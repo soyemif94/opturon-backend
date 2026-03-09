@@ -146,7 +146,9 @@ async function processInboundMessages({ body, headers, requestId }) {
       logError('conversation_inbound_process_failed', {
         requestId,
         waMessageId: event.waMessageId || null,
-        error: error.message
+        error: error.message,
+        code: error.code || null,
+        details: error.details || null
       });
     }
   }

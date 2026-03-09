@@ -10,46 +10,91 @@ function dbQuery(client, text, params) {
 }
 
 async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId }, client = null) {
-  const byPair = await dbQuery(
+  const byOwner = await dbQuery(
     client,
     `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
-     WHERE "waFrom" = $1 AND "waTo" = $2
+     WHERE "clinicId" = $1 AND "channelId" = $2 AND "contactId" = $3
      LIMIT 1`,
-    [waFrom, waTo]
+    [clinicId, channelId, contactId]
   );
 
-  if (byPair.rows[0]) {
+  if (byOwner.rows[0]) {
     const updated = await dbQuery(
       client,
       `UPDATE conversations
-       SET "updatedAt" = NOW()
+       SET "waFrom" = $2,
+           "waTo" = $3,
+           "lastInboundAt" = NOW(),
+           "updatedAt" = NOW()
        WHERE id = $1
        RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
                  "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
-      [byPair.rows[0].id]
+      [byOwner.rows[0].id, waFrom, waTo]
     );
     return updated.rows[0];
   }
 
-  const inserted = await dbQuery(
-    client,
-    `INSERT INTO conversations (
-      "clinicId", "channelId", "contactId", "waFrom", "waTo",
-      status, stage, state, context, "lastInboundAt", "updatedAt"
-    ) VALUES ($1, $2, $3, $4, $5, 'open', 'new', 'NEW', '{}'::jsonb, NOW(), NOW())
-    ON CONFLICT ("clinicId", "channelId", "contactId")
-    DO UPDATE SET
-      "waFrom" = EXCLUDED."waFrom",
-      "waTo" = EXCLUDED."waTo",
-      "updatedAt" = NOW()
-    RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
-              "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
-    [clinicId, channelId, contactId, waFrom, waTo]
-  );
+  try {
+    const inserted = await dbQuery(
+      client,
+      `INSERT INTO conversations (
+        "clinicId", "channelId", "contactId", "waFrom", "waTo",
+        status, stage, state, context, "lastInboundAt", "updatedAt"
+      ) VALUES ($1, $2, $3, $4, $5, 'open', 'new', 'NEW', '{}'::jsonb, NOW(), NOW())
+      ON CONFLICT ("clinicId", "channelId", "contactId")
+      DO UPDATE SET
+        "waFrom" = EXCLUDED."waFrom",
+        "waTo" = EXCLUDED."waTo",
+        "lastInboundAt" = NOW(),
+        "updatedAt" = NOW()
+      RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+                "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
+      [clinicId, channelId, contactId, waFrom, waTo]
+    );
 
-  return inserted.rows[0];
+    return inserted.rows[0];
+  } catch (error) {
+    if (error && error.code === '23505') {
+      const byPair = await dbQuery(
+        client,
+        `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+                "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
+         FROM conversations
+         WHERE "waFrom" = $1 AND "waTo" = $2
+         LIMIT 1`,
+        [waFrom, waTo]
+      );
+
+      const existing = byPair.rows[0] || null;
+      if (
+        existing &&
+        existing.clinicId === clinicId &&
+        existing.channelId === channelId &&
+        existing.contactId === contactId
+      ) {
+        return existing;
+      }
+
+      const conflictError = new Error('conversation_pair_already_mapped_to_other_owner');
+      conflictError.code = 'CONVERSATION_CROSS_OWNER_CONFLICT';
+      conflictError.details = {
+        waFrom,
+        waTo,
+        clinicId,
+        channelId,
+        contactId,
+        existingConversationId: existing ? existing.id : null,
+        existingClinicId: existing ? existing.clinicId : null,
+        existingChannelId: existing ? existing.channelId : null,
+        existingContactId: existing ? existing.contactId : null
+      };
+      throw conflictError;
+    }
+
+    throw error;
+  }
 }
 
 async function insertInboundMessage(record, client = null) {
