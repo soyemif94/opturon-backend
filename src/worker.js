@@ -64,6 +64,7 @@ let stopped = false;
 let polling = false;
 let processingCount = 0;
 let timer = null;
+let started = false;
 const aiBudget = new Map();
 
 function sanitizeDatabaseUrl(databaseUrl) {
@@ -1706,6 +1707,14 @@ async function shutdown(signal) {
 }
 
 function startWorker() {
+  if (started) {
+    logWarn('worker_start_skipped_already_running', {
+      workerId: WORKER_ID
+    });
+    return;
+  }
+
+  started = true;
   const dbInfo = sanitizeDatabaseUrl(process.env.DATABASE_URL || '');
   logInfo('worker_env_loaded', {
     hasDatabaseUrl: !!process.env.DATABASE_URL,
@@ -1745,6 +1754,12 @@ function startWorker() {
   });
 }
 
-startWorker();
+if (require.main === module) {
+  startWorker();
+}
+
+module.exports = {
+  startWorker
+};
 
 

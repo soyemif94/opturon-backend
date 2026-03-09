@@ -15,6 +15,7 @@ env.validateEnvOrExit();
 
 const app = createApp();
 const host = '0.0.0.0';
+const runWorkerInWeb = String(process.env.RUN_WORKER_IN_WEB || '').trim().toLowerCase() === 'true';
 
 console.log('[BOOT]', {
   cwd: process.cwd(),
@@ -55,6 +56,14 @@ server.listen(env.port, host, () => {
     debugEnabled: env.whatsappDebug,
     tokenLen: env.whatsappAccessToken.length
   });
+
+  if (runWorkerInWeb) {
+    const { startWorker } = require('./worker');
+    logInfo('worker_embed_requested', {
+      enabled: true
+    });
+    startWorker();
+  }
 
   if (env.whatsappDebug) {
     if (String(env.whatsappPhoneNumberId || '').trim()) {
