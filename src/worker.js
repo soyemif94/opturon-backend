@@ -17,7 +17,7 @@ const { sendTextMessage, sendTemplateMessage } = require('./whatsapp/whatsapp.se
 const { normalizeWhatsAppTo } = require('./whatsapp/normalize-phone');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
-const { listProductsByClinicId } = require('./repositories/products.repository');
+const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
 const { createOrderForClinic } = require('./services/portal-orders.service');
 const { generateReply } = require('./ai/openai.client');
 const { buildAiMessages } = require('./ai/context.builder');
@@ -293,6 +293,19 @@ function parseCommerceQuantity(rawText) {
   return value;
 }
 
+function isCommerceCancelIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return (
+    text === 'cancelar' ||
+    text === 'cancelar pedido' ||
+    text === 'anular' ||
+    text === 'anular pedido' ||
+    text === 'quiero cancelar el pedido' ||
+    text === 'quiero anular el pedido'
+  );
+}
+
 function buildCommerceResetPatch(extra = {}) {
   return {
     commerceCatalog: null,
@@ -318,9 +331,15 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (currentState === 'WAITING_PRODUCT_SELECTION') {
-    if (isGlobalMenuCommand(inboundText)) {
+    if (isCommerceCancelIntent(inboundText) || isGlobalMenuCommand(inboundText)) {
+      logInfo('commerce_flow_cancelled_by_user', {
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        currentState,
+        inboundText: normalizeCommandText(inboundText)
+      });
       return {
-        replyText: 'Listo. Cuando quieras ver el catalogo otra vez, escribi "productos".',
+        replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
         newState: 'IDLE',
         contextPatch: buildCommerceResetPatch()
       };
@@ -364,14 +383,17 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (currentState === 'WAITING_QUANTITY') {
-    if (isGlobalMenuCommand(inboundText)) {
-      const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+    if (isCommerceCancelIntent(inboundText) || isGlobalMenuCommand(inboundText)) {
+      logInfo('commerce_flow_cancelled_by_user', {
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        currentState,
+        inboundText: normalizeCommandText(inboundText)
+      });
       return {
-        replyText: buildCommerceCatalogReply(products),
-        newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
-        contextPatch: buildCommerceResetPatch({
-          commerceCatalog: products
-        })
+        replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+        newState: 'IDLE',
+        contextPatch: buildCommerceResetPatch()
       };
     }
 
@@ -399,6 +421,53 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       };
     }
 
+    const latestProduct = await findProductById(selectedProduct.productId, conversation.clinicId);
+    if (!latestProduct || String(latestProduct.status || '').toLowerCase() !== 'active') {
+      const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+      return {
+        replyText: products.length
+          ? `Ese producto ya no esta disponible.\n\n${buildCommerceCatalogReply(products)}`
+          : 'Ese producto ya no esta disponible y no hay otros productos activos para pedir ahora mismo.',
+        newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCatalog: products.length ? products : null
+        })
+      };
+    }
+
+    if (Number(latestProduct.stock || 0) < quantity) {
+      logInfo('commerce_order_create_failed_stock', {
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        productId: latestProduct.id,
+        requestedQuantity: quantity,
+        availableStock: Number(latestProduct.stock || 0)
+      });
+      return {
+        replyText: 'Lo siento, no tenemos suficiente stock de ese producto en este momento.',
+        newState: 'WAITING_QUANTITY',
+        contextPatch: {
+          commerceCatalog: catalogFromContext,
+          commerceSelectedProduct: {
+            ...selectedProduct,
+            name: latestProduct.name,
+            price: Number(latestProduct.price || 0),
+            currency: String(latestProduct.currency || selectedProduct.currency || 'ARS').toUpperCase(),
+            stock: Number(latestProduct.stock || 0),
+            sku: latestProduct.sku || null
+          }
+        }
+      };
+    }
+
+    logInfo('commerce_order_create_attempt', {
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      productId: latestProduct.id,
+      requestedQuantity: quantity,
+      availableStock: Number(latestProduct.stock || 0)
+    });
+
     const orderResult = await createOrderForClinic(conversation.clinicId, {
       customerName: contact.name || `Cliente ${String(contact.waId || contact.phone || '').slice(-4) || 'WhatsApp'}`,
       customerPhone: contact.phone || contact.waId || null,
@@ -413,6 +482,13 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     if (!orderResult.ok) {
       if (orderResult.reason === 'order_item_insufficient_stock') {
+        logInfo('commerce_order_create_failed_stock', {
+          conversationId: conversation.id,
+          clinicId: conversation.clinicId,
+          productId: selectedProduct.productId,
+          requestedQuantity: quantity,
+          details: orderResult.details || null
+        });
         return {
           replyText: 'Lo siento, no tenemos suficiente stock de ese producto en este momento.',
           newState: 'WAITING_QUANTITY',
@@ -444,13 +520,22 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     }
 
     const order = orderResult.order;
+    logInfo('commerce_order_create_success', {
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      productId: selectedProduct.productId,
+      orderId: order.id || null,
+      requestedQuantity: quantity,
+      total: Number(order.total || 0),
+      currency: order.currency || latestProduct.currency || selectedProduct.currency || 'ARS'
+    });
     return {
       replyText: [
         'Perfecto.',
         '',
         'Tu pedido fue registrado:',
-        `${selectedProduct.name} x${quantity}`,
-        `Total: ${formatMoney(Number(order.total || 0), order.currency || selectedProduct.currency || 'ARS')}`,
+        `${latestProduct.name} x${quantity}`,
+        `Total: ${formatMoney(Number(order.total || 0), order.currency || latestProduct.currency || selectedProduct.currency || 'ARS')}`,
         '',
         'En breve te confirmamos la preparacion.'
       ].join('\n'),
