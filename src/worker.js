@@ -306,6 +306,15 @@ function isCommerceCancelIntent(rawText) {
   );
 }
 
+function hasCommerceContext(context) {
+  const safeContext = context && typeof context === 'object' ? context : {};
+  return Boolean(
+    (Array.isArray(safeContext.commerceCatalog) && safeContext.commerceCatalog.length > 0) ||
+    (safeContext.commerceSelectedProduct && typeof safeContext.commerceSelectedProduct === 'object') ||
+    safeContext.commerceLastOrderId
+  );
+}
+
 function buildCommerceResetPatch(extra = {}) {
   return {
     commerceCatalog: null,
@@ -1177,6 +1186,8 @@ async function processConversationReplyJob(job) {
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const normalizedInboundText = normalizeCommandText(inboundText);
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
+  const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
+  const commerceContextActive = hasCommerceContext(safeContext);
 
   logInfo('incoming_whatsapp_message_received', {
     requestId,
@@ -1645,6 +1656,51 @@ async function processConversationReplyJob(job) {
             appointmentSuggestionsCreatedAt: new Date().toISOString()
           }
         };
+      }
+    }
+  }
+
+  if (!decision) {
+    if (inboundLooksLikeCommerceCancel || inboundLooksLikeCommerce || commerceContextActive) {
+      logInfo('legacy_menu_blocked_for_commerce', {
+        requestId,
+        jobId: job.id,
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        currentState,
+        inboundText: normalizedInboundText,
+        reason: inboundLooksLikeCommerceCancel
+          ? 'commerce_cancel_intent'
+          : inboundLooksLikeCommerce
+            ? 'commerce_entry_intent'
+            : 'commerce_context_active'
+      });
+
+      if (inboundLooksLikeCommerceCancel) {
+        decision = {
+          replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+          newState: 'IDLE',
+          contextPatch: buildCommerceResetPatch()
+        };
+        decisionSource = 'commerce_cancel_block';
+        logInfo('commerce_flow_cancelled_response_returned', {
+          requestId,
+          jobId: job.id,
+          conversationId: conversation.id,
+          clinicId: conversation.clinicId,
+          currentState,
+          inboundText: normalizedInboundText
+        });
+      } else {
+        const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+        decision = {
+          replyText: buildCommerceCatalogReply(products),
+          newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+          contextPatch: buildCommerceResetPatch({
+            commerceCatalog: products
+          })
+        };
+        decisionSource = 'commerce_legacy_block';
       }
     }
   }
