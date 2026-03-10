@@ -308,7 +308,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
   if (
     isCommerceEntryIntent(inboundText) &&
-    (currentState === 'NEW' || currentState === 'READY' || currentState === 'IDLE')
+    currentState !== 'WAITING_PRODUCT_SELECTION' &&
+    currentState !== 'WAITING_QUANTITY'
   ) {
     const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
     return {
@@ -1128,6 +1129,17 @@ async function processConversationReplyJob(job) {
     contact,
     inboundText
   });
+  if (decision) {
+    logInfo('commerce_flow_matched', {
+      requestId,
+      jobId: job.id,
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      currentState,
+      nextState: decision.newState || null,
+      inboundText: normalizeCommandText(inboundText)
+    });
+  }
 
   const managementIntent = detectTurnManagementIntent(inboundText);
   if (
@@ -1220,6 +1232,18 @@ async function processConversationReplyJob(job) {
           }
         };
       }
+    }
+
+    if (decision) {
+      logInfo('legacy_clinic_flow_matched', {
+        requestId,
+        jobId: job.id,
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        currentState,
+        reason: 'appointment_management',
+        nextState: decision.newState || null
+      });
     }
   }
 
@@ -1520,6 +1544,14 @@ async function processConversationReplyJob(job) {
   }
 
   if (!decision) {
+    logInfo('legacy_clinic_flow_matched', {
+      requestId,
+      jobId: job.id,
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      currentState,
+      reason: 'conversation_engine_fallback'
+    });
     decision = decideReply({
       state: conversation.state,
       context: safeContext,
