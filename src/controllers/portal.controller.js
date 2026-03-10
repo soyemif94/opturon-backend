@@ -1,4 +1,5 @@
 const { resolvePortalTenantContext } = require('../services/portal-context.service');
+const { logError } = require('../utils/logger');
 const {
   listPortalConversations,
   getPortalConversationDetail,
@@ -231,10 +232,27 @@ async function postPortalOrder(req, res) {
       data: result.order
     });
   } catch (error) {
+    logError('portal_order_create_controller_failed', {
+      tenantId,
+      error: error.message,
+      code: error.code || null,
+      detail: error.detail || null,
+      where: error.where || null,
+      constraint: error.constraint || null,
+      stack: error.stack || null
+    });
+
     return res.status(500).json({
       success: false,
       error: 'portal_order_create_failed',
-      details: error.message
+      details: error.message,
+      debug: {
+        message: error.message,
+        code: error.code || null,
+        detail: error.detail || null,
+        where: error.where || null,
+        constraint: error.constraint || null
+      }
     });
   }
 }
