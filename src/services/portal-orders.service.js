@@ -1,5 +1,6 @@
 const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
+const { logError } = require('../utils/logger');
 const {
   listOrdersByClinicId,
   findOrderById,
@@ -139,7 +140,7 @@ async function createPortalOrder(tenantId, payload) {
         productId: product.id,
         nameSnapshot: product.name,
         skuSnapshot: normalizeString(product.sku) || null,
-        priceSnapshot: product.price,
+        priceSnapshot: Number(product.price),
         currencySnapshot: normalizeCurrency(product.currency, requestedCurrency),
         quantity: item.quantity,
         variant: item.variant || null
@@ -169,24 +170,41 @@ async function createPortalOrder(tenantId, payload) {
   const subtotal = Number(items.reduce((sum, item) => sum + item.priceSnapshot * item.quantity, 0).toFixed(2));
   const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
 
-  const order = await withTransaction(async (client) =>
-    createOrder(
-      {
-        clinicId: context.clinic.id,
-        contactId: normalizeString(payload && payload.contactId) || null,
-        customerName,
-        customerPhone,
-        notes: notes || null,
-        subtotal,
-        total: subtotal,
-        currency,
-        paymentStatus,
-        orderStatus,
-        items
-      },
-      client
-    )
-  );
+  let order;
+  try {
+    order = await withTransaction(async (client) =>
+      createOrder(
+        {
+          clinicId: context.clinic.id,
+          contactId: normalizeString(payload && payload.contactId) || null,
+          customerName,
+          customerPhone,
+          notes: notes || null,
+          subtotal,
+          total: subtotal,
+          currency,
+          paymentStatus,
+          orderStatus,
+          items
+        },
+        client
+      )
+    );
+  } catch (error) {
+    logError('portal_order_create_transaction_failed', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      customerPhone,
+      itemCount: items.length,
+      currency,
+      error: error.message,
+      code: error.code || null,
+      detail: error.detail || null,
+      where: error.where || null,
+      constraint: error.constraint || null
+    });
+    throw error;
+  }
 
   return {
     ok: true,

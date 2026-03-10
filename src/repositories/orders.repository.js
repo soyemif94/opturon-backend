@@ -1,4 +1,5 @@
 const { query } = require('../db/client');
+const { logError } = require('../utils/logger');
 
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') {
@@ -18,6 +19,21 @@ function normalizeItem(item) {
     quantity: Number(item.quantity || 0),
     variant: item.variant || null,
     createdAt: item.createdAt
+  };
+}
+
+function normalizeInsertItem(item, fallbackCurrency) {
+  const currencySnapshot = String(item.currencySnapshot || fallbackCurrency || 'ARS').trim().toUpperCase() || 'ARS';
+  const skuSnapshot = String(item.skuSnapshot || '').trim();
+
+  return {
+    productId: item.productId || null,
+    nameSnapshot: String(item.nameSnapshot || '').trim(),
+    skuSnapshot: skuSnapshot || null,
+    priceSnapshot: Number(item.priceSnapshot || 0),
+    currencySnapshot,
+    quantity: Number.parseInt(String(item.quantity || 0), 10),
+    variant: String(item.variant || '').trim() || null
   };
 }
 
@@ -180,30 +196,49 @@ async function createOrder(input, client = null) {
   const orderId = insertOrder.rows[0].id;
 
   for (const item of input.items) {
-    await dbQuery(
-      client,
-      `INSERT INTO order_items (
-         "orderId",
-         "productId",
-         "nameSnapshot",
-         "skuSnapshot",
-         "priceSnapshot",
-         "currencySnapshot",
-         quantity,
-         variant
-       )
-       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8)`,
-      [
+    const safeItem = normalizeInsertItem(item, input.currency);
+
+    try {
+      await dbQuery(
+        client,
+        `INSERT INTO order_items (
+           "orderId",
+           "productId",
+           "nameSnapshot",
+           "skuSnapshot",
+           "priceSnapshot",
+           "currencySnapshot",
+           quantity,
+           variant
+         )
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8)`,
+        [
+          orderId,
+          safeItem.productId,
+          safeItem.nameSnapshot,
+          safeItem.skuSnapshot,
+          safeItem.priceSnapshot,
+          safeItem.currencySnapshot,
+          safeItem.quantity,
+          safeItem.variant
+        ]
+      );
+    } catch (error) {
+      logError('order_item_insert_failed', {
         orderId,
-        item.productId || null,
-        item.nameSnapshot,
-        item.skuSnapshot || null,
-        item.priceSnapshot,
-        item.currencySnapshot || null,
-        item.quantity,
-        item.variant || null
-      ]
-    );
+        clinicId: input.clinicId,
+        productId: safeItem.productId,
+        skuSnapshot: safeItem.skuSnapshot,
+        currencySnapshot: safeItem.currencySnapshot,
+        quantity: safeItem.quantity,
+        error: error.message,
+        code: error.code || null,
+        detail: error.detail || null,
+        where: error.where || null,
+        constraint: error.constraint || null
+      });
+      throw error;
+    }
   }
 
   return findOrderById(orderId, input.clinicId, client);
