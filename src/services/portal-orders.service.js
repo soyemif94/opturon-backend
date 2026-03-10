@@ -20,6 +20,10 @@ function normalizeNumber(value) {
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
+function normalizeCurrency(value, fallback = 'ARS') {
+  return normalizeString(value || fallback).toUpperCase() || fallback;
+}
+
 function derivePaymentStatus(orderStatus, paymentStatus) {
   const safePaymentStatus = normalizeString(paymentStatus).toLowerCase();
   if (PAYMENT_STATUSES.has(safePaymentStatus)) {
@@ -90,7 +94,7 @@ async function createPortalOrder(tenantId, payload) {
   const customerName = normalizeString(payload && payload.customerName);
   const customerPhone = normalizeString(payload && payload.customerPhone);
   const notes = normalizeString(payload && payload.notes);
-  const requestedCurrency = normalizeString((payload && payload.currency) || 'ARS').toUpperCase() || 'ARS';
+  const requestedCurrency = normalizeCurrency(payload && payload.currency, 'ARS');
   const requestedOrderStatus = normalizeString((payload && payload.orderStatus) || 'new').toLowerCase();
   const orderStatus = ORDER_STATUSES.has(requestedOrderStatus) ? requestedOrderStatus : 'new';
   const itemsInput = Array.isArray(payload && payload.items) ? payload.items : [];
@@ -134,10 +138,11 @@ async function createPortalOrder(tenantId, payload) {
       items.push({
         productId: product.id,
         nameSnapshot: product.name,
+        skuSnapshot: normalizeString(product.sku) || null,
         priceSnapshot: product.price,
+        currencySnapshot: normalizeCurrency(product.currency, requestedCurrency),
         quantity: item.quantity,
-        variant: item.variant || null,
-        currency: product.currency || requestedCurrency
+        variant: item.variant || null
       });
       continue;
     }
@@ -152,14 +157,15 @@ async function createPortalOrder(tenantId, payload) {
     items.push({
       productId: null,
       nameSnapshot: item.nameSnapshot,
+      skuSnapshot: null,
       priceSnapshot: item.priceSnapshot,
+      currencySnapshot: requestedCurrency,
       quantity: item.quantity,
-      variant: item.variant || null,
-      currency: requestedCurrency
+      variant: item.variant || null
     });
   }
 
-  const currency = items[0]?.currency || requestedCurrency;
+  const currency = items[0]?.currencySnapshot || requestedCurrency;
   const subtotal = Number(items.reduce((sum, item) => sum + item.priceSnapshot * item.quantity, 0).toFixed(2));
   const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
 

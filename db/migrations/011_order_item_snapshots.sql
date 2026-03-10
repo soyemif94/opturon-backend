@@ -1,0 +1,3 @@
+ALTER TABLE order_items
+  ADD COLUMN IF NOT EXISTS "skuSnapshot" TEXT NULL,
+  ADD COLUMN IF NOT EXISTS "currencySnapshot" TEXT NULL;

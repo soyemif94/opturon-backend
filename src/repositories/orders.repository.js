@@ -12,7 +12,9 @@ function normalizeItem(item) {
     id: item.id,
     productId: item.productId || null,
     nameSnapshot: item.nameSnapshot,
+    skuSnapshot: item.skuSnapshot || null,
     priceSnapshot: Number(item.priceSnapshot || 0),
+    currencySnapshot: item.currencySnapshot || null,
     quantity: Number(item.quantity || 0),
     variant: item.variant || null,
     createdAt: item.createdAt
@@ -74,7 +76,9 @@ async function listOrdersByClinicId(clinicId, client = null) {
            'id', oi.id,
            'productId', oi."productId",
            'nameSnapshot', oi."nameSnapshot",
+           'skuSnapshot', oi."skuSnapshot",
            'priceSnapshot', oi."priceSnapshot",
+           'currencySnapshot', oi."currencySnapshot",
            'quantity', oi.quantity,
            'variant', oi.variant,
            'createdAt', oi."createdAt"
@@ -120,7 +124,9 @@ async function findOrderById(orderId, clinicId, client = null) {
            'id', oi.id,
            'productId', oi."productId",
            'nameSnapshot', oi."nameSnapshot",
+           'skuSnapshot', oi."skuSnapshot",
            'priceSnapshot', oi."priceSnapshot",
+           'currencySnapshot', oi."currencySnapshot",
            'quantity', oi.quantity,
            'variant', oi.variant,
            'createdAt', oi."createdAt"
@@ -180,16 +186,20 @@ async function createOrder(input, client = null) {
          "orderId",
          "productId",
          "nameSnapshot",
+         "skuSnapshot",
          "priceSnapshot",
+         "currencySnapshot",
          quantity,
          variant
        )
-       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)`,
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8)`,
       [
         orderId,
         item.productId || null,
         item.nameSnapshot,
+        item.skuSnapshot || null,
         item.priceSnapshot,
+        item.currencySnapshot || null,
         item.quantity,
         item.variant || null
       ]
