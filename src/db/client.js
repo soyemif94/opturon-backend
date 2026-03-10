@@ -1,5 +1,37 @@
-﻿const { Pool } = require('pg');
+const { Pool } = require('pg');
 const env = require('../config/env');
+const { logInfo, logWarn } = require('../utils/logger');
+
+function parseDatabaseConfig(connectionString) {
+  const raw = String(connectionString || '').trim();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    return {
+      source: 'DATABASE_URL',
+      hostname: parsed.hostname || null,
+      database: (parsed.pathname || '').replace(/^\//, '') || null
+    };
+  } catch (error) {
+    return {
+      source: 'DATABASE_URL',
+      hostname: null,
+      database: null,
+      parseError: error.message
+    };
+  }
+}
+
+const dbConfig = parseDatabaseConfig(env.databaseUrl);
+
+if (dbConfig && !dbConfig.parseError) {
+  logInfo('db_config_loaded', dbConfig);
+} else if (env.databaseUrl) {
+  logWarn('db_config_parse_failed', dbConfig || { source: 'DATABASE_URL' });
+}
 
 const pool = new Pool({
   connectionString: env.databaseUrl,

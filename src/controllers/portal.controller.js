@@ -305,10 +305,27 @@ async function getPortalProducts(req, res) {
       }
     });
   } catch (error) {
+    logError('portal_products_failed', {
+      tenantId,
+      error: error.message,
+      code: error.code || null,
+      detail: error.detail || null,
+      where: error.where || null,
+      constraint: error.constraint || null,
+      stack: error.stack || null
+    });
+
     return res.status(500).json({
       success: false,
       error: 'portal_products_failed',
-      details: error.message
+      details: error.message,
+      debug: {
+        message: error.message,
+        code: error.code || null,
+        detail: error.detail || null,
+        where: error.where || null,
+        constraint: error.constraint || null
+      }
     });
   }
 }

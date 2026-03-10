@@ -1715,11 +1715,12 @@ function startWorker() {
   }
 
   started = true;
-  const dbInfo = sanitizeDatabaseUrl(process.env.DATABASE_URL || '');
+  const dbInfo = sanitizeDatabaseUrl(env.databaseUrl || '');
   logInfo('worker_env_loaded', {
-    hasDatabaseUrl: !!process.env.DATABASE_URL,
-    dbHostPort: dbInfo ? dbInfo.hostPort : null,
-    dbName: dbInfo ? dbInfo.dbname : null,
+    dbSource: 'DATABASE_URL',
+    hasDatabaseUrl: !!env.databaseUrl,
+    dbHostname: dbInfo ? String(dbInfo.hostPort || '').split(':')[0] || null : null,
+    dbDatabase: dbInfo ? dbInfo.dbname : null,
     hasToken: !!process.env.WHATSAPP_ACCESS_TOKEN,
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || null
   });
