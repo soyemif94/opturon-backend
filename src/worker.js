@@ -17,6 +17,8 @@ const { sendTextMessage, sendTemplateMessage } = require('./whatsapp/whatsapp.se
 const { normalizeWhatsAppTo } = require('./whatsapp/normalize-phone');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
+const { listProductsByClinicId } = require('./repositories/products.repository');
+const { createOrderForClinic } = require('./services/portal-orders.service');
 const { generateReply } = require('./ai/openai.client');
 const { buildAiMessages } = require('./ai/context.builder');
 const {
@@ -214,6 +216,264 @@ function detectIntent(rawText) {
   if (appointmentWords.test(text)) return 'appointment';
   if (pricingWords.test(text)) return 'pricing';
   return 'unknown';
+}
+
+function isCommerceEntryIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return (
+    text === 'hola' ||
+    text === 'buenas' ||
+    text === 'buen dia' ||
+    text === 'buenas tardes' ||
+    text === 'buenas noches' ||
+    text === 'productos' ||
+    text === 'catalogo' ||
+    text === 'comprar' ||
+    text === 'pedido' ||
+    text === 'pedidos'
+  );
+}
+
+function buildCommerceCatalog(products) {
+  return (Array.isArray(products) ? products : [])
+    .filter((product) => {
+      const status = String(product && product.status ? product.status : '').toLowerCase();
+      const stock = Number(product && product.stock ? product.stock : 0);
+      return status === 'active' && stock > 0;
+    })
+    .slice(0, 10)
+    .map((product, index) => ({
+      index: index + 1,
+      productId: product.id,
+      name: product.name,
+      price: Number(product.price || 0),
+      currency: String(product.currency || 'ARS').toUpperCase() || 'ARS',
+      stock: Number(product.stock || 0),
+      sku: product.sku || null
+    }));
+}
+
+function buildCommerceCatalogReply(products) {
+  if (!products.length) {
+    return 'Hola. En este momento no tenemos productos disponibles para pedir por WhatsApp.';
+  }
+
+  const lines = [
+    'Hola.',
+    'Estos son nuestros productos disponibles:',
+    '',
+    ...products.map((product) => `${product.index}) ${product.name} - ${formatMoney(product.price, product.currency)}`),
+    '',
+    'Responde con el numero del producto que queres.'
+  ];
+
+  return lines.join('\n');
+}
+
+function parseCommerceSelection(rawText, max) {
+  const text = normalizeCommandText(rawText);
+  const match = text.match(/^(\d{1,2})$/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isInteger(value) || value < 1 || value > max) {
+    return null;
+  }
+  return value;
+}
+
+function parseCommerceQuantity(rawText) {
+  const text = normalizeCommandText(rawText);
+  const match = text.match(/^(\d{1,3})$/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isInteger(value) || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+function buildCommerceResetPatch(extra = {}) {
+  return {
+    commerceCatalog: null,
+    commerceSelectedProduct: null,
+    ...extra
+  };
+}
+
+async function resolveCommerceDecision({ conversation, clinic, contact, inboundText }) {
+  const currentState = String(conversation.state || '').toUpperCase();
+  const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
+  const catalogFromContext = Array.isArray(safeContext.commerceCatalog) ? safeContext.commerceCatalog : [];
+
+  if (
+    isCommerceEntryIntent(inboundText) &&
+    (currentState === 'NEW' || currentState === 'READY' || currentState === 'IDLE')
+  ) {
+    const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+    return {
+      replyText: buildCommerceCatalogReply(products),
+      newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: buildCommerceResetPatch({
+        commerceCatalog: products
+      })
+    };
+  }
+
+  if (currentState === 'WAITING_PRODUCT_SELECTION') {
+    if (isGlobalMenuCommand(inboundText)) {
+      return {
+        replyText: 'Listo. Cuando quieras ver el catalogo otra vez, escribi "productos".',
+        newState: 'IDLE',
+        contextPatch: buildCommerceResetPatch()
+      };
+    }
+
+    const products = catalogFromContext.length
+      ? catalogFromContext
+      : buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+    const selection = parseCommerceSelection(inboundText, products.length);
+    if (!selection) {
+      return {
+        replyText: products.length
+          ? 'No entendi ese producto. Por favor elegi un numero de la lista.'
+          : 'No hay productos disponibles ahora mismo. Escribi "productos" para intentar de nuevo.',
+        newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCatalog: products.length ? products : null
+        })
+      };
+    }
+
+    const selectedProduct = products[selection - 1] || null;
+    if (!selectedProduct) {
+      return {
+        replyText: 'No entendi ese producto. Por favor elegi un numero de la lista.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: buildCommerceResetPatch({
+          commerceCatalog: products
+        })
+      };
+    }
+
+    return {
+      replyText: `Elegiste: ${selectedProduct.name}\n\nCuantas unidades queres?`,
+      newState: 'WAITING_QUANTITY',
+      contextPatch: {
+        commerceCatalog: products,
+        commerceSelectedProduct: selectedProduct
+      }
+    };
+  }
+
+  if (currentState === 'WAITING_QUANTITY') {
+    if (isGlobalMenuCommand(inboundText)) {
+      const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+      return {
+        replyText: buildCommerceCatalogReply(products),
+        newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCatalog: products
+        })
+      };
+    }
+
+    const selectedProduct = safeContext.commerceSelectedProduct || null;
+    if (!selectedProduct || !selectedProduct.productId) {
+      const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+      return {
+        replyText: buildCommerceCatalogReply(products),
+        newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCatalog: products
+        })
+      };
+    }
+
+    const quantity = parseCommerceQuantity(inboundText);
+    if (!quantity) {
+      return {
+        replyText: 'Decime un numero valido de unidades.',
+        newState: 'WAITING_QUANTITY',
+        contextPatch: {
+          commerceCatalog: catalogFromContext,
+          commerceSelectedProduct: selectedProduct
+        }
+      };
+    }
+
+    const orderResult = await createOrderForClinic(conversation.clinicId, {
+      customerName: contact.name || `Cliente ${String(contact.waId || contact.phone || '').slice(-4) || 'WhatsApp'}`,
+      customerPhone: contact.phone || contact.waId || null,
+      notes: 'Pedido creado desde WhatsApp commerce',
+      items: [
+        {
+          productId: selectedProduct.productId,
+          quantity
+        }
+      ]
+    });
+
+    if (!orderResult.ok) {
+      if (orderResult.reason === 'order_item_insufficient_stock') {
+        return {
+          replyText: 'Lo siento, no tenemos suficiente stock de ese producto en este momento.',
+          newState: 'WAITING_QUANTITY',
+          contextPatch: {
+            commerceCatalog: catalogFromContext,
+            commerceSelectedProduct: selectedProduct
+          }
+        };
+      }
+
+      if (orderResult.reason === 'order_item_product_not_found' || orderResult.reason === 'order_item_product_inactive') {
+        const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+        return {
+          replyText: products.length
+            ? `Ese producto ya no esta disponible.\n\n${buildCommerceCatalogReply(products)}`
+            : 'Ese producto ya no esta disponible y no hay otros productos activos para pedir ahora mismo.',
+          newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+          contextPatch: buildCommerceResetPatch({
+            commerceCatalog: products.length ? products : null
+          })
+        };
+      }
+
+      return {
+        replyText: 'No pude registrar tu pedido en este momento. Intenta nuevamente en unos minutos.',
+        newState: 'IDLE',
+        contextPatch: buildCommerceResetPatch()
+      };
+    }
+
+    const order = orderResult.order;
+    return {
+      replyText: [
+        'Perfecto.',
+        '',
+        'Tu pedido fue registrado:',
+        `${selectedProduct.name} x${quantity}`,
+        `Total: ${formatMoney(Number(order.total || 0), order.currency || selectedProduct.currency || 'ARS')}`,
+        '',
+        'En breve te confirmamos la preparacion.'
+      ].join('\n'),
+      newState: 'IDLE',
+      contextPatch: buildCommerceResetPatch({
+        commerceLastOrderId: order.id || null,
+        commerceLastOrderAt: new Date().toISOString()
+      })
+    };
+  }
+
+  return null;
+}
+
+function formatMoney(value, currency = 'ARS') {
+  return new Intl.NumberFormat('es-AR', {
+    style: 'currency',
+    currency: String(currency || 'ARS').toUpperCase(),
+    maximumFractionDigits: 0
+  }).format(Number.isFinite(Number(value)) ? Number(value) : 0);
 }
 
 function extractSelection(rawText) {
@@ -825,6 +1085,10 @@ async function processConversationReplyJob(job) {
   if (!contact) {
     throw new Error('Contact not found for conversation_reply job');
   }
+  const clinic = await getClinic(conversation.clinicId);
+  if (!clinic) {
+    throw new Error('Clinic not found for conversation_reply job');
+  }
 
   const inboundText = String(inboundMessage.text || '').trim();
   const currentState = String(conversation.state || '').toUpperCase();
@@ -858,8 +1122,16 @@ async function processConversationReplyJob(job) {
   };
 
   let decision = null;
+  decision = await resolveCommerceDecision({
+    conversation,
+    clinic,
+    contact,
+    inboundText
+  });
+
   const managementIntent = detectTurnManagementIntent(inboundText);
   if (
+    !decision &&
     managementIntent &&
     (currentState === 'READY' || currentState === 'SELECT_APPOINTMENT_SLOT' || currentState === 'CONFIRM_APPOINTMENT')
   ) {
@@ -951,7 +1223,7 @@ async function processConversationReplyJob(job) {
     }
   }
 
-  if (currentState === 'ASKED_APPOINTMENT_TIMEWINDOW') {
+  if (!decision && currentState === 'ASKED_APPOINTMENT_TIMEWINDOW') {
     const selectedWindow = parseTimeWindowInput(inboundText);
     if (selectedWindow) {
       const candidate = safeContext.appointmentCandidate || {};
