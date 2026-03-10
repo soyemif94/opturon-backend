@@ -136,12 +136,14 @@ async function createPortalOrder(tenantId, payload) {
         return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_price' };
       }
 
+      const productCurrency = normalizeCurrency(product.currency, requestedCurrency || 'ARS');
+
       items.push({
         productId: product.id,
         nameSnapshot: product.name,
         skuSnapshot: normalizeString(product.sku) || null,
         priceSnapshot: Number(product.price),
-        currencySnapshot: normalizeCurrency(product.currency, requestedCurrency),
+        currencySnapshot: productCurrency,
         quantity: item.quantity,
         variant: item.variant || null
       });
@@ -160,13 +162,13 @@ async function createPortalOrder(tenantId, payload) {
       nameSnapshot: item.nameSnapshot,
       skuSnapshot: null,
       priceSnapshot: item.priceSnapshot,
-      currencySnapshot: requestedCurrency,
+      currencySnapshot: normalizeCurrency(requestedCurrency, 'ARS'),
       quantity: item.quantity,
       variant: item.variant || null
     });
   }
 
-  const currency = items[0]?.currencySnapshot || requestedCurrency;
+  const orderCurrency = normalizeCurrency(items[0] && items[0].currencySnapshot, requestedCurrency || 'ARS');
   const subtotal = Number(items.reduce((sum, item) => sum + item.priceSnapshot * item.quantity, 0).toFixed(2));
   const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
 
@@ -182,7 +184,7 @@ async function createPortalOrder(tenantId, payload) {
           notes: notes || null,
           subtotal,
           total: subtotal,
-          currency,
+          currency: orderCurrency,
           paymentStatus,
           orderStatus,
           items
@@ -196,7 +198,7 @@ async function createPortalOrder(tenantId, payload) {
       clinicId: context.clinic.id,
       customerPhone,
       itemCount: items.length,
-      currency,
+      currency: orderCurrency,
       error: error.message,
       code: error.code || null,
       detail: error.detail || null,
