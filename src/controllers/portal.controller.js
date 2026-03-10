@@ -15,6 +15,7 @@ const {
   listPortalProducts,
   getPortalProductDetail,
   createPortalProduct,
+  createPortalProductsBulk,
   patchPortalProduct,
   patchPortalProductStatus
 } = require('../services/portal-products.service');
@@ -349,6 +350,39 @@ async function postPortalProduct(req, res) {
   }
 }
 
+async function postPortalProductsBulk(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalProductsBulk(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_bulk_items'
+          ? 400
+          : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        created: result.created,
+        failed: result.failed,
+        results: result.results
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_bulk_create_failed',
+      details: error.message
+    });
+  }
+}
+
 async function updatePortalProduct(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const productId = String(req.params.productId || '').trim();
@@ -425,6 +459,7 @@ module.exports = {
   getPortalProducts,
   getPortalProduct,
   postPortalProduct,
+  postPortalProductsBulk,
   updatePortalProduct,
   updatePortalProductStatus
 };

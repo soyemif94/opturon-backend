@@ -40,6 +40,42 @@ function validateProductPayload(product) {
   return null;
 }
 
+async function createProductForContext(context, payload) {
+  const product = buildProductPayload(payload, 'active');
+  const reason = validateProductPayload(product);
+  if (reason) {
+    return { ok: false, tenantId: context.tenantId, reason };
+  }
+
+  try {
+    const created = await withTransaction((client) =>
+      createProduct(
+        {
+          clinicId: context.clinic.id,
+          ...product
+        },
+        client
+      )
+    );
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      product: created
+    };
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === '23505') {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        reason: 'duplicate_product_sku'
+      };
+    }
+    throw error;
+  }
+}
+
 async function listPortalProducts(tenantId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -84,29 +120,7 @@ async function createPortalProduct(tenantId, payload) {
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
-
-  const product = buildProductPayload(payload, 'active');
-  const reason = validateProductPayload(product);
-  if (reason) {
-    return { ok: false, tenantId: context.tenantId, reason };
-  }
-
-  const created = await withTransaction((client) =>
-    createProduct(
-      {
-        clinicId: context.clinic.id,
-        ...product
-      },
-      client
-    )
-  );
-
-  return {
-    ok: true,
-    tenantId: context.tenantId,
-    clinic: context.clinic,
-    product: created
-  };
+  return createProductForContext(context, payload);
 }
 
 async function patchPortalProduct(tenantId, productId, payload) {
@@ -176,11 +190,73 @@ async function patchPortalProductStatus(tenantId, productId, payload) {
   };
 }
 
+async function createPortalProductsBulk(tenantId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const items = Array.isArray(payload && payload.items) ? payload.items : [];
+  if (!items.length) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      reason: 'missing_bulk_items'
+    };
+  }
+
+  const results = [];
+  let created = 0;
+  let failed = 0;
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    try {
+      const result = await createProductForContext(context, {
+        ...item,
+        status: 'active'
+      });
+      if (result.ok) {
+        created += 1;
+        results.push({
+          row: index + 1,
+          status: 'created',
+          productId: result.product.id
+        });
+      } else {
+        failed += 1;
+        results.push({
+          row: index + 1,
+          status: 'failed',
+          code: result.reason
+        });
+      }
+    } catch (error) {
+      failed += 1;
+      results.push({
+        row: index + 1,
+        status: 'failed',
+        code: error instanceof Error ? error.message : 'bulk_product_create_failed'
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    created,
+    failed,
+    results
+  };
+}
+
 module.exports = {
   PRODUCT_STATUSES: Array.from(PRODUCT_STATUSES),
   listPortalProducts,
   getPortalProductDetail,
   createPortalProduct,
+  createPortalProductsBulk,
   patchPortalProduct,
   patchPortalProductStatus
 };

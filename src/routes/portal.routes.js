@@ -12,6 +12,7 @@ const {
   getPortalProducts,
   getPortalProduct,
   postPortalProduct,
+  postPortalProductsBulk,
   updatePortalProduct,
   updatePortalProductStatus
 } = require('../controllers/portal.controller');
@@ -29,6 +30,7 @@ router.get('/tenants/:tenantId/orders/:orderId', getPortalOrder);
 router.patch('/tenants/:tenantId/orders/:orderId/status', updatePortalOrderStatus);
 router.get('/tenants/:tenantId/products', getPortalProducts);
 router.post('/tenants/:tenantId/products', postPortalProduct);
+router.post('/tenants/:tenantId/products/bulk', postPortalProductsBulk);
 router.get('/tenants/:tenantId/products/:productId', getPortalProduct);
 router.patch('/tenants/:tenantId/products/:productId', updatePortalProduct);
 router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProductStatus);
