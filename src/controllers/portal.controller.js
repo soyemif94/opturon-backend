@@ -213,10 +213,13 @@ async function postPortalOrder(req, res) {
         result.reason === 'missing_customer_name' ||
         result.reason === 'missing_customer_phone' ||
         result.reason === 'missing_order_items' ||
+        result.reason === 'invalid_order_item_product' ||
         result.reason === 'invalid_order_item_name' ||
         result.reason === 'invalid_order_item_price' ||
         result.reason === 'invalid_order_item_quantity'
           ? 400
+          : result.reason === 'inactive_order_item_product'
+            ? 409
           : 404;
 
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });

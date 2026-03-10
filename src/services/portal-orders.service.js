@@ -6,6 +6,7 @@ const {
   createOrder,
   updateOrderStatus
 } = require('../repositories/orders.repository');
+const { findProductById } = require('../repositories/products.repository');
 
 const ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
 const PAYMENT_STATUSES = new Set(['unpaid', 'pending', 'paid', 'refunded', 'cancelled']);
@@ -89,7 +90,7 @@ async function createPortalOrder(tenantId, payload) {
   const customerName = normalizeString(payload && payload.customerName);
   const customerPhone = normalizeString(payload && payload.customerPhone);
   const notes = normalizeString(payload && payload.notes);
-  const currency = normalizeString((payload && payload.currency) || 'ARS').toUpperCase() || 'ARS';
+  const requestedCurrency = normalizeString((payload && payload.currency) || 'ARS').toUpperCase() || 'ARS';
   const requestedOrderStatus = normalizeString((payload && payload.orderStatus) || 'new').toLowerCase();
   const orderStatus = ORDER_STATUSES.has(requestedOrderStatus) ? requestedOrderStatus : 'new';
   const itemsInput = Array.isArray(payload && payload.items) ? payload.items : [];
@@ -104,7 +105,7 @@ async function createPortalOrder(tenantId, payload) {
     return { ok: false, tenantId: context.tenantId, reason: 'missing_order_items' };
   }
 
-  const items = itemsInput.map((item) => ({
+  const rawItems = itemsInput.map((item) => ({
     productId: normalizeString(item && item.productId) || null,
     nameSnapshot: normalizeString(item && item.nameSnapshot),
     priceSnapshot: normalizeNumber(item && item.priceSnapshot),
@@ -112,16 +113,53 @@ async function createPortalOrder(tenantId, payload) {
     variant: normalizeString(item && item.variant) || null
   }));
 
-  if (items.some((item) => !item.nameSnapshot)) {
-    return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_name' };
-  }
-  if (items.some((item) => !Number.isFinite(item.priceSnapshot) || item.priceSnapshot < 0)) {
-    return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_price' };
-  }
-  if (items.some((item) => !Number.isInteger(item.quantity) || item.quantity <= 0)) {
+  if (rawItems.some((item) => !Number.isInteger(item.quantity) || item.quantity <= 0)) {
     return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_quantity' };
   }
 
+  const items = [];
+  for (const item of rawItems) {
+    if (item.productId) {
+      const product = await findProductById(item.productId, context.clinic.id);
+      if (!product) {
+        return { ok: false, tenantId: context.tenantId, reason: 'order_item_product_not_found' };
+      }
+      if (String(product.status || '').toLowerCase() !== 'active') {
+        return { ok: false, tenantId: context.tenantId, reason: 'inactive_order_item_product' };
+      }
+      if (!Number.isFinite(product.price) || product.price < 0) {
+        return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_price' };
+      }
+
+      items.push({
+        productId: product.id,
+        nameSnapshot: product.name,
+        priceSnapshot: product.price,
+        quantity: item.quantity,
+        variant: item.variant || null,
+        currency: product.currency || requestedCurrency
+      });
+      continue;
+    }
+
+    if (!item.nameSnapshot) {
+      return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_name' };
+    }
+    if (!Number.isFinite(item.priceSnapshot) || item.priceSnapshot < 0) {
+      return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_price' };
+    }
+
+    items.push({
+      productId: null,
+      nameSnapshot: item.nameSnapshot,
+      priceSnapshot: item.priceSnapshot,
+      quantity: item.quantity,
+      variant: item.variant || null,
+      currency: requestedCurrency
+    });
+  }
+
+  const currency = items[0]?.currency || requestedCurrency;
   const subtotal = Number(items.reduce((sum, item) => sum + item.priceSnapshot * item.quantity, 0).toFixed(2));
   const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
 
