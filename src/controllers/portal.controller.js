@@ -220,11 +220,16 @@ async function postPortalOrder(req, res) {
         result.reason === 'invalid_order_item_price' ||
         result.reason === 'invalid_order_item_quantity'
           ? 400
-          : result.reason === 'inactive_order_item_product'
+          : result.reason === 'order_item_product_inactive' || result.reason === 'order_item_insufficient_stock'
             ? 409
-          : 404;
+            : 404;
 
-      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
     }
 
     return res.status(201).json({
@@ -269,9 +274,16 @@ async function updatePortalOrderStatus(req, res) {
         result.reason === 'missing_order_id' ||
         result.reason === 'invalid_order_status'
           ? 400
-          : 404;
+          : result.reason === 'order_item_product_inactive' || result.reason === 'order_item_insufficient_stock'
+            ? 409
+            : 404;
 
-      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
     }
 
     return res.status(200).json({

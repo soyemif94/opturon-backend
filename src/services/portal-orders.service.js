@@ -7,7 +7,11 @@ const {
   createOrder,
   updateOrderStatus
 } = require('../repositories/orders.repository');
-const { findProductById } = require('../repositories/products.repository');
+const {
+  findProductById,
+  decrementProductStock,
+  incrementProductStock
+} = require('../repositories/products.repository');
 
 const ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
 const PAYMENT_STATUSES = new Set(['unpaid', 'pending', 'paid', 'refunded', 'cancelled']);
@@ -23,6 +27,15 @@ function normalizeNumber(value) {
 
 function normalizeCurrency(value, fallback = 'ARS') {
   return normalizeString(value || fallback).toUpperCase() || fallback;
+}
+
+function buildError(tenantId, reason, details) {
+  return {
+    ok: false,
+    tenantId,
+    reason,
+    details: details || null
+  };
 }
 
 function derivePaymentStatus(orderStatus, paymentStatus) {
@@ -101,13 +114,13 @@ async function createPortalOrder(tenantId, payload) {
   const itemsInput = Array.isArray(payload && payload.items) ? payload.items : [];
 
   if (!customerName) {
-    return { ok: false, tenantId: context.tenantId, reason: 'missing_customer_name' };
+    return buildError(context.tenantId, 'missing_customer_name');
   }
   if (!customerPhone) {
-    return { ok: false, tenantId: context.tenantId, reason: 'missing_customer_phone' };
+    return buildError(context.tenantId, 'missing_customer_phone');
   }
   if (itemsInput.length === 0) {
-    return { ok: false, tenantId: context.tenantId, reason: 'missing_order_items' };
+    return buildError(context.tenantId, 'missing_order_items');
   }
 
   const rawItems = itemsInput.map((item) => ({
@@ -119,63 +132,82 @@ async function createPortalOrder(tenantId, payload) {
   }));
 
   if (rawItems.some((item) => !Number.isInteger(item.quantity) || item.quantity <= 0)) {
-    return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_quantity' };
+    return buildError(context.tenantId, 'invalid_order_item_quantity');
   }
 
-  const items = [];
-  for (const item of rawItems) {
-    if (item.productId) {
-      const product = await findProductById(item.productId, context.clinic.id);
-      if (!product) {
-        return { ok: false, tenantId: context.tenantId, reason: 'order_item_product_not_found' };
-      }
-      if (String(product.status || '').toLowerCase() !== 'active') {
-        return { ok: false, tenantId: context.tenantId, reason: 'inactive_order_item_product' };
-      }
-      if (!Number.isFinite(product.price) || product.price < 0) {
-        return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_price' };
-      }
-
-      const productCurrency = normalizeCurrency(product.currency, requestedCurrency || 'ARS');
-
-      items.push({
-        productId: product.id,
-        nameSnapshot: product.name,
-        skuSnapshot: normalizeString(product.sku) || null,
-        priceSnapshot: Number(product.price),
-        currencySnapshot: productCurrency,
-        quantity: item.quantity,
-        variant: item.variant || null
-      });
-      continue;
-    }
-
-    if (!item.nameSnapshot) {
-      return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_name' };
-    }
-    if (!Number.isFinite(item.priceSnapshot) || item.priceSnapshot < 0) {
-      return { ok: false, tenantId: context.tenantId, reason: 'invalid_order_item_price' };
-    }
-
-    items.push({
-      productId: null,
-      nameSnapshot: item.nameSnapshot,
-      skuSnapshot: null,
-      priceSnapshot: item.priceSnapshot,
-      currencySnapshot: normalizeCurrency(requestedCurrency, 'ARS'),
-      quantity: item.quantity,
-      variant: item.variant || null
-    });
-  }
-
-  const orderCurrency = normalizeCurrency(items[0] && items[0].currencySnapshot, requestedCurrency || 'ARS');
-  const subtotal = Number(items.reduce((sum, item) => sum + item.priceSnapshot * item.quantity, 0).toFixed(2));
   const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
-
-  let order;
+  let transactionResult;
   try {
-    order = await withTransaction(async (client) =>
-      createOrder(
+    transactionResult = await withTransaction(async (client) => {
+      const items = [];
+
+      for (const item of rawItems) {
+        if (item.productId) {
+          const product = await findProductById(item.productId, context.clinic.id, client);
+          if (!product) {
+            return buildError(context.tenantId, 'order_item_product_not_found', `Product ${item.productId} was not found.`);
+          }
+          if (String(product.status || '').toLowerCase() !== 'active') {
+            return buildError(context.tenantId, 'order_item_product_inactive', `Product ${product.name} is inactive.`);
+          }
+          if (!Number.isFinite(product.price) || product.price < 0) {
+            return buildError(context.tenantId, 'invalid_order_item_price');
+          }
+          if (Number(product.stock) < item.quantity) {
+            return buildError(
+              context.tenantId,
+              'order_item_insufficient_stock',
+              `Not enough stock for product ${product.name}. Requested ${item.quantity}, available ${product.stock}.`
+            );
+          }
+
+          const productCurrency = normalizeCurrency(product.currency, requestedCurrency || 'ARS');
+          items.push({
+            productId: product.id,
+            nameSnapshot: product.name,
+            skuSnapshot: normalizeString(product.sku) || null,
+            priceSnapshot: Number(product.price),
+            currencySnapshot: productCurrency,
+            quantity: item.quantity,
+            variant: item.variant || null
+          });
+        } else {
+          if (!item.nameSnapshot) {
+            return buildError(context.tenantId, 'invalid_order_item_name');
+          }
+          if (!Number.isFinite(item.priceSnapshot) || item.priceSnapshot < 0) {
+            return buildError(context.tenantId, 'invalid_order_item_price');
+          }
+
+          items.push({
+            productId: null,
+            nameSnapshot: item.nameSnapshot,
+            skuSnapshot: null,
+            priceSnapshot: item.priceSnapshot,
+            currencySnapshot: normalizeCurrency(requestedCurrency, 'ARS'),
+            quantity: item.quantity,
+            variant: item.variant || null
+          });
+        }
+      }
+
+      for (const item of items) {
+        if (!item.productId) continue;
+
+        const updatedProduct = await decrementProductStock(item.productId, context.clinic.id, item.quantity, client);
+        if (!updatedProduct) {
+          return buildError(
+            context.tenantId,
+            'order_item_insufficient_stock',
+            `Not enough stock to reserve ${item.quantity} unit(s) for ${item.nameSnapshot}.`
+          );
+        }
+      }
+
+      const orderCurrency = normalizeCurrency(items[0] && items[0].currencySnapshot, requestedCurrency || 'ARS');
+      const subtotal = Number(items.reduce((sum, item) => sum + item.priceSnapshot * item.quantity, 0).toFixed(2));
+
+      const order = await createOrder(
         {
           clinicId: context.clinic.id,
           contactId: normalizeString(payload && payload.contactId) || null,
@@ -190,15 +222,22 @@ async function createPortalOrder(tenantId, payload) {
           items
         },
         client
-      )
-    );
+      );
+
+      return {
+        ok: true,
+        order,
+        currency: orderCurrency,
+        itemCount: items.length
+      };
+    });
   } catch (error) {
     logError('portal_order_create_transaction_failed', {
       tenantId: context.tenantId,
       clinicId: context.clinic.id,
       customerPhone,
-      itemCount: items.length,
-      currency: orderCurrency,
+      itemCount: rawItems.length,
+      currency: requestedCurrency,
       error: error.message,
       code: error.code || null,
       detail: error.detail || null,
@@ -208,11 +247,15 @@ async function createPortalOrder(tenantId, payload) {
     throw error;
   }
 
+  if (!transactionResult.ok) {
+    return transactionResult;
+  }
+
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    order
+    order: transactionResult.order
   };
 }
 
@@ -241,28 +284,79 @@ async function patchPortalOrderStatus(tenantId, orderId, payload) {
   }
 
   const paymentStatus = derivePaymentStatus(requestedOrderStatus, payload && payload.paymentStatus);
-  const order = await updateOrderStatus(
-    safeOrderId,
-    context.clinic.id,
-    {
-      orderStatus: requestedOrderStatus,
-      paymentStatus
-    }
-  );
+  let transactionResult;
+  try {
+    transactionResult = await withTransaction(async (client) => {
+      const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client);
+      if (!currentOrder) {
+        return buildError(context.tenantId, 'order_not_found');
+      }
 
-  if (!order) {
-    return {
-      ok: false,
+      if (currentOrder.orderStatus === requestedOrderStatus) {
+        return {
+          ok: true,
+          order: currentOrder
+        };
+      }
+
+      if (requestedOrderStatus === 'cancelled' && currentOrder.orderStatus !== 'cancelled') {
+        for (const item of currentOrder.items || []) {
+          if (!item.productId) continue;
+
+          const updatedProduct = await incrementProductStock(item.productId, context.clinic.id, item.quantity, client);
+          if (!updatedProduct) {
+            return buildError(
+              context.tenantId,
+              'order_item_product_not_found',
+              `Product ${item.productId} was not found while restoring stock.`
+            );
+          }
+        }
+      }
+
+      const order = await updateOrderStatus(
+        safeOrderId,
+        context.clinic.id,
+        {
+          orderStatus: requestedOrderStatus,
+          paymentStatus
+        },
+        client
+      );
+
+      if (!order) {
+        return buildError(context.tenantId, 'order_not_found');
+      }
+
+      return {
+        ok: true,
+        order
+      };
+    });
+  } catch (error) {
+    logError('portal_order_status_transaction_failed', {
       tenantId: context.tenantId,
-      reason: 'order_not_found'
-    };
+      clinicId: context.clinic.id,
+      orderId: safeOrderId,
+      nextStatus: requestedOrderStatus,
+      error: error.message,
+      code: error.code || null,
+      detail: error.detail || null,
+      where: error.where || null,
+      constraint: error.constraint || null
+    });
+    throw error;
+  }
+
+  if (!transactionResult.ok) {
+    return transactionResult;
   }
 
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    order
+    order: transactionResult.order
   };
 }
 
