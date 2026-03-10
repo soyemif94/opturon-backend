@@ -5,6 +5,19 @@ const {
   patchPortalConversation,
   sendPortalMessage
 } = require('../services/portal-inbox.service');
+const {
+  listPortalOrders,
+  getPortalOrderDetail,
+  createPortalOrder,
+  patchPortalOrderStatus
+} = require('../services/portal-orders.service');
+const {
+  listPortalProducts,
+  getPortalProductDetail,
+  createPortalProduct,
+  patchPortalProduct,
+  patchPortalProductStatus
+} = require('../services/portal-products.service');
 
 async function getPortalTenantContext(req, res) {
   const tenantId = String(req.params.tenantId || req.query.tenantId || '').trim();
@@ -139,10 +152,276 @@ async function postPortalMessage(req, res) {
   }
 }
 
+async function getPortalOrders(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalOrders(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        orders: result.orders
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_orders_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalOrder(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const orderId = String(req.params.orderId || '').trim();
+
+  try {
+    const result = await getPortalOrderDetail(tenantId, orderId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_order_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.order
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_order_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalOrder(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalOrder(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_customer_name' ||
+        result.reason === 'missing_customer_phone' ||
+        result.reason === 'missing_order_items' ||
+        result.reason === 'invalid_order_item_name' ||
+        result.reason === 'invalid_order_item_price' ||
+        result.reason === 'invalid_order_item_quantity'
+          ? 400
+          : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.order
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_order_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function updatePortalOrderStatus(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const orderId = String(req.params.orderId || '').trim();
+
+  try {
+    const result = await patchPortalOrderStatus(tenantId, orderId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_order_id' ||
+        result.reason === 'invalid_order_status'
+          ? 400
+          : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.order
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_order_status_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalProducts(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalProducts(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        products: result.products
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_products_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalProduct(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const productId = String(req.params.productId || '').trim();
+
+  try {
+    const result = await getPortalProductDetail(tenantId, productId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_product_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.product
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalProduct(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalProduct(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_name' ||
+        result.reason === 'invalid_product_price' ||
+        result.reason === 'invalid_product_stock' ||
+        result.reason === 'invalid_product_status'
+          ? 400
+          : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.product
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function updatePortalProduct(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const productId = String(req.params.productId || '').trim();
+
+  try {
+    const result = await patchPortalProduct(tenantId, productId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_id' ||
+        result.reason === 'missing_product_name' ||
+        result.reason === 'invalid_product_price' ||
+        result.reason === 'invalid_product_stock' ||
+        result.reason === 'invalid_product_status'
+          ? 400
+          : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.product
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function updatePortalProductStatus(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const productId = String(req.params.productId || '').trim();
+
+  try {
+    const result = await patchPortalProductStatus(tenantId, productId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_id' ||
+        result.reason === 'invalid_product_status'
+          ? 400
+          : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.product
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_status_update_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   getPortalTenantContext,
   getPortalConversations,
   getPortalConversation,
   updatePortalConversation,
-  postPortalMessage
+  postPortalMessage,
+  getPortalOrders,
+  getPortalOrder,
+  postPortalOrder,
+  updatePortalOrderStatus,
+  getPortalProducts,
+  getPortalProduct,
+  postPortalProduct,
+  updatePortalProduct,
+  updatePortalProductStatus
 };
