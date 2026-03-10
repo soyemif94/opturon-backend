@@ -306,11 +306,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const catalogFromContext = Array.isArray(safeContext.commerceCatalog) ? safeContext.commerceCatalog : [];
 
-  if (
-    isCommerceEntryIntent(inboundText) &&
-    currentState !== 'WAITING_PRODUCT_SELECTION' &&
-    currentState !== 'WAITING_QUANTITY'
-  ) {
+  if (isCommerceEntryIntent(inboundText)) {
     const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
     return {
       replyText: buildCommerceCatalogReply(products),
@@ -1094,6 +1090,18 @@ async function processConversationReplyJob(job) {
   const inboundText = String(inboundMessage.text || '').trim();
   const currentState = String(conversation.state || '').toUpperCase();
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
+  const normalizedInboundText = normalizeCommandText(inboundText);
+  const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
+
+  logInfo('incoming_whatsapp_message_received', {
+    requestId,
+    jobId: job.id,
+    conversationId: conversation.id,
+    clinicId: conversation.clinicId,
+    currentState,
+    inboundText: normalizedInboundText,
+    inboundMessageId
+  });
 
   const buildSuggestionsFromContext = async (count = 3) => {
     const timing = conversationRepo.resolveCandidateTiming(safeContext.appointmentCandidate || null);
@@ -1123,6 +1131,7 @@ async function processConversationReplyJob(job) {
   };
 
   let decision = null;
+  let decisionSource = null;
   decision = await resolveCommerceDecision({
     conversation,
     clinic,
@@ -1130,14 +1139,25 @@ async function processConversationReplyJob(job) {
     inboundText
   });
   if (decision) {
-    logInfo('commerce_flow_matched', {
+    decisionSource = 'commerce';
+    logInfo('commerce_flow_entered', {
       requestId,
       jobId: job.id,
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
       currentState,
       nextState: decision.newState || null,
-      inboundText: normalizeCommandText(inboundText)
+      inboundText: normalizedInboundText
+    });
+  } else {
+    logInfo('commerce_flow_skipped', {
+      requestId,
+      jobId: job.id,
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      currentState,
+      inboundText: normalizedInboundText,
+      reason: inboundLooksLikeCommerce ? 'resolve_commerce_returned_null' : 'not_a_commerce_command'
     });
   }
 
@@ -1235,6 +1255,7 @@ async function processConversationReplyJob(job) {
     }
 
     if (decision) {
+      decisionSource = 'legacy_appointment_management';
       logInfo('legacy_clinic_flow_matched', {
         requestId,
         jobId: job.id,
@@ -1557,9 +1578,37 @@ async function processConversationReplyJob(job) {
       context: safeContext,
       inboundText
     });
+    decisionSource = 'legacy_conversation_engine';
+  }
+
+  if (
+    decision &&
+    typeof decision.replyText === 'string' &&
+    /1\)\s*Sacar turno[\s\S]*2\)\s*Precios[\s\S]*3\)\s*Direccion/i.test(decision.replyText)
+  ) {
+    logInfo('legacy_menu_generated', {
+      requestId,
+      jobId: job.id,
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      currentState,
+      source: decisionSource || 'unknown',
+      inboundText: normalizedInboundText
+    });
   }
 
   const deterministicReplyText = String(decision && decision.replyText ? decision.replyText : '').trim();
+
+  logInfo('reply_job_response_selected', {
+    requestId,
+    jobId: job.id,
+    conversationId: conversation.id,
+    clinicId: conversation.clinicId,
+    currentState,
+    nextState: decision && decision.newState ? decision.newState : null,
+    source: decisionSource || 'unknown',
+    inboundText: normalizedInboundText
+  });
 
   let replyText = deterministicReplyText;
   let aiUsed = false;
