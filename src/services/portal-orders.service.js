@@ -7,11 +7,9 @@ const {
   createOrder,
   updateOrderStatus
 } = require('../repositories/orders.repository');
-const {
-  findProductById,
-  decrementProductStock,
-  incrementProductStock
-} = require('../repositories/products.repository');
+const productsRepository = require('../repositories/products.repository');
+
+const { findProductById, updateProduct } = productsRepository;
 
 const ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
 const PAYMENT_STATUSES = new Set(['unpaid', 'pending', 'paid', 'refunded', 'cancelled']);
@@ -37,6 +35,46 @@ function buildError(tenantId, reason, details) {
     details: details || null
   };
 }
+
+function createStockAdjuster(methodName, direction) {
+  const repositoryMethod = productsRepository[methodName];
+  if (typeof repositoryMethod === 'function') {
+    return repositoryMethod.bind(productsRepository);
+  }
+
+  return async (productId, clinicId, quantity, client) => {
+    const product = await findProductById(productId, clinicId, client);
+    if (!product) {
+      return null;
+    }
+
+    const currentStock = Number(product.stock || 0);
+    const delta = Number(quantity || 0);
+    const nextStock = direction === 'decrement' ? currentStock - delta : currentStock + delta;
+
+    if (!Number.isFinite(nextStock) || nextStock < 0) {
+      return null;
+    }
+
+    return updateProduct(
+      productId,
+      clinicId,
+      {
+        name: product.name,
+        description: product.description,
+        price: product.price,
+        currency: product.currency,
+        stock: nextStock,
+        status: product.status,
+        sku: product.sku
+      },
+      client
+    );
+  };
+}
+
+const decrementProductStock = createStockAdjuster('decrementProductStock', 'decrement');
+const incrementProductStock = createStockAdjuster('incrementProductStock', 'increment');
 
 function derivePaymentStatus(orderStatus, paymentStatus) {
   const safePaymentStatus = normalizeString(paymentStatus).toLowerCase();
