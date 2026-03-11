@@ -318,12 +318,7 @@ async function createOrderForClinic(clinicId, payload) {
   );
 }
 
-async function patchPortalOrderStatus(tenantId, orderId, payload) {
-  const context = await resolvePortalTenantContext(tenantId);
-  if (!context.ok || !context.clinic?.id) {
-    return context;
-  }
-
+async function patchOrderStatusForContext(context, orderId, payload) {
   const safeOrderId = normalizeString(orderId);
   if (!safeOrderId) {
     return {
@@ -419,11 +414,39 @@ async function patchPortalOrderStatus(tenantId, orderId, payload) {
   };
 }
 
+async function patchPortalOrderStatus(tenantId, orderId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  return patchOrderStatusForContext(context, orderId, payload);
+}
+
+async function patchOrderStatusForClinic(clinicId, orderId, payload) {
+  const safeClinicId = normalizeString(clinicId);
+  if (!safeClinicId) {
+    return buildError(null, 'missing_clinic_id');
+  }
+
+  return patchOrderStatusForContext(
+    {
+      ok: true,
+      tenantId: null,
+      clinic: { id: safeClinicId },
+      channel: null
+    },
+    orderId,
+    payload
+  );
+}
+
 module.exports = {
   ORDER_STATUSES: Array.from(ORDER_STATUSES),
   listPortalOrders,
   getPortalOrderDetail,
   createPortalOrder,
   createOrderForClinic,
-  patchPortalOrderStatus
+  patchPortalOrderStatus,
+  patchOrderStatusForClinic
 };

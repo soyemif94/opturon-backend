@@ -18,7 +18,7 @@ const { normalizeWhatsAppTo } = require('./whatsapp/normalize-phone');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
 const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
-const { createOrderForClinic } = require('./services/portal-orders.service');
+const { createOrderForClinic, patchOrderStatusForClinic } = require('./services/portal-orders.service');
 const { generateReply } = require('./ai/openai.client');
 const { buildAiMessages } = require('./ai/context.builder');
 const {
@@ -329,10 +329,93 @@ function buildCommerceResetPatch(extra = {}) {
   };
 }
 
+async function resolveCommerceCancellation({ conversation, inboundText, currentState, safeContext }) {
+  if (!(isCommerceCancelIntent(inboundText) || isGlobalMenuCommand(inboundText))) {
+    return null;
+  }
+
+  logInfo('commerce_flow_cancelled_by_user', {
+    conversationId: conversation.id,
+    clinicId: conversation.clinicId,
+    currentState,
+    inboundText: normalizeCommandText(inboundText)
+  });
+
+  const lastOrderId = String(safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : '').trim();
+  if (!lastOrderId) {
+    return {
+      replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+      newState: 'IDLE',
+      contextPatch: buildCommerceResetPatch({
+        commerceLastOrderId: null,
+        commerceLastOrderAt: null
+      })
+    };
+  }
+
+  logInfo('commerce_order_cancel_attempt', {
+    conversationId: conversation.id,
+    clinicId: conversation.clinicId,
+    orderId: lastOrderId
+  });
+
+  const cancelResult = await patchOrderStatusForClinic(conversation.clinicId, lastOrderId, {
+    orderStatus: 'cancelled'
+  });
+
+  if (!cancelResult.ok) {
+    if (cancelResult.reason === 'order_not_found') {
+      return {
+        replyText: "No encontre ese pedido para cancelarlo. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+        newState: 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceLastOrderId: null,
+          commerceLastOrderAt: null
+        })
+      };
+    }
+
+    return {
+      replyText: 'No pude cancelar tu pedido en este momento. Intenta nuevamente en unos minutos.',
+      newState: 'IDLE',
+      contextPatch: buildCommerceResetPatch({
+        commerceLastOrderId: lastOrderId,
+        commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null
+      })
+    };
+  }
+
+  logInfo('commerce_order_cancel_success', {
+    conversationId: conversation.id,
+    clinicId: conversation.clinicId,
+    orderId: lastOrderId,
+    finalStatus: cancelResult.order && cancelResult.order.orderStatus ? cancelResult.order.orderStatus : null
+  });
+
+  return {
+    replyText: "Entendido. Cancele tu pedido y devolvi el stock reservado. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+    newState: 'IDLE',
+    contextPatch: buildCommerceResetPatch({
+      commerceLastOrderId: null,
+      commerceLastOrderAt: null
+    })
+  };
+}
+
 async function resolveCommerceDecision({ conversation, clinic, contact, inboundText }) {
   const currentState = String(conversation.state || '').toUpperCase();
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const catalogFromContext = Array.isArray(safeContext.commerceCatalog) ? safeContext.commerceCatalog : [];
+
+  const cancelDecision = await resolveCommerceCancellation({
+    conversation,
+    inboundText,
+    currentState,
+    safeContext
+  });
+  if (cancelDecision) {
+    return cancelDecision;
+  }
 
   if (isCommerceEntryIntent(inboundText)) {
     const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
@@ -346,20 +429,6 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (currentState === 'WAITING_PRODUCT_SELECTION') {
-    if (isCommerceCancelIntent(inboundText) || isGlobalMenuCommand(inboundText)) {
-      logInfo('commerce_flow_cancelled_by_user', {
-        conversationId: conversation.id,
-        clinicId: conversation.clinicId,
-        currentState,
-        inboundText: normalizeCommandText(inboundText)
-      });
-      return {
-        replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
-        newState: 'IDLE',
-        contextPatch: buildCommerceResetPatch()
-      };
-    }
-
     const products = catalogFromContext.length
       ? catalogFromContext
       : buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
@@ -398,20 +467,6 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (currentState === 'WAITING_QUANTITY') {
-    if (isCommerceCancelIntent(inboundText) || isGlobalMenuCommand(inboundText)) {
-      logInfo('commerce_flow_cancelled_by_user', {
-        conversationId: conversation.id,
-        clinicId: conversation.clinicId,
-        currentState,
-        inboundText: normalizeCommandText(inboundText)
-      });
-      return {
-        replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
-        newState: 'IDLE',
-        contextPatch: buildCommerceResetPatch()
-      };
-    }
-
     const selectedProduct = safeContext.commerceSelectedProduct || null;
     if (!selectedProduct || !selectedProduct.productId) {
       const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
