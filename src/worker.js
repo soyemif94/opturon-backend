@@ -227,6 +227,8 @@ function isCommerceEntryIntent(rawText) {
     text === 'buen dia' ||
     text === 'buenas tardes' ||
     text === 'buenas noches' ||
+    text === 'quiero hacer un pedido' ||
+    text === 'quiero comprar' ||
     text === 'productos' ||
     text === 'catalogo' ||
     text === 'comprar' ||
@@ -261,17 +263,24 @@ function formatCommerceIndex(index) {
 
 function buildCommerceCatalogReply(products) {
   if (!products.length) {
-    return 'Hola 👋\n\nEn este momento no tenemos productos disponibles para pedir por WhatsApp.';
+    return 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos productos disponibles para pedir por WhatsApp.';
   }
 
   const lines = [
     'Hola 👋',
     '',
+    '¡Bienvenido! Te ayudo a armar tu pedido por aca.',
+    '',
     'Estos son nuestros productos disponibles:',
     '',
     ...products.map((product) => `${formatCommerceIndex(product.index)} ${product.name} — ${formatMoney(product.price, product.currency)}`),
     '',
-    'Respondé con el número del producto que querés.'
+    'Podes:',
+    '- escribir el numero del producto que queres agregar',
+    '- escribir "confirmar" para cerrar tu pedido',
+    '- escribir "productos" para ver el catalogo otra vez',
+    '- escribir "deshacer" para quitar el ultimo producto agregado',
+    '- escribir "cancelar" para anular la compra'
   ];
 
   return lines.join('\n');
@@ -318,6 +327,12 @@ function isCommerceConfirmIntent(rawText) {
   return text === 'confirmar' || text === 'confirmar pedido';
 }
 
+function isCommerceUndoIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return text === 'deshacer' || text === 'borrar ultimo' || text === 'quitar ultimo';
+}
+
 function hasCommerceContext(context) {
   const safeContext = context && typeof context === 'object' ? context : {};
   return Boolean(
@@ -332,6 +347,7 @@ function buildCommerceResetPatch(extra = {}) {
   return {
     commerceCatalog: null,
     commerceSelectedProduct: null,
+    commerceLastAddedItem: null,
     ...extra
   };
 }
@@ -384,6 +400,32 @@ function mergeCommerceCartItem(cartItems, product, quantity) {
   return nextItems;
 }
 
+function removeLastAddedCommerceCartItem(cartItems, lastAddedItem) {
+  const safeCart = Array.isArray(cartItems) ? cartItems.map((item) => ({ ...item })) : [];
+  const productId = String(lastAddedItem && lastAddedItem.productId ? lastAddedItem.productId : '').trim();
+  const quantity = Number.parseInt(String(lastAddedItem && lastAddedItem.quantity ? lastAddedItem.quantity : 0), 10);
+  if (!productId || !Number.isInteger(quantity) || quantity <= 0) {
+    return safeCart;
+  }
+
+  const existingIndex = safeCart.findIndex((item) => String(item.productId || '') === productId);
+  if (existingIndex < 0) {
+    return safeCart;
+  }
+
+  const currentQuantity = Number.parseInt(String(safeCart[existingIndex].quantity || 0), 10);
+  if (!Number.isInteger(currentQuantity) || currentQuantity <= quantity) {
+    safeCart.splice(existingIndex, 1);
+    return safeCart;
+  }
+
+  safeCart[existingIndex] = {
+    ...safeCart[existingIndex],
+    quantity: currentQuantity - quantity
+  };
+  return safeCart;
+}
+
 function buildCommerceCartReply(cartItems) {
   const safeItems = Array.isArray(cartItems) ? cartItems : [];
   const subtotal = safeItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
@@ -400,7 +442,38 @@ function buildCommerceCartReply(cartItems) {
     '- escribir otro número de producto para seguir agregando',
     '- escribir "confirmar" para cerrar el pedido',
     '- escribir "productos" para ver el catálogo otra vez',
+    '- escribir "deshacer" para quitar el ultimo producto agregado',
     '- escribir "cancelar" para anular la compra'
+  ].join('\n');
+}
+
+function buildCommerceUndoReply(cartItems) {
+  const safeItems = Array.isArray(cartItems) ? cartItems : [];
+
+  if (!safeItems.length) {
+    return [
+      'Listo 👍',
+      '',
+      'Saque el ultimo producto agregado.',
+      '',
+      'Tu carrito quedo vacio.',
+      'Escribi "productos" para ver el catalogo o mandame otro numero para seguir.'
+    ].join('\n');
+  }
+
+  return [
+    'Listo 👍',
+    '',
+    'Saque el ultimo producto agregado.',
+    '',
+    'Tu carrito ahora tiene:',
+    ...safeItems.map((item) => `• ${item.name} ×${item.quantity}`),
+    '',
+    'Podes:',
+    '- escribir otro numero de producto',
+    '- escribir "confirmar"',
+    '- escribir "productos"',
+    '- escribir "cancelar"'
   ].join('\n');
 }
 
@@ -505,6 +578,12 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const catalogFromContext = Array.isArray(safeContext.commerceCatalog) ? safeContext.commerceCatalog : [];
   const cartItems = normalizeCommerceCartItems(safeContext);
+  const lastAddedItem = safeContext.commerceLastAddedItem && typeof safeContext.commerceLastAddedItem === 'object'
+    ? {
+      productId: String(safeContext.commerceLastAddedItem.productId || '').trim() || null,
+      quantity: Number.parseInt(String(safeContext.commerceLastAddedItem.quantity || 0), 10)
+    }
+    : null;
 
   const cancelDecision = await resolveCommerceCancellation({
     conversation,
@@ -514,6 +593,43 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   });
   if (cancelDecision) {
     return cancelDecision;
+  }
+
+  if (isCommerceUndoIntent(inboundText)) {
+    if (!cartItems.length || !lastAddedItem || !lastAddedItem.productId || !Number.isInteger(lastAddedItem.quantity) || lastAddedItem.quantity <= 0) {
+      return {
+        replyText: 'Todavia no hay productos en tu carrito. Escribi "productos" para ver el catalogo.',
+        newState: catalogFromContext.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: {
+          commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
+          commerceCartItems: cartItems,
+          commerceSelectedProduct: null,
+          commerceLastAddedItem: null
+        }
+      };
+    }
+
+    const updatedCartItems = removeLastAddedCommerceCartItem(cartItems, lastAddedItem);
+    logInfo('commerce_cart_item_removed', {
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      productId: lastAddedItem.productId,
+      removedQuantity: lastAddedItem.quantity,
+      cartItemCount: updatedCartItems.length
+    });
+
+    return {
+      replyText: buildCommerceUndoReply(updatedCartItems),
+      newState: 'WAITING_PRODUCT_SELECTION',
+      contextPatch: {
+        commerceCatalog: catalogFromContext.length
+          ? catalogFromContext
+          : buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId)),
+        commerceCartItems: updatedCartItems.length ? updatedCartItems : null,
+        commerceSelectedProduct: null,
+        commerceLastAddedItem: null
+      }
+    };
   }
 
   if (isCommerceConfirmIntent(inboundText)) {
@@ -609,7 +725,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
       contextPatch: buildCommerceResetPatch({
         commerceCatalog: products,
-        commerceCartItems: cartItems
+        commerceCartItems: cartItems,
+        commerceLastAddedItem: lastAddedItem
       })
     };
   }
@@ -648,7 +765,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       contextPatch: {
         commerceCatalog: products,
         commerceCartItems: cartItems,
-        commerceSelectedProduct: selectedProduct
+        commerceSelectedProduct: selectedProduct,
+        commerceLastAddedItem: lastAddedItem
       }
     };
   }
@@ -674,7 +792,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         contextPatch: {
           commerceCatalog: catalogFromContext,
           commerceCartItems: cartItems,
-          commerceSelectedProduct: selectedProduct
+          commerceSelectedProduct: selectedProduct,
+          commerceLastAddedItem: lastAddedItem
         }
       };
     }
@@ -707,6 +826,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         contextPatch: {
           commerceCatalog: catalogFromContext,
           commerceCartItems: cartItems,
+          commerceLastAddedItem: lastAddedItem,
           commerceSelectedProduct: {
             ...selectedProduct,
             name: latestProduct.name,
@@ -735,6 +855,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         contextPatch: {
           commerceCatalog: catalogFromContext,
           commerceCartItems: cartItems,
+          commerceLastAddedItem: lastAddedItem,
           commerceSelectedProduct: {
             ...selectedProduct,
             name: latestProduct.name,
@@ -773,7 +894,11 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         commerceCatalog: catalogFromContext.length
           ? catalogFromContext
           : buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId)),
-        commerceCartItems: updatedCartItems
+        commerceCartItems: updatedCartItems,
+        commerceLastAddedItem: {
+          productId: String(latestProduct.id || '').trim() || null,
+          quantity
+        }
       })
     };
   }
