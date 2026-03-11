@@ -312,10 +312,17 @@ function isCommerceCancelIntent(rawText) {
   );
 }
 
+function isCommerceConfirmIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return text === 'confirmar' || text === 'confirmar pedido';
+}
+
 function hasCommerceContext(context) {
   const safeContext = context && typeof context === 'object' ? context : {};
   return Boolean(
     (Array.isArray(safeContext.commerceCatalog) && safeContext.commerceCatalog.length > 0) ||
+    (Array.isArray(safeContext.commerceCartItems) && safeContext.commerceCartItems.length > 0) ||
     (safeContext.commerceSelectedProduct && typeof safeContext.commerceSelectedProduct === 'object') ||
     safeContext.commerceLastOrderId
   );
@@ -327,6 +334,89 @@ function buildCommerceResetPatch(extra = {}) {
     commerceSelectedProduct: null,
     ...extra
   };
+}
+
+function normalizeCommerceCartItems(context) {
+  const safeContext = context && typeof context === 'object' ? context : {};
+  const rawItems = Array.isArray(safeContext.commerceCartItems) ? safeContext.commerceCartItems : [];
+
+  return rawItems
+    .map((item) => ({
+      productId: String(item && item.productId ? item.productId : '').trim() || null,
+      name: String(item && item.name ? item.name : '').trim(),
+      price: Number(item && item.price ? item.price : 0),
+      currency: String(item && item.currency ? item.currency : 'ARS').trim().toUpperCase() || 'ARS',
+      quantity: Number.parseInt(String(item && item.quantity ? item.quantity : 0), 10)
+    }))
+    .filter((item) => item.productId && item.name && Number.isInteger(item.quantity) && item.quantity > 0);
+}
+
+function mergeCommerceCartItem(cartItems, product, quantity) {
+  const safeCart = Array.isArray(cartItems) ? cartItems : [];
+  const normalizedQuantity = Number.parseInt(String(quantity || 0), 10);
+  const productId = String(product && (product.productId || product.id) ? (product.productId || product.id) : '').trim();
+  if (!productId || !Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0) {
+    return safeCart;
+  }
+
+  const nextItems = safeCart.map((item) => ({ ...item }));
+  const existingIndex = nextItems.findIndex((item) => String(item.productId || '') === productId);
+  const nextItem = {
+    productId,
+    name: String(product.name || '').trim(),
+    price: Number(product.price || 0),
+    currency: String(product.currency || 'ARS').trim().toUpperCase() || 'ARS',
+    quantity: normalizedQuantity
+  };
+
+  if (existingIndex >= 0) {
+    nextItems[existingIndex] = {
+      ...nextItems[existingIndex],
+      name: nextItem.name,
+      price: nextItem.price,
+      currency: nextItem.currency,
+      quantity: Number(nextItems[existingIndex].quantity || 0) + normalizedQuantity
+    };
+    return nextItems;
+  }
+
+  nextItems.push(nextItem);
+  return nextItems;
+}
+
+function buildCommerceCartReply(cartItems) {
+  const safeItems = Array.isArray(cartItems) ? cartItems : [];
+  const subtotal = safeItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
+  const currency = safeItems[0] && safeItems[0].currency ? safeItems[0].currency : 'ARS';
+
+  return [
+    'Agregado al carrito 👍',
+    '',
+    'Tu carrito ahora tiene:',
+    ...safeItems.map((item) => `• ${item.name} ×${item.quantity}`),
+    `• Total parcial: ${formatMoney(subtotal, currency)}`,
+    '',
+    'Podés:',
+    '- escribir otro número de producto para seguir agregando',
+    '- escribir "confirmar" para cerrar el pedido',
+    '- escribir "productos" para ver el catálogo otra vez',
+    '- escribir "cancelar" para anular la compra'
+  ].join('\n');
+}
+
+function buildCommerceOrderConfirmation(order, cartItems) {
+  const safeItems = Array.isArray(cartItems) ? cartItems : [];
+  const currency = order && order.currency ? order.currency : safeItems[0] && safeItems[0].currency ? safeItems[0].currency : 'ARS';
+
+  return [
+    'Perfecto 👍',
+    '',
+    'Tu pedido fue registrado:',
+    ...safeItems.map((item) => `• ${item.name} ×${item.quantity}`),
+    `• Total: ${formatMoney(Number(order && order.total ? order.total : 0), currency)}`,
+    '',
+    'En breve te confirmamos la preparación.'
+  ].join('\n');
 }
 
 async function resolveCommerceCancellation({ conversation, inboundText, currentState, safeContext }) {
@@ -341,12 +431,18 @@ async function resolveCommerceCancellation({ conversation, inboundText, currentS
     inboundText: normalizeCommandText(inboundText)
   });
 
+  const cartItems = normalizeCommerceCartItems(safeContext);
+  const hasActiveFlow = currentState === 'WAITING_PRODUCT_SELECTION' ||
+    currentState === 'WAITING_QUANTITY' ||
+    cartItems.length > 0 ||
+    Boolean(safeContext && safeContext.commerceSelectedProduct);
   const lastOrderId = String(safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : '').trim();
-  if (!lastOrderId) {
+  if (!lastOrderId || hasActiveFlow) {
     return {
       replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
       newState: 'IDLE',
       contextPatch: buildCommerceResetPatch({
+        commerceCartItems: null,
         commerceLastOrderId: null,
         commerceLastOrderAt: null
       })
@@ -369,6 +465,7 @@ async function resolveCommerceCancellation({ conversation, inboundText, currentS
         replyText: "No encontre ese pedido para cancelarlo. Si queres, escribi 'productos' para ver el catalogo otra vez.",
         newState: 'IDLE',
         contextPatch: buildCommerceResetPatch({
+          commerceCartItems: null,
           commerceLastOrderId: null,
           commerceLastOrderAt: null
         })
@@ -396,6 +493,7 @@ async function resolveCommerceCancellation({ conversation, inboundText, currentS
     replyText: "Entendido. Cancele tu pedido y devolvi el stock reservado. Si queres, escribi 'productos' para ver el catalogo otra vez.",
     newState: 'IDLE',
     contextPatch: buildCommerceResetPatch({
+      commerceCartItems: null,
       commerceLastOrderId: null,
       commerceLastOrderAt: null
     })
@@ -406,6 +504,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const currentState = String(conversation.state || '').toUpperCase();
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const catalogFromContext = Array.isArray(safeContext.commerceCatalog) ? safeContext.commerceCatalog : [];
+  const cartItems = normalizeCommerceCartItems(safeContext);
 
   const cancelDecision = await resolveCommerceCancellation({
     conversation,
@@ -417,13 +516,100 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     return cancelDecision;
   }
 
+  if (isCommerceConfirmIntent(inboundText)) {
+    if (!cartItems.length) {
+      return {
+        replyText: 'Todavia no agregaste productos.\nEscribi "productos" para ver el catalogo.',
+        newState: 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCartItems: null
+        })
+      };
+    }
+
+    logInfo('commerce_order_create_attempt', {
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      itemCount: cartItems.length,
+      cartItems: cartItems.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity
+      }))
+    });
+
+    const orderResult = await createOrderForClinic(conversation.clinicId, {
+      customerName: contact.name || `Cliente ${String(contact.waId || contact.phone || '').slice(-4) || 'WhatsApp'}`,
+      customerPhone: contact.phone || contact.waId || null,
+      notes: 'Pedido creado desde WhatsApp commerce',
+      items: cartItems.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity
+      }))
+    });
+
+    if (!orderResult.ok) {
+      if (
+        orderResult.reason === 'order_item_insufficient_stock' ||
+        orderResult.reason === 'order_item_product_not_found' ||
+        orderResult.reason === 'order_item_product_inactive'
+      ) {
+        const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
+        logInfo('commerce_order_create_failed_stock', {
+          conversationId: conversation.id,
+          clinicId: conversation.clinicId,
+          itemCount: cartItems.length,
+          reason: orderResult.reason,
+          details: orderResult.details || null
+        });
+        return {
+          replyText:
+            'No pude confirmar tu pedido porque uno o mas productos ya no tienen stock suficiente.\n\nEscribi "productos" para ver el catalogo actualizado.',
+          newState: 'WAITING_PRODUCT_SELECTION',
+          contextPatch: buildCommerceResetPatch({
+            commerceCatalog: products,
+            commerceCartItems: cartItems
+          })
+        };
+      }
+
+      return {
+        replyText: 'No pude registrar tu pedido en este momento. Intenta nuevamente en unos minutos.',
+        newState: 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCartItems: cartItems
+        })
+      };
+    }
+
+    const order = orderResult.order;
+    logInfo('commerce_order_create_success', {
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      orderId: order.id || null,
+      itemCount: cartItems.length,
+      total: Number(order.total || 0),
+      currency: order.currency || (cartItems[0] && cartItems[0].currency) || 'ARS'
+    });
+
+    return {
+      replyText: buildCommerceOrderConfirmation(order, cartItems),
+      newState: 'IDLE',
+      contextPatch: buildCommerceResetPatch({
+        commerceCartItems: null,
+        commerceLastOrderId: order.id || null,
+        commerceLastOrderAt: new Date().toISOString()
+      })
+    };
+  }
+
   if (isCommerceEntryIntent(inboundText)) {
     const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
     return {
       replyText: buildCommerceCatalogReply(products),
       newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
       contextPatch: buildCommerceResetPatch({
-        commerceCatalog: products
+        commerceCatalog: products,
+        commerceCartItems: cartItems
       })
     };
   }
@@ -461,6 +647,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       newState: 'WAITING_QUANTITY',
       contextPatch: {
         commerceCatalog: products,
+        commerceCartItems: cartItems,
         commerceSelectedProduct: selectedProduct
       }
     };
@@ -486,6 +673,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         newState: 'WAITING_QUANTITY',
         contextPatch: {
           commerceCatalog: catalogFromContext,
+          commerceCartItems: cartItems,
           commerceSelectedProduct: selectedProduct
         }
       };
@@ -518,6 +706,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         newState: 'WAITING_QUANTITY',
         contextPatch: {
           commerceCatalog: catalogFromContext,
+          commerceCartItems: cartItems,
           commerceSelectedProduct: {
             ...selectedProduct,
             name: latestProduct.name,
@@ -530,89 +719,61 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       };
     }
 
-    logInfo('commerce_order_create_attempt', {
-      conversationId: conversation.id,
-      clinicId: conversation.clinicId,
-      productId: latestProduct.id,
-      requestedQuantity: quantity,
-      availableStock: Number(latestProduct.stock || 0)
-    });
-
-    const orderResult = await createOrderForClinic(conversation.clinicId, {
-      customerName: contact.name || `Cliente ${String(contact.waId || contact.phone || '').slice(-4) || 'WhatsApp'}`,
-      customerPhone: contact.phone || contact.waId || null,
-      notes: 'Pedido creado desde WhatsApp commerce',
-      items: [
-        {
-          productId: selectedProduct.productId,
-          quantity
-        }
-      ]
-    });
-
-    if (!orderResult.ok) {
-      if (orderResult.reason === 'order_item_insufficient_stock') {
-        logInfo('commerce_order_create_failed_stock', {
-          conversationId: conversation.id,
-          clinicId: conversation.clinicId,
-          productId: selectedProduct.productId,
-          requestedQuantity: quantity,
-          details: orderResult.details || null
-        });
-        return {
-          replyText: 'Lo siento, no tenemos suficiente stock de ese producto en este momento.',
-          newState: 'WAITING_QUANTITY',
-          contextPatch: {
-            commerceCatalog: catalogFromContext,
-            commerceSelectedProduct: selectedProduct
-          }
-        };
-      }
-
-      if (orderResult.reason === 'order_item_product_not_found' || orderResult.reason === 'order_item_product_inactive') {
-        const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
-        return {
-          replyText: products.length
-            ? `Ese producto ya no esta disponible.\n\n${buildCommerceCatalogReply(products)}`
-            : 'Ese producto ya no esta disponible y no hay otros productos activos para pedir ahora mismo.',
-          newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
-          contextPatch: buildCommerceResetPatch({
-            commerceCatalog: products.length ? products : null
-          })
-        };
-      }
-
+    const existingItem = cartItems.find((item) => String(item.productId || '') === String(latestProduct.id));
+    const requestedCartQuantity = Number(existingItem && existingItem.quantity ? existingItem.quantity : 0) + quantity;
+    if (Number(latestProduct.stock || 0) < requestedCartQuantity) {
+      logInfo('commerce_order_create_failed_stock', {
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        productId: latestProduct.id,
+        requestedQuantity: requestedCartQuantity,
+        availableStock: Number(latestProduct.stock || 0)
+      });
       return {
-        replyText: 'No pude registrar tu pedido en este momento. Intenta nuevamente en unos minutos.',
-        newState: 'IDLE',
-        contextPatch: buildCommerceResetPatch()
+        replyText: 'Lo siento, no tenemos suficiente stock de ese producto en este momento.',
+        newState: 'WAITING_QUANTITY',
+        contextPatch: {
+          commerceCatalog: catalogFromContext,
+          commerceCartItems: cartItems,
+          commerceSelectedProduct: {
+            ...selectedProduct,
+            name: latestProduct.name,
+            price: Number(latestProduct.price || 0),
+            currency: String(latestProduct.currency || selectedProduct.currency || 'ARS').toUpperCase(),
+            stock: Number(latestProduct.stock || 0),
+            sku: latestProduct.sku || null
+          }
+        }
       };
     }
 
-    const order = orderResult.order;
-    logInfo('commerce_order_create_success', {
+    const updatedCartItems = mergeCommerceCartItem(
+      cartItems,
+      {
+        productId: latestProduct.id,
+        name: latestProduct.name,
+        price: Number(latestProduct.price || 0),
+        currency: String(latestProduct.currency || 'ARS').toUpperCase()
+      },
+      quantity
+    );
+
+    logInfo('commerce_cart_item_added', {
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
-      productId: selectedProduct.productId,
-      orderId: order.id || null,
-      requestedQuantity: quantity,
-      total: Number(order.total || 0),
-      currency: order.currency || latestProduct.currency || selectedProduct.currency || 'ARS'
+      productId: latestProduct.id,
+      addedQuantity: quantity,
+      cartQuantity: requestedCartQuantity
     });
+
     return {
-      replyText: [
-        'Perfecto 👍',
-        '',
-        'Tu pedido fue registrado:',
-        `• ${latestProduct.name} ×${quantity}`,
-        `• Total: ${formatMoney(Number(order.total || 0), order.currency || latestProduct.currency || selectedProduct.currency || 'ARS')}`,
-        '',
-        'En breve te confirmamos la preparación.'
-      ].join('\n'),
-      newState: 'IDLE',
+      replyText: buildCommerceCartReply(updatedCartItems),
+      newState: 'WAITING_PRODUCT_SELECTION',
       contextPatch: buildCommerceResetPatch({
-        commerceLastOrderId: order.id || null,
-        commerceLastOrderAt: new Date().toISOString()
+        commerceCatalog: catalogFromContext.length
+          ? catalogFromContext
+          : buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId)),
+        commerceCartItems: updatedCartItems
       })
     };
   }
