@@ -254,18 +254,24 @@ function buildCommerceCatalog(products) {
     }));
 }
 
+function formatCommerceIndex(index) {
+  const digits = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+  return digits[index - 1] || `${index}.`;
+}
+
 function buildCommerceCatalogReply(products) {
   if (!products.length) {
-    return 'Hola. En este momento no tenemos productos disponibles para pedir por WhatsApp.';
+    return 'Hola 👋\n\nEn este momento no tenemos productos disponibles para pedir por WhatsApp.';
   }
 
   const lines = [
-    'Hola.',
+    'Hola 👋',
+    '',
     'Estos son nuestros productos disponibles:',
     '',
-    ...products.map((product) => `${product.index}) ${product.name} - ${formatMoney(product.price, product.currency)}`),
+    ...products.map((product) => `${formatCommerceIndex(product.index)} ${product.name} — ${formatMoney(product.price, product.currency)}`),
     '',
-    'Responde con el numero del producto que queres.'
+    'Respondé con el número del producto que querés.'
   ];
 
   return lines.join('\n');
@@ -382,7 +388,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     }
 
     return {
-      replyText: `Elegiste: ${selectedProduct.name}\n\nCuantas unidades queres?`,
+      replyText: `Elegiste: ${selectedProduct.name}\n\n¿Cuántas unidades querés?`,
       newState: 'WAITING_QUANTITY',
       contextPatch: {
         commerceCatalog: products,
@@ -540,13 +546,13 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     });
     return {
       replyText: [
-        'Perfecto.',
+        'Perfecto 👍',
         '',
         'Tu pedido fue registrado:',
-        `${latestProduct.name} x${quantity}`,
-        `Total: ${formatMoney(Number(order.total || 0), order.currency || latestProduct.currency || selectedProduct.currency || 'ARS')}`,
+        `• ${latestProduct.name} ×${quantity}`,
+        `• Total: ${formatMoney(Number(order.total || 0), order.currency || latestProduct.currency || selectedProduct.currency || 'ARS')}`,
         '',
-        'En breve te confirmamos la preparacion.'
+        'En breve te confirmamos la preparación.'
       ].join('\n'),
       newState: 'IDLE',
       contextPatch: buildCommerceResetPatch({
