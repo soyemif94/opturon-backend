@@ -23,33 +23,84 @@ async function ensureSeedInputs() {
   };
 }
 
-async function getOrCreateClinic(clinicName, externalTenantId = null) {
-  const existing = await query(
-    `SELECT id, name, "externalTenantId" FROM clinics WHERE name = $1 ORDER BY "createdAt" ASC LIMIT 1`,
+async function findClinicByExternalTenantId(externalTenantId) {
+  if (!externalTenantId) return null;
+
+  const result = await query(
+    `SELECT id, name, "externalTenantId"
+     FROM clinics
+     WHERE "externalTenantId" = $1
+     LIMIT 1`,
+    [externalTenantId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function findClinicByName(clinicName) {
+  const result = await query(
+    `SELECT id, name, "externalTenantId"
+     FROM clinics
+     WHERE name = $1
+     ORDER BY "createdAt" ASC
+     LIMIT 1`,
     [clinicName]
   );
 
-  if (existing.rows[0]) {
-    if (externalTenantId && existing.rows[0].externalTenantId !== externalTenantId) {
-      const updated = await query(
-        `UPDATE clinics
-         SET "externalTenantId" = $2,
-             "updatedAt" = NOW()
-         WHERE id = $1
-         RETURNING id, name, "externalTenantId"`,
-        [existing.rows[0].id, externalTenantId]
-      );
-      return updated.rows[0];
-    }
-    return existing.rows[0];
-  }
+  return result.rows[0] || null;
+}
 
+async function createClinic(clinicName, externalTenantId = null) {
   const inserted = await query(
-    `INSERT INTO clinics (name, "externalTenantId") VALUES ($1, $2) RETURNING id, name, "externalTenantId"`,
+    `INSERT INTO clinics (name, "externalTenantId")
+     VALUES ($1, $2)
+     RETURNING id, name, "externalTenantId"`,
     [clinicName, externalTenantId]
   );
 
   return inserted.rows[0];
+}
+
+async function getOrCreateClinic(clinicName, externalTenantId = null) {
+  const existingByTenant = await findClinicByExternalTenantId(externalTenantId);
+  if (existingByTenant) {
+    return existingByTenant;
+  }
+
+  const existingByName = await findClinicByName(clinicName);
+  if (!existingByName) {
+    return createClinic(clinicName, externalTenantId);
+  }
+
+  if (!externalTenantId) {
+    return existingByName;
+  }
+
+  if (!existingByName.externalTenantId) {
+    const updated = await query(
+      `UPDATE clinics
+       SET "externalTenantId" = $2,
+           "updatedAt" = NOW()
+       WHERE id = $1
+       RETURNING id, name, "externalTenantId"`,
+      [existingByName.id, externalTenantId]
+    );
+    return updated.rows[0];
+  }
+
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      message: 'db_seed_clinic_name_collision',
+      clinicName,
+      requestedExternalTenantId: externalTenantId,
+      existingClinicId: existingByName.id,
+      existingExternalTenantId: existingByName.externalTenantId,
+      ts: new Date().toISOString()
+    })
+  );
+
+  return createClinic(clinicName, externalTenantId);
 }
 
 async function upsertChannel({ clinicId, phoneNumberId, wabaId, accessToken }) {
