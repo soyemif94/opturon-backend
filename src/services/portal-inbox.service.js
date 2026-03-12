@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { query } = require('../db/client');
 const { findContactByIdAndClinicId, upsertContact } = require('../repositories/contact.repository');
 const { listEvents } = require('../repositories/conversation-events.repository');
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
