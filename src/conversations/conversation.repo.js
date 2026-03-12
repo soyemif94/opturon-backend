@@ -205,6 +205,20 @@ async function getConversationById(id, client = null) {
   return result.rows[0] || null;
 }
 
+async function getConversationByIdAndClinicId(id, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+            "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
+     FROM conversations
+     WHERE id = $1
+       AND "clinicId" = $2
+     LIMIT 1`,
+    [id, clinicId]
+  );
+  return result.rows[0] || null;
+}
+
 async function getMessageById(id, client = null) {
   const result = await dbQuery(
     client,
@@ -231,6 +245,25 @@ async function updateConversationState({ conversationId, state, contextPatch = n
      WHERE id = $1
      RETURNING id, state, context`,
     [conversationId, state || null, contextPatch ? JSON.stringify(contextPatch) : null]
+  );
+  return result.rows[0] || null;
+}
+
+async function updateConversationStateForClinic({ conversationId, clinicId, state, contextPatch = null }, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE conversations
+     SET
+       state = COALESCE($3, state),
+       context = CASE
+         WHEN $4::jsonb IS NULL THEN context
+         ELSE context || $4::jsonb
+       END,
+       "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+     RETURNING id, state, context`,
+    [conversationId, clinicId, state || null, contextPatch ? JSON.stringify(contextPatch) : null]
   );
   return result.rows[0] || null;
 }
@@ -274,6 +307,24 @@ async function listConversationMessages(conversationId, limit = 100, client = nu
      ORDER BY "createdAt" ASC
      LIMIT $2`,
     [conversationId, safeLimit]
+  );
+  return result.rows;
+}
+
+async function listConversationMessagesByClinicId(conversationId, clinicId, limit = 100, client = null) {
+  const parsedLimit = Number.isInteger(Number(limit)) ? Number(limit) : 100;
+  const safeLimit = Math.max(1, Math.min(500, parsedLimit));
+
+  const result = await dbQuery(
+    client,
+    `SELECT m.id, m."conversationId", m.direction, m."waMessageId", m."from", m."to", m.type, m.text, m.raw, m."createdAt"
+     FROM conversation_messages m
+     INNER JOIN conversations c ON c.id = m."conversationId"
+     WHERE m."conversationId" = $1
+       AND c."clinicId" = $2
+     ORDER BY m."createdAt" ASC
+     LIMIT $3`,
+    [conversationId, clinicId, safeLimit]
   );
   return result.rows;
 }
@@ -1201,8 +1252,10 @@ module.exports = {
   insertInboundMessage,
   insertOutboundMessage,
   getConversationById,
+  getConversationByIdAndClinicId,
   getMessageById,
   updateConversationState,
+  updateConversationStateForClinic,
   listAppointmentRequests,
   getLastInboundTextByConversationIds,
   listInboxAppointments,
@@ -1222,5 +1275,6 @@ module.exports = {
   listOutboundAiAudit,
   enqueueJob,
   listConversations,
-  listConversationMessages
+  listConversationMessages,
+  listConversationMessagesByClinicId
 };

@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { query } = require('../db/client');
-const { findContactById, upsertContact } = require('../repositories/contact.repository');
+const { findContactByIdAndClinicId, upsertContact } = require('../repositories/contact.repository');
 const { listEvents } = require('../repositories/conversation-events.repository');
 const { findChannelById, findPreferredWhatsAppChannelByClinicId } = require('../repositories/tenant.repository');
 const conversationRepo = require('../conversations/conversation.repo');
@@ -172,8 +172,8 @@ async function getPortalConversationDetail(tenantId, conversationId) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
 
-  const conversation = await conversationRepo.getConversationById(conversationId);
-  if (!conversation || conversation.clinicId !== context.clinic.id) {
+  const conversation = await conversationRepo.getConversationByIdAndClinicId(conversationId, context.clinic.id);
+  if (!conversation) {
     return {
       ok: false,
       tenantId: context.tenantId,
@@ -184,8 +184,8 @@ async function getPortalConversationDetail(tenantId, conversationId) {
   }
 
   const [contact, messages, events] = await Promise.all([
-    findContactById(conversation.contactId),
-    conversationRepo.listConversationMessages(conversation.id, 200),
+    findContactByIdAndClinicId(conversation.contactId, context.clinic.id),
+    conversationRepo.listConversationMessagesByClinicId(conversation.id, context.clinic.id, 200),
     listEvents(context.clinic.id, conversation.id, 20)
   ]);
 
@@ -247,8 +247,8 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
 
-  const conversation = await conversationRepo.getConversationById(conversationId);
-  if (!conversation || conversation.clinicId !== context.clinic.id) {
+  const conversation = await conversationRepo.getConversationByIdAndClinicId(conversationId, context.clinic.id);
+  if (!conversation) {
     return {
       ok: false,
       tenantId: context.tenantId,
@@ -308,8 +308,9 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     );
   }
 
-  await conversationRepo.updateConversationState({
+  await conversationRepo.updateConversationStateForClinic({
     conversationId: conversation.id,
+    clinicId: context.clinic.id,
     state: null,
     contextPatch: nextContext
   });
@@ -327,8 +328,8 @@ async function sendPortalMessage(tenantId, conversationId, text) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
 
-  const conversation = await conversationRepo.getConversationById(conversationId);
-  if (!conversation || conversation.clinicId !== context.clinic.id) {
+  const conversation = await conversationRepo.getConversationByIdAndClinicId(conversationId, context.clinic.id);
+  if (!conversation) {
     return {
       ok: false,
       tenantId: context.tenantId,
@@ -352,7 +353,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
     };
   }
 
-  const contact = await findContactById(conversation.contactId);
+  const contact = await findContactByIdAndClinicId(conversation.contactId, context.clinic.id);
   if (!contact || !contact.waId) {
     return {
       ok: false,

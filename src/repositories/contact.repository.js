@@ -35,8 +35,23 @@ async function findContactById(contactId, client = null) {
   return result.rows[0] || null;
 }
 
+async function findContactByIdAndClinicId(contactId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", "waId", phone, name, "optedOut"
+     FROM contacts
+     WHERE id = $1
+       AND "clinicId" = $2
+     LIMIT 1`,
+    [contactId, clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
 module.exports = {
   upsertContact,
-  findContactById
+  findContactById,
+  findContactByIdAndClinicId
 };
 
