@@ -20,6 +20,11 @@ const {
   patchPortalProduct,
   patchPortalProductStatus
 } = require('../services/portal-products.service');
+const {
+  listPortalUsers,
+  invitePortalUser,
+  authenticatePortalUser
+} = require('../services/portal-users.service');
 
 async function getPortalTenantContext(req, res) {
   const tenantId = String(req.params.tenantId || req.query.tenantId || '').trim();
@@ -493,6 +498,90 @@ async function updatePortalProductStatus(req, res) {
   }
 }
 
+async function getPortalUsers(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalUsers(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        users: result.users
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_users_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalUser(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await invitePortalUser(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_name' ||
+        result.reason === 'invalid_email' ||
+        result.reason === 'invalid_role' ||
+        result.reason === 'invalid_password'
+          ? 400
+          : result.reason === 'duplicate_user_email'
+            ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        user: result.user
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_user_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalAuthLogin(req, res) {
+  const email = req.body && req.body.email;
+  const password = req.body && req.body.password;
+
+  try {
+    const result = await authenticatePortalUser(email, password);
+    if (!result.ok) {
+      return res.status(401).json({ success: false, error: result.reason });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.user
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_auth_login_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   getPortalTenantContext,
   getPortalConversations,
@@ -508,5 +597,8 @@ module.exports = {
   postPortalProduct,
   postPortalProductsBulk,
   updatePortalProduct,
-  updatePortalProductStatus
+  updatePortalProductStatus,
+  getPortalUsers,
+  postPortalUser,
+  postPortalAuthLogin
 };

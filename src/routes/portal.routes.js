@@ -14,8 +14,12 @@ const {
   postPortalProduct,
   postPortalProductsBulk,
   updatePortalProduct,
-  updatePortalProductStatus
+  updatePortalProductStatus,
+  getPortalUsers,
+  postPortalUser,
+  postPortalAuthLogin
 } = require('../controllers/portal.controller');
+const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 
 const router = express.Router();
 
@@ -34,5 +38,8 @@ router.post('/tenants/:tenantId/products/bulk', postPortalProductsBulk);
 router.get('/tenants/:tenantId/products/:productId', getPortalProduct);
 router.patch('/tenants/:tenantId/products/:productId', updatePortalProduct);
 router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProductStatus);
+router.get('/tenants/:tenantId/users', requirePortalInternalAuth, getPortalUsers);
+router.post('/tenants/:tenantId/users', requirePortalInternalAuth, postPortalUser);
+router.post('/auth/login', postPortalAuthLogin);
 
 module.exports = router;

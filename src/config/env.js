@@ -93,7 +93,8 @@ const env = {
   googleSpreadsheetId: String(process.env.GOOGLE_SPREADSHEET_ID || '').trim(),
   googleSheetName: String(process.env.GOOGLE_SHEET_NAME || 'Leads').trim(),
   googleServiceAccountEmail: String(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '').trim(),
-  googlePrivateKey: String(process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n')
+  googlePrivateKey: String(process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+  portalInternalKey: String(process.env.PORTAL_INTERNAL_KEY || '').trim()
 };
 
 function validateEnvOrExit() {
