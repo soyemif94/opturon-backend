@@ -49,9 +49,36 @@ async function findContactByIdAndClinicId(contactId, clinicId, client = null) {
   return result.rows[0] || null;
 }
 
+async function listContactsByClinicId(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT
+       c.id,
+       c."clinicId",
+       c."waId",
+       c.phone,
+       c.name,
+       c."optedOut",
+       c."updatedAt",
+       COALESCE(MAX(conv."updatedAt"), c."updatedAt") AS "lastInteractionAt",
+       COUNT(DISTINCT conv.id)::int AS "conversationCount"
+     FROM contacts c
+     LEFT JOIN conversations conv
+       ON conv."contactId" = c.id
+      AND conv."clinicId" = c."clinicId"
+     WHERE c."clinicId" = $1
+     GROUP BY c.id, c."clinicId", c."waId", c.phone, c.name, c."optedOut", c."updatedAt"
+     ORDER BY COALESCE(MAX(conv."updatedAt"), c."updatedAt") DESC, c."createdAt" DESC`,
+    [clinicId]
+  );
+
+  return result.rows;
+}
+
 module.exports = {
   upsertContact,
   findContactById,
-  findContactByIdAndClinicId
+  findContactByIdAndClinicId,
+  listContactsByClinicId
 };
 

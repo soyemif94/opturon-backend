@@ -28,6 +28,7 @@ const {
   authenticatePortalUser,
   getPortalAuthUserByEmail
 } = require('../services/portal-users.service');
+const { listPortalContacts } = require('../services/portal-contacts.service');
 
 async function getPortalTenantContext(req, res) {
   const tenantId = String(req.params.tenantId || req.query.tenantId || '').trim();
@@ -527,6 +528,32 @@ async function getPortalUsers(req, res) {
   }
 }
 
+async function getPortalContacts(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalContacts(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        contacts: result.contacts
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_contacts_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -690,6 +717,7 @@ module.exports = {
   postPortalProductsBulk,
   updatePortalProduct,
   updatePortalProductStatus,
+  getPortalContacts,
   getPortalUsers,
   postPortalUser,
   patchPortalUser,
