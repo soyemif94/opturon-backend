@@ -7,6 +7,8 @@ function dbQuery(client, text, params) {
   return query(text, params);
 }
 
+const PORTAL_ROLE_SQL = `('owner', 'manager', 'seller', 'viewer', 'editor')`;
+
 async function listPortalUsersByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -21,6 +23,8 @@ async function listPortalUsersByClinicId(clinicId, client = null) {
      FROM staff_users
      WHERE "clinicId" = $1
        AND email IS NOT NULL
+       AND active = TRUE
+       AND role IN ${PORTAL_ROLE_SQL}
      ORDER BY "createdAt" ASC`,
     [clinicId]
   );
@@ -35,6 +39,7 @@ async function countOwnersByClinicId(clinicId, client = null) {
      FROM staff_users
      WHERE "clinicId" = $1
        AND email IS NOT NULL
+       AND active = TRUE
        AND role = 'owner'`,
     [clinicId]
   );
@@ -69,6 +74,7 @@ async function updatePortalUserRole(payload, client = null) {
          "updatedAt" = NOW()
      WHERE id = $1
        AND "clinicId" = $2
+       AND role IN ${PORTAL_ROLE_SQL}
      RETURNING id,
                "clinicId",
                name,
@@ -86,9 +92,10 @@ async function updatePortalUserRole(payload, client = null) {
 async function deletePortalUserById(payload, client = null) {
   const result = await dbQuery(
     client,
-    `DELETE FROM staff_users
+     `DELETE FROM staff_users
      WHERE id = $1
        AND "clinicId" = $2
+       AND role IN ${PORTAL_ROLE_SQL}
      RETURNING id`,
     [payload.userId, payload.clinicId]
   );
@@ -111,6 +118,8 @@ async function findPortalUserByEmail(email, client = null) {
      INNER JOIN clinics c ON c.id = su."clinicId"
      WHERE LOWER(su.email) = LOWER($1)
        AND su.email IS NOT NULL
+       AND su.active = TRUE
+       AND su.role IN ${PORTAL_ROLE_SQL}
      LIMIT 1`,
     [email]
   );
