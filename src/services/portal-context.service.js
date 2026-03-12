@@ -1,4 +1,4 @@
-const { findClinicByExternalTenantId, findPreferredWhatsAppChannelByClinicId } = require('../repositories/tenant.repository');
+const { findClinicByExternalTenantId, listWhatsAppChannelsByClinicId } = require('../repositories/tenant.repository');
 
 function summarizeClinic(clinic) {
   if (!clinic) return null;
@@ -20,6 +20,27 @@ function summarizeChannel(channel) {
     wabaId: channel.wabaId || null,
     status: channel.status || null
   };
+}
+
+function pickPortalChannel(channels) {
+  const items = Array.isArray(channels) ? channels : [];
+  if (!items.length) {
+    return { channel: null, reason: 'mapped_clinic_without_whatsapp_channel' };
+  }
+
+  const activeChannels = items.filter((channel) => String(channel.status || '').trim().toLowerCase() === 'active');
+  if (activeChannels.length === 1) {
+    return { channel: activeChannels[0], reason: 'resolved' };
+  }
+  if (activeChannels.length > 1) {
+    return { channel: null, reason: 'multiple_whatsapp_channels_configured' };
+  }
+
+  if (items.length === 1) {
+    return { channel: items[0], reason: 'resolved' };
+  }
+
+  return { channel: null, reason: 'multiple_whatsapp_channels_configured' };
 }
 
 async function resolvePortalTenantContext(externalTenantId) {
@@ -45,13 +66,13 @@ async function resolvePortalTenantContext(externalTenantId) {
     };
   }
 
-  const channel = await findPreferredWhatsAppChannelByClinicId(clinic.id);
+  const channelSelection = pickPortalChannel(await listWhatsAppChannelsByClinicId(clinic.id));
   return {
     ok: true,
     tenantId: safeTenantId,
     clinic: summarizeClinic(clinic),
-    channel: summarizeChannel(channel),
-    reason: channel ? 'resolved' : 'mapped_clinic_without_whatsapp_channel'
+    channel: summarizeChannel(channelSelection.channel),
+    reason: channelSelection.reason
   };
 }
 

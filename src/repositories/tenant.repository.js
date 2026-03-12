@@ -78,11 +78,29 @@ async function findPreferredWhatsAppChannelByClinicId(clinicId, client = null) {
   return result.rows[0] || null;
 }
 
+async function listWhatsAppChannelsByClinicId(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status, "updatedAt", "createdAt"
+     FROM channels
+     WHERE "clinicId" = $1
+       AND provider = 'whatsapp_cloud'
+     ORDER BY
+       CASE WHEN LOWER(COALESCE(status, '')) = 'active' THEN 0 ELSE 1 END,
+       "updatedAt" DESC,
+       "createdAt" DESC`,
+    [clinicId]
+  );
+
+  return result.rows;
+}
+
 module.exports = {
   findChannelByPhoneNumberId,
   findChannelById,
   findChannelByIdAndClinicId,
   findClinicByExternalTenantId,
-  findPreferredWhatsAppChannelByClinicId
+  findPreferredWhatsAppChannelByClinicId,
+  listWhatsAppChannelsByClinicId
 };
 

@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { findContactByIdAndClinicId, upsertContact } = require('../repositories/contact.repository');
 const { listEvents } = require('../repositories/conversation-events.repository');
-const { findChannelByIdAndClinicId, findPreferredWhatsAppChannelByClinicId } = require('../repositories/tenant.repository');
+const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendTextMessage } = require('../whatsapp/whatsapp.service');
 const { resolvePortalTenantContext } = require('./portal-context.service');
@@ -89,7 +89,10 @@ function toPortalChannel(channel) {
 async function resolveRuntimeContext(tenantId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok) return context;
-  const channel = await findPreferredWhatsAppChannelByClinicId(context.clinic.id);
+  const channel =
+    context.channel && context.channel.id
+      ? await findChannelByIdAndClinicId(context.channel.id, context.clinic.id)
+      : null;
   return {
     ...context,
     channel: channel
@@ -103,7 +106,7 @@ async function resolveRuntimeContext(tenantId) {
           accessToken: channel.accessToken || null
         }
       : null,
-    reason: channel ? 'resolved' : 'mapped_clinic_without_whatsapp_channel'
+    reason: channel ? context.reason || 'resolved' : context.reason || 'mapped_clinic_without_whatsapp_channel'
   };
 }
 
