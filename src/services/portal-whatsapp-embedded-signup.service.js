@@ -405,22 +405,6 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
   }
 
   const metaConfig = buildMetaConfigStatus();
-  if (!metaConfig.ready) {
-    logWarn('portal_whatsapp_embedded_signup_config_missing', {
-      tenantId: safeTenantId,
-      clinicId: context.clinic.id,
-      metaConfig
-    });
-    return {
-      ok: true,
-      tenantId: safeTenantId,
-      clinicId: context.clinic.id,
-      ready: false,
-      status: 'pending_meta',
-      reason: 'meta_embedded_signup_credentials_missing',
-      session: null
-    };
-  }
 
   const session = await withOnboardingTransaction(async (client) => {
     await expirePreviousPendingSessions(context.clinic.id, client);
@@ -444,8 +428,18 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
     clinicId: context.clinic.id,
     sessionId: session && session.id ? session.id : null,
     stateToken: session && session.stateToken ? redactToken(session.stateToken) : null,
-    redirectUri: safeRedirectUri
+    redirectUri: safeRedirectUri,
+    backendMetaReady: metaConfig.ready
   });
+
+  if (!metaConfig.ready) {
+    logWarn('portal_whatsapp_embedded_signup_config_missing', {
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id,
+      sessionId: session && session.id ? session.id : null,
+      metaConfig
+    });
+  }
 
   return {
     ok: true,
@@ -454,7 +448,8 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
     ready: true,
     status: 'launching',
     reason: context.reason,
-    session: summarizeSession(session)
+    session: summarizeSession(session),
+    backendMetaReady: metaConfig.ready
   };
 }
 
