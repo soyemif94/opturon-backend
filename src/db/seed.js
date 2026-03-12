@@ -96,7 +96,9 @@ async function runSeed() {
   const existingStaff = await query(
     `SELECT id, name
      FROM staff_users
-     WHERE "clinicId" = $1 AND name = $2
+     WHERE "clinicId" = $1
+       AND "accountType" = 'internal_staff'
+       AND name = $2
      LIMIT 1`,
     [clinic.id, seed.staffName]
   );
@@ -104,8 +106,8 @@ async function runSeed() {
   let staff = existingStaff.rows[0] || null;
   if (!staff) {
     const insertedStaff = await query(
-      `INSERT INTO staff_users ("clinicId", name, role, active, "updatedAt")
-       VALUES ($1, $2, 'staff', TRUE, NOW())
+      `INSERT INTO staff_users ("clinicId", name, role, "accountType", active, "updatedAt")
+       VALUES ($1, $2, 'staff', 'internal_staff', TRUE, NOW())
        RETURNING id, name`,
       [clinic.id, seed.staffName]
     );

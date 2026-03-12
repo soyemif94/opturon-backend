@@ -8,6 +8,7 @@ function dbQuery(client, text, params) {
 }
 
 const PORTAL_ROLE_SQL = `('owner', 'manager', 'seller', 'viewer', 'editor')`;
+const PORTAL_ACCOUNT_TYPE = 'client_portal';
 
 async function listPortalUsersByClinicId(clinicId, client = null) {
   const result = await dbQuery(
@@ -22,6 +23,7 @@ async function listPortalUsersByClinicId(clinicId, client = null) {
             "updatedAt"
      FROM staff_users
      WHERE "clinicId" = $1
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
        AND email IS NOT NULL
        AND active = TRUE
        AND role IN ${PORTAL_ROLE_SQL}
@@ -38,6 +40,7 @@ async function countOwnersByClinicId(clinicId, client = null) {
     `SELECT COUNT(*)::INT AS count
      FROM staff_users
      WHERE "clinicId" = $1
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
        AND email IS NOT NULL
        AND active = TRUE
        AND role = 'owner'`,
@@ -50,8 +53,8 @@ async function countOwnersByClinicId(clinicId, client = null) {
 async function createPortalUser(payload, client = null) {
   const result = await dbQuery(
     client,
-    `INSERT INTO staff_users ("clinicId", name, email, "passwordHash", role, active, "updatedAt")
-     VALUES ($1, $2, $3, $4, $5, TRUE, NOW())
+    `INSERT INTO staff_users ("clinicId", name, email, "passwordHash", role, "accountType", active, "updatedAt")
+     VALUES ($1, $2, $3, $4, $5, '${PORTAL_ACCOUNT_TYPE}', TRUE, NOW())
      RETURNING id,
                "clinicId",
                name,
@@ -74,6 +77,7 @@ async function updatePortalUserRole(payload, client = null) {
          "updatedAt" = NOW()
      WHERE id = $1
        AND "clinicId" = $2
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
        AND role IN ${PORTAL_ROLE_SQL}
      RETURNING id,
                "clinicId",
@@ -95,6 +99,7 @@ async function deletePortalUserById(payload, client = null) {
      `DELETE FROM staff_users
      WHERE id = $1
        AND "clinicId" = $2
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
        AND role IN ${PORTAL_ROLE_SQL}
      RETURNING id`,
     [payload.userId, payload.clinicId]
@@ -117,6 +122,7 @@ async function findPortalUserByEmail(email, client = null) {
      FROM staff_users su
      INNER JOIN clinics c ON c.id = su."clinicId"
      WHERE LOWER(su.email) = LOWER($1)
+       AND su."accountType" = '${PORTAL_ACCOUNT_TYPE}'
        AND su.email IS NOT NULL
        AND su.active = TRUE
        AND su.role IN ${PORTAL_ROLE_SQL}

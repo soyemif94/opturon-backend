@@ -12,7 +12,9 @@ async function listActiveStaff(clinicId, client = null) {
     client,
     `SELECT id, "clinicId", name, role, active
      FROM staff_users
-     WHERE "clinicId" = $1 AND active = TRUE
+     WHERE "clinicId" = $1
+       AND "accountType" = 'internal_staff'
+       AND active = TRUE
      ORDER BY "createdAt" ASC`,
     [clinicId]
   );
@@ -25,7 +27,9 @@ async function getDefaultAssignee(clinicId, client = null) {
     client,
     `SELECT id, "clinicId", name, role, active
      FROM staff_users
-     WHERE "clinicId" = $1 AND active = TRUE
+     WHERE "clinicId" = $1
+       AND "accountType" = 'internal_staff'
+       AND active = TRUE
      ORDER BY "createdAt" ASC
      LIMIT 1`,
     [clinicId]
@@ -40,7 +44,9 @@ async function upsertDemoStaff(clinicId, name, client = null) {
     client,
     `SELECT id, "clinicId", name, role, active
      FROM staff_users
-     WHERE "clinicId" = $1 AND name = $2
+     WHERE "clinicId" = $1
+       AND "accountType" = 'internal_staff'
+       AND name = $2
      LIMIT 1`,
     [clinicId, safeName]
   );
@@ -51,8 +57,8 @@ async function upsertDemoStaff(clinicId, name, client = null) {
 
   const inserted = await dbQuery(
     client,
-    `INSERT INTO staff_users ("clinicId", name, role, active, "updatedAt")
-     VALUES ($1, $2, 'staff', TRUE, NOW())
+    `INSERT INTO staff_users ("clinicId", name, role, "accountType", active, "updatedAt")
+     VALUES ($1, $2, 'staff', 'internal_staff', TRUE, NOW())
      RETURNING id, "clinicId", name, role, active`,
     [clinicId, safeName]
   );
