@@ -727,7 +727,12 @@ async function postPortalWhatsAppEmbeddedSignupBootstrap(req, res) {
             ? 404
             : 409;
 
-      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
     }
 
     return res.status(result.ready ? 200 : 202).json({
@@ -750,7 +755,12 @@ async function getPortalWhatsAppEmbeddedSignupStatus(req, res) {
     const result = await getPortalWhatsAppSignupStatus(tenantId);
     if (!result.ok) {
       const status = result.reason === 'missing_tenant_id' ? 400 : 404;
-      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
     }
 
     return res.status(200).json({
@@ -792,7 +802,8 @@ async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
 
       return res.status(status).json({
         success: false,
-        error: result.reason
+        error: result.reason,
+        detail: result.detail || null
       });
     }
 

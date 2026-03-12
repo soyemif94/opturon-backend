@@ -19,7 +19,6 @@ const {
 
 const DEFAULT_PROVIDER = 'meta_embedded_signup';
 const DEFAULT_GRAPH_VERSION = String(env.whatsappApiVersion || env.whatsappGraphVersion || 'v25.0').trim();
-const DEFAULT_SESSION_TTL_MS = 60 * 60 * 1000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function buildMetaConfigStatus() {
@@ -40,6 +39,46 @@ function randomToken(size = 32) {
 function normalizeActorUserId(value) {
   const safeValue = String(value || '').trim();
   return UUID_PATTERN.test(safeValue) ? safeValue : null;
+}
+
+function redactToken(value) {
+  const safeValue = String(value || '').trim();
+  if (!safeValue) return null;
+  if (safeValue.length <= 8) return `${safeValue.slice(0, 2)}***`;
+  return `${safeValue.slice(0, 4)}***${safeValue.slice(-4)}`;
+}
+
+function summarizeCode(code) {
+  const safeValue = String(code || '').trim();
+  if (!safeValue) return null;
+  return {
+    preview: redactToken(safeValue),
+    length: safeValue.length
+  };
+}
+
+function summarizeMetaEvent(eventPayload) {
+  if (!eventPayload) {
+    return null;
+  }
+
+  return {
+    eventName: eventPayload.eventName || null,
+    businessId: eventPayload.businessId || null,
+    wabaId: eventPayload.wabaId || null,
+    phoneNumberId: eventPayload.phoneNumberId || null,
+    errorCode: eventPayload.errorCode || null,
+    errorMessage: eventPayload.errorMessage || null
+  };
+}
+
+function withReason(reason, detail = null, extra = null) {
+  return {
+    ok: false,
+    reason,
+    detail,
+    ...(extra || {})
+  };
 }
 
 function parseEventPayload(rawPayload) {
@@ -149,6 +188,12 @@ async function exchangeMetaCodeForAccessToken({ code, redirectUri, requestId = n
     throw error;
   }
 
+  logInfo('portal_whatsapp_embedded_signup_exchange_started', {
+    requestId,
+    redirectUri,
+    code: summarizeCode(code)
+  });
+
   const url = new URL(`https://graph.facebook.com/${DEFAULT_GRAPH_VERSION}/oauth/access_token`);
   url.searchParams.set('client_id', appId);
   url.searchParams.set('client_secret', appSecret);
@@ -168,6 +213,13 @@ async function exchangeMetaCodeForAccessToken({ code, redirectUri, requestId = n
   }
 
   if (!response.ok || !json || !json.access_token) {
+    logWarn('portal_whatsapp_embedded_signup_exchange_failed', {
+      requestId,
+      status: response.status,
+      redirectUri,
+      code: summarizeCode(code),
+      body: json
+    });
     const error = new Error((json && json.error && json.error.message) || 'meta_oauth_exchange_failed');
     error.reason = 'meta_oauth_exchange_failed';
     error.status = response.status;
@@ -185,6 +237,11 @@ async function exchangeMetaCodeForAccessToken({ code, redirectUri, requestId = n
 }
 
 async function fetchAccessiblePhoneNumbers({ accessToken, wabaId, requestId = null }) {
+  logInfo('portal_whatsapp_embedded_signup_phone_lookup_started', {
+    requestId,
+    wabaId,
+    accessToken: redactToken(accessToken)
+  });
   const result = await graphClient.request('GET', `/${wabaId}/phone_numbers`, {
     accessToken,
     requestId,
@@ -336,10 +393,10 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
   const safeTenantId = String(tenantId || '').trim();
   const safeRedirectUri = String(redirectUri || '').trim();
   if (!safeTenantId) {
-    return { ok: false, reason: 'missing_tenant_id' };
+    return withReason('missing_tenant_id', 'No recibimos el tenantId para iniciar el onboarding con Meta.');
   }
   if (!safeRedirectUri) {
-    return { ok: false, reason: 'missing_redirect_uri' };
+    return withReason('missing_redirect_uri', 'No recibimos la redirectUri para volver del popup de Meta.');
   }
 
   const context = await resolvePortalTenantContext(safeTenantId);
@@ -349,6 +406,11 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
 
   const metaConfig = buildMetaConfigStatus();
   if (!metaConfig.ready) {
+    logWarn('portal_whatsapp_embedded_signup_config_missing', {
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id,
+      metaConfig
+    });
     return {
       ok: true,
       tenantId: safeTenantId,
@@ -380,7 +442,9 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
   logInfo('portal_whatsapp_embedded_signup_bootstrap_created', {
     tenantId: safeTenantId,
     clinicId: context.clinic.id,
-    sessionId: session && session.id ? session.id : null
+    sessionId: session && session.id ? session.id : null,
+    stateToken: session && session.stateToken ? redactToken(session.stateToken) : null,
+    redirectUri: safeRedirectUri
   });
 
   return {
@@ -397,7 +461,7 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
 async function getPortalWhatsAppSignupStatus(tenantId) {
   const safeTenantId = String(tenantId || '').trim();
   if (!safeTenantId) {
-    return { ok: false, reason: 'missing_tenant_id' };
+    return withReason('missing_tenant_id', 'No recibimos el tenantId para consultar el ultimo onboarding.');
   }
 
   const context = await resolvePortalTenantContext(safeTenantId);
@@ -406,6 +470,12 @@ async function getPortalWhatsAppSignupStatus(tenantId) {
   }
 
   const session = await findLatestOnboardingSessionByClinicId(context.clinic.id);
+  logInfo('portal_whatsapp_embedded_signup_status_loaded', {
+    tenantId: safeTenantId,
+    clinicId: context.clinic.id,
+    sessionId: session && session.id ? session.id : null,
+    sessionStatus: session && session.status ? session.status : null
+  });
   return {
     ok: true,
     ...buildStatusPayload(context, session)
@@ -426,13 +496,23 @@ async function finalizePortalWhatsAppSignup({
   const safeRedirectUri = String(redirectUri || '').trim();
 
   if (!safeStateToken) {
-    return { ok: false, reason: 'missing_state_token' };
+    return withReason('missing_state_token', 'No recibimos el state del onboarding para correlacionar el callback de Meta.');
   }
 
   const session = await findOnboardingSessionByStateToken(safeStateToken);
   if (!session) {
-    return { ok: false, reason: 'embedded_signup_session_not_found' };
+    return withReason('embedded_signup_session_not_found', 'No encontramos una sesion activa para el state recibido desde Meta.');
   }
+
+  logInfo('portal_whatsapp_embedded_signup_callback_received', {
+    tenantId: session.externalTenantId,
+    clinicId: session.clinicId,
+    sessionId: session.id,
+    sessionStatus: session.status,
+    stateToken: redactToken(safeStateToken),
+    code: summarizeCode(safeCode),
+    metaEvent: summarizeMetaEvent(normalizeMetaEventPayload(metaPayload))
+  });
 
   if (session.status === 'completed') {
     return {
@@ -450,7 +530,10 @@ async function finalizePortalWhatsAppSignup({
       errorCode: 'embedded_signup_session_expired',
       errorMessage: 'La sesion de conexion con Meta expiro antes de finalizar.'
     });
-    return { ok: false, reason: 'embedded_signup_session_expired' };
+    return withReason(
+      'embedded_signup_session_expired',
+      'La sesion de conexion con Meta ya habia expirado. Inicia de nuevo desde Integraciones.'
+    );
   }
 
   if (error) {
@@ -459,18 +542,21 @@ async function finalizePortalWhatsAppSignup({
       errorMessage: String(errorDescription || error).trim() || 'Meta devolvio un error al finalizar el Embedded Signup.',
       metadata: metaPayload || null
     });
-    return {
-      ok: false,
-      reason: failed && failed.errorCode ? failed.errorCode : 'meta_embedded_signup_error'
-    };
+    return withReason(
+      failed && failed.errorCode ? failed.errorCode : 'meta_embedded_signup_error',
+      failed && failed.errorMessage ? failed.errorMessage : 'Meta devolvio un error al finalizar el Embedded Signup.'
+    );
   }
 
   if (!safeCode) {
-    return { ok: false, reason: 'missing_meta_code' };
+    return withReason('missing_meta_code', 'Meta no devolvio el code de autorizacion necesario para finalizar la conexion.');
   }
 
   if (!safeRedirectUri || safeRedirectUri !== String(session.redirectUri || '').trim()) {
-    return { ok: false, reason: 'embedded_signup_redirect_uri_mismatch' };
+    return withReason(
+      'embedded_signup_redirect_uri_mismatch',
+      'La redirectUri del callback no coincide con la que inicio la sesion de onboarding.'
+    );
   }
 
   try {
@@ -485,6 +571,17 @@ async function finalizePortalWhatsAppSignup({
       requestId
     });
 
+    logInfo('portal_whatsapp_embedded_signup_assets_resolved', {
+      requestId,
+      tenantId: session.externalTenantId,
+      clinicId: session.clinicId,
+      sessionId: session.id,
+      businessId: assets.businessId,
+      wabaId: assets.wabaId,
+      phoneNumberId: assets.phoneNumberId,
+      displayPhoneNumber: assets.displayPhoneNumber
+    });
+
     const existingChannel = await findWhatsAppChannelByPhoneNumberId(assets.phoneNumberId);
     if (existingChannel && existingChannel.clinicId !== session.clinicId) {
       await markOnboardingSessionFailed(session.id, {
@@ -495,7 +592,17 @@ async function finalizePortalWhatsAppSignup({
           currentClinicId: existingChannel.clinicId
         }
       });
-      return { ok: false, reason: 'channel_belongs_to_another_workspace' };
+      logWarn('portal_whatsapp_embedded_signup_cross_tenant_conflict', {
+        tenantId: session.externalTenantId,
+        clinicId: session.clinicId,
+        sessionId: session.id,
+        phoneNumberId: assets.phoneNumberId,
+        conflictingClinicId: existingChannel.clinicId
+      });
+      return withReason(
+        'channel_belongs_to_another_workspace',
+        'El numero conectado ya esta asociado a otro workspace y no se puede vincular automaticamente.'
+      );
     }
 
     const subscription = await subscribeCurrentAppToWaba({
@@ -582,6 +689,17 @@ async function finalizePortalWhatsAppSignup({
     });
 
     const latestSession = await findOnboardingSessionByStateToken(safeStateToken);
+    logInfo('portal_whatsapp_embedded_signup_finalize_succeeded', {
+      requestId,
+      tenantId: session.externalTenantId,
+      clinicId: session.clinicId,
+      sessionId: session.id,
+      channelId: persisted.channel.id,
+      channelStatus: persisted.channelStatus,
+      phoneNumberId: persisted.channel.phoneNumberId,
+      displayPhoneNumber: persisted.channel.displayPhoneNumber || null,
+      subscriptionState: subscription.ok ? 'ok' : 'pending'
+    });
 
     return {
       ok: true,
@@ -614,7 +732,8 @@ async function finalizePortalWhatsAppSignup({
 
     return {
       ok: false,
-      reason
+      reason,
+      detail: String(finalizeError.message || reason).trim()
     };
   }
 }
