@@ -333,6 +333,39 @@ function isCommerceUndoIntent(rawText) {
   return text === 'deshacer' || text === 'borrar ultimo' || text === 'quitar ultimo';
 }
 
+function isCommerceViewCartIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return text === 'ver carrito' || text === 'carrito' || text === 'mi pedido';
+}
+
+function isCommerceClearCartIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return text === 'vaciar carrito' || text === 'borrar carrito' || text === 'limpiar carrito';
+}
+
+function isCommerceHelpIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return text === 'ayuda' || text === 'menu' || text === 'opciones';
+}
+
+function parseCommerceRemoveCartItemIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  const match = text.match(/^(quitar|eliminar)\s+(\d{1,2})$/);
+  if (!match) return null;
+
+  const index = Number(match[2]);
+  if (!Number.isInteger(index) || index < 1) {
+    return null;
+  }
+
+  return index;
+}
+
 function hasCommerceContext(context) {
   const safeContext = context && typeof context === 'object' ? context : {};
   return Boolean(
@@ -426,6 +459,24 @@ function removeLastAddedCommerceCartItem(cartItems, lastAddedItem) {
   return safeCart;
 }
 
+function removeCommerceCartItemByIndex(cartItems, index) {
+  const safeCart = Array.isArray(cartItems) ? cartItems.map((item) => ({ ...item })) : [];
+  if (!Number.isInteger(index) || index < 1 || index > safeCart.length) {
+    return safeCart;
+  }
+
+  safeCart.splice(index - 1, 1);
+  return safeCart;
+}
+
+function buildCommerceCartItemLines(cartItems, { numbered = false } = {}) {
+  const safeItems = Array.isArray(cartItems) ? cartItems : [];
+  return safeItems.map((item, index) => {
+    const prefix = numbered ? `${index + 1}. ` : '• ';
+    return `${prefix}${item.name} ×${item.quantity}`;
+  });
+}
+
 function buildCommerceCartReply(cartItems) {
   const safeItems = Array.isArray(cartItems) ? cartItems : [];
   const subtotal = safeItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
@@ -435,7 +486,7 @@ function buildCommerceCartReply(cartItems) {
     'Agregado al carrito 👍',
     '',
     'Tu carrito ahora tiene:',
-    ...safeItems.map((item) => `• ${item.name} ×${item.quantity}`),
+    ...buildCommerceCartItemLines(safeItems),
     `• Total parcial: ${formatMoney(subtotal, currency)}`,
     '',
     'Podés:',
@@ -467,7 +518,7 @@ function buildCommerceUndoReply(cartItems) {
     'Saque el ultimo producto agregado.',
     '',
     'Tu carrito ahora tiene:',
-    ...safeItems.map((item) => `• ${item.name} ×${item.quantity}`),
+    ...buildCommerceCartItemLines(safeItems),
     '',
     'Podes:',
     '- escribir otro numero de producto',
@@ -482,18 +533,134 @@ function buildCommerceOrderConfirmation(order, cartItems) {
   const currency = order && order.currency ? order.currency : safeItems[0] && safeItems[0].currency ? safeItems[0].currency : 'ARS';
 
   return [
-    'Perfecto 👍',
+    'Perfecto 🙌',
     '',
-    'Tu pedido fue registrado:',
-    ...safeItems.map((item) => `• ${item.name} ×${item.quantity}`),
-    `• Total: ${formatMoney(Number(order && order.total ? order.total : 0), currency)}`,
+    'Tu pedido ya quedó registrado.',
+    '',
+    'Resumen:',
+    ...buildCommerceCartItemLines(safeItems),
+    '',
+    `Total: ${formatMoney(Number(order && order.total ? order.total : 0), currency)}`,
     '',
     'En breve te confirmamos la preparación.'
   ].join('\n');
 }
 
+function buildCommerceEmptyCartReply() {
+  return 'Tu carrito está vacío por ahora. Escribí "productos" para ver el catálogo.';
+}
+
+function buildCommerceCartSummaryReply(cartItems) {
+  const safeItems = Array.isArray(cartItems) ? cartItems : [];
+  if (!safeItems.length) {
+    return buildCommerceEmptyCartReply();
+  }
+
+  const subtotal = safeItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
+  const currency = safeItems[0] && safeItems[0].currency ? safeItems[0].currency : 'ARS';
+
+  return [
+    'Tu carrito ahora tiene:',
+    '',
+    ...buildCommerceCartItemLines(safeItems, { numbered: true }),
+    '',
+    `Total estimado: ${formatMoney(subtotal, currency)}`,
+    '',
+    'Podés:',
+    '- escribir otro número de producto para seguir agregando',
+    '- escribir "confirmar" para cerrar el pedido',
+    '- escribir "productos" para ver el catálogo',
+    '- escribir "deshacer" para quitar lo último agregado',
+    '- escribir "quitar 1" o "eliminar 1" para sacar un producto puntual',
+    '- escribir "vaciar carrito" para borrar todo',
+    '- escribir "cancelar" para anular la compra'
+  ].join('\n');
+}
+
+function buildCommerceCartClearedReply() {
+  return [
+    'Listo 👍',
+    'Vacié tu carrito.',
+    '',
+    'Escribí "productos" para ver el catálogo y empezar de nuevo.'
+  ].join('\n');
+}
+
+function buildCommerceAlreadyEmptyCartReply() {
+  return 'Tu carrito ya está vacío. Escribí "productos" para ver el catálogo.';
+}
+
+function buildCommerceHelpReply({ currentState, cartItems }) {
+  const safeItems = Array.isArray(cartItems) ? cartItems : [];
+  const hasCart = safeItems.length > 0;
+  const isWaitingQuantity = currentState === 'WAITING_QUANTITY';
+
+  const lines = [
+    'Te ayudo con tu pedido 👇',
+    '',
+    'Podés:'
+  ];
+
+  if (isWaitingQuantity) {
+    lines.push('- escribir cuántas unidades querés del producto que elegiste');
+  } else {
+    lines.push('- escribir el número de un producto para agregarlo');
+  }
+
+  lines.push(`- escribir "productos" para ver el catálogo otra vez`);
+
+  if (hasCart) {
+    lines.push('- escribir "ver carrito" para revisar tu pedido');
+    lines.push('- escribir "confirmar" para cerrar la compra');
+    lines.push('- escribir "vaciar carrito" para borrar todo');
+  } else {
+    lines.push('- escribir "ver carrito" para revisar tu pedido cuando agregues productos');
+  }
+
+  lines.push('- escribir "deshacer" para quitar lo último agregado');
+  lines.push('- escribir "cancelar" para anular la compra');
+
+  return lines.join('\n');
+}
+
+function buildCommerceAlreadyConfirmedReply(lastOrderId) {
+  const orderLabel = String(lastOrderId || '').trim();
+  return orderLabel
+    ? `Tu pedido ya fue registrado con el comprobante ${orderLabel}. Si querés hacer otro, escribí "productos".`
+    : 'Tu pedido ya fue registrado. Si querés hacer otro, escribí "productos".';
+}
+
+function isRecentCommerceOrder(lastOrderAt) {
+  if (!lastOrderAt) return false;
+  const parsedAt = Date.parse(String(lastOrderAt));
+  if (!Number.isFinite(parsedAt)) return false;
+  return Date.now() - parsedAt <= 2 * 60 * 1000;
+}
+
+function buildCommerceRemovedCartItemReply(cartItems, removedItem) {
+  const removedName = removedItem && removedItem.name ? removedItem.name : 'ese producto';
+  const safeItems = Array.isArray(cartItems) ? cartItems : [];
+
+  if (!safeItems.length) {
+    return [
+      'Listo 👍',
+      `Quité ${removedName} de tu carrito.`,
+      '',
+      'Tu carrito quedó vacío.',
+      'Escribí "productos" para ver el catálogo y empezar de nuevo.'
+    ].join('\n');
+  }
+
+  return [
+    'Listo 👍',
+    `Quité ${removedName} de tu carrito.`,
+    '',
+    buildCommerceCartSummaryReply(safeItems)
+  ].join('\n');
+}
+
 async function resolveCommerceCancellation({ conversation, inboundText, currentState, safeContext }) {
-  if (!(isCommerceCancelIntent(inboundText) || isGlobalMenuCommand(inboundText))) {
+  if (!isCommerceCancelIntent(inboundText)) {
     return null;
   }
 
@@ -595,6 +762,109 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     return cancelDecision;
   }
 
+  if (
+    isCommerceHelpIntent(inboundText) &&
+    (
+      currentState === 'WAITING_PRODUCT_SELECTION' ||
+      currentState === 'WAITING_QUANTITY' ||
+      catalogFromContext.length > 0 ||
+      cartItems.length > 0 ||
+      Boolean(safeContext && safeContext.commerceLastOrderId)
+    )
+  ) {
+    return {
+      replyText: buildCommerceHelpReply({ currentState, cartItems }),
+      newState: currentState === 'WAITING_QUANTITY'
+        ? 'WAITING_QUANTITY'
+        : (catalogFromContext.length || cartItems.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE'),
+      contextPatch: {
+        commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
+        commerceCartItems: cartItems.length ? cartItems : null,
+        commerceSelectedProduct: currentState === 'WAITING_QUANTITY' ? safeContext.commerceSelectedProduct || null : null,
+        commerceLastAddedItem: lastAddedItem,
+        commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+        commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null
+      }
+    };
+  }
+
+  if (isCommerceViewCartIntent(inboundText)) {
+    return {
+      replyText: buildCommerceCartSummaryReply(cartItems),
+      newState: catalogFromContext.length || cartItems.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: {
+        commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
+        commerceCartItems: cartItems.length ? cartItems : null,
+        commerceSelectedProduct: null,
+        commerceLastAddedItem: lastAddedItem
+      }
+    };
+  }
+
+  if (isCommerceClearCartIntent(inboundText)) {
+    return {
+      replyText: cartItems.length ? buildCommerceCartClearedReply() : buildCommerceAlreadyEmptyCartReply(),
+      newState: catalogFromContext.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: {
+        commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
+        commerceCartItems: null,
+        commerceSelectedProduct: null,
+        commerceLastAddedItem: null
+      }
+    };
+  }
+
+  const removeCartItemIndex = parseCommerceRemoveCartItemIntent(inboundText);
+  if (removeCartItemIndex) {
+    if (!cartItems.length) {
+      return {
+        replyText: buildCommerceEmptyCartReply(),
+        newState: catalogFromContext.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: {
+          commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
+          commerceCartItems: null,
+          commerceSelectedProduct: null,
+          commerceLastAddedItem: null
+        }
+      };
+    }
+
+    if (removeCartItemIndex > cartItems.length) {
+      return {
+        replyText: `No encontré ese ítem en tu carrito. Te muestro cómo quedó:\n\n${buildCommerceCartSummaryReply(cartItems)}`,
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: {
+          commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
+          commerceCartItems: cartItems,
+          commerceSelectedProduct: null,
+          commerceLastAddedItem: lastAddedItem
+        }
+      };
+    }
+
+    const removedItem = cartItems[removeCartItemIndex - 1] || null;
+    const updatedCartItems = removeCommerceCartItemByIndex(cartItems, removeCartItemIndex);
+
+    logInfo('commerce_cart_item_removed_by_index', {
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      removedIndex: removeCartItemIndex,
+      productId: removedItem && removedItem.productId ? removedItem.productId : null,
+      cartItemCount: updatedCartItems.length
+    });
+
+    return {
+      replyText: buildCommerceRemovedCartItemReply(updatedCartItems, removedItem),
+      newState: catalogFromContext.length || updatedCartItems.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: {
+        commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
+        commerceCartItems: updatedCartItems.length ? updatedCartItems : null,
+        commerceSelectedProduct: null,
+        commerceLastAddedItem: null
+      }
+    };
+  }
+
   if (isCommerceUndoIntent(inboundText)) {
     if (!cartItems.length || !lastAddedItem || !lastAddedItem.productId || !Number.isInteger(lastAddedItem.quantity) || lastAddedItem.quantity <= 0) {
       return {
@@ -633,9 +903,23 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (isCommerceConfirmIntent(inboundText)) {
+    const lastOrderId = String(safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : '').trim();
+    const lastOrderAt = safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null;
+    if (!cartItems.length && lastOrderId && isRecentCommerceOrder(lastOrderAt)) {
+      return {
+        replyText: buildCommerceAlreadyConfirmedReply(lastOrderId),
+        newState: 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCartItems: null,
+          commerceLastOrderId: lastOrderId,
+          commerceLastOrderAt: lastOrderAt
+        })
+      };
+    }
+
     if (!cartItems.length) {
       return {
-        replyText: 'Todavia no agregaste productos.\nEscribi "productos" para ver el catalogo.',
+        replyText: 'Tu carrito está vacío por ahora. Escribí "productos" para ver el catálogo.',
         newState: 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCartItems: null
@@ -739,8 +1023,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     if (!selection) {
       return {
         replyText: products.length
-          ? 'No entendi ese producto. Por favor elegi un numero de la lista.'
-          : 'No hay productos disponibles ahora mismo. Escribi "productos" para intentar de nuevo.',
+          ? 'No entendí ese producto. Elegí un número de la lista o escribí "ayuda" si querés ver las opciones.'
+          : 'No hay productos disponibles ahora mismo. Escribí "productos" para intentar de nuevo.',
         newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCatalog: products.length ? products : null
@@ -751,7 +1035,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const selectedProduct = products[selection - 1] || null;
     if (!selectedProduct) {
       return {
-        replyText: 'No entendi ese producto. Por favor elegi un numero de la lista.',
+        replyText: 'No entendí ese producto. Elegí un número de la lista o escribí "ayuda" si querés ver las opciones.',
         newState: 'WAITING_PRODUCT_SELECTION',
         contextPatch: buildCommerceResetPatch({
           commerceCatalog: products
@@ -787,7 +1071,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const quantity = parseCommerceQuantity(inboundText);
     if (!quantity) {
       return {
-        replyText: 'Decime un numero valido de unidades.',
+        replyText: 'No entendí esa cantidad. Decime cuántas unidades querés.',
         newState: 'WAITING_QUANTITY',
         contextPatch: {
           commerceCatalog: catalogFromContext,
