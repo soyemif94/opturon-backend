@@ -33,6 +33,20 @@ async function findChannelById(channelId, client = null) {
   return result.rows[0] || null;
 }
 
+async function findChannelByIdAndClinicId(channelId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status
+     FROM channels
+     WHERE id = $1
+       AND "clinicId" = $2
+     LIMIT 1`,
+    [channelId, clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function findClinicByExternalTenantId(externalTenantId, client = null) {
   const result = await dbQuery(
     client,
@@ -67,6 +81,7 @@ async function findPreferredWhatsAppChannelByClinicId(clinicId, client = null) {
 module.exports = {
   findChannelByPhoneNumberId,
   findChannelById,
+  findChannelByIdAndClinicId,
   findClinicByExternalTenantId,
   findPreferredWhatsAppChannelByClinicId
 };

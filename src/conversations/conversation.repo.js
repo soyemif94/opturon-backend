@@ -268,6 +268,21 @@ async function updateConversationStateForClinic({ conversationId, clinicId, stat
   return result.rows[0] || null;
 }
 
+async function updateConversationStatusForClinic({ conversationId, clinicId, status }, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE conversations
+     SET
+       status = $3,
+       "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+     RETURNING id, status, "updatedAt"`,
+    [conversationId, clinicId, status]
+  );
+  return result.rows[0] || null;
+}
+
 async function enqueueJob(type, payload, client = null) {
   const result = await dbQuery(
     client,
@@ -1256,6 +1271,7 @@ module.exports = {
   getMessageById,
   updateConversationState,
   updateConversationStateForClinic,
+  updateConversationStatusForClinic,
   listAppointmentRequests,
   getLastInboundTextByConversationIds,
   listInboxAppointments,

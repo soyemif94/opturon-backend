@@ -1,8 +1,7 @@
 const crypto = require('crypto');
-const { query } = require('../db/client');
 const { findContactByIdAndClinicId, upsertContact } = require('../repositories/contact.repository');
 const { listEvents } = require('../repositories/conversation-events.repository');
-const { findChannelById, findPreferredWhatsAppChannelByClinicId } = require('../repositories/tenant.repository');
+const { findChannelByIdAndClinicId, findPreferredWhatsAppChannelByClinicId } = require('../repositories/tenant.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendTextMessage } = require('../whatsapp/whatsapp.service');
 const { resolvePortalTenantContext } = require('./portal-context.service');
@@ -299,13 +298,11 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
   }
 
   if (action === 'close' || action === 'reopen') {
-    await query(
-      `UPDATE conversations
-       SET status = $2,
-           "updatedAt" = NOW()
-       WHERE id = $1::uuid`,
-      [conversation.id, action === 'close' ? 'closed' : 'open']
-    );
+    await conversationRepo.updateConversationStatusForClinic({
+      conversationId: conversation.id,
+      clinicId: context.clinic.id,
+      status: action === 'close' ? 'closed' : 'open'
+    });
   }
 
   await conversationRepo.updateConversationStateForClinic({
@@ -342,7 +339,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
   const runtimeChannel =
     (context.channel && context.channel.id === conversation.channelId
       ? context.channel
-      : await findChannelById(conversation.channelId)) || null;
+      : await findChannelByIdAndClinicId(conversation.channelId, context.clinic.id)) || null;
   if (!runtimeChannel) {
     return {
       ok: false,
