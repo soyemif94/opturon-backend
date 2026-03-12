@@ -29,6 +29,11 @@ const {
   getPortalAuthUserByEmail
 } = require('../services/portal-users.service');
 const { listPortalContacts } = require('../services/portal-contacts.service');
+const {
+  createPortalWhatsAppSignupSession,
+  getPortalWhatsAppSignupStatus,
+  finalizePortalWhatsAppSignup
+} = require('../services/portal-whatsapp-embedded-signup.service');
 
 async function getPortalTenantContext(req, res) {
   const tenantId = String(req.params.tenantId || req.query.tenantId || '').trim();
@@ -701,6 +706,109 @@ async function getPortalAuthUser(req, res) {
   }
 }
 
+async function postPortalWhatsAppEmbeddedSignupBootstrap(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const redirectUri = String((req.body && req.body.redirectUri) || '').trim();
+  const actorUserId = String((req.body && req.body.actorUserId) || '').trim() || null;
+
+  try {
+    const result = await createPortalWhatsAppSignupSession({
+      tenantId,
+      redirectUri,
+      actorUserId,
+      metadata: req.body && req.body.metadata ? req.body.metadata : null
+    });
+
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_redirect_uri'
+          ? 400
+          : result.reason === 'tenant_mapping_not_found'
+            ? 404
+            : 409;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(result.ready ? 200 : 202).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_embedded_signup_bootstrap_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalWhatsAppEmbeddedSignupStatus(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalWhatsAppSignupStatus(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_embedded_signup_status_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
+  try {
+    const result = await finalizePortalWhatsAppSignup({
+      stateToken: req.body && req.body.stateToken,
+      code: req.body && req.body.code,
+      redirectUri: req.body && req.body.redirectUri,
+      metaPayload: req.body && req.body.metaPayload ? req.body.metaPayload : null,
+      requestId: req.body && req.body.requestId ? String(req.body.requestId) : null,
+      error: req.body && req.body.error ? String(req.body.error) : null,
+      errorDescription: req.body && req.body.errorDescription ? String(req.body.errorDescription) : null
+    });
+
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_state_token' ||
+        result.reason === 'missing_meta_code' ||
+        result.reason === 'embedded_signup_redirect_uri_mismatch'
+          ? 400
+          : result.reason === 'embedded_signup_session_not_found'
+            ? 404
+            : result.reason === 'channel_belongs_to_another_workspace'
+              ? 409
+              : 422;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason
+      });
+    }
+
+    return res.status(result.status === 'connected' ? 200 : 202).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_embedded_signup_finalize_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   getPortalTenantContext,
   getPortalConversations,
@@ -723,5 +831,8 @@ module.exports = {
   patchPortalUser,
   destroyPortalUser,
   postPortalAuthLogin,
-  getPortalAuthUser
+  getPortalAuthUser,
+  postPortalWhatsAppEmbeddedSignupBootstrap,
+  getPortalWhatsAppEmbeddedSignupStatus,
+  postPortalWhatsAppEmbeddedSignupFinalize
 };

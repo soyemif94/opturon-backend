@@ -10,7 +10,7 @@ function dbQuery(client, text, params) {
 async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status
+    `SELECT id, "clinicId", provider, "phoneNumberId", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
      FROM channels
      WHERE "phoneNumberId" = $1
      LIMIT 1`,
@@ -23,7 +23,7 @@ async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
 async function findChannelById(channelId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status
+    `SELECT id, "clinicId", provider, "phoneNumberId", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
      FROM channels
      WHERE id = $1
      LIMIT 1`,
@@ -36,7 +36,7 @@ async function findChannelById(channelId, client = null) {
 async function findChannelByIdAndClinicId(channelId, clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status
+    `SELECT id, "clinicId", provider, "phoneNumberId", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
      FROM channels
      WHERE id = $1
        AND "clinicId" = $2
@@ -63,7 +63,7 @@ async function findClinicByExternalTenantId(externalTenantId, client = null) {
 async function findPreferredWhatsAppChannelByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status
+    `SELECT id, "clinicId", provider, "phoneNumberId", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
      FROM channels
      WHERE "clinicId" = $1
        AND provider = 'whatsapp_cloud'
@@ -81,7 +81,7 @@ async function findPreferredWhatsAppChannelByClinicId(clinicId, client = null) {
 async function listWhatsAppChannelsByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status, "updatedAt", "createdAt"
+    `SELECT id, "clinicId", provider, "phoneNumberId", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status, "updatedAt", "createdAt"
      FROM channels
      WHERE "clinicId" = $1
        AND provider = 'whatsapp_cloud'

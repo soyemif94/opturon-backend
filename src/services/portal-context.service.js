@@ -17,6 +17,8 @@ function summarizeChannel(channel) {
     clinicId: channel.clinicId,
     provider: channel.provider || null,
     phoneNumberId: channel.phoneNumberId || null,
+    displayPhoneNumber: channel.displayPhoneNumber || null,
+    verifiedName: channel.verifiedName || null,
     wabaId: channel.wabaId || null,
     status: channel.status || null
   };
