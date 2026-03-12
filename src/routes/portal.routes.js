@@ -24,7 +24,11 @@ const {
   getPortalAuthUser,
   postPortalWhatsAppEmbeddedSignupBootstrap,
   getPortalWhatsAppEmbeddedSignupStatus,
-  postPortalWhatsAppEmbeddedSignupFinalize
+  postPortalWhatsAppEmbeddedSignupFinalize,
+  getPortalWhatsAppTemplateBlueprints,
+  getPortalWhatsAppTemplates,
+  postPortalWhatsAppTemplateFromBlueprint,
+  postPortalWhatsAppTemplatesSync
 } = require('../controllers/portal.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 
@@ -49,6 +53,10 @@ router.get('/tenants/:tenantId/contacts', getPortalContacts);
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupBootstrap);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/finalize', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupFinalize);
+router.get('/tenants/:tenantId/whatsapp/templates/blueprints', requirePortalInternalAuth, getPortalWhatsAppTemplateBlueprints);
+router.get('/tenants/:tenantId/whatsapp/templates', requirePortalInternalAuth, getPortalWhatsAppTemplates);
+router.post('/tenants/:tenantId/whatsapp/templates/create-from-blueprint', requirePortalInternalAuth, postPortalWhatsAppTemplateFromBlueprint);
+router.post('/tenants/:tenantId/whatsapp/templates/sync', requirePortalInternalAuth, postPortalWhatsAppTemplatesSync);
 router.get('/tenants/:tenantId/users', requirePortalInternalAuth, getPortalUsers);
 router.post('/tenants/:tenantId/users', requirePortalInternalAuth, postPortalUser);
 router.patch('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, patchPortalUser);

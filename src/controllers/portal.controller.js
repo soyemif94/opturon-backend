@@ -34,6 +34,12 @@ const {
   getPortalWhatsAppSignupStatus,
   finalizePortalWhatsAppSignup
 } = require('../services/portal-whatsapp-embedded-signup.service');
+const {
+  listPortalWhatsAppTemplateBlueprints,
+  listPortalWhatsAppTemplates,
+  createPortalWhatsAppTemplateFromBlueprint,
+  syncPortalWhatsAppTemplates
+} = require('../services/portal-whatsapp-templates.service');
 
 async function getPortalTenantContext(req, res) {
   const tenantId = String(req.params.tenantId || req.query.tenantId || '').trim();
@@ -820,6 +826,157 @@ async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
   }
 }
 
+async function getPortalWhatsAppTemplateBlueprints(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalWhatsAppTemplateBlueprints(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        blueprints: result.blueprints
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_template_blueprints_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalWhatsAppTemplates(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalWhatsAppTemplates(tenantId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'mapped_clinic_without_whatsapp_channel' || result.reason === 'whatsapp_channel_not_ready'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        templates: result.templates
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_templates_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalWhatsAppTemplateFromBlueprint(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalWhatsAppTemplateFromBlueprint(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_template_key' ||
+        result.reason === 'invalid_template_category'
+          ? 400
+          : result.reason === 'mapped_clinic_without_whatsapp_channel' ||
+              result.reason === 'whatsapp_channel_not_ready' ||
+              result.reason === 'meta_template_create_failed'
+            ? 409
+            : result.reason === 'template_blueprint_not_found'
+              ? 404
+              : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(result.created ? 201 : 200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        template: result.template,
+        created: result.created
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_template_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalWhatsAppTemplatesSync(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await syncPortalWhatsAppTemplates(tenantId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'mapped_clinic_without_whatsapp_channel' ||
+              result.reason === 'whatsapp_channel_not_ready' ||
+              result.reason === 'meta_templates_sync_failed'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        templates: result.templates,
+        syncedCount: result.syncedCount
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_templates_sync_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   getPortalTenantContext,
   getPortalConversations,
@@ -845,5 +1002,9 @@ module.exports = {
   getPortalAuthUser,
   postPortalWhatsAppEmbeddedSignupBootstrap,
   getPortalWhatsAppEmbeddedSignupStatus,
-  postPortalWhatsAppEmbeddedSignupFinalize
+  postPortalWhatsAppEmbeddedSignupFinalize,
+  getPortalWhatsAppTemplateBlueprints,
+  getPortalWhatsAppTemplates,
+  postPortalWhatsAppTemplateFromBlueprint,
+  postPortalWhatsAppTemplatesSync
 };
