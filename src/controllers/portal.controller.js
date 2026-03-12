@@ -23,7 +23,10 @@ const {
 const {
   listPortalUsers,
   invitePortalUser,
-  authenticatePortalUser
+  updatePortalUser,
+  deletePortalUser,
+  authenticatePortalUser,
+  getPortalAuthUserByEmail
 } = require('../services/portal-users.service');
 
 async function getPortalTenantContext(req, res) {
@@ -559,6 +562,73 @@ async function postPortalUser(req, res) {
   }
 }
 
+async function patchPortalUser(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const userId = String(req.params.userId || '').trim();
+
+  try {
+    const result = await updatePortalUser(tenantId, userId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_role'
+          ? 400
+          : result.reason === 'cannot_delete_last_owner'
+            ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        user: result.user
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_user_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function destroyPortalUser(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const userId = String(req.params.userId || '').trim();
+  const currentUserId = String(req.get('x-portal-actor-id') || '').trim();
+
+  try {
+    const result = await deletePortalUser(tenantId, userId, currentUserId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'cannot_delete_current_user'
+          ? 400
+          : result.reason === 'cannot_delete_last_owner'
+            ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        userId: result.userId
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_user_delete_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalAuthLogin(req, res) {
   const email = req.body && req.body.email;
   const password = req.body && req.body.password;
@@ -582,6 +652,28 @@ async function postPortalAuthLogin(req, res) {
   }
 }
 
+async function getPortalAuthUser(req, res) {
+  const email = String(req.query.email || '').trim();
+
+  try {
+    const result = await getPortalAuthUserByEmail(email);
+    if (!result.ok) {
+      return res.status(400).json({ success: false, error: result.reason });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.user
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_auth_user_lookup_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   getPortalTenantContext,
   getPortalConversations,
@@ -600,5 +692,8 @@ module.exports = {
   updatePortalProductStatus,
   getPortalUsers,
   postPortalUser,
-  postPortalAuthLogin
+  patchPortalUser,
+  destroyPortalUser,
+  postPortalAuthLogin,
+  getPortalAuthUser
 };

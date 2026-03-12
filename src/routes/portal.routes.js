@@ -17,7 +17,10 @@ const {
   updatePortalProductStatus,
   getPortalUsers,
   postPortalUser,
-  postPortalAuthLogin
+  patchPortalUser,
+  destroyPortalUser,
+  postPortalAuthLogin,
+  getPortalAuthUser
 } = require('../controllers/portal.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 
@@ -40,6 +43,9 @@ router.patch('/tenants/:tenantId/products/:productId', updatePortalProduct);
 router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProductStatus);
 router.get('/tenants/:tenantId/users', requirePortalInternalAuth, getPortalUsers);
 router.post('/tenants/:tenantId/users', requirePortalInternalAuth, postPortalUser);
+router.patch('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, patchPortalUser);
+router.delete('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, destroyPortalUser);
 router.post('/auth/login', postPortalAuthLogin);
+router.get('/auth/users/by-email', requirePortalInternalAuth, getPortalAuthUser);
 
 module.exports = router;

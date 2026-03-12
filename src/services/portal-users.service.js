@@ -2,12 +2,15 @@ const { hashSync, compareSync } = require('bcryptjs');
 const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
+  countOwnersByClinicId,
   listPortalUsersByClinicId,
   createPortalUser,
+  updatePortalUserRole,
+  deletePortalUserById,
   findPortalUserByEmail
 } = require('../repositories/portal-users.repository');
 
-const ALLOWED_ROLES = new Set(['owner', 'manager', 'editor', 'viewer']);
+const ALLOWED_ROLES = new Set(['owner', 'manager', 'seller', 'viewer']);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -19,6 +22,7 @@ function normalizeEmail(value) {
 
 function normalizeRole(value) {
   const normalized = normalizeString(value).toLowerCase();
+  if (normalized === 'editor') return 'seller';
   return ALLOWED_ROLES.has(normalized) ? normalized : null;
 }
 
@@ -81,6 +85,104 @@ async function invitePortalUser(tenantId, payload) {
   }
 }
 
+async function updatePortalUser(tenantId, userId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const role = normalizeRole(payload && payload.role);
+  if (!role) return { ok: false, tenantId: context.tenantId, reason: 'invalid_role' };
+
+  const user = await withTransaction(async (client) => {
+    const current = await listPortalUsersByClinicId(context.clinic.id, client);
+    const target = current.find((item) => String(item.id) === String(userId));
+    if (!target) return null;
+
+    if (target.role === 'owner' && role !== 'owner') {
+      const ownerCount = await countOwnersByClinicId(context.clinic.id, client);
+      if (ownerCount <= 1) {
+        const error = new Error('cannot_delete_last_owner');
+        error.code = 'LAST_OWNER_ROLE_CHANGE';
+        throw error;
+      }
+    }
+
+    return updatePortalUserRole(
+      {
+        userId,
+        clinicId: context.clinic.id,
+        role
+      },
+      client
+    );
+  }).catch((error) => {
+    if (error && error.code === 'LAST_OWNER_ROLE_CHANGE') {
+      return { error: 'cannot_delete_last_owner' };
+    }
+    throw error;
+  });
+
+  if (!user) return { ok: false, tenantId: context.tenantId, reason: 'user_not_found' };
+  if (user.error) return { ok: false, tenantId: context.tenantId, reason: user.error };
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    user
+  };
+}
+
+async function deletePortalUser(tenantId, userId, currentUserId) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  if (String(userId) === String(currentUserId)) {
+    return { ok: false, tenantId: context.tenantId, reason: 'cannot_delete_current_user' };
+  }
+
+  const removed = await withTransaction(async (client) => {
+    const current = await listPortalUsersByClinicId(context.clinic.id, client);
+    const target = current.find((item) => String(item.id) === String(userId));
+    if (!target) return null;
+
+    if (target.role === 'owner') {
+      const ownerCount = await countOwnersByClinicId(context.clinic.id, client);
+      if (ownerCount <= 1) {
+        const error = new Error('cannot_delete_last_owner');
+        error.code = 'LAST_OWNER_DELETE';
+        throw error;
+      }
+    }
+
+    return deletePortalUserById(
+      {
+        userId,
+        clinicId: context.clinic.id
+      },
+      client
+    );
+  }).catch((error) => {
+    if (error && error.code === 'LAST_OWNER_DELETE') {
+      return { error: 'cannot_delete_last_owner' };
+    }
+    throw error;
+  });
+
+  if (!removed) return { ok: false, tenantId: context.tenantId, reason: 'user_not_found' };
+  if (removed.error) return { ok: false, tenantId: context.tenantId, reason: removed.error };
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    userId
+  };
+}
+
 async function authenticatePortalUser(email, password) {
   const safeEmail = normalizeEmail(email);
   const safePassword = String(password || '');
@@ -118,8 +220,33 @@ async function authenticatePortalUser(email, password) {
   };
 }
 
+async function getPortalAuthUserByEmail(email) {
+  const safeEmail = normalizeEmail(email);
+  if (!safeEmail) return { ok: false, reason: 'invalid_email' };
+
+  const user = await findPortalUserByEmail(safeEmail);
+  if (!user || user.active !== true) {
+    return { ok: true, user: null };
+  }
+
+  return {
+    ok: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tenantId: user.tenantId,
+      tenantRole: user.role,
+      globalRole: 'client'
+    }
+  };
+}
+
 module.exports = {
   listPortalUsers,
   invitePortalUser,
-  authenticatePortalUser
+  updatePortalUser,
+  deletePortalUser,
+  authenticatePortalUser,
+  getPortalAuthUserByEmail
 };
