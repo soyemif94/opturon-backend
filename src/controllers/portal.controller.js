@@ -34,6 +34,7 @@ const {
   getPortalWhatsAppSignupStatus,
   finalizePortalWhatsAppSignup
 } = require('../services/portal-whatsapp-embedded-signup.service');
+const { connectPortalWhatsAppManual } = require('../services/portal-whatsapp-manual-onboarding.service');
 const {
   listPortalWhatsAppTemplateBlueprints,
   listPortalWhatsAppTemplates,
@@ -826,6 +827,46 @@ async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
   }
 }
 
+async function postPortalWhatsAppManualConnect(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await connectPortalWhatsAppManual(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_waba_id' ||
+        result.reason === 'missing_phone_number_id' ||
+        result.reason === 'missing_access_token'
+          ? 400
+          : result.reason === 'channel_belongs_to_another_workspace' ||
+              result.reason === 'phone_number_not_belong_to_waba'
+            ? 409
+            : result.reason === 'tenant_mapping_not_found'
+              ? 404
+              : 422;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(result.status === 'connected' ? 200 : 202).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_manual_connect_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalWhatsAppTemplateBlueprints(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -1003,6 +1044,7 @@ module.exports = {
   postPortalWhatsAppEmbeddedSignupBootstrap,
   getPortalWhatsAppEmbeddedSignupStatus,
   postPortalWhatsAppEmbeddedSignupFinalize,
+  postPortalWhatsAppManualConnect,
   getPortalWhatsAppTemplateBlueprints,
   getPortalWhatsAppTemplates,
   postPortalWhatsAppTemplateFromBlueprint,
