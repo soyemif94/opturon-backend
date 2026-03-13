@@ -840,7 +840,7 @@ async function postPortalWhatsAppManualConnect(req, res) {
         result.reason === 'missing_access_token'
           ? 400
           : result.reason === 'channel_belongs_to_another_workspace' ||
-              result.reason === 'phone_number_not_belong_to_waba'
+              result.reason === 'phone_number_not_in_waba'
             ? 409
             : result.reason === 'tenant_mapping_not_found'
               ? 404

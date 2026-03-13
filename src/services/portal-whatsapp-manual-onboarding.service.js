@@ -29,32 +29,6 @@ function buildReason(reason, detail = null, extra = null) {
   };
 }
 
-async function fetchWaba(accessToken, wabaId, requestId) {
-  const result = await graphClient.request('GET', `/${wabaId}`, {
-    requestId,
-    accessToken,
-    query: {
-      fields: 'id,name'
-    }
-  });
-
-  if (!result.ok) {
-    return {
-      ok: false,
-      reason: 'meta_waba_not_accessible',
-      detail:
-        result.data && result.data.error && result.data.error.message
-          ? String(result.data.error.message)
-          : `No pudimos acceder a la WABA (${result.status || 'unknown'}).`
-    };
-  }
-
-  return {
-    ok: true,
-    data: result.data || null
-  };
-}
-
 async function fetchPhoneNumber(accessToken, phoneNumberId, requestId) {
   const result = await graphClient.request('GET', `/${phoneNumberId}`, {
     requestId,
@@ -175,22 +149,11 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     accessToken: maskToken(accessToken)
   });
 
-  const [waba, phone, phoneNumbers] = await Promise.all([
-    fetchWaba(accessToken, wabaId, requestId),
+  const [phone, phoneNumbers] = await Promise.all([
     fetchPhoneNumber(accessToken, phoneNumberId, requestId),
     fetchWabaPhoneNumbers(accessToken, wabaId, requestId)
   ]);
 
-  if (!waba.ok) {
-    logWarn('portal_whatsapp_manual_connect_validation_failed', {
-      tenantId: safeTenantId,
-      clinicId: context.clinic.id,
-      requestId,
-      reason: waba.reason,
-      detail: waba.detail
-    });
-    return buildReason(waba.reason, waba.detail, { tenantId: safeTenantId });
-  }
   if (!phone.ok) {
     logWarn('portal_whatsapp_manual_connect_validation_failed', {
       tenantId: safeTenantId,
@@ -215,7 +178,7 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
   const matchedPhone = phoneNumbers.items.find((item) => normalizeString(item.id) === phoneNumberId);
   if (!matchedPhone) {
     return buildReason(
-      'phone_number_not_belong_to_waba',
+      'phone_number_not_in_waba',
       'El Phone Number ID indicado no aparece dentro de la WABA validada con ese token.',
       { tenantId: safeTenantId }
     );
@@ -252,7 +215,7 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
           onboardingProvider: 'manual_assisted',
           requestId,
           channelName,
-          wabaName: normalizeString(waba.data && waba.data.name) || null,
+          wabaName: null,
           subscriptionOk: subscription.ok,
           subscriptionAlreadyExisted: subscription.alreadySubscribed || false,
           subscriptionError: subscription.ok ? null : subscription.body || null
@@ -282,11 +245,11 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     clinicId: context.clinic.id,
     status: subscription.ok ? 'connected' : 'pending_meta',
     channel: persisted,
-    validation: {
-      wabaName: normalizeString(waba.data && waba.data.name) || null,
-      displayPhoneNumber: normalizeString(matchedPhone.display_phone_number) || null,
-      verifiedName: normalizeString(matchedPhone.verified_name) || null,
-      subscriptionOk: subscription.ok
+      validation: {
+        wabaName: null,
+        displayPhoneNumber: normalizeString(matchedPhone.display_phone_number) || null,
+        verifiedName: normalizeString(matchedPhone.verified_name) || null,
+        subscriptionOk: subscription.ok
     }
   };
 }
