@@ -35,6 +35,7 @@ const {
   finalizePortalWhatsAppSignup
 } = require('../services/portal-whatsapp-embedded-signup.service');
 const { connectPortalWhatsAppManual } = require('../services/portal-whatsapp-manual-onboarding.service');
+const { discoverTenantWhatsAppAssets } = require('../services/portal-whatsapp-discovery.service');
 const {
   listPortalWhatsAppTemplateBlueprints,
   listPortalWhatsAppTemplates,
@@ -867,6 +868,40 @@ async function postPortalWhatsAppManualConnect(req, res) {
   }
 }
 
+async function postPortalWhatsAppDiscoverAssets(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await discoverTenantWhatsAppAssets(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_access_token'
+          ? 400
+          : result.reason === 'tenant_mapping_not_found'
+            ? 404
+            : 422;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_discover_assets_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalWhatsAppTemplateBlueprints(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -1045,6 +1080,7 @@ module.exports = {
   getPortalWhatsAppEmbeddedSignupStatus,
   postPortalWhatsAppEmbeddedSignupFinalize,
   postPortalWhatsAppManualConnect,
+  postPortalWhatsAppDiscoverAssets,
   getPortalWhatsAppTemplateBlueprints,
   getPortalWhatsAppTemplates,
   postPortalWhatsAppTemplateFromBlueprint,
