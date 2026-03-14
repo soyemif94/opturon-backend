@@ -181,10 +181,25 @@ async function markOnboardingSessionCompleted(sessionId, data, client = null) {
 async function findWhatsAppChannelByPhoneNumberId(phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"
-     FROM channels
-     WHERE "phoneNumberId" = $1
-       AND provider = 'whatsapp_cloud'
+    `SELECT ch.id,
+            ch."clinicId",
+            ch.provider,
+            ch."phoneNumberId",
+            ch."wabaId",
+            ch."accessToken",
+            ch."displayPhoneNumber",
+            ch."verifiedName",
+            ch.status,
+            ch."connectionSource",
+            ch."connectionMetadata",
+            ch."updatedAt",
+            ch."createdAt",
+            c."externalTenantId",
+            c.name AS "clinicName"
+     FROM channels ch
+     LEFT JOIN clinics c ON c.id = ch."clinicId"
+     WHERE ch."phoneNumberId" = $1
+       AND ch.provider = 'whatsapp_cloud'
      LIMIT 1`,
     [phoneNumberId]
   );
@@ -237,6 +252,37 @@ async function upsertWhatsAppChannel(input, client = null) {
   return result.rows[0] || null;
 }
 
+async function reassignWhatsAppChannelToClinic(channelId, input, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE channels
+     SET "clinicId" = $2,
+         "wabaId" = COALESCE($3, "wabaId"),
+         "accessToken" = COALESCE($4, "accessToken"),
+         "displayPhoneNumber" = COALESCE($5, "displayPhoneNumber"),
+         "verifiedName" = COALESCE($6, "verifiedName"),
+         status = $7,
+         "connectionSource" = $8,
+         "connectionMetadata" = COALESCE($9, "connectionMetadata"),
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
+    [
+      channelId,
+      input.clinicId,
+      input.wabaId || null,
+      input.accessToken || null,
+      input.displayPhoneNumber || null,
+      input.verifiedName || null,
+      input.status || 'active',
+      input.connectionSource || 'embedded_signup',
+      input.connectionMetadata || null
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function deactivateOtherClinicWhatsAppChannels(clinicId, keepChannelId, client = null) {
   await dbQuery(
     client,
@@ -265,6 +311,7 @@ module.exports = {
   markOnboardingSessionCompleted,
   findWhatsAppChannelByPhoneNumberId,
   upsertWhatsAppChannel,
+  reassignWhatsAppChannelToClinic,
   deactivateOtherClinicWhatsAppChannels,
   withOnboardingTransaction
 };

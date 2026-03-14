@@ -5,6 +5,7 @@ const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   findWhatsAppChannelByPhoneNumberId,
   upsertWhatsAppChannel,
+  reassignWhatsAppChannelToClinic,
   deactivateOtherClinicWhatsAppChannels,
   withOnboardingTransaction
 } = require('../repositories/whatsapp-onboarding.repository');
@@ -112,45 +113,67 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     );
   }
 
+  let channelAction = 'created';
   const existingChannel = await findWhatsAppChannelByPhoneNumberId(phoneNumberId);
-  if (existingChannel && existingChannel.clinicId !== context.clinic.id) {
-    logWarn('portal_whatsapp_manual_connect_cross_tenant_conflict', {
-      tenantId: safeTenantId,
-      clinicId: context.clinic.id,
-      requestId,
-      phoneNumberId,
-      conflictingClinicId: existingChannel.clinicId
-    });
-    return buildReason(
-      'WHATSAPP_CHANNEL_ALREADY_CONNECTED',
-      'Ese número ya está asociado a otro workspace y no se puede vincular manualmente.'
-    );
+  if (existingChannel) {
+    if (existingChannel.clinicId === context.clinic.id) {
+      channelAction = String(existingChannel.status || '').trim().toLowerCase() === 'active' ? 'reconnected' : 'repaired';
+    } else if (
+      existingChannel.externalTenantId &&
+      normalizeString(existingChannel.externalTenantId) !== safeTenantId
+    ) {
+      logWarn('portal_whatsapp_manual_connect_cross_tenant_conflict', {
+        tenantId: safeTenantId,
+        clinicId: context.clinic.id,
+        requestId,
+        phoneNumberId,
+        conflictingClinicId: existingChannel.clinicId,
+        conflictingTenantId: existingChannel.externalTenantId
+      });
+      return buildReason(
+        'WHATSAPP_CHANNEL_ALREADY_CONNECTED',
+        'Ese número ya está asociado a otro workspace y no se puede vincular manualmente.'
+      );
+    } else {
+      channelAction = 'repaired';
+      logInfo('portal_whatsapp_manual_connect_repairing_channel', {
+        tenantId: safeTenantId,
+        clinicId: context.clinic.id,
+        requestId,
+        phoneNumberId,
+        previousClinicId: existingChannel.clinicId,
+        previousTenantId: existingChannel.externalTenantId || null
+      });
+    }
   }
 
   const subscription = await subscribeCurrentAppToWaba(accessToken, wabaId, requestId);
   const persisted = await withOnboardingTransaction(async (client) => {
-    const channel = await upsertWhatsAppChannel(
-      {
-        clinicId: context.clinic.id,
-        phoneNumberId,
-        wabaId,
-        accessToken,
-        displayPhoneNumber: matchedPhone.displayPhoneNumber || null,
-        verifiedName: matchedPhone.verifiedName || channelName || null,
-        status: subscription.ok ? 'active' : 'pending',
-        connectionSource: 'manual_assisted',
-        connectionMetadata: {
-          onboardingProvider: 'manual_assisted',
-          requestId,
-          channelName,
-          wabaName: matchedPhone.wabaName || null,
-          subscriptionOk: subscription.ok,
-          subscriptionAlreadyExisted: subscription.alreadySubscribed || false,
-          subscriptionError: subscription.ok ? null : subscription.body || null
-        }
-      },
-      client
-    );
+    const nextChannelData = {
+      clinicId: context.clinic.id,
+      phoneNumberId,
+      wabaId,
+      accessToken,
+      displayPhoneNumber: matchedPhone.displayPhoneNumber || null,
+      verifiedName: matchedPhone.verifiedName || channelName || null,
+      status: subscription.ok ? 'active' : 'pending',
+      connectionSource: 'manual_assisted',
+      connectionMetadata: {
+        onboardingProvider: 'manual_assisted',
+        requestId,
+        channelName,
+        wabaName: matchedPhone.wabaName || null,
+        subscriptionOk: subscription.ok,
+        subscriptionAlreadyExisted: subscription.alreadySubscribed || false,
+        subscriptionError: subscription.ok ? null : subscription.body || null,
+        channelAction
+      }
+    };
+
+    const channel =
+      existingChannel && existingChannel.clinicId !== context.clinic.id && channelAction === 'repaired'
+        ? await reassignWhatsAppChannelToClinic(existingChannel.id, nextChannelData, client)
+        : await upsertWhatsAppChannel(nextChannelData, client);
 
     await deactivateOtherClinicWhatsAppChannels(context.clinic.id, channel.id, client);
     return channel;
@@ -164,7 +187,8 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     phoneNumberId: persisted.phoneNumberId,
     wabaId: persisted.wabaId,
     status: persisted.status,
-    subscriptionState: subscription.ok ? 'ok' : 'pending'
+    subscriptionState: subscription.ok ? 'ok' : 'pending',
+    channelAction
   });
 
   return {
@@ -172,6 +196,7 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     tenantId: safeTenantId,
     clinicId: context.clinic.id,
     status: subscription.ok ? 'connected' : 'pending_meta',
+    channelAction,
     channel: persisted,
     validation: {
       wabaName: matchedPhone.wabaName || null,
