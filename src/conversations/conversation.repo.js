@@ -66,9 +66,11 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
          FROM conversations c
          LEFT JOIN clinics cl ON cl.id = c."clinicId"
          LEFT JOIN contacts ct ON ct.id = c."contactId"
-         WHERE c."waFrom" = $1 AND c."waTo" = $2
+         WHERE c."channelId" = $1
+           AND c."waFrom" = $2
+           AND c."waTo" = $3
          LIMIT 1`,
-        [waFrom, waTo]
+        [channelId, waFrom, waTo]
       );
 
       const existing = byPair.rows[0] || null;
