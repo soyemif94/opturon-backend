@@ -30,6 +30,66 @@ function parseRawBody(bufferValue, parsedBody) {
   return {};
 }
 
+function sanitizeString(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function summarizeRejectedWebhookPayload(rawPayload) {
+  const payload = rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload) ? rawPayload : {};
+  const entry = Array.isArray(payload.entry) ? payload.entry : [];
+  const firstEntry = entry[0] || null;
+  const changes = Array.isArray(firstEntry && firstEntry.changes) ? firstEntry.changes : [];
+  const firstChange = changes[0] || null;
+  const value = firstChange && firstChange.value ? firstChange.value : {};
+  const metadata = value && value.metadata ? value.metadata : {};
+  const messages = Array.isArray(value.messages) ? value.messages : [];
+  const statuses = Array.isArray(value.statuses) ? value.statuses : [];
+  const contacts = Array.isArray(value.contacts) ? value.contacts : [];
+
+  const entryIds = entry
+    .map((item) => sanitizeString(item && item.id))
+    .filter(Boolean)
+    .slice(0, 3);
+
+  const phoneNumberId = sanitizeString(metadata.phone_number_id || metadata.phoneNumberId);
+  const displayPhoneNumber = sanitizeString(metadata.display_phone_number || metadata.displayPhoneNumber);
+  const firstMessage = messages[0] || null;
+  const firstStatus = statuses[0] || null;
+  const object = sanitizeString(payload.object);
+  const field = sanitizeString(firstChange && firstChange.field);
+
+  const looksLikeRealMessageEvent = object === 'whatsapp_business_account' && messages.length > 0 && !!phoneNumberId;
+  const looksLikeStatusEvent = object === 'whatsapp_business_account' && statuses.length > 0 && !!phoneNumberId;
+  const looksLikeMetaTestDelivery =
+    object === 'whatsapp_business_account' &&
+    messages.length === 0 &&
+    statuses.length === 0 &&
+    contacts.length === 0 &&
+    !!field;
+
+  return {
+    object,
+    entryCount: entry.length,
+    entryIds,
+    firstChangeField: field,
+    phoneNumberId,
+    displayPhoneNumber,
+    firstMessageId: sanitizeString(firstMessage && firstMessage.id),
+    firstMessageFrom: sanitizeString(firstMessage && (firstMessage.from || firstMessage.wa_id)),
+    firstStatusId: sanitizeString(firstStatus && firstStatus.id),
+    firstStatusRecipient: sanitizeString(firstStatus && firstStatus.recipient_id),
+    looksLikeRealMessageEvent,
+    looksLikeStatusEvent,
+    looksLikeMetaTestDelivery,
+    matchesConfiguredPhoneNumberId: phoneNumberId ? phoneNumberId === sanitizeString(env.whatsappPhoneNumberId) : null,
+    matchesConfiguredWabaId:
+      entryIds.length > 0 && sanitizeString(env.whatsappWabaId)
+        ? entryIds.includes(sanitizeString(env.whatsappWabaId))
+        : null
+  };
+}
+
 async function rejectInvalidSignature(req, res, reason, detail) {
   const requestId = req.requestId || null;
   req.metaSignatureValid = false;
@@ -66,7 +126,8 @@ async function rejectInvalidSignature(req, res, reason, detail) {
     receivedPrefix: detail && detail.received ? previewDigest(detail.received) : null,
     expectedLength: detail && Number.isInteger(detail.expectedLength) ? detail.expectedLength : null,
     receivedLength: detail && Number.isInteger(detail.receivedLength) ? detail.receivedLength : null,
-    signatureAlgorithm: detail && detail.signatureAlgorithm ? detail.signatureAlgorithm : null
+    signatureAlgorithm: detail && detail.signatureAlgorithm ? detail.signatureAlgorithm : null,
+    payloadSummary: summarizeRejectedWebhookPayload(rawPayload)
   });
 
   return res.status(200).json({ success: true, ignored: 'invalid_signature' });
