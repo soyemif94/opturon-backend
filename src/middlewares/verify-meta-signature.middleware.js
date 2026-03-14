@@ -4,6 +4,16 @@ const env = require('../config/env');
 const { createFailure } = require('../repositories/inbound-failures.repository');
 const { logWarn, logError, logInfo } = require('../utils/logger');
 
+function previewDigest(value) {
+  const normalized = String(value || '').trim();
+  return normalized ? normalized.slice(0, 12) : null;
+}
+
+function buildExpectedSignature(rawBody) {
+  const digest = crypto.createHmac('sha256', env.metaAppSecret).update(rawBody).digest('hex');
+  return `sha256=${digest}`;
+}
+
 function parseRawBody(bufferValue, parsedBody) {
   if (bufferValue && Buffer.isBuffer(bufferValue) && bufferValue.length > 0) {
     try {
@@ -24,6 +34,8 @@ async function rejectInvalidSignature(req, res, reason, detail) {
   const requestId = req.requestId || null;
   req.metaSignatureValid = false;
   const rawPayload = parseRawBody(req.rawBody, req.body);
+  const detailText =
+    detail && typeof detail === 'object' ? JSON.stringify(detail) : detail ? String(detail) : null;
 
   try {
     await createFailure({
@@ -32,7 +44,7 @@ async function rejectInvalidSignature(req, res, reason, detail) {
       providerMessageId: null,
       requestId,
       raw: rawPayload,
-      error: `${reason}${detail ? `: ${detail}` : ''}`
+      error: `${reason}${detailText ? `: ${detailText}` : ''}`
     });
   } catch (error) {
     logError('signature_failure_persist_failed', {
@@ -48,7 +60,13 @@ async function rejectInvalidSignature(req, res, reason, detail) {
     detail: detail || null,
     hasRawBody: Buffer.isBuffer(req.rawBody),
     rawBodyBytes: Buffer.isBuffer(req.rawBody) ? req.rawBody.length : 0,
-    signatureHeaderPresent: !!req.get('x-hub-signature-256')
+    signatureHeaderPresent: !!req.get('x-hub-signature-256'),
+    signaturePrefix: previewDigest(req.get('x-hub-signature-256')),
+    expectedPrefix: detail && detail.expected ? previewDigest(detail.expected) : null,
+    receivedPrefix: detail && detail.received ? previewDigest(detail.received) : null,
+    expectedLength: detail && Number.isInteger(detail.expectedLength) ? detail.expectedLength : null,
+    receivedLength: detail && Number.isInteger(detail.receivedLength) ? detail.receivedLength : null,
+    signatureAlgorithm: detail && detail.signatureAlgorithm ? detail.signatureAlgorithm : null
   });
 
   return res.status(200).json({ success: true, ignored: 'invalid_signature' });
@@ -69,34 +87,45 @@ async function verifyMetaSignature(req, res, next) {
   }
 
   const signatureHeader = String(req.get('x-hub-signature-256') || '').trim();
+  const signatureAlgorithm = signatureHeader.includes('=') ? signatureHeader.split('=')[0] : null;
   if (!signatureHeader.startsWith('sha256=')) {
-    return rejectInvalidSignature(req, res, 'missing_or_malformed_header');
+    return rejectInvalidSignature(req, res, 'missing_or_malformed_header', {
+      signatureAlgorithm
+    });
   }
 
   const rawBody =
     Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
-  const providedDigest = signatureHeader.slice('sha256='.length);
 
   if (!rawBody.length) {
     return rejectInvalidSignature(req, res, 'missing_raw_body');
   }
 
-  let providedBuffer;
-  try {
-    providedBuffer = Buffer.from(providedDigest, 'hex');
-  } catch (error) {
-    return rejectInvalidSignature(req, res, 'malformed_digest', error.message);
+  const providedSignature = signatureHeader;
+  if (!/^sha256=[a-f0-9]+$/i.test(providedSignature)) {
+    return rejectInvalidSignature(req, res, 'malformed_digest', {
+      signatureAlgorithm,
+      received: providedSignature,
+      receivedLength: providedSignature.length
+    });
   }
 
-  const expectedDigest = crypto.createHmac('sha256', env.metaAppSecret).update(rawBody).digest('hex');
-  const expectedBuffer = Buffer.from(expectedDigest, 'hex');
+  const expectedSignature = buildExpectedSignature(rawBody);
+  const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
+  const providedBuffer = Buffer.from(providedSignature, 'utf8');
 
   const isValid =
     expectedBuffer.length === providedBuffer.length &&
     crypto.timingSafeEqual(expectedBuffer, providedBuffer);
 
   if (!isValid) {
-    return rejectInvalidSignature(req, res, 'invalid_digest');
+    return rejectInvalidSignature(req, res, 'invalid_digest', {
+      signatureAlgorithm,
+      expected: expectedSignature,
+      received: providedSignature,
+      expectedLength: expectedSignature.length,
+      receivedLength: providedSignature.length
+    });
   }
 
   req.metaSignatureValid = true;
