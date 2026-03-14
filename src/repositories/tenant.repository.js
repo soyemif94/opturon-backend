@@ -95,12 +95,56 @@ async function listWhatsAppChannelsByClinicId(clinicId, client = null) {
   return result.rows;
 }
 
+async function getClinicBusinessProfileById(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            name,
+            timezone,
+            "externalTenantId",
+            settings,
+            settings -> 'businessProfile' AS "businessProfile"
+     FROM clinics
+     WHERE id = $1
+     LIMIT 1`,
+    [clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function updateClinicBusinessProfileById(clinicId, businessProfile, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE clinics
+     SET settings = jsonb_set(
+       COALESCE(settings, '{}'::jsonb),
+       '{businessProfile}',
+       $2::jsonb,
+       true
+     ),
+     "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id,
+               name,
+               timezone,
+               "externalTenantId",
+               settings,
+               settings -> 'businessProfile' AS "businessProfile"`,
+    [clinicId, JSON.stringify(businessProfile || {})]
+  );
+
+  return result.rows[0] || null;
+}
+
 module.exports = {
   findChannelByPhoneNumberId,
   findChannelById,
   findChannelByIdAndClinicId,
   findClinicByExternalTenantId,
   findPreferredWhatsAppChannelByClinicId,
-  listWhatsAppChannelsByClinicId
+  listWhatsAppChannelsByClinicId,
+  getClinicBusinessProfileById,
+  updateClinicBusinessProfileById
 };
 

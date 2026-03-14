@@ -30,6 +30,10 @@ const {
 } = require('../services/portal-users.service');
 const { listPortalContacts } = require('../services/portal-contacts.service');
 const {
+  getPortalBusinessSettings,
+  updatePortalBusinessSettings
+} = require('../services/portal-business.service');
+const {
   createPortalWhatsAppSignupSession,
   getPortalWhatsAppSignupStatus,
   finalizePortalWhatsAppSignup
@@ -567,6 +571,29 @@ async function getPortalContacts(req, res) {
   }
 }
 
+async function getPortalBusiness(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalBusinessSettings(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, detail: result.detail || null, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_business_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -597,6 +624,29 @@ async function postPortalUser(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_user_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalBusiness(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await updatePortalBusinessSettings(tenantId, req.body || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, detail: result.detail || null, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_business_update_failed',
       details: error.message
     });
   }
@@ -1074,7 +1124,9 @@ module.exports = {
   updatePortalProduct,
   updatePortalProductStatus,
   getPortalContacts,
+  getPortalBusiness,
   getPortalUsers,
+  patchPortalBusiness,
   postPortalUser,
   patchPortalUser,
   destroyPortalUser,
