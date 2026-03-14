@@ -319,6 +319,23 @@ async function updateConversationStatusForClinic({ conversationId, clinicId, sta
   return result.rows[0] || null;
 }
 
+async function reassignConversationChannelForClinic({ conversationId, clinicId, channelId, waTo = null }, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE conversations
+     SET
+       "channelId" = $3,
+       "waTo" = COALESCE($4, "waTo"),
+       "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+     RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+               "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
+    [conversationId, clinicId, channelId, waTo]
+  );
+  return result.rows[0] || null;
+}
+
 async function enqueueJob(type, payload, client = null) {
   const result = await dbQuery(
     client,
@@ -1308,6 +1325,7 @@ module.exports = {
   updateConversationState,
   updateConversationStateForClinic,
   updateConversationStatusForClinic,
+  reassignConversationChannelForClinic,
   listAppointmentRequests,
   getLastInboundTextByConversationIds,
   listInboxAppointments,

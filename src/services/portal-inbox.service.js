@@ -340,7 +340,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
     };
   }
 
-  const runtimeChannel =
+  let runtimeChannel =
     (context.channel && context.channel.id === conversation.channelId
       ? context.channel
       : await findChannelByIdAndClinicId(conversation.channelId, context.clinic.id)) || null;
@@ -351,6 +351,40 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       clinic: context.clinic,
       channel: toPortalChannel(context.channel),
       reason: 'conversation_channel_not_found'
+    };
+  }
+
+  const runtimeChannelStatus = String(runtimeChannel.status || '').trim().toLowerCase();
+  const preferredChannelStatus = String(context.channel && context.channel.status ? context.channel.status : '').trim().toLowerCase();
+  const canRepairConversationChannel =
+    runtimeChannelStatus !== 'active' &&
+    context.channel &&
+    context.channel.id &&
+    context.channel.id !== runtimeChannel.id &&
+    preferredChannelStatus === 'active';
+
+  if (canRepairConversationChannel) {
+    const repairedConversation = await conversationRepo.reassignConversationChannelForClinic({
+      conversationId: conversation.id,
+      clinicId: context.clinic.id,
+      channelId: context.channel.id,
+      waTo: context.channel.phoneNumberId || conversation.waTo || null
+    });
+
+    if (repairedConversation) {
+      conversation.channelId = repairedConversation.channelId;
+      conversation.waTo = repairedConversation.waTo;
+      runtimeChannel = context.channel;
+    }
+  }
+
+  if (String(runtimeChannel.status || '').trim().toLowerCase() !== 'active') {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(runtimeChannel),
+      reason: 'conversation_channel_inactive'
     };
   }
 

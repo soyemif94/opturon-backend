@@ -166,6 +166,7 @@ async function postPortalMessage(req, res) {
       const status =
         result.reason === 'missing_tenant_id' || result.reason === 'missing_text' ? 400
           : result.reason === 'mapped_clinic_without_whatsapp_channel' ? 409
+            : result.reason === 'conversation_channel_inactive' ? 409
             : result.reason === 'contact_without_waid' ? 422
               : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
