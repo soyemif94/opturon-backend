@@ -2,7 +2,7 @@
 
 const env = require('../config/env');
 const { createFailure } = require('../repositories/inbound-failures.repository');
-const { logWarn, logError } = require('../utils/logger');
+const { logWarn, logError, logInfo } = require('../utils/logger');
 
 function parseRawBody(bufferValue, parsedBody) {
   if (bufferValue && Buffer.isBuffer(bufferValue) && bufferValue.length > 0) {
@@ -45,7 +45,10 @@ async function rejectInvalidSignature(req, res, reason, detail) {
   logWarn('Meta signature rejected', {
     requestId,
     reason,
-    detail: detail || null
+    detail: detail || null,
+    hasRawBody: Buffer.isBuffer(req.rawBody),
+    rawBodyBytes: Buffer.isBuffer(req.rawBody) ? req.rawBody.length : 0,
+    signatureHeaderPresent: !!req.get('x-hub-signature-256')
   });
 
   return res.status(200).json({ success: true, ignored: 'invalid_signature' });
@@ -70,8 +73,13 @@ async function verifyMetaSignature(req, res, next) {
     return rejectInvalidSignature(req, res, 'missing_or_malformed_header');
   }
 
-  const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from('');
+  const rawBody =
+    Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
   const providedDigest = signatureHeader.slice('sha256='.length);
+
+  if (!rawBody.length) {
+    return rejectInvalidSignature(req, res, 'missing_raw_body');
+  }
 
   let providedBuffer;
   try {
@@ -92,8 +100,32 @@ async function verifyMetaSignature(req, res, next) {
   }
 
   req.metaSignatureValid = true;
+  req.rawBody = rawBody;
+  logInfo('Meta signature verified', {
+    requestId: req.requestId || null,
+    rawBodyBytes: rawBody.length,
+    signatureHeaderPresent: true
+  });
   return next();
 }
 
-module.exports = { verifyMetaSignature };
+function parseMetaWebhookJson(req, res, next) {
+  if (!Buffer.isBuffer(req.rawBody) || req.rawBody.length === 0) {
+    req.body = {};
+    return next();
+  }
+
+  try {
+    req.body = JSON.parse(req.rawBody.toString('utf8'));
+    return next();
+  } catch (error) {
+    logWarn('Meta webhook JSON parse failed', {
+      requestId: req.requestId || null,
+      error: error.message
+    });
+    return res.status(400).json({ success: false, error: 'invalid_webhook_payload' });
+  }
+}
+
+module.exports = { verifyMetaSignature, parseMetaWebhookJson };
 

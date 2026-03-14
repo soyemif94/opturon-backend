@@ -22,14 +22,6 @@ function createApp() {
 
   app.use(helmet());
   app.use(cors());
-  app.use(
-    express.json({
-      limit: '2mb',
-      verify: (req, res, buf) => {
-        req.rawBody = buf;
-      }
-    })
-  );
   app.use(morgan('combined'));
   app.use((req, res, next) => {
     const incomingRequestId = String(req.get('x-request-id') || '').trim();
@@ -59,6 +51,14 @@ function createApp() {
   });
 
   app.use('/webhook', webhookLimiter, webhookRoutes);
+  app.use(
+    express.json({
+      limit: '2mb',
+      verify: (req, res, buf) => {
+        req.rawBody = buf;
+      }
+    })
+  );
   app.use('/metrics', metricsRoutes);
   app.use('/portal', portalRoutes);
   if (env.whatsappDebug && env.debugApiEnabled) {
