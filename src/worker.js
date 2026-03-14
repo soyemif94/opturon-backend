@@ -2676,6 +2676,7 @@ async function processConversationReplyJob(job) {
     {
       requestId,
       credentials: {
+        channelId: channel.id,
         accessToken: channel.accessToken || env.whatsappAccessToken,
         phoneNumberId: channel.phoneNumberId || env.whatsappPhoneNumberId
       }
@@ -2801,6 +2802,7 @@ async function processJob(job) {
       const finalTo = normalizeWhatsAppTo(normalizeDigitsOnly(to));
 
       const credentials = {
+        channelId: job.channelId || null,
         accessToken: env.whatsappAccessToken,
         phoneNumberId
       };

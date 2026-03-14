@@ -23,6 +23,12 @@ function extractGraphError(data) {
   };
 }
 
+function resolveAuthSource(credentials) {
+  const credentialToken =
+    credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
+  return credentialToken ? 'credentials' : 'env';
+}
+
 function buildGraphError(message, result, to) {
   const ge = extractGraphError(result && result.data ? result.data : null);
   const error = new Error(message);
@@ -82,6 +88,8 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel 
     (credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '') ||
     String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
   const phoneNumberId = credentials.phoneNumberId || env.whatsappPhoneNumberId;
+  const authSource = resolveAuthSource(credentials);
+  const channelId = credentials && credentials.channelId ? String(credentials.channelId).trim() : null;
   const to = sanitizePhoneNumber(toRaw);
   const toLast4 = to ? to.slice(-4) : null;
   const toLen = to ? to.length : 0;
@@ -104,6 +112,8 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel 
   console.log(logLabel || 'WhatsApp send', {
     url,
     phoneNumberId,
+    channelId,
+    authSource,
     toLast4,
     toLen
   });
@@ -171,12 +181,36 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel 
         rawGraphErrorBody,
         error_subcode: ge.subcode,
         phoneNumberId,
+        channelId,
+        authSource,
         diagnosis: [
           'ID no es Phone Number ID',
           'token no tiene acceso al activo',
           'System User no asignado al WABA',
           'token pertenece a otro business/app'
         ]
+      });
+    } else if (Number(ge.code) === 190 && Number(ge.subcode) === 463) {
+      logWarn('whatsapp_send_failed', {
+        event: 'whatsapp_send_failed',
+        requestId,
+        method: 'POST',
+        url,
+        graphPath: `/${phoneNumberId}/messages`,
+        toLast4,
+        toLen,
+        status: responseStatus,
+        durationMs: null,
+        fbtrace_id: ge.fbtrace_id,
+        graphErrorCode: ge.code,
+        graphErrorSubcode: ge.subcode,
+        graphErrorMessage: ge.message,
+        rawGraphErrorBody,
+        error_subcode: ge.subcode,
+        phoneNumberId,
+        channelId,
+        authSource,
+        diagnosis: 'channel_access_token_expired'
       });
     } else {
       logWarn('whatsapp_send_failed', {
@@ -195,7 +229,9 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel 
         graphErrorMessage: ge.message,
         rawGraphErrorBody,
         error_subcode: ge.subcode,
-        phoneNumberId
+        phoneNumberId,
+        channelId,
+        authSource
       });
     }
 
