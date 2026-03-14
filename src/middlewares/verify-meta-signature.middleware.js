@@ -67,6 +67,7 @@ function summarizeRejectedWebhookPayload(rawPayload) {
     statuses.length === 0 &&
     contacts.length === 0 &&
     !!field;
+  const configuredWabaId = sanitizeString(env.whatsappWabaId);
 
   return {
     object,
@@ -83,10 +84,9 @@ function summarizeRejectedWebhookPayload(rawPayload) {
     looksLikeStatusEvent,
     looksLikeMetaTestDelivery,
     matchesConfiguredPhoneNumberId: phoneNumberId ? phoneNumberId === sanitizeString(env.whatsappPhoneNumberId) : null,
-    matchesConfiguredWabaId:
-      entryIds.length > 0 && sanitizeString(env.whatsappWabaId)
-        ? entryIds.includes(sanitizeString(env.whatsappWabaId))
-        : null
+    configuredWabaIdPresent: Boolean(configuredWabaId),
+    matchesConfiguredWabaId: entryIds.length > 0 && configuredWabaId ? entryIds.includes(configuredWabaId) : null,
+    matchesConfiguredWabaIdReason: configuredWabaId ? 'compared_to_env_whatsapp_waba_id' : 'env_whatsapp_waba_id_missing'
   };
 }
 
@@ -127,6 +127,16 @@ async function rejectInvalidSignature(req, res, reason, detail) {
     expectedLength: detail && Number.isInteger(detail.expectedLength) ? detail.expectedLength : null,
     receivedLength: detail && Number.isInteger(detail.receivedLength) ? detail.receivedLength : null,
     signatureAlgorithm: detail && detail.signatureAlgorithm ? detail.signatureAlgorithm : null,
+    signatureHeaderRawLength: detail && Number.isInteger(detail.signatureHeaderRawLength) ? detail.signatureHeaderRawLength : null,
+    signatureHeaderTrimmedLength:
+      detail && Number.isInteger(detail.signatureHeaderTrimmedLength) ? detail.signatureHeaderTrimmedLength : null,
+    signatureHeaderHasWhitespace: detail && typeof detail.signatureHeaderHasWhitespace === 'boolean'
+      ? detail.signatureHeaderHasWhitespace
+      : null,
+    signatureHeaderMatchesExpectedFormat:
+      detail && typeof detail.signatureHeaderMatchesExpectedFormat === 'boolean'
+        ? detail.signatureHeaderMatchesExpectedFormat
+        : null,
     payloadSummary: summarizeRejectedWebhookPayload(rawPayload)
   });
 
@@ -147,11 +157,18 @@ async function verifyMetaSignature(req, res, next) {
     return next();
   }
 
-  const signatureHeader = String(req.get('x-hub-signature-256') || '').trim();
+  const signatureHeaderRaw = String(req.get('x-hub-signature-256') || '');
+  const signatureHeader = signatureHeaderRaw.trim();
+  const signatureHeaderHasWhitespace = signatureHeaderRaw !== signatureHeader;
+  const signatureHeaderMatchesExpectedFormat = /^sha256=[a-f0-9]+$/i.test(signatureHeader);
   const signatureAlgorithm = signatureHeader.includes('=') ? signatureHeader.split('=')[0] : null;
   if (!signatureHeader.startsWith('sha256=')) {
     return rejectInvalidSignature(req, res, 'missing_or_malformed_header', {
-      signatureAlgorithm
+      signatureAlgorithm,
+      signatureHeaderRawLength: signatureHeaderRaw.length,
+      signatureHeaderTrimmedLength: signatureHeader.length,
+      signatureHeaderHasWhitespace,
+      signatureHeaderMatchesExpectedFormat
     });
   }
 
@@ -163,11 +180,15 @@ async function verifyMetaSignature(req, res, next) {
   }
 
   const providedSignature = signatureHeader;
-  if (!/^sha256=[a-f0-9]+$/i.test(providedSignature)) {
+  if (!signatureHeaderMatchesExpectedFormat) {
     return rejectInvalidSignature(req, res, 'malformed_digest', {
       signatureAlgorithm,
       received: providedSignature,
-      receivedLength: providedSignature.length
+      receivedLength: providedSignature.length,
+      signatureHeaderRawLength: signatureHeaderRaw.length,
+      signatureHeaderTrimmedLength: signatureHeader.length,
+      signatureHeaderHasWhitespace,
+      signatureHeaderMatchesExpectedFormat
     });
   }
 
@@ -185,7 +206,11 @@ async function verifyMetaSignature(req, res, next) {
       expected: expectedSignature,
       received: providedSignature,
       expectedLength: expectedSignature.length,
-      receivedLength: providedSignature.length
+      receivedLength: providedSignature.length,
+      signatureHeaderRawLength: signatureHeaderRaw.length,
+      signatureHeaderTrimmedLength: signatureHeader.length,
+      signatureHeaderHasWhitespace,
+      signatureHeaderMatchesExpectedFormat
     });
   }
 
