@@ -840,12 +840,14 @@ async function postPortalWhatsAppManualConnect(req, res) {
         result.reason === 'missing_phone_number_id' ||
         result.reason === 'missing_access_token'
           ? 400
-          : result.reason === 'channel_belongs_to_another_workspace' ||
-              result.reason === 'phone_number_not_in_waba'
+          : result.reason === 'WHATSAPP_CHANNEL_ALREADY_CONNECTED' ||
+              result.reason === 'PHONE_NUMBER_NOT_IN_WABA'
             ? 409
             : result.reason === 'tenant_mapping_not_found'
               ? 404
-              : 422;
+              : result.reason === 'WHATSAPP_TOKEN_INVALID' || result.reason === 'WABA_NOT_ACCESSIBLE'
+                ? 422
+                : 422;
 
       return res.status(status).json({
         success: false,
@@ -879,7 +881,9 @@ async function postPortalWhatsAppDiscoverAssets(req, res) {
           ? 400
           : result.reason === 'tenant_mapping_not_found'
             ? 404
-            : 422;
+            : result.reason === 'WHATSAPP_TOKEN_INVALID' || result.reason === 'WABA_NOT_ACCESSIBLE'
+              ? 422
+              : 422;
 
       return res.status(status).json({
         success: false,

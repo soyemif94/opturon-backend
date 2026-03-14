@@ -1,27 +1,18 @@
 const crypto = require('crypto');
 const env = require('../config/env');
-const graphClient = require('../whatsapp/whatsapp-graph.client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const { logInfo, logWarn } = require('../utils/logger');
-
-function normalizeString(value) {
-  return String(value || '').trim();
-}
+const {
+  normalizeString,
+  buildReason,
+  listWhatsAppAssetsForWaba
+} = require('./portal-whatsapp-assets.service');
 
 function redactToken(value) {
   const safe = normalizeString(value);
   if (!safe) return null;
   if (safe.length <= 8) return `${safe.slice(0, 2)}***`;
   return `${safe.slice(0, 4)}***${safe.slice(-4)}`;
-}
-
-function buildReason(reason, detail = null, extra = null) {
-  return {
-    ok: false,
-    reason,
-    detail,
-    ...(extra || {})
-  };
 }
 
 async function debugMetaAccessToken(accessToken, requestId) {
@@ -31,7 +22,9 @@ async function debugMetaAccessToken(accessToken, requestId) {
     return null;
   }
 
-  const url = new URL(`https://graph.facebook.com/${normalizeString(env.whatsappApiVersion || env.whatsappGraphVersion || 'v25.0')}/debug_token`);
+  const url = new URL(
+    `https://graph.facebook.com/${normalizeString(env.whatsappApiVersion || env.whatsappGraphVersion || 'v25.0')}/debug_token`
+  );
   url.searchParams.set('input_token', accessToken);
   url.searchParams.set('access_token', `${appId}|${appSecret}`);
 
@@ -75,59 +68,6 @@ function extractCandidateWabaIds(debugTokenData) {
   return Array.from(ids);
 }
 
-async function fetchWabaPhoneNumbers(accessToken, wabaId, requestId) {
-  const result = await graphClient.request('GET', `/${wabaId}/phone_numbers`, {
-    requestId,
-    accessToken,
-    query: {
-      fields: 'id,display_phone_number,verified_name,quality_rating,code_verification_status,name_status',
-      limit: 200
-    }
-  });
-
-  if (!result.ok) {
-    return {
-      ok: false,
-      reason:
-        result.status === 401 || result.status === 403
-          ? 'meta_access_denied'
-          : result.status === 400
-            ? 'meta_assets_not_found'
-            : 'meta_discovery_failed',
-      detail:
-        result.data && result.data.error && result.data.error.message
-          ? String(result.data.error.message)
-          : `No pudimos listar numeros para la WABA ${wabaId}.`
-    };
-  }
-
-  return {
-    ok: true,
-    items: Array.isArray(result.data && result.data.data) ? result.data.data : []
-  };
-}
-
-function normalizeDiscoveryItem(wabaId, rawPhone) {
-  const phoneNumberId = normalizeString(rawPhone && rawPhone.id);
-  if (!phoneNumberId) return null;
-  const displayPhoneNumber = normalizeString(rawPhone && rawPhone.display_phone_number) || null;
-  const verifiedName = normalizeString(rawPhone && rawPhone.verified_name) || null;
-  const qualityRating = rawPhone && rawPhone.quality_rating ? String(rawPhone.quality_rating) : null;
-  const status = rawPhone && rawPhone.name_status ? String(rawPhone.name_status) : null;
-  const label = [verifiedName || null, displayPhoneNumber || null].filter(Boolean).join(' · ') || phoneNumberId;
-
-  return {
-    wabaId,
-    wabaName: null,
-    phoneNumberId,
-    displayPhoneNumber,
-    verifiedName,
-    qualityRating,
-    status,
-    label
-  };
-}
-
 async function discoverTenantWhatsAppAssets(tenantId, payload) {
   const safeTenantId = normalizeString(tenantId);
   const accessToken = normalizeString(payload && payload.accessToken);
@@ -160,6 +100,7 @@ async function discoverTenantWhatsAppAssets(tenantId, payload) {
       tenantId: safeTenantId,
       clinicId: context.clinic.id,
       requestId,
+      reason: 'WHATSAPP_DISCOVERY_EMPTY',
       candidateWabaIds: 0
     });
     return {
@@ -172,7 +113,9 @@ async function discoverTenantWhatsAppAssets(tenantId, payload) {
 
   const discovered = [];
   for (const wabaId of candidateWabaIds) {
-    const numbers = await fetchWabaPhoneNumbers(accessToken, wabaId, requestId);
+    const numbers = await listWhatsAppAssetsForWaba(accessToken, wabaId, requestId, {
+      context: 'discovery'
+    });
     if (!numbers.ok) {
       logWarn('portal_whatsapp_discovery_waba_failed', {
         tenantId: safeTenantId,
@@ -185,8 +128,7 @@ async function discoverTenantWhatsAppAssets(tenantId, payload) {
       continue;
     }
 
-    for (const rawPhone of numbers.items) {
-      const item = normalizeDiscoveryItem(wabaId, rawPhone);
+    for (const item of numbers.items) {
       if (item) discovered.push(item);
     }
   }

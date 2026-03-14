@@ -8,78 +8,17 @@ const {
   deactivateOtherClinicWhatsAppChannels,
   withOnboardingTransaction
 } = require('../repositories/whatsapp-onboarding.repository');
-
-function normalizeString(value) {
-  return String(value || '').trim();
-}
+const {
+  normalizeString,
+  buildReason,
+  listWhatsAppAssetsForWaba
+} = require('./portal-whatsapp-assets.service');
 
 function maskToken(value) {
   const safe = normalizeString(value);
   if (!safe) return null;
   if (safe.length <= 8) return `${safe.slice(0, 2)}***`;
   return `${safe.slice(0, 4)}***${safe.slice(-4)}`;
-}
-
-function buildReason(reason, detail = null, extra = null) {
-  return {
-    ok: false,
-    reason,
-    detail,
-    ...(extra || {})
-  };
-}
-
-async function fetchPhoneNumber(accessToken, phoneNumberId, requestId) {
-  const result = await graphClient.request('GET', `/${phoneNumberId}`, {
-    requestId,
-    accessToken,
-    query: {
-      fields: 'id,display_phone_number,verified_name'
-    }
-  });
-
-  if (!result.ok) {
-    return {
-      ok: false,
-      reason: 'meta_phone_number_not_accessible',
-      detail:
-        result.data && result.data.error && result.data.error.message
-          ? String(result.data.error.message)
-          : `No pudimos acceder al Phone Number ID (${result.status || 'unknown'}).`
-    };
-  }
-
-  return {
-    ok: true,
-    data: result.data || null
-  };
-}
-
-async function fetchWabaPhoneNumbers(accessToken, wabaId, requestId) {
-  const result = await graphClient.request('GET', `/${wabaId}/phone_numbers`, {
-    requestId,
-    accessToken,
-    query: {
-      fields: 'id,display_phone_number,verified_name',
-      limit: 200
-    }
-  });
-
-  if (!result.ok) {
-    return {
-      ok: false,
-      reason: 'meta_waba_phone_numbers_not_accessible',
-      detail:
-        result.data && result.data.error && result.data.error.message
-          ? String(result.data.error.message)
-          : `No pudimos listar numeros de la WABA (${result.status || 'unknown'}).`
-    };
-  }
-
-  return {
-    ok: true,
-    items: Array.isArray(result.data && result.data.data) ? result.data.data : []
-  };
 }
 
 async function subscribeCurrentAppToWaba(accessToken, wabaId, requestId) {
@@ -149,37 +88,26 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     accessToken: maskToken(accessToken)
   });
 
-  const [phone, phoneNumbers] = await Promise.all([
-    fetchPhoneNumber(accessToken, phoneNumberId, requestId),
-    fetchWabaPhoneNumbers(accessToken, wabaId, requestId)
-  ]);
+  const numbers = await listWhatsAppAssetsForWaba(accessToken, wabaId, requestId, {
+    context: 'manual_connect'
+  });
 
-  if (!phone.ok) {
+  if (!numbers.ok) {
     logWarn('portal_whatsapp_manual_connect_validation_failed', {
       tenantId: safeTenantId,
       clinicId: context.clinic.id,
       requestId,
-      reason: phone.reason,
-      detail: phone.detail
+      reason: numbers.reason,
+      detail: numbers.detail
     });
-    return buildReason(phone.reason, phone.detail, { tenantId: safeTenantId });
-  }
-  if (!phoneNumbers.ok) {
-    logWarn('portal_whatsapp_manual_connect_validation_failed', {
-      tenantId: safeTenantId,
-      clinicId: context.clinic.id,
-      requestId,
-      reason: phoneNumbers.reason,
-      detail: phoneNumbers.detail
-    });
-    return buildReason(phoneNumbers.reason, phoneNumbers.detail, { tenantId: safeTenantId });
+    return buildReason(numbers.reason, numbers.detail, { tenantId: safeTenantId });
   }
 
-  const matchedPhone = phoneNumbers.items.find((item) => normalizeString(item.id) === phoneNumberId);
+  const matchedPhone = numbers.items.find((item) => normalizeString(item.phoneNumberId) === phoneNumberId);
   if (!matchedPhone) {
     return buildReason(
-      'phone_number_not_in_waba',
-      'El Phone Number ID indicado no aparece dentro de la WABA validada con ese token.',
+      'PHONE_NUMBER_NOT_IN_WABA',
+      'El número seleccionado no pertenece a la WABA validada con ese token.',
       { tenantId: safeTenantId }
     );
   }
@@ -194,8 +122,8 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
       conflictingClinicId: existingChannel.clinicId
     });
     return buildReason(
-      'channel_belongs_to_another_workspace',
-      'Ese numero ya esta asociado a otro workspace y no se puede vincular manualmente.'
+      'WHATSAPP_CHANNEL_ALREADY_CONNECTED',
+      'Ese número ya está asociado a otro workspace y no se puede vincular manualmente.'
     );
   }
 
@@ -207,15 +135,15 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
         phoneNumberId,
         wabaId,
         accessToken,
-        displayPhoneNumber: normalizeString(matchedPhone.display_phone_number) || normalizeString(phone.data && phone.data.display_phone_number) || null,
-        verifiedName: normalizeString(matchedPhone.verified_name) || normalizeString(phone.data && phone.data.verified_name) || channelName || null,
+        displayPhoneNumber: matchedPhone.displayPhoneNumber || null,
+        verifiedName: matchedPhone.verifiedName || channelName || null,
         status: subscription.ok ? 'active' : 'pending',
         connectionSource: 'manual_assisted',
         connectionMetadata: {
           onboardingProvider: 'manual_assisted',
           requestId,
           channelName,
-          wabaName: null,
+          wabaName: matchedPhone.wabaName || null,
           subscriptionOk: subscription.ok,
           subscriptionAlreadyExisted: subscription.alreadySubscribed || false,
           subscriptionError: subscription.ok ? null : subscription.body || null
@@ -245,11 +173,11 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     clinicId: context.clinic.id,
     status: subscription.ok ? 'connected' : 'pending_meta',
     channel: persisted,
-      validation: {
-        wabaName: null,
-        displayPhoneNumber: normalizeString(matchedPhone.display_phone_number) || null,
-        verifiedName: normalizeString(matchedPhone.verified_name) || null,
-        subscriptionOk: subscription.ok
+    validation: {
+      wabaName: matchedPhone.wabaName || null,
+      displayPhoneNumber: matchedPhone.displayPhoneNumber || null,
+      verifiedName: matchedPhone.verifiedName || null,
+      subscriptionOk: subscription.ok
     }
   };
 }
