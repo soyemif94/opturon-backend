@@ -30,6 +30,10 @@ const {
 } = require('../services/portal-users.service');
 const { listPortalContacts } = require('../services/portal-contacts.service');
 const {
+  listPortalAutomations,
+  createPortalAutomation
+} = require('../services/portal-automations.service');
+const {
   getPortalBusinessSettings,
   updatePortalBusinessSettings
 } = require('../services/portal-business.service');
@@ -594,6 +598,32 @@ async function getPortalBusiness(req, res) {
   }
 }
 
+async function getPortalAutomations(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalAutomations(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        automations: result.automations
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_automations_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -647,6 +677,47 @@ async function patchPortalBusiness(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_business_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalAutomation(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalAutomation(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_automation_name' ||
+        result.reason === 'invalid_automation_trigger' ||
+        result.reason === 'missing_automation_keyword' ||
+        result.reason === 'missing_automation_actions' ||
+        result.reason === 'invalid_automation_action' ||
+        result.reason === 'missing_automation_message' ||
+        result.reason === 'missing_automation_tag'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        automation: result.automation
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_automation_create_failed',
       details: error.message
     });
   }
@@ -1124,9 +1195,11 @@ module.exports = {
   updatePortalProduct,
   updatePortalProductStatus,
   getPortalContacts,
+  getPortalAutomations,
   getPortalBusiness,
   getPortalUsers,
   patchPortalBusiness,
+  postPortalAutomation,
   postPortalUser,
   patchPortalUser,
   destroyPortalUser,

@@ -16,9 +16,11 @@ const {
   updatePortalProduct,
   updatePortalProductStatus,
   getPortalContacts,
+  getPortalAutomations,
   getPortalBusiness,
   getPortalUsers,
   postPortalUser,
+  postPortalAutomation,
   patchPortalBusiness,
   patchPortalUser,
   destroyPortalUser,
@@ -54,6 +56,8 @@ router.get('/tenants/:tenantId/products/:productId', getPortalProduct);
 router.patch('/tenants/:tenantId/products/:productId', updatePortalProduct);
 router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProductStatus);
 router.get('/tenants/:tenantId/contacts', getPortalContacts);
+router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
+router.post('/tenants/:tenantId/automations', requirePortalInternalAuth, postPortalAutomation);
 router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBusiness);
 router.patch('/tenants/:tenantId/business', requirePortalInternalAuth, patchPortalBusiness);
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);
