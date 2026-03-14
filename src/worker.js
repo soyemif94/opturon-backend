@@ -13,7 +13,7 @@ const {
   updateConversationStage
 } = require('./repositories/conversation.repository');
 const { insertOutboundMessage, getMessageById } = require('./repositories/message.repository');
-const { sendTextMessage, sendTemplateMessage } = require('./whatsapp/whatsapp.service');
+const { sendChannelScopedMessage } = require('./whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('./whatsapp/normalize-phone');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
@@ -1525,7 +1525,7 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
     phoneNumberId: channelCredentials.phoneNumberId,
     hasAccessToken: true
   });
-  const sendResult = await sendTextMessage(
+  const sendResult = await sendChannelScopedMessage(
     { to: contact.waId, text },
     {
       requestId,
@@ -2738,7 +2738,7 @@ async function processConversationReplyJob(job) {
     hasAccessToken: true
   });
 
-  const sendResult = await sendTextMessage(
+  const sendResult = await sendChannelScopedMessage(
     { to: contact.waId, text: replyText },
     {
       requestId,
@@ -2901,7 +2901,7 @@ async function processJob(job) {
           throw new Error('templateName is required for template send jobs');
         }
 
-        sendResult = await sendTemplateMessage(
+        sendResult = await sendChannelScopedMessage(
           {
             to: finalTo,
             templateName,
@@ -2914,7 +2914,7 @@ async function processJob(job) {
           }
         );
       } else {
-        sendResult = await sendTextMessage(
+        sendResult = await sendChannelScopedMessage(
           { to: finalTo, text },
           {
             requestId,

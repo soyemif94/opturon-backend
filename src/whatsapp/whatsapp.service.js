@@ -83,20 +83,63 @@ function resolveTemplateArgs(arg1, arg2, arg3, arg4, arg5) {
   };
 }
 
-async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel }) {
-  const channelId = credentials && credentials.channelId ? String(credentials.channelId).trim() : null;
-  const scopedAccessToken =
-    credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
-  const scopedPhoneNumberId =
+function resolveChannelScopedCredentials(credentials = {}) {
+  const channelId = credentials && credentials.channelId ? String(credentials.channelId).trim() : '';
+  const accessToken = credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
+  const phoneNumberId = credentials && credentials.phoneNumberId ? String(credentials.phoneNumberId).trim() : '';
+
+  if (!channelId) {
+    throw new Error('Missing WhatsApp channelId for channel-scoped send');
+  }
+
+  if (!accessToken) {
+    throw new Error('Missing WhatsApp channel access token');
+  }
+
+  if (!phoneNumberId) {
+    throw new Error('Missing WhatsApp channel phone number id');
+  }
+
+  return {
+    channelId,
+    accessToken,
+    phoneNumberId,
+    authSource: 'channel_scoped'
+  };
+}
+
+function resolveLegacyCredentials(credentials = {}) {
+  const credentialToken = credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
+  const credentialPhoneNumberId =
     credentials && credentials.phoneNumberId ? String(credentials.phoneNumberId).trim() : '';
-  const allowGlobalFallback = !channelId;
-  const accessToken = allowGlobalFallback
-    ? (scopedAccessToken || String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim())
-    : scopedAccessToken;
-  const phoneNumberId = allowGlobalFallback
-    ? (scopedPhoneNumberId || String(env.whatsappPhoneNumberId || '').trim())
-    : scopedPhoneNumberId;
-  const authSource = allowGlobalFallback ? resolveAuthSource(credentials) : 'channel_scoped';
+  const accessToken = credentialToken || String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
+  const phoneNumberId = credentialPhoneNumberId || String(env.whatsappPhoneNumberId || '').trim();
+
+  if (!accessToken) {
+    throw new Error('Missing WhatsApp access token');
+  }
+
+  if (!phoneNumberId) {
+    throw new Error('WHATSAPP_PHONE_NUMBER_ID is missing.');
+  }
+
+  return {
+    channelId: credentials && credentials.channelId ? String(credentials.channelId).trim() : null,
+    accessToken,
+    phoneNumberId,
+    authSource: resolveAuthSource(credentials)
+  };
+}
+
+async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel, mode = 'legacy_global' }) {
+  const resolvedCredentials =
+    mode === 'channel_scoped'
+      ? resolveChannelScopedCredentials(credentials || {})
+      : resolveLegacyCredentials(credentials || {});
+  const channelId = resolvedCredentials.channelId;
+  const accessToken = resolvedCredentials.accessToken;
+  const phoneNumberId = resolvedCredentials.phoneNumberId;
+  const authSource = resolvedCredentials.authSource;
   const to = sanitizePhoneNumber(toRaw);
   const toLast4 = to ? to.slice(-4) : null;
   const toLen = to ? to.length : 0;
@@ -127,34 +170,69 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel 
 
   let graphResponse;
   if (body && body.type === 'template') {
-    graphResponse = await graphClient.sendTemplateMessageViaGraph({
-      phoneNumberId,
-      to,
-      templateName: body.template && body.template.name ? body.template.name : '',
-      languageCode:
-        body.template && body.template.language && body.template.language.code
-          ? body.template.language.code
-          : 'es',
-      components: body.template && Array.isArray(body.template.components) ? body.template.components : [],
-      requestId,
-      credentials: {
-        ...(credentials || {}),
-        accessToken,
-        phoneNumberId
-      }
-    });
+    graphResponse =
+      mode === 'channel_scoped'
+        ? await graphClient.sendTemplateMessageViaGraphScoped({
+            phoneNumberId,
+            to,
+            templateName: body.template && body.template.name ? body.template.name : '',
+            languageCode:
+              body.template && body.template.language && body.template.language.code
+                ? body.template.language.code
+                : 'es',
+            components: body.template && Array.isArray(body.template.components) ? body.template.components : [],
+            requestId,
+            credentials: {
+              ...(credentials || {}),
+              channelId,
+              accessToken,
+              phoneNumberId
+            }
+          })
+        : await graphClient.sendTemplateMessageViaGraphLegacy({
+            phoneNumberId,
+            to,
+            templateName: body.template && body.template.name ? body.template.name : '',
+            languageCode:
+              body.template && body.template.language && body.template.language.code
+                ? body.template.language.code
+                : 'es',
+            components: body.template && Array.isArray(body.template.components) ? body.template.components : [],
+            requestId,
+            credentials: {
+              ...(credentials || {}),
+              channelId,
+              accessToken,
+              phoneNumberId
+            }
+          });
   } else {
-    graphResponse = await graphClient.sendTextMessageViaGraph({
-      phoneNumberId,
-      to,
-      text: body && body.text && body.text.body ? String(body.text.body) : '',
-      requestId,
-      credentials: {
-        ...(credentials || {}),
-        accessToken,
-        phoneNumberId
-      }
-    });
+    graphResponse =
+      mode === 'channel_scoped'
+        ? await graphClient.sendTextMessageViaGraphScoped({
+            phoneNumberId,
+            to,
+            text: body && body.text && body.text.body ? String(body.text.body) : '',
+            requestId,
+            credentials: {
+              ...(credentials || {}),
+              channelId,
+              accessToken,
+              phoneNumberId
+            }
+          })
+        : await graphClient.sendTextMessageViaGraphLegacy({
+            phoneNumberId,
+            to,
+            text: body && body.text && body.text.body ? String(body.text.body) : '',
+            requestId,
+            credentials: {
+              ...(credentials || {}),
+              channelId,
+              accessToken,
+              phoneNumberId
+            }
+          });
   }
 
   const responseStatus = graphResponse.status;
@@ -272,12 +350,37 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel 
   };
 }
 
-async function sendTextMessage(arg1, arg2, arg3) {
-  const resolved = resolveSendArgs(arg1, arg2, arg3);
-  const requestId = resolved.context && resolved.context.requestId ? resolved.context.requestId : null;
-  const credentials = resolved.context && resolved.context.credentials ? resolved.context.credentials : {};
-  const text = String(resolved.text || '').trim();
+async function sendChannelScopedMessage(message, context = {}) {
+  const requestId = context && context.requestId ? context.requestId : null;
+  const credentials = context && context.credentials ? context.credentials : {};
+  const payload = message && typeof message === 'object' ? message : {};
+  const toRaw = payload.to;
 
+  if (payload.templateName || (payload.template && payload.template.name)) {
+    const templateName = String(payload.templateName || (payload.template && payload.template.name) || '').trim();
+    const languageCode = String(payload.languageCode || (payload.template && payload.template.languageCode) || 'es').trim() || 'es';
+    const components = Array.isArray(payload.components)
+      ? payload.components
+      : (payload.template && Array.isArray(payload.template.components) ? payload.template.components : []);
+
+    return sendGraphMessage({
+      requestId,
+      credentials,
+      toRaw,
+      body: {
+        type: 'template',
+        template: {
+          name: templateName,
+          language: { code: languageCode },
+          ...(components.length ? { components } : {})
+        }
+      },
+      logLabel: 'WhatsApp channel-scoped send',
+      mode: 'channel_scoped'
+    });
+  }
+
+  const text = String(payload.text || '').trim();
   if (!text) {
     throw new Error('Text is required.');
   }
@@ -285,19 +388,80 @@ async function sendTextMessage(arg1, arg2, arg3) {
   return sendGraphMessage({
     requestId,
     credentials,
-    toRaw: resolved.to,
+    toRaw,
     body: {
       type: 'text',
       text: { body: text }
     },
-    logLabel: 'WhatsApp send'
+    logLabel: 'WhatsApp channel-scoped send',
+    mode: 'channel_scoped'
   });
+}
+
+async function sendLegacyGlobalMessage(message, context = {}) {
+  const requestId = context && context.requestId ? context.requestId : null;
+  const credentials = context && context.credentials ? context.credentials : {};
+  const payload = message && typeof message === 'object' ? message : {};
+  const toRaw = payload.to;
+
+  if (payload.templateName || (payload.template && payload.template.name)) {
+    const templateName = String(payload.templateName || (payload.template && payload.template.name) || '').trim();
+    const languageCode = String(payload.languageCode || (payload.template && payload.template.languageCode) || 'es').trim() || 'es';
+    const components = Array.isArray(payload.components)
+      ? payload.components
+      : (payload.template && Array.isArray(payload.template.components) ? payload.template.components : []);
+
+    return sendGraphMessage({
+      requestId,
+      credentials,
+      toRaw,
+      body: {
+        type: 'template',
+        template: {
+          name: templateName,
+          language: { code: languageCode },
+          ...(components.length ? { components } : {})
+        }
+      },
+      logLabel: 'WhatsApp legacy global send',
+      mode: 'legacy_global'
+    });
+  }
+
+  const text = String(payload.text || '').trim();
+  if (!text) {
+    throw new Error('Text is required.');
+  }
+
+  return sendGraphMessage({
+    requestId,
+    credentials,
+    toRaw,
+    body: {
+      type: 'text',
+      text: { body: text }
+    },
+    logLabel: 'WhatsApp legacy global send',
+    mode: 'legacy_global'
+  });
+}
+
+async function sendTextMessage(arg1, arg2, arg3) {
+  const resolved = resolveSendArgs(arg1, arg2, arg3);
+  const text = String(resolved.text || '').trim();
+
+  if (!text) {
+    throw new Error('Text is required.');
+  }
+
+  return sendLegacyGlobalMessage(
+    { to: resolved.to, text },
+    resolved.context || {}
+  );
 }
 
 async function sendTemplateMessage(arg1, arg2, arg3, arg4, arg5) {
   const resolved = resolveTemplateArgs(arg1, arg2, arg3, arg4, arg5);
-  const requestId = resolved.context && resolved.context.requestId ? resolved.context.requestId : null;
-  const credentials = resolved.context && resolved.context.credentials ? resolved.context.credentials : {};
   const templateName = String(resolved.templateName || '').trim();
   const languageCode = String(resolved.languageCode || 'es').trim() || 'es';
   const components = Array.isArray(resolved.components) ? resolved.components : [];
@@ -306,24 +470,15 @@ async function sendTemplateMessage(arg1, arg2, arg3, arg4, arg5) {
     throw new Error('templateName is required.');
   }
 
-  const template = {
-    name: templateName,
-    language: { code: languageCode }
-  };
-  if (components.length) {
-    template.components = components;
-  }
-
-  return sendGraphMessage({
-    requestId,
-    credentials,
-    toRaw: resolved.to,
-    body: {
-      type: 'template',
-      template
+  return sendLegacyGlobalMessage(
+    {
+      to: resolved.to,
+      templateName,
+      languageCode,
+      components
     },
-    logLabel: 'WhatsApp template send'
-  });
+    resolved.context || {}
+  );
 }
 
 async function fetchPaginated(pathToRequest, query, requestId) {
@@ -536,10 +691,12 @@ async function autoDetectPhoneNumberId(context = {}) {
 }
 
 async function sendTestMessage(to, text, context = {}) {
-  return sendTextMessage({ to, text }, context);
+  return sendLegacyGlobalMessage({ to, text }, context);
 }
 
 module.exports = {
+  sendChannelScopedMessage,
+  sendLegacyGlobalMessage,
   sendTextMessage,
   sendTemplateMessage,
   sendGraphMessage,

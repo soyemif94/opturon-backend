@@ -4,7 +4,7 @@ const { findContactByIdAndClinicId, upsertContact } = require('../repositories/c
 const { listEvents } = require('../repositories/conversation-events.repository');
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const conversationRepo = require('../conversations/conversation.repo');
-const { sendTextMessage } = require('../whatsapp/whatsapp.service');
+const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 
 function parseContext(context) {
@@ -376,7 +376,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
     };
   }
 
-  const sendResult = await sendTextMessage(
+  const sendResult = await sendChannelScopedMessage(
     { to: contact.waId, text: safeText },
     {
       requestId: `portal:${conversation.id}`,

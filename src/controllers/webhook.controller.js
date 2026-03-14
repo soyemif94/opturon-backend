@@ -13,7 +13,7 @@ const { deriveEventType, extractWhatsAppMeta } = require('../webhook/webhook-eve
 const { processInboundMessages } = require('../conversations/conversation.service');
 const { pushInboxItem } = require('../debug/inbox-store');
 const { pushWebhookEvent } = require('../debug/webhook-store');
-const { sendTextMessage: sendScopedTextMessage } = require('../whatsapp/whatsapp.service');
+const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 
 function withRequestMeta(req, meta = {}) {
   return {
@@ -346,7 +346,7 @@ async function runAutoReplyIfEnabled(req, textEvents) {
         continue;
       }
 
-      const sendResult = await sendScopedTextMessage(
+      const sendResult = await sendChannelScopedMessage(
         { to: event.from, text: replyText },
         {
           requestId: req && req.requestId ? req.requestId : null,

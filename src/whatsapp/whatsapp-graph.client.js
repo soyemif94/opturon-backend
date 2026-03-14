@@ -85,7 +85,7 @@ function normalizeToDigits(value) {
   return String(value || '').replace(/[^\d]/g, '');
 }
 
-function resolveAccessToken(credentials = null) {
+function resolveLegacyAccessToken(credentials = null) {
   const credentialToken =
     credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
   const envToken =
@@ -102,7 +102,21 @@ function resolveAccessToken(credentials = null) {
   };
 }
 
-function resolvePhoneNumberId(credentials = null, explicitPhoneNumberId = null) {
+function resolveScopedAccessToken(credentials = null) {
+  const accessToken =
+    credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
+
+  if (!accessToken) {
+    throw new Error('Missing WhatsApp channel access token');
+  }
+
+  return {
+    accessToken,
+    authSource: 'channel_scoped'
+  };
+}
+
+function resolveLegacyPhoneNumberId(credentials = null, explicitPhoneNumberId = null) {
   const phoneNumberId =
     (credentials && credentials.phoneNumberId && String(credentials.phoneNumberId).trim()) ||
     (explicitPhoneNumberId ? String(explicitPhoneNumberId).trim() : '') ||
@@ -110,6 +124,18 @@ function resolvePhoneNumberId(credentials = null, explicitPhoneNumberId = null) 
 
   if (!phoneNumberId) {
     throw new Error('Missing WhatsApp phoneNumberId');
+  }
+
+  return phoneNumberId;
+}
+
+function resolveScopedPhoneNumberId(credentials = null, explicitPhoneNumberId = null) {
+  const phoneNumberId =
+    (credentials && credentials.phoneNumberId && String(credentials.phoneNumberId).trim()) ||
+    (explicitPhoneNumberId ? String(explicitPhoneNumberId).trim() : '');
+
+  if (!phoneNumberId) {
+    throw new Error('Missing WhatsApp channel phoneNumberId');
   }
 
   return phoneNumberId;
@@ -124,9 +150,22 @@ function extractFbTraceIdFromRaw(rawBody) {
   }
 }
 
-async function sendTextMessageViaGraph({ phoneNumberId, to, text, requestId = null, credentials = null }) {
-  const normalizedPhoneNumberId = resolvePhoneNumberId(credentials, phoneNumberId);
-  const { accessToken, authSource } = resolveAccessToken(credentials);
+async function sendTextMessageViaGraphInternal({
+  phoneNumberId,
+  to,
+  text,
+  requestId = null,
+  credentials = null,
+  mode = 'legacy_global'
+}) {
+  const normalizedPhoneNumberId =
+    mode === 'channel_scoped'
+      ? resolveScopedPhoneNumberId(credentials, phoneNumberId)
+      : resolveLegacyPhoneNumberId(credentials, phoneNumberId);
+  const { accessToken, authSource } =
+    mode === 'channel_scoped'
+      ? resolveScopedAccessToken(credentials)
+      : resolveLegacyAccessToken(credentials);
   const normalizedTo = normalizeToDigits(to);
   const messageText = String(text || '').trim();
   const toLast4 = normalizedTo ? normalizedTo.slice(-4) : null;
@@ -189,17 +228,24 @@ async function sendTextMessageViaGraph({ phoneNumberId, to, text, requestId = nu
   };
 }
 
-async function sendTemplateMessageViaGraph({
+async function sendTemplateMessageViaGraphInternal({
   phoneNumberId,
   to,
   templateName,
   languageCode = 'es',
   components = [],
   requestId = null,
-  credentials = null
+  credentials = null,
+  mode = 'legacy_global'
 }) {
-  const normalizedPhoneNumberId = resolvePhoneNumberId(credentials, phoneNumberId);
-  const { accessToken, authSource } = resolveAccessToken(credentials);
+  const normalizedPhoneNumberId =
+    mode === 'channel_scoped'
+      ? resolveScopedPhoneNumberId(credentials, phoneNumberId)
+      : resolveLegacyPhoneNumberId(credentials, phoneNumberId);
+  const { accessToken, authSource } =
+    mode === 'channel_scoped'
+      ? resolveScopedAccessToken(credentials)
+      : resolveLegacyAccessToken(credentials);
   const normalizedTo = normalizeToDigits(to);
   const normalizedTemplateName = String(templateName || '').trim();
   const normalizedLanguageCode = String(languageCode || 'es').trim() || 'es';
@@ -269,6 +315,34 @@ async function sendTemplateMessageViaGraph({
     json: parsed,
     fbtrace_id
   };
+}
+
+async function sendTextMessageViaGraphScoped(options) {
+  return sendTextMessageViaGraphInternal({
+    ...(options || {}),
+    mode: 'channel_scoped'
+  });
+}
+
+async function sendTextMessageViaGraphLegacy(options) {
+  return sendTextMessageViaGraphInternal({
+    ...(options || {}),
+    mode: 'legacy_global'
+  });
+}
+
+async function sendTemplateMessageViaGraphScoped(options) {
+  return sendTemplateMessageViaGraphInternal({
+    ...(options || {}),
+    mode: 'channel_scoped'
+  });
+}
+
+async function sendTemplateMessageViaGraphLegacy(options) {
+  return sendTemplateMessageViaGraphInternal({
+    ...(options || {}),
+    mode: 'legacy_global'
+  });
 }
 
 async function request(method, path, options = {}) {
@@ -473,10 +547,26 @@ async function request(method, path, options = {}) {
   };
 }
 
+function resolveAccessToken(credentials = null) {
+  return resolveLegacyAccessToken(credentials);
+}
+
+async function sendTextMessageViaGraph(options) {
+  return sendTextMessageViaGraphLegacy(options);
+}
+
+async function sendTemplateMessageViaGraph(options) {
+  return sendTemplateMessageViaGraphLegacy(options);
+}
+
 module.exports = {
   request,
   buildGraphUrl,
   classifyGraphError,
   sendTextMessageViaGraph,
-  sendTemplateMessageViaGraph
+  sendTextMessageViaGraphScoped,
+  sendTextMessageViaGraphLegacy,
+  sendTemplateMessageViaGraph,
+  sendTemplateMessageViaGraphScoped,
+  sendTemplateMessageViaGraphLegacy
 };
