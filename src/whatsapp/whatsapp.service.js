@@ -84,12 +84,19 @@ function resolveTemplateArgs(arg1, arg2, arg3, arg4, arg5) {
 }
 
 async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel }) {
-  const accessToken =
-    (credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '') ||
-    String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
-  const phoneNumberId = credentials.phoneNumberId || env.whatsappPhoneNumberId;
-  const authSource = resolveAuthSource(credentials);
   const channelId = credentials && credentials.channelId ? String(credentials.channelId).trim() : null;
+  const scopedAccessToken =
+    credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
+  const scopedPhoneNumberId =
+    credentials && credentials.phoneNumberId ? String(credentials.phoneNumberId).trim() : '';
+  const allowGlobalFallback = !channelId;
+  const accessToken = allowGlobalFallback
+    ? (scopedAccessToken || String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim())
+    : scopedAccessToken;
+  const phoneNumberId = allowGlobalFallback
+    ? (scopedPhoneNumberId || String(env.whatsappPhoneNumberId || '').trim())
+    : scopedPhoneNumberId;
+  const authSource = allowGlobalFallback ? resolveAuthSource(credentials) : 'channel_scoped';
   const to = sanitizePhoneNumber(toRaw);
   const toLast4 = to ? to.slice(-4) : null;
   const toLen = to ? to.length : 0;
@@ -99,11 +106,11 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel 
   }
 
   if (!accessToken) {
-    throw new Error('Missing WhatsApp access token');
+    throw new Error(channelId ? 'Missing WhatsApp channel access token' : 'Missing WhatsApp access token');
   }
 
   if (!phoneNumberId) {
-    throw new Error('WHATSAPP_PHONE_NUMBER_ID is missing.');
+    throw new Error(channelId ? 'Missing WhatsApp channel phone number id' : 'WHATSAPP_PHONE_NUMBER_ID is missing.');
   }
 
   const graphVersion = String(process.env.WHATSAPP_GRAPH_VERSION || env.whatsappGraphVersion || 'v25.0').trim();

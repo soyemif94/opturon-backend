@@ -13,7 +13,7 @@ const { deriveEventType, extractWhatsAppMeta } = require('../webhook/webhook-eve
 const { processInboundMessages } = require('../conversations/conversation.service');
 const { pushInboxItem } = require('../debug/inbox-store');
 const { pushWebhookEvent } = require('../debug/webhook-store');
-const { sendTextMessage: sendAutoReplyText } = require('../whatsapp/send');
+const { sendTextMessage: sendScopedTextMessage } = require('../whatsapp/whatsapp.service');
 
 function withRequestMeta(req, meta = {}) {
   return {
@@ -236,7 +236,8 @@ function extractInboxObservedEvents(payload) {
             messageId,
             isEcho,
             fromBusiness,
-            messageType
+            messageType,
+            phoneNumberId: sanitizeString(metadata.phone_number_id) || null
           });
         });
       }
@@ -301,18 +302,66 @@ async function runAutoReplyIfEnabled(req, textEvents) {
       continue;
     }
 
+    if (!event.phoneNumberId) {
+      logWarn(
+        'webhook_auto_reply_skipped_missing_phone_number_id',
+        withRequestMeta(req, {
+          to: event.from,
+          messageId: event.messageId || null
+        })
+      );
+      continue;
+    }
+
     const rule = detectAutoReplyRule(event.text);
     const replyText = buildAutoReplyText(rule);
 
     try {
-      const sendResult = await sendAutoReplyText({
-        to: event.from,
-        text: replyText,
-        requestId: req && req.requestId ? req.requestId : null
-      });
+      const channel = await findChannelByPhoneNumberId(event.phoneNumberId);
+      if (!channel) {
+        logWarn(
+          'webhook_auto_reply_skipped_unrouted_channel',
+          withRequestMeta(req, {
+            to: event.from,
+            messageId: event.messageId || null,
+            phoneNumberId: event.phoneNumberId
+          })
+        );
+        continue;
+      }
+
+      if (!String(channel.accessToken || '').trim() || !String(channel.phoneNumberId || '').trim()) {
+        logWarn(
+          'webhook_auto_reply_skipped_incomplete_channel',
+          withRequestMeta(req, {
+            clinicId: channel.clinicId || null,
+            channelId: channel.id || null,
+            to: event.from,
+            messageId: event.messageId || null,
+            phoneNumberId: event.phoneNumberId,
+            hasAccessToken: !!String(channel.accessToken || '').trim(),
+            hasChannelPhoneNumberId: !!String(channel.phoneNumberId || '').trim()
+          })
+        );
+        continue;
+      }
+
+      const sendResult = await sendScopedTextMessage(
+        { to: event.from, text: replyText },
+        {
+          requestId: req && req.requestId ? req.requestId : null,
+          credentials: {
+            channelId: channel.id,
+            accessToken: channel.accessToken,
+            phoneNumberId: channel.phoneNumberId
+          }
+        }
+      );
       logInfo(
         'webhook_auto_reply_sent',
         withRequestMeta(req, {
+          clinicId: channel.clinicId || null,
+          channelId: channel.id || null,
           to: event.from,
           messageId: event.messageId || null,
           rule,
@@ -623,39 +672,13 @@ async function handleWebhook(req, res) {
     }
 
     if (env.autoReplyEnabled && events.length > 0) {
-      for (const event of events) {
-        if (!event || event.type !== 'text' || !event.body || !event.waId) {
-          continue;
-        }
-        const rule = detectAutoReplyRule(event.body);
-        const replyText = buildAutoReplyText(rule);
-        try {
-          const sendResult = await sendAutoReplyText({
-            to: event.waId,
-            text: replyText,
-            requestId: req && req.requestId ? req.requestId : null
-          });
-          logInfo(
-            'webhook_auto_reply_sent',
-            withRequestMeta(req, {
-              to: event.waId,
-              messageId: event.providerMessageId || null,
-              rule,
-              outboundMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null
-            })
-          );
-        } catch (error) {
-          logWarn(
-            'webhook_auto_reply_failed',
-            withRequestMeta(req, {
-              to: event.waId,
-              messageId: event.providerMessageId || null,
-              rule,
-              error: error.message
-            })
-          );
-        }
-      }
+      logWarn(
+        'webhook_auto_reply_skipped_legacy_payload',
+        withRequestMeta(req, {
+          reason: 'legacy_payload_not_channel_scoped',
+          eventCount: events.length
+        })
+      );
     }
 
     if (events.length === 0) {

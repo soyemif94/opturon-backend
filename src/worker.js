@@ -1473,14 +1473,66 @@ function formatSlotForHuman(utcIso, timezone) {
   return DateTime.fromISO(String(utcIso), { zone: 'utc' }).setZone(timezone).toFormat('ccc dd/LL HH:mm');
 }
 
+function normalizeChannelSendContext(channel, meta = {}) {
+  const safeChannel = channel && typeof channel === 'object' ? channel : null;
+  const accessToken = safeChannel && safeChannel.accessToken ? String(safeChannel.accessToken).trim() : '';
+  const phoneNumberId = safeChannel && safeChannel.phoneNumberId ? String(safeChannel.phoneNumberId).trim() : '';
+
+  if (!safeChannel || !String(safeChannel.id || '').trim()) {
+    const error = new Error('Missing WhatsApp channel for tenant-scoped send');
+    error.code = 'CHANNEL_NOT_FOUND';
+    error.meta = meta;
+    throw error;
+  }
+
+  if (!accessToken) {
+    const error = new Error('Missing WhatsApp channel access token');
+    error.code = 'CHANNEL_ACCESS_TOKEN_MISSING';
+    error.channelId = safeChannel.id;
+    error.clinicId = safeChannel.clinicId || null;
+    error.meta = meta;
+    throw error;
+  }
+
+  if (!phoneNumberId) {
+    const error = new Error('Missing WhatsApp channel phone number id');
+    error.code = 'CHANNEL_PHONE_NUMBER_ID_MISSING';
+    error.channelId = safeChannel.id;
+    error.clinicId = safeChannel.clinicId || null;
+    error.meta = meta;
+    throw error;
+  }
+
+  return {
+    channelId: safeChannel.id,
+    clinicId: safeChannel.clinicId || null,
+    accessToken,
+    phoneNumberId
+  };
+}
+
 async function sendAndPersistReply({ clinicId, channel, conversationId, contact, text, requestId, correlationMessageId }) {
+  const channelCredentials = normalizeChannelSendContext(channel, {
+    conversationId: conversationId || null,
+    requestId
+  });
+  logInfo('worker_whatsapp_send_attempt', {
+    requestId,
+    clinicId,
+    channelId: channelCredentials.channelId,
+    conversationId: conversationId || null,
+    jobId: null,
+    phoneNumberId: channelCredentials.phoneNumberId,
+    hasAccessToken: true
+  });
   const sendResult = await sendTextMessage(
     { to: contact.waId, text },
     {
       requestId,
       credentials: {
-        accessToken: channel.accessToken || env.whatsappAccessToken,
-        phoneNumberId: channel.phoneNumberId || env.whatsappPhoneNumberId
+        channelId: channelCredentials.channelId,
+        accessToken: channelCredentials.accessToken,
+        phoneNumberId: channelCredentials.phoneNumberId
       }
     }
   );
@@ -1490,7 +1542,7 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
     channelId: channel.id,
     conversationId,
     providerMessageId: sendResult.messageId,
-    from: channel.phoneNumberId || env.whatsappPhoneNumberId,
+    from: channelCredentials.phoneNumberId,
     to: contact.waId,
     type: 'text',
     body: text,
@@ -2671,14 +2723,27 @@ async function processConversationReplyJob(job) {
     contextPatch: decision.contextPatch || null
   });
 
+  const replyChannelCredentials = normalizeChannelSendContext(channel, {
+    jobId: job.id,
+    clinicId: conversation.clinicId || job.clinicId || null,
+    conversationId: conversation.id
+  });
+  logInfo('worker_whatsapp_send_attempt', {
+    requestId,
+    clinicId: conversation.clinicId || job.clinicId || null,
+    channelId: replyChannelCredentials.channelId,
+    conversationId: conversation.id,
+    jobId: job.id,
+    phoneNumberId: replyChannelCredentials.phoneNumberId,
+    hasAccessToken: true
+  });
+
   const sendResult = await sendTextMessage(
     { to: contact.waId, text: replyText },
     {
       requestId,
       credentials: {
-        channelId: channel.id,
-        accessToken: channel.accessToken || env.whatsappAccessToken,
-        phoneNumberId: channel.phoneNumberId || env.whatsappPhoneNumberId
+        ...replyChannelCredentials
       }
     }
   );
@@ -2686,7 +2751,7 @@ async function processConversationReplyJob(job) {
   const outboundWrite = await conversationRepo.insertOutboundMessage({
     conversationId: conversation.id,
     waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
-    from: channel.phoneNumberId || env.whatsappPhoneNumberId || null,
+    from: replyChannelCredentials.phoneNumberId,
     to: contact.waId || null,
     type: 'text',
     text: replyText,
@@ -2746,9 +2811,7 @@ async function processJob(job) {
       const payload = parseJobPayload(job.payload);
       const payloadType = String(payload.type || '').trim().toLowerCase();
       const isTemplateJob = job.type === 'whatsapp_template_send' || payloadType === 'template';
-      const phoneNumberId = String(
-        payload.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || env.whatsappPhoneNumberId || ''
-      ).trim();
+      const payloadChannelId = String(payload.channelId || job.channelId || '').trim();
       const originalToRaw = String(payload.to || '');
       const originalTo = normalizeDigitsOnly(originalToRaw);
       const to = normalizeWhatsAppTo(originalTo);
@@ -2784,27 +2847,44 @@ async function processJob(job) {
         jobId: job.id,
         sendType: isTemplateJob ? 'template' : 'text',
         clinicId: job.clinicId || null,
-        channelId: job.channelId || null,
-        phoneNumberId: phoneNumberId || null,
+        channelId: payloadChannelId || null,
+        phoneNumberId: null,
         toLast4,
         toLen
       });
 
-      if (!phoneNumberId) {
-        throw new Error('Missing phoneNumberId for whatsapp_send job');
+      if (!payloadChannelId) {
+        throw new Error('Missing channelId for tenant-scoped WhatsApp job');
       }
 
       if (!/^\d{8,15}$/.test(to)) {
         throw new Error('Invalid "to" for whatsapp_send job. Expected 8..15 digits');
       }
 
+      const channel = await findChannelById(payloadChannelId);
+      const channelCredentials = normalizeChannelSendContext(channel, {
+        jobId: job.id,
+        clinicId: job.clinicId || null,
+        conversationId: String(payload.conversationId || '').trim() || null
+      });
+
+      logInfo('worker_whatsapp_send_attempt', {
+        requestId,
+        clinicId: job.clinicId || channelCredentials.clinicId,
+        channelId: channelCredentials.channelId,
+        conversationId: String(payload.conversationId || '').trim() || null,
+        jobId: job.id,
+        phoneNumberId: channelCredentials.phoneNumberId,
+        hasAccessToken: true
+      });
+
       // Ultra-defensive: ensure final `to` is normalized right before sending
       const finalTo = normalizeWhatsAppTo(normalizeDigitsOnly(to));
 
       const credentials = {
-        channelId: job.channelId || null,
-        accessToken: env.whatsappAccessToken,
-        phoneNumberId
+        channelId: channelCredentials.channelId,
+        accessToken: channelCredentials.accessToken,
+        phoneNumberId: channelCredentials.phoneNumberId
       };
       let sendResult = null;
 
@@ -2848,7 +2928,7 @@ async function processJob(job) {
         const outboundWrite = await conversationRepo.insertOutboundMessage({
           conversationId: payloadConversationId,
           waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
-          from: phoneNumberId,
+          from: channelCredentials.phoneNumberId,
           to: finalTo,
           type: isTemplateJob ? 'template' : 'text',
           text: isTemplateJob ? null : text,
@@ -2869,9 +2949,9 @@ async function processJob(job) {
         requestId,
         jobId: job.id,
         sendType: isTemplateJob ? 'template' : 'text',
-        clinicId: job.clinicId || null,
-        channelId: job.channelId || null,
-        phoneNumberId,
+        clinicId: job.clinicId || channelCredentials.clinicId,
+        channelId: channelCredentials.channelId,
+        phoneNumberId: channelCredentials.phoneNumberId,
         toLast4,
         toLen,
         outboundMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null
@@ -2901,7 +2981,13 @@ async function processJob(job) {
         error && error.graphErrorCode !== undefined && error.graphErrorCode !== null
           ? Number(error.graphErrorCode)
           : null,
-      error: error.message
+      error: error.message,
+      reason:
+        error && error.code
+          ? error.code
+          : (error && error.graphErrorCode !== undefined && error.graphErrorCode !== null ? 'GRAPH_SEND_FAILED' : null),
+      missingChannelAccessToken: error && error.code === 'CHANNEL_ACCESS_TOKEN_MISSING',
+      missingChannelPhoneNumberId: error && error.code === 'CHANNEL_PHONE_NUMBER_ID_MISSING'
     });
   } finally {
     processingCount -= 1;

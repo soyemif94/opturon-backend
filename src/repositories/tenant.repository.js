@@ -13,6 +13,7 @@ async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
     `SELECT id, "clinicId", provider, "phoneNumberId", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
      FROM channels
      WHERE "phoneNumberId" = $1
+       AND provider = 'whatsapp_cloud'
      LIMIT 1`,
     [phoneNumberId]
   );

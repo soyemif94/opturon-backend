@@ -381,6 +381,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
     {
       requestId: `portal:${conversation.id}`,
       credentials: {
+        channelId: runtimeChannel.id,
         accessToken: runtimeChannel.accessToken || undefined,
         phoneNumberId: runtimeChannel.phoneNumberId
       }
