@@ -59,10 +59,14 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
     if (error && error.code === '23505') {
       const byPair = await dbQuery(
         client,
-        `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
-                "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
-         FROM conversations
-         WHERE "waFrom" = $1 AND "waTo" = $2
+        `SELECT c.id, c."clinicId", c."channelId", c."contactId", c."waFrom", c."waTo", c.status, c.stage, c.state, c.context,
+                c."lastInboundAt", c."lastOutboundAt", c."createdAt", c."updatedAt",
+                cl."externalTenantId" AS "clinicExternalTenantId",
+                ct."waId" AS "contactWaId"
+         FROM conversations c
+         LEFT JOIN clinics cl ON cl.id = c."clinicId"
+         LEFT JOIN contacts ct ON ct.id = c."contactId"
+         WHERE c."waFrom" = $1 AND c."waTo" = $2
          LIMIT 1`,
         [waFrom, waTo]
       );
@@ -77,6 +81,34 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
         return existing;
       }
 
+      const canRepairSameWorkspaceOwner =
+        existing &&
+        existing.channelId === channelId &&
+        (
+          existing.clinicId === clinicId ||
+          !existing.clinicExternalTenantId
+        );
+
+      if (canRepairSameWorkspaceOwner) {
+        const repaired = await dbQuery(
+          client,
+          `UPDATE conversations
+           SET "clinicId" = $2,
+               "channelId" = $3,
+               "contactId" = $4,
+               "waFrom" = $5,
+               "waTo" = $6,
+               "lastInboundAt" = NOW(),
+               "updatedAt" = NOW()
+           WHERE id = $1
+           RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+                     "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
+          [existing.id, clinicId, channelId, contactId, waFrom, waTo]
+        );
+
+        return repaired.rows[0] || existing;
+      }
+
       const conflictError = new Error('conversation_pair_already_mapped_to_other_owner');
       conflictError.code = 'CONVERSATION_CROSS_OWNER_CONFLICT';
       conflictError.details = {
@@ -88,7 +120,9 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
         existingConversationId: existing ? existing.id : null,
         existingClinicId: existing ? existing.clinicId : null,
         existingChannelId: existing ? existing.channelId : null,
-        existingContactId: existing ? existing.contactId : null
+        existingContactId: existing ? existing.contactId : null,
+        existingClinicExternalTenantId: existing ? existing.clinicExternalTenantId || null : null,
+        existingContactWaId: existing ? existing.contactWaId || null : null
       };
       throw conflictError;
     }
