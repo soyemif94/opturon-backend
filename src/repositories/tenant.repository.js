@@ -14,6 +14,7 @@ async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
      FROM channels
      WHERE "phoneNumberId" = $1
        AND provider = 'whatsapp_cloud'
+       AND LOWER(COALESCE(status, '')) = 'active'
      LIMIT 1`,
     [phoneNumberId]
   );
