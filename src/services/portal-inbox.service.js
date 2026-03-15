@@ -59,6 +59,7 @@ function mapConversationRow(row) {
   const context = parseContext(row.context);
   return {
     id: row.id,
+    channelId: row.channelId || null,
     status: normalizePortalStatus(row.status, row),
     assignedTo: context.portalAssignedTo || undefined,
     lastMessageAt: row.lastMessageAt || row.updatedAt,
@@ -84,8 +85,50 @@ function toPortalChannel(channel) {
     clinicId: channel.clinicId,
     provider: channel.provider || null,
     phoneNumberId: channel.phoneNumberId || null,
+    displayPhoneNumber: channel.displayPhoneNumber || null,
+    verifiedName: channel.verifiedName || null,
     wabaId: channel.wabaId || null,
     status: channel.status || null
+  };
+}
+
+function buildConversationChannelBinding({ context, conversationChannel }) {
+  const workspaceDefaultChannel = toPortalChannel(context && context.channel ? context.channel : null);
+  const boundConversationChannel = toPortalChannel(conversationChannel);
+  const boundStatus = String(
+    (boundConversationChannel && boundConversationChannel.status) || ''
+  )
+    .trim()
+    .toLowerCase();
+
+  let resolutionStatus = 'workspace_default_unresolved';
+  let matchesWorkspaceDefault = null;
+
+  if (!boundConversationChannel) {
+    resolutionStatus = 'conversation_channel_missing';
+    matchesWorkspaceDefault = false;
+  } else if (boundStatus !== 'active') {
+    resolutionStatus = 'conversation_channel_inactive';
+    matchesWorkspaceDefault =
+      Boolean(workspaceDefaultChannel && workspaceDefaultChannel.id) &&
+      workspaceDefaultChannel.id === boundConversationChannel.id;
+  } else if (!workspaceDefaultChannel || !workspaceDefaultChannel.id) {
+    resolutionStatus = 'workspace_default_unresolved';
+    matchesWorkspaceDefault = null;
+  } else if (workspaceDefaultChannel.id === boundConversationChannel.id) {
+    resolutionStatus = 'matches_workspace_default';
+    matchesWorkspaceDefault = true;
+  } else {
+    resolutionStatus = 'different_from_workspace_default';
+    matchesWorkspaceDefault = false;
+  }
+
+  return {
+    conversationChannelId: boundConversationChannel ? boundConversationChannel.id : null,
+    conversationChannel: boundConversationChannel,
+    workspaceDefaultChannel,
+    matchesWorkspaceDefault,
+    resolutionStatus
   };
 }
 
@@ -104,6 +147,8 @@ async function resolveRuntimeContext(tenantId) {
           clinicId: channel.clinicId,
           provider: channel.provider || null,
           phoneNumberId: channel.phoneNumberId || null,
+          displayPhoneNumber: channel.displayPhoneNumber || null,
+          verifiedName: channel.verifiedName || null,
           wabaId: channel.wabaId || null,
           status: channel.status || null,
           accessToken: channel.accessToken || null
@@ -202,10 +247,11 @@ async function getPortalConversationDetail(tenantId, conversationId) {
     };
   }
 
-  const [contact, messages, events] = await Promise.all([
+  const [contact, messages, events, conversationChannel] = await Promise.all([
     findContactByIdAndClinicId(conversation.contactId, context.clinic.id),
     conversationRepo.listConversationMessagesByClinicId(conversation.id, context.clinic.id, 200),
-    listEvents(context.clinic.id, conversation.id, 20)
+    listEvents(context.clinic.id, conversation.id, 20),
+    conversation.channelId ? findChannelByIdAndClinicId(conversation.channelId, context.clinic.id) : null
   ]);
 
   const contextData = parseContext(conversation.context);
@@ -220,6 +266,22 @@ async function getPortalConversationDetail(tenantId, conversationId) {
     lastMessagePreview: messages.length > 0 ? messages[messages.length - 1].text : null,
     unreadCount: 0
   });
+
+  const channelBinding = buildConversationChannelBinding({
+    context,
+    conversationChannel
+  });
+
+  if (channelBinding.resolutionStatus === 'conversation_channel_inactive' || channelBinding.resolutionStatus === 'conversation_channel_missing') {
+    logWarn('portal_conversation_channel_binding_warning', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      conversationChannelId: channelBinding.conversationChannelId,
+      workspaceDefaultChannelId: channelBinding.workspaceDefaultChannel ? channelBinding.workspaceDefaultChannel.id : null,
+      resolutionStatus: channelBinding.resolutionStatus
+    });
+  }
 
   return {
     ok: true,
@@ -257,7 +319,8 @@ async function getPortalConversationDetail(tenantId, conversationId) {
         id: event.id,
         text: event.type,
         createdAt: event.createdAt
-      }))
+      })),
+      channelBinding
     }
   };
 }
