@@ -410,6 +410,12 @@ async function sendPortalMessage(tenantId, conversationId, text) {
     };
   }
 
+  console.log('WA_CHANNEL_VALIDATION', {
+    channelId: runtimeChannel.id,
+    phoneNumberId: runtimeChannel.phoneNumberId || null,
+    wabaId: runtimeChannel.wabaId || null
+  });
+
   const sendResult = await sendChannelScopedMessage(
     { to: contact.waId, text: safeText },
     {
