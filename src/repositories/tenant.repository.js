@@ -52,7 +52,7 @@ async function findChannelByIdAndClinicId(channelId, clinicId, client = null) {
 async function findClinicByExternalTenantId(externalTenantId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, name, timezone, "externalTenantId"
+    `SELECT id, name, timezone, "externalTenantId", settings
      FROM clinics
      WHERE "externalTenantId" = $1
      LIMIT 1`,

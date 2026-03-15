@@ -7,6 +7,7 @@ const conversationRepo = require('../conversations/conversation.repo');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const env = require('../config/env');
+const { logInfo, logWarn } = require('../utils/logger');
 
 function parseContext(context) {
   return context && typeof context === 'object' && !Array.isArray(context) ? context : {};
@@ -109,6 +110,20 @@ async function resolveRuntimeContext(tenantId) {
         }
       : null,
     reason: channel ? context.reason || 'resolved' : context.reason || 'mapped_clinic_without_whatsapp_channel'
+  };
+}
+
+function buildOwnershipSnapshot({ context, conversation, runtimeChannel }) {
+  return {
+    tenantId: context && context.tenantId ? context.tenantId : null,
+    clinicId: context && context.clinic && context.clinic.id ? context.clinic.id : null,
+    conversationId: conversation && conversation.id ? conversation.id : null,
+    conversationChannelId: conversation && conversation.channelId ? conversation.channelId : null,
+    selectedPortalChannelId: context && context.channel && context.channel.id ? context.channel.id : null,
+    runtimeChannelId: runtimeChannel && runtimeChannel.id ? runtimeChannel.id : null,
+    runtimeChannelClinicId: runtimeChannel && runtimeChannel.clinicId ? runtimeChannel.clinicId : null,
+    channelSelectionReason: context && context.channelSelection ? context.channelSelection.reason || null : null,
+    channelSelectionStrategy: context && context.channelSelection ? context.channelSelection.strategy || null : null
   };
 }
 
@@ -346,6 +361,11 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       ? context.channel
       : await findChannelByIdAndClinicId(conversation.channelId, context.clinic.id)) || null;
   if (!runtimeChannel) {
+    logWarn('portal_conversation_channel_resolution_failed', buildOwnershipSnapshot({
+      context,
+      conversation,
+      runtimeChannel: null
+    }));
     return {
       ok: false,
       tenantId: context.tenantId,
@@ -376,8 +396,21 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       conversation.channelId = repairedConversation.channelId;
       conversation.waTo = repairedConversation.waTo;
       runtimeChannel = context.channel;
+      logWarn('portal_conversation_channel_repaired_to_selected_channel', buildOwnershipSnapshot({
+        context,
+        conversation,
+        runtimeChannel
+      }));
     }
   }
+
+  logInfo('portal_conversation_channel_resolved', {
+    ...buildOwnershipSnapshot({ context, conversation, runtimeChannel }),
+    resolutionSource:
+      context.channel && context.channel.id === runtimeChannel.id
+        ? 'portal_selected_channel'
+        : 'conversation_bound_channel'
+  });
 
   if (String(runtimeChannel.status || '').trim().toLowerCase() !== 'active') {
     return {
