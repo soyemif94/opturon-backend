@@ -115,6 +115,68 @@ async function getClinicBusinessProfileById(clinicId, client = null) {
   return result.rows[0] || null;
 }
 
+async function getClinicWhatsAppSettingsById(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            name,
+            timezone,
+            "externalTenantId",
+            settings,
+            settings -> 'whatsapp' AS "whatsappSettings",
+            settings -> 'whatsapp' ->> 'defaultChannelId' AS "defaultWhatsAppChannelId"
+     FROM clinics
+     WHERE id = $1
+     LIMIT 1`,
+    [clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function updateClinicWhatsAppDefaultChannelId(clinicId, defaultChannelId, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE clinics
+     SET settings = jsonb_set(
+       jsonb_set(
+         (
+           (
+             COALESCE(settings, '{}'::jsonb)
+             #- '{portal,defaultWhatsAppChannelId}'
+           )
+           #- '{portal,selectedWhatsAppChannelId}'
+         )
+         #- '{whatsapp,primaryChannelId}',
+         '{whatsapp}',
+         COALESCE(
+           CASE
+             WHEN jsonb_typeof(settings -> 'whatsapp') = 'object' THEN settings -> 'whatsapp'
+             ELSE '{}'::jsonb
+           END,
+           '{}'::jsonb
+         ),
+         true
+       ),
+       '{whatsapp,defaultChannelId}',
+       to_jsonb($2::text),
+       true
+     ),
+     "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id,
+               name,
+               timezone,
+               "externalTenantId",
+               settings,
+               settings -> 'whatsapp' AS "whatsappSettings",
+               settings -> 'whatsapp' ->> 'defaultChannelId' AS "defaultWhatsAppChannelId"`,
+    [clinicId, defaultChannelId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function updateClinicBusinessProfileById(clinicId, businessProfile, client = null) {
   const result = await dbQuery(
     client,
@@ -146,6 +208,8 @@ module.exports = {
   findClinicByExternalTenantId,
   findPreferredWhatsAppChannelByClinicId,
   listWhatsAppChannelsByClinicId,
+  getClinicWhatsAppSettingsById,
+  updateClinicWhatsAppDefaultChannelId,
   getClinicBusinessProfileById,
   updateClinicBusinessProfileById
 };

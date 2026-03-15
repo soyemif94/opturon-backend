@@ -31,6 +31,8 @@ const {
   postPortalWhatsAppEmbeddedSignupFinalize,
   postPortalWhatsAppManualConnect,
   postPortalWhatsAppDiscoverAssets,
+  getPortalWhatsAppDefaultChannel,
+  patchPortalWhatsAppDefaultChannel,
   getPortalWhatsAppTemplateBlueprints,
   getPortalWhatsAppTemplates,
   postPortalWhatsAppTemplateFromBlueprint,
@@ -65,6 +67,8 @@ router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePort
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/finalize', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupFinalize);
 router.post('/tenants/:tenantId/whatsapp/manual-connect', requirePortalInternalAuth, postPortalWhatsAppManualConnect);
 router.post('/tenants/:tenantId/whatsapp/discover-assets', requirePortalInternalAuth, postPortalWhatsAppDiscoverAssets);
+router.get('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalAuth, getPortalWhatsAppDefaultChannel);
+router.patch('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalAuth, patchPortalWhatsAppDefaultChannel);
 router.get('/tenants/:tenantId/whatsapp/templates/blueprints', requirePortalInternalAuth, getPortalWhatsAppTemplateBlueprints);
 router.get('/tenants/:tenantId/whatsapp/templates', requirePortalInternalAuth, getPortalWhatsAppTemplates);
 router.post('/tenants/:tenantId/whatsapp/templates/create-from-blueprint', requirePortalInternalAuth, postPortalWhatsAppTemplateFromBlueprint);

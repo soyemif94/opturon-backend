@@ -45,6 +45,10 @@ const {
 const { connectPortalWhatsAppManual } = require('../services/portal-whatsapp-manual-onboarding.service');
 const { discoverTenantWhatsAppAssets } = require('../services/portal-whatsapp-discovery.service');
 const {
+  getPortalWhatsAppChannelSettings,
+  updatePortalWhatsAppDefaultChannel
+} = require('../services/portal-whatsapp-channel-settings.service');
+const {
   listPortalWhatsAppTemplateBlueprints,
   listPortalWhatsAppTemplates,
   createPortalWhatsAppTemplateFromBlueprint,
@@ -1028,6 +1032,76 @@ async function postPortalWhatsAppDiscoverAssets(req, res) {
   }
 }
 
+async function getPortalWhatsAppDefaultChannel(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalWhatsAppChannelSettings(tenantId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'tenant_mapping_not_found'
+            ? 404
+            : 409;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_default_channel_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalWhatsAppDefaultChannel(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await updatePortalWhatsAppDefaultChannel(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_channel_id'
+          ? 400
+          : result.reason === 'default_channel_not_found'
+            ? 404
+            : result.reason === 'default_channel_invalid_provider' || result.reason === 'default_channel_inactive'
+              ? 409
+              : 409;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_default_channel_update_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalWhatsAppTemplateBlueprints(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -1211,6 +1285,8 @@ module.exports = {
   postPortalWhatsAppEmbeddedSignupFinalize,
   postPortalWhatsAppManualConnect,
   postPortalWhatsAppDiscoverAssets,
+  getPortalWhatsAppDefaultChannel,
+  patchPortalWhatsAppDefaultChannel,
   getPortalWhatsAppTemplateBlueprints,
   getPortalWhatsAppTemplates,
   postPortalWhatsAppTemplateFromBlueprint,
