@@ -27,7 +27,22 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
 async function findContactById(contactId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", "waId", phone, name, "optedOut"
+    `SELECT
+       id,
+       "clinicId",
+       "waId",
+       phone,
+       name,
+       email,
+       "whatsappPhone",
+       "taxId",
+       "taxCondition",
+       "companyName",
+       notes,
+       status,
+       "optedOut",
+       "createdAt",
+       "updatedAt"
      FROM contacts WHERE id = $1 LIMIT 1`,
     [contactId]
   );
@@ -38,7 +53,22 @@ async function findContactById(contactId, client = null) {
 async function findContactByIdAndClinicId(contactId, clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", "waId", phone, name, "optedOut"
+    `SELECT
+       id,
+       "clinicId",
+       "waId",
+       phone,
+       name,
+       email,
+       "whatsappPhone",
+       "taxId",
+       "taxCondition",
+       "companyName",
+       notes,
+       status,
+       "optedOut",
+       "createdAt",
+       "updatedAt"
      FROM contacts
      WHERE id = $1
        AND "clinicId" = $2
@@ -75,10 +105,60 @@ async function listContactsByClinicId(clinicId, client = null) {
   return result.rows;
 }
 
+async function updateContact(contactId, clinicId, input, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE contacts
+     SET
+       name = $3,
+       email = $4,
+       phone = $5,
+       "whatsappPhone" = $6,
+       "taxId" = $7,
+       "taxCondition" = $8,
+       "companyName" = $9,
+       notes = $10,
+       "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+     RETURNING
+       id,
+       "clinicId",
+       "waId",
+       phone,
+       name,
+       email,
+       "whatsappPhone",
+       "taxId",
+       "taxCondition",
+       "companyName",
+       notes,
+       status,
+       "optedOut",
+       "createdAt",
+       "updatedAt"`,
+    [
+      contactId,
+      clinicId,
+      input.name,
+      input.email,
+      input.phone,
+      input.whatsappPhone,
+      input.taxId,
+      input.taxCondition,
+      input.companyName,
+      input.notes
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
 module.exports = {
   upsertContact,
   findContactById,
   findContactByIdAndClinicId,
-  listContactsByClinicId
+  listContactsByClinicId,
+  updateContact
 };
 
