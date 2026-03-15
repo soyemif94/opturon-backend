@@ -1477,6 +1477,8 @@ function normalizeChannelSendContext(channel, meta = {}) {
   const safeChannel = channel && typeof channel === 'object' ? channel : null;
   const accessToken = safeChannel && safeChannel.accessToken ? String(safeChannel.accessToken).trim() : '';
   const phoneNumberId = safeChannel && safeChannel.phoneNumberId ? String(safeChannel.phoneNumberId).trim() : '';
+  const provider = safeChannel && safeChannel.provider ? String(safeChannel.provider).trim().toLowerCase() : '';
+  const status = safeChannel && safeChannel.status ? String(safeChannel.status).trim().toLowerCase() : '';
 
   if (!safeChannel || !String(safeChannel.id || '').trim()) {
     const error = new Error('Missing WhatsApp channel for tenant-scoped send');
@@ -1503,11 +1505,32 @@ function normalizeChannelSendContext(channel, meta = {}) {
     throw error;
   }
 
+  if (provider && provider !== 'whatsapp_cloud') {
+    const error = new Error('Invalid channel provider for WhatsApp send');
+    error.code = 'CHANNEL_PROVIDER_INVALID';
+    error.channelId = safeChannel.id;
+    error.clinicId = safeChannel.clinicId || null;
+    error.meta = meta;
+    throw error;
+  }
+
+  if (status && status !== 'active') {
+    const error = new Error('Inactive WhatsApp channel cannot be used for send');
+    error.code = 'CHANNEL_INACTIVE';
+    error.channelId = safeChannel.id;
+    error.clinicId = safeChannel.clinicId || null;
+    error.meta = meta;
+    throw error;
+  }
+
   return {
     channelId: safeChannel.id,
     clinicId: safeChannel.clinicId || null,
     accessToken,
-    phoneNumberId
+    phoneNumberId,
+    provider: safeChannel.provider || null,
+    status: safeChannel.status || null,
+    wabaId: safeChannel.wabaId || null
   };
 }
 
@@ -1532,7 +1555,11 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
       credentials: {
         channelId: channelCredentials.channelId,
         accessToken: channelCredentials.accessToken,
-        phoneNumberId: channelCredentials.phoneNumberId
+        phoneNumberId: channelCredentials.phoneNumberId,
+        clinicId: channelCredentials.clinicId,
+        provider: channelCredentials.provider,
+        status: channelCredentials.status,
+        wabaId: channelCredentials.wabaId
       }
     }
   );
@@ -2884,7 +2911,11 @@ async function processJob(job) {
       const credentials = {
         channelId: channelCredentials.channelId,
         accessToken: channelCredentials.accessToken,
-        phoneNumberId: channelCredentials.phoneNumberId
+        phoneNumberId: channelCredentials.phoneNumberId,
+        clinicId: channelCredentials.clinicId,
+        provider: channelCredentials.provider,
+        status: channelCredentials.status,
+        wabaId: channelCredentials.wabaId
       };
       let sendResult = null;
 

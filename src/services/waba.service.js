@@ -74,7 +74,7 @@ async function getWabaFromPhoneNumber(context = {}) {
     query: {
       fields: 'id,display_phone_number,verified_name'
     },
-    apiVersion: env.whatsappApiVersion
+    apiVersion: env.whatsappGraphVersion
   });
 
   if (!result.ok) {
@@ -105,7 +105,7 @@ async function listSubscribedApps(wabaId, context = {}) {
   const requestId = context.requestId || null;
   const result = await graphClient.request('GET', `/${wabaId}/subscribed_apps`, {
     requestId,
-    apiVersion: env.whatsappApiVersion
+    apiVersion: env.whatsappGraphVersion
   });
 
   if (!result.ok) {
@@ -122,7 +122,7 @@ async function subscribeCurrentApp(wabaId, context = {}) {
   const requestId = context.requestId || null;
   const result = await graphClient.request('POST', `/${wabaId}/subscribed_apps`, {
     requestId,
-    apiVersion: env.whatsappApiVersion
+    apiVersion: env.whatsappGraphVersion
   });
 
   if (!result.ok) {

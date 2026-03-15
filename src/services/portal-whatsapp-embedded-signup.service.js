@@ -18,7 +18,7 @@ const {
 } = require('../repositories/whatsapp-onboarding.repository');
 
 const DEFAULT_PROVIDER = 'meta_embedded_signup';
-const DEFAULT_GRAPH_VERSION = String(env.whatsappApiVersion || env.whatsappGraphVersion || 'v25.0').trim();
+const DEFAULT_GRAPH_VERSION = String(env.getWhatsAppGraphVersion()).trim();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function buildMetaConfigStatus() {

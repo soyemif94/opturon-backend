@@ -34,7 +34,8 @@ function getDebugConfig(req, res) {
   return res.status(200).json({
     success: true,
     data: {
-      apiVersion: env.whatsappApiVersion,
+      apiVersion: env.whatsappGraphVersion,
+      graphVersion: env.whatsappGraphVersion,
       phoneNumberId: env.whatsappPhoneNumberId,
       tokenLen: env.whatsappAccessToken.length,
       debugEnabled: env.whatsappDebug
@@ -977,7 +978,7 @@ async function getRecentWhatsAppJobs(req, res) {
         to: payload.to || errorMeta.to || null,
         graphUrl:
           errorMeta.graphUrl ||
-          (phoneNumberId ? `https://graph.facebook.com/${env.whatsappApiVersion}/${phoneNumberId}/messages` : null),
+          (phoneNumberId ? `https://graph.facebook.com/${env.whatsappGraphVersion}/${phoneNumberId}/messages` : null),
         graphStatus: errorMeta.graphStatus,
         graphErrorCode: errorMeta.graphErrorCode,
         graphErrorMessage: errorMeta.graphErrorMessage,

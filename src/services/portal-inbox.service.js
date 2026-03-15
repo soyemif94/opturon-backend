@@ -6,6 +6,7 @@ const { findChannelByIdAndClinicId } = require('../repositories/tenant.repositor
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const { resolvePortalTenantContext } = require('./portal-context.service');
+const env = require('../config/env');
 
 function parseContext(context) {
   return context && typeof context === 'object' && !Array.isArray(context) ? context : {};
@@ -411,22 +412,34 @@ async function sendPortalMessage(tenantId, conversationId, text) {
   }
 
   console.log('WA_CHANNEL_VALIDATION', {
+    tenantId: context.tenantId,
+    clinicId: context.clinic.id,
+    conversationId: conversation.id,
     channelId: runtimeChannel.id,
+    provider: runtimeChannel.provider || null,
+    status: runtimeChannel.status || null,
     phoneNumberId: runtimeChannel.phoneNumberId || null,
-    wabaId: runtimeChannel.wabaId || null
+    wabaId: runtimeChannel.wabaId || null,
+    graphVersion: env.getWhatsAppGraphVersion()
   });
 
   const sendResult = await sendChannelScopedMessage(
     { to: contact.waId, text: safeText },
-    {
-      requestId: `portal:${conversation.id}`,
-      credentials: {
-        channelId: runtimeChannel.id,
-        accessToken: runtimeChannel.accessToken || undefined,
-        phoneNumberId: runtimeChannel.phoneNumberId
+      {
+        requestId: `portal:${conversation.id}`,
+        credentials: {
+          tenantId: context.tenantId,
+          clinicId: context.clinic.id,
+          conversationId: conversation.id,
+          channelId: runtimeChannel.id,
+          accessToken: runtimeChannel.accessToken || undefined,
+          phoneNumberId: runtimeChannel.phoneNumberId,
+          provider: runtimeChannel.provider || null,
+          status: runtimeChannel.status || null,
+          wabaId: runtimeChannel.wabaId || null
+        }
       }
-    }
-  );
+    );
 
   const outboundWrite = await conversationRepo.insertOutboundMessage({
     conversationId: conversation.id,

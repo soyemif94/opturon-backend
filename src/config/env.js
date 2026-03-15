@@ -36,6 +36,22 @@ function parseCsvList(value, defaultValue = []) {
     .filter(Boolean);
 }
 
+function resolveWhatsAppGraphVersion() {
+  const configuredGraphVersion = String(process.env.WHATSAPP_GRAPH_VERSION || '').trim();
+  const configuredApiVersion = String(process.env.WHATSAPP_API_VERSION || '').trim();
+  const resolved = String(configuredGraphVersion || configuredApiVersion || 'v25.0').trim();
+
+  return {
+    configuredGraphVersion,
+    configuredApiVersion,
+    resolved,
+    usingDefault: !configuredGraphVersion && !configuredApiVersion
+  };
+}
+
+const whatsAppGraphVersionConfig = resolveWhatsAppGraphVersion();
+const resolvedWhatsAppGraphVersion = whatsAppGraphVersionConfig.resolved;
+
 const env = {
   nodeEnv: String(process.env.NODE_ENV || 'development').trim(),
   allowDebug: parseBoolean(process.env.ALLOW_DEBUG, false),
@@ -45,8 +61,8 @@ const env = {
   metaVerifyToken: String(process.env.META_VERIFY_TOKEN || '').trim(),
   whatsappAccessToken: String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim(),
   whatsappPhoneNumberId: String(process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim(),
-  whatsappGraphVersion: String(process.env.WHATSAPP_GRAPH_VERSION || process.env.WHATSAPP_API_VERSION || 'v25.0').trim(),
-  whatsappApiVersion: String(process.env.WHATSAPP_API_VERSION || process.env.WHATSAPP_GRAPH_VERSION || 'v25.0').trim(),
+  whatsappGraphVersion: resolvedWhatsAppGraphVersion,
+  whatsappApiVersion: resolvedWhatsAppGraphVersion,
   whatsappDebug: parseBoolean(process.env.WHATSAPP_DEBUG, false),
   debugApiEnabled: parseBoolean(process.env.DEBUG_API_ENABLED, false),
   debugUiEnabled: parseBoolean(process.env.DEBUG_UI_ENABLED, false),
@@ -136,10 +152,31 @@ function validateEnvOrExit() {
     logWarn('VERIFY_SIGNATURE=true but META_APP_SECRET is empty. Signature validation will fail.');
   }
 
+  const configuredGraphVersion = whatsAppGraphVersionConfig.configuredGraphVersion;
+  const configuredApiVersion = whatsAppGraphVersionConfig.configuredApiVersion;
+  if (
+    configuredGraphVersion &&
+    configuredApiVersion &&
+    configuredGraphVersion !== configuredApiVersion
+  ) {
+    logWarn('WHATSAPP_GRAPH_VERSION and WHATSAPP_API_VERSION differ. Using WHATSAPP_GRAPH_VERSION as source of truth.', {
+      whatsappGraphVersion: configuredGraphVersion,
+      whatsappApiVersion: configuredApiVersion,
+      resolvedWhatsAppGraphVersion
+    });
+  }
+
+  if (whatsAppGraphVersionConfig.usingDefault) {
+    logWarn('WHATSAPP_GRAPH_VERSION is not configured. Defaulting to v25.0.', {
+      resolvedWhatsAppGraphVersion
+    });
+  }
+
 }
 
 module.exports = {
   ...env,
-  validateEnvOrExit
+  validateEnvOrExit,
+  getWhatsAppGraphVersion: () => resolvedWhatsAppGraphVersion
 };
 

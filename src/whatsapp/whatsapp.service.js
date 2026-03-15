@@ -29,6 +29,61 @@ function resolveAuthSource(credentials) {
   return credentialToken ? 'credentials' : 'env';
 }
 
+function resolveGraphVersion() {
+  return String(env.getWhatsAppGraphVersion()).trim();
+}
+
+function normalizeChannelScopedSendValidation(credentials = {}) {
+  const normalized = {
+    tenantId: credentials && credentials.tenantId ? String(credentials.tenantId).trim() : null,
+    clinicId: credentials && credentials.clinicId ? String(credentials.clinicId).trim() : null,
+    conversationId: credentials && credentials.conversationId ? String(credentials.conversationId).trim() : null,
+    channelId: credentials && credentials.channelId ? String(credentials.channelId).trim() : null,
+    provider: credentials && credentials.provider ? String(credentials.provider).trim().toLowerCase() : null,
+    status: credentials && credentials.status ? String(credentials.status).trim().toLowerCase() : null,
+    phoneNumberId: credentials && credentials.phoneNumberId ? String(credentials.phoneNumberId).trim() : null,
+    wabaId: credentials && credentials.wabaId ? String(credentials.wabaId).trim() : null,
+    accessTokenPresent: Boolean(credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '')
+  };
+
+  if (!normalized.channelId) {
+    const error = new Error('Missing WhatsApp channelId for channel-scoped send');
+    error.code = 'CHANNEL_ID_MISSING';
+    error.validation = normalized;
+    throw error;
+  }
+
+  if (normalized.provider && normalized.provider !== 'whatsapp_cloud') {
+    const error = new Error('Invalid channel provider for WhatsApp channel-scoped send');
+    error.code = 'CHANNEL_PROVIDER_INVALID';
+    error.validation = normalized;
+    throw error;
+  }
+
+  if (normalized.status && normalized.status !== 'active') {
+    const error = new Error('Inactive WhatsApp channel cannot be used for send');
+    error.code = 'CHANNEL_INACTIVE';
+    error.validation = normalized;
+    throw error;
+  }
+
+  if (!normalized.phoneNumberId) {
+    const error = new Error('Missing WhatsApp channel phone number id');
+    error.code = 'CHANNEL_PHONE_NUMBER_ID_MISSING';
+    error.validation = normalized;
+    throw error;
+  }
+
+  if (!normalized.accessTokenPresent) {
+    const error = new Error('Missing WhatsApp channel access token');
+    error.code = 'CHANNEL_ACCESS_TOKEN_MISSING';
+    error.validation = normalized;
+    throw error;
+  }
+
+  return normalized;
+}
+
 function buildGraphError(message, result, to) {
   const ge = extractGraphError(result && result.data ? result.data : null);
   const error = new Error(message);
@@ -112,7 +167,7 @@ function resolveLegacyCredentials(credentials = {}) {
   const credentialToken = credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
   const credentialPhoneNumberId =
     credentials && credentials.phoneNumberId ? String(credentials.phoneNumberId).trim() : '';
-  const accessToken = credentialToken || String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
+  const accessToken = credentialToken || String(env.whatsappAccessToken || '').trim();
   const phoneNumberId = credentialPhoneNumberId || String(env.whatsappPhoneNumberId || '').trim();
 
   if (!accessToken) {
@@ -132,6 +187,8 @@ function resolveLegacyCredentials(credentials = {}) {
 }
 
 async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel, mode = 'legacy_global' }) {
+  const channelValidation =
+    mode === 'channel_scoped' ? normalizeChannelScopedSendValidation(credentials || {}) : null;
   const resolvedCredentials =
     mode === 'channel_scoped'
       ? resolveChannelScopedCredentials(credentials || {})
@@ -156,8 +213,22 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
     throw new Error(channelId ? 'Missing WhatsApp channel phone number id' : 'WHATSAPP_PHONE_NUMBER_ID is missing.');
   }
 
-  const graphVersion = String(process.env.WHATSAPP_GRAPH_VERSION || env.whatsappGraphVersion || 'v25.0').trim();
-  const url = `https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`;
+  const graphVersion = resolveGraphVersion();
+  const url = graphClient.buildMessagesEndpointUrl(phoneNumberId, graphVersion);
+
+  if (channelValidation) {
+    logWarn('WA_CHANNEL_VALIDATION', {
+      tenantId: channelValidation.tenantId,
+      clinicId: channelValidation.clinicId,
+      conversationId: channelValidation.conversationId,
+      channelId: channelValidation.channelId,
+      provider: channelValidation.provider || 'whatsapp_cloud',
+      status: channelValidation.status || 'active',
+      phoneNumberId: channelValidation.phoneNumberId,
+      wabaId: channelValidation.wabaId,
+      graphVersion
+    });
+  }
 
   console.log(logLabel || 'WhatsApp send', {
     url,
@@ -514,7 +585,7 @@ async function fetchPaginated(pathToRequest, query, requestId) {
     }
 
     const parsedNext = new URL(nextUrl);
-    nextPath = parsedNext.pathname.replace(`/${env.whatsappApiVersion}`, '');
+    nextPath = parsedNext.pathname.replace(`/${resolveGraphVersion()}`, '');
     nextQuery = {};
     parsedNext.searchParams.forEach((value, key) => {
       nextQuery[key] = value;
@@ -695,6 +766,7 @@ async function sendTestMessage(to, text, context = {}) {
 }
 
 module.exports = {
+  normalizeChannelScopedSendValidation,
   sendChannelScopedMessage,
   sendLegacyGlobalMessage,
   sendTextMessage,

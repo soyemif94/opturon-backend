@@ -23,7 +23,7 @@ async function debugMetaAccessToken(accessToken, requestId) {
   }
 
   const url = new URL(
-    `https://graph.facebook.com/${normalizeString(env.whatsappApiVersion || env.whatsappGraphVersion || 'v25.0')}/debug_token`
+    `https://graph.facebook.com/${normalizeString(env.getWhatsAppGraphVersion())}/debug_token`
   );
   url.searchParams.set('input_token', accessToken);
   url.searchParams.set('access_token', `${appId}|${appSecret}`);

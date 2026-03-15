@@ -55,7 +55,7 @@ server.listen(env.port, host, () => {
     host,
     port: env.port,
     env: env.nodeEnv,
-    apiVersion: env.whatsappGraphVersion || env.whatsappApiVersion,
+    apiVersion: env.whatsappGraphVersion,
     phoneNumberId: env.whatsappPhoneNumberId,
     verifySignatureEnabled: env.verifySignature,
     sandboxArNormalizeEnabled: env.whatsappSandboxArNormalize,

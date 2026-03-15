@@ -351,9 +351,13 @@ async function runAutoReplyIfEnabled(req, textEvents) {
         {
           requestId: req && req.requestId ? req.requestId : null,
           credentials: {
+            clinicId: channel.clinicId || null,
             channelId: channel.id,
             accessToken: channel.accessToken,
-            phoneNumberId: channel.phoneNumberId
+            phoneNumberId: channel.phoneNumberId,
+            provider: channel.provider || null,
+            status: channel.status || null,
+            wabaId: channel.wabaId || null
           }
         }
       );

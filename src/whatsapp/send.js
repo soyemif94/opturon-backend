@@ -7,8 +7,8 @@ function normalizeToDigits(value) {
 
 async function sendTextMessage({ to, text, requestId = null }) {
   const accessToken = String(process.env.WHATSAPP_TOKEN || env.whatsappAccessToken || '').trim();
-  const phoneNumberId = String(env.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
-  const graphVersion = String(env.whatsappGraphVersion || process.env.WHATSAPP_GRAPH_VERSION || 'v25.0').trim();
+  const phoneNumberId = String(env.whatsappPhoneNumberId || '').trim();
+  const graphVersion = String(env.getWhatsAppGraphVersion()).trim();
   const toDigits = normalizeToDigits(to);
   const bodyText = String(text || '').trim();
 
@@ -81,4 +81,3 @@ async function sendTextMessage({ to, text, requestId = null }) {
 module.exports = {
   sendTextMessage
 };
-

@@ -4,17 +4,11 @@ const { logInfo, logWarn } = require('../utils/logger');
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_MAX_RETRIES = 3;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
-const GRAPH_API_VERSION = String(
-  process.env.WHATSAPP_API_VERSION ||
-    process.env.WHATSAPP_GRAPH_VERSION ||
-    env.whatsappApiVersion ||
-    env.whatsappGraphVersion ||
-    'v25.0'
-).trim();
+const GRAPH_API_VERSION = String(env.getWhatsAppGraphVersion()).trim();
 
 function buildGraphUrl(path, query = null, apiVersion = null) {
   const normalizedPath = String(path || '').startsWith('/') ? String(path) : `/${String(path || '')}`;
-  const version = String(apiVersion || env.whatsappApiVersion || env.whatsappGraphVersion || GRAPH_API_VERSION).trim();
+  const version = String(apiVersion || GRAPH_API_VERSION).trim();
   const url = new URL(`https://graph.facebook.com/${version}${normalizedPath}`);
 
   if (query && typeof query === 'object') {
@@ -26,6 +20,15 @@ function buildGraphUrl(path, query = null, apiVersion = null) {
   }
 
   return url.toString();
+}
+
+function buildMessagesEndpointUrl(phoneNumberId, apiVersion = null) {
+  const safePhoneNumberId = String(phoneNumberId || '').trim();
+  if (!safePhoneNumberId) {
+    throw new Error('Missing WhatsApp phoneNumberId for Graph messages endpoint');
+  }
+
+  return buildGraphUrl(`/${safePhoneNumberId}/messages`, null, apiVersion);
 }
 
 function parseRetryAfterMs(headers) {
@@ -88,8 +91,7 @@ function normalizeToDigits(value) {
 function resolveLegacyAccessToken(credentials = null) {
   const credentialToken =
     credentials && credentials.accessToken ? String(credentials.accessToken).trim() : '';
-  const envToken =
-    process.env.WHATSAPP_ACCESS_TOKEN ? String(process.env.WHATSAPP_ACCESS_TOKEN).trim() : '';
+  const envToken = String(env.whatsappAccessToken || '').trim();
 
   const accessToken = credentialToken || envToken;
   if (!accessToken) {
@@ -120,7 +122,7 @@ function resolveLegacyPhoneNumberId(credentials = null, explicitPhoneNumberId = 
   const phoneNumberId =
     (credentials && credentials.phoneNumberId && String(credentials.phoneNumberId).trim()) ||
     (explicitPhoneNumberId ? String(explicitPhoneNumberId).trim() : '') ||
-    String(process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
+    String(env.whatsappPhoneNumberId || '').trim();
 
   if (!phoneNumberId) {
     throw new Error('Missing WhatsApp phoneNumberId');
@@ -179,7 +181,7 @@ async function sendTextMessageViaGraphInternal({
     throw new Error('text is required.');
   }
 
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${normalizedPhoneNumberId}/messages`;
+  const url = buildMessagesEndpointUrl(normalizedPhoneNumberId, GRAPH_API_VERSION);
   console.log('WA_GRAPH_SEND', {
     phoneNumberId: normalizedPhoneNumberId,
     url,
@@ -271,7 +273,7 @@ async function sendTemplateMessageViaGraphInternal({
     body.template.components = components;
   }
 
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${normalizedPhoneNumberId}/messages`;
+  const url = buildMessagesEndpointUrl(normalizedPhoneNumberId, GRAPH_API_VERSION);
   console.log('WA_GRAPH_TEMPLATE_SEND', {
     phoneNumberId: normalizedPhoneNumberId,
     url,
@@ -360,12 +362,7 @@ async function request(method, path, options = {}) {
   const accessToken = tokenResolution.accessToken;
   const authSource = tokenResolution.authSource;
   const apiVersion = String(
-    options.apiVersion ||
-      env.whatsappApiVersion ||
-      env.whatsappGraphVersion ||
-      process.env.WHATSAPP_API_VERSION ||
-      process.env.WHATSAPP_GRAPH_VERSION ||
-      GRAPH_API_VERSION
+    options.apiVersion || GRAPH_API_VERSION
   ).trim();
 
   const url = buildGraphUrl(path, query, apiVersion);
@@ -558,6 +555,7 @@ async function sendTemplateMessageViaGraph(options) {
 module.exports = {
   request,
   buildGraphUrl,
+  buildMessagesEndpointUrl,
   classifyGraphError,
   sendTextMessageViaGraph,
   sendTextMessageViaGraphScoped,
