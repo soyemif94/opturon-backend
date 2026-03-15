@@ -127,6 +127,11 @@ function buildConversationChannelBinding({ context, conversationChannel }) {
     conversationChannelId: boundConversationChannel ? boundConversationChannel.id : null,
     conversationChannel: boundConversationChannel,
     workspaceDefaultChannel,
+    activeWorkspaceChannels: Array.isArray(context && context.channels)
+      ? context.channels
+          .filter((channel) => String(channel && channel.status ? channel.status : '').trim().toLowerCase() === 'active')
+          .map((channel) => toPortalChannel(channel))
+      : [],
     matchesWorkspaceDefault,
     resolutionStatus
   };
@@ -378,6 +383,86 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
       });
       nextContext.portalTasks = tasks;
     }
+  } else if (action === 'repair_channel') {
+    const requestedChannelId = String(safePayload.channelId || '').trim();
+    const source = requestedChannelId ? 'explicit_channel' : 'workspace_default_channel';
+    const targetChannelId = requestedChannelId || String(context.channel && context.channel.id ? context.channel.id : '').trim();
+
+    if (!targetChannelId) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(context.channel),
+        reason: 'repair_channel_target_unresolved'
+      };
+    }
+
+    const targetChannel = await findChannelByIdAndClinicId(targetChannelId, context.clinic.id);
+    if (!targetChannel) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(context.channel),
+        reason: 'repair_channel_not_found'
+      };
+    }
+
+    if (String(targetChannel.provider || '').trim().toLowerCase() !== 'whatsapp_cloud') {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(context.channel),
+        reason: 'repair_channel_invalid_provider'
+      };
+    }
+
+    if (String(targetChannel.status || '').trim().toLowerCase() !== 'active') {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(context.channel),
+        reason: 'repair_channel_inactive'
+      };
+    }
+
+    const previousChannelId = conversation.channelId || null;
+    const repairedConversation = await conversationRepo.reassignConversationChannelForClinic({
+      conversationId: conversation.id,
+      clinicId: context.clinic.id,
+      channelId: targetChannel.id,
+      waTo: targetChannel.phoneNumberId || conversation.waTo || null
+    });
+
+    if (!repairedConversation) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(context.channel),
+        reason: 'repair_channel_not_persisted'
+      };
+    }
+
+    logInfo('portal_conversation_channel_repaired', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      previousChannelId,
+      nextChannelId: targetChannel.id,
+      source
+    });
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'channel_repaired'
+    };
   }
 
   if (action === 'close' || action === 'reopen') {
