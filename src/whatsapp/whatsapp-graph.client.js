@@ -180,6 +180,11 @@ async function sendTextMessageViaGraphInternal({
   }
 
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${normalizedPhoneNumberId}/messages`;
+  console.log('WA_GRAPH_SEND', {
+    phoneNumberId: normalizedPhoneNumberId,
+    url,
+    to: normalizedTo
+  });
   logInfo('graph_request_prepare', {
     requestId,
     method: 'POST',
@@ -211,13 +216,6 @@ async function sendTextMessageViaGraphInternal({
     parsed = null;
   }
   const fbtrace_id = extractFbTraceIdFromRaw(raw);
-
-  console.log('WA_GRAPH_SEND', {
-    url,
-    phoneNumberId: normalizedPhoneNumberId,
-    to: normalizedTo,
-    status: response.status
-  });
 
   return {
     ok: response.ok,
@@ -274,6 +272,11 @@ async function sendTemplateMessageViaGraphInternal({
   }
 
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${normalizedPhoneNumberId}/messages`;
+  console.log('WA_GRAPH_TEMPLATE_SEND', {
+    phoneNumberId: normalizedPhoneNumberId,
+    url,
+    to: normalizedTo
+  });
   logInfo('graph_request_prepare', {
     requestId,
     method: 'POST',
@@ -300,13 +303,6 @@ async function sendTemplateMessageViaGraphInternal({
     parsed = null;
   }
   const fbtrace_id = extractFbTraceIdFromRaw(raw);
-
-  console.log('WA_GRAPH_TEMPLATE_SEND', {
-    url,
-    phoneNumberId: normalizedPhoneNumberId,
-    to: normalizedTo,
-    status: response.status
-  });
 
   return {
     ok: response.ok,

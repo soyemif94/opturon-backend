@@ -108,7 +108,8 @@ async function sendDebugMessage(req, res) {
     const result = await sendTestMessage(to, text, { requestId: req.requestId });
     return res.status(200).json({
       success: true,
-      data: result
+      messageId: result && result.messageId ? result.messageId : null,
+      status: result && result.status ? result.status : null
     });
   } catch (error) {
     return res.status(500).json({
