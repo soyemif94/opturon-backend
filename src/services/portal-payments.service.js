@@ -22,7 +22,7 @@ const {
 } = require('./invoice-balance.service');
 const { quantizeDecimal } = require('../utils/money');
 
-const PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'other']);
+const PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'other', 'combined']);
 const PAYMENT_STATUSES = new Set(['recorded', 'void']);
 
 function normalizeString(value) {
