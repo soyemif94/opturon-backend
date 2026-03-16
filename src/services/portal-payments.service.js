@@ -40,6 +40,17 @@ function normalizeMetadata(value) {
   return value;
 }
 
+function normalizePaymentMethod(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (normalized === 'combined') {
+    return 'other';
+  }
+  if (PAYMENT_METHODS.has(normalized)) {
+    return normalized;
+  }
+  return 'other';
+}
+
 function buildError(tenantId, reason, details) {
   return {
     ok: false,
@@ -142,9 +153,7 @@ async function createPortalPayment(tenantId, payload = {}) {
   const invoiceId = normalizeString(payload.invoiceId) || null;
   const amount = quantizeDecimal(payload.amount, 2, NaN);
   const currency = normalizeCurrency(payload.currency, 'ARS');
-  const method = PAYMENT_METHODS.has(normalizeString(payload.method).toLowerCase())
-    ? normalizeString(payload.method).toLowerCase()
-    : 'other';
+  const method = normalizePaymentMethod(payload.method);
   const status = PAYMENT_STATUSES.has(normalizeString(payload.status).toLowerCase())
     ? normalizeString(payload.status).toLowerCase()
     : 'recorded';

@@ -12,7 +12,9 @@ const {
   voidInvoice,
   issueInvoice
 } = require('../repositories/invoices.repository');
+const { createPayment } = require('../repositories/payments.repository');
 const {
+  createPaymentAllocation,
   listAllocationsByInvoiceId,
   sumRecordedAllocatedAmountsByInvoiceIds
 } = require('../repositories/payment-allocations.repository');
@@ -22,6 +24,8 @@ const { calculateInvoiceReceivable } = require('./invoice-balance.service');
 const INVOICE_STATUSES = new Set(['draft', 'issued', 'void']);
 const INVOICE_TYPES = new Set(['invoice', 'credit_note']);
 const DOCUMENT_MODES = new Set(['internal_only', 'external_provider', 'synced_external']);
+const INITIAL_PAYMENT_STATUSES = new Set(['unpaid', 'partial', 'paid']);
+const INITIAL_PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'other', 'combined']);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -36,6 +40,17 @@ function normalizeMetadata(value) {
     return {};
   }
   return value;
+}
+
+function normalizeInitialPaymentMethod(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (normalized === 'combined') {
+    return 'other';
+  }
+  if (INITIAL_PAYMENT_METHODS.has(normalized)) {
+    return normalized;
+  }
+  return 'bank_transfer';
 }
 
 function buildError(tenantId, reason, details) {
@@ -189,6 +204,40 @@ function buildInvoicePayload(payload = {}, fallback = {}) {
     externalProvider: normalizeString(payload.externalProvider ?? fallback.externalProvider) || null,
     externalReference: normalizeString(payload.externalReference ?? fallback.externalReference) || null,
     metadata: normalizeMetadata(payload.metadata !== undefined ? payload.metadata : fallback.metadata)
+  };
+}
+
+function normalizeInitialPaymentPlan(invoice, metadata) {
+  const rawPlan = metadata && typeof metadata === 'object' ? metadata.initialPaymentPlan : null;
+  if (!rawPlan || typeof rawPlan !== 'object' || Array.isArray(rawPlan)) {
+    return null;
+  }
+
+  const status = normalizeString(rawPlan.status).toLowerCase();
+  if (!INITIAL_PAYMENT_STATUSES.has(status) || status === 'unpaid') {
+    return null;
+  }
+
+  const invoiceTotal = quantizeDecimal(invoice && invoice.totalAmount, 2, 0);
+  const absoluteTotal = Math.abs(invoiceTotal);
+  if (!(absoluteTotal > 0) || invoice.type !== 'invoice') {
+    return null;
+  }
+
+  const requestedAmount =
+    status === 'paid'
+      ? absoluteTotal
+      : quantizeDecimal(rawPlan.amount, 2, NaN);
+
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || requestedAmount > absoluteTotal) {
+    return null;
+  }
+
+  return {
+    status,
+    amount: requestedAmount,
+    method: normalizeInitialPaymentMethod(rawPlan.method),
+    notes: normalizeString(rawPlan.notes) || null
   };
 }
 
@@ -694,9 +743,10 @@ async function issuePortalInvoice(tenantId, invoiceId, payload = {}) {
       at: new Date().toISOString()
     }
   };
+  const initialPaymentPlan = normalizeInitialPaymentPlan(currentInvoice, nextMetadata);
 
-  const invoice = await withTransaction((client) =>
-    issueInvoice(
+  const invoice = await withTransaction(async (client) => {
+    const issuedInvoice = await issueInvoice(
       currentInvoice.id,
       context.clinic.id,
       {
@@ -705,8 +755,44 @@ async function issuePortalInvoice(tenantId, invoiceId, payload = {}) {
         metadata: nextMetadata
       },
       client
-    )
-  );
+    );
+
+    if (!initialPaymentPlan) {
+      return issuedInvoice;
+    }
+
+    const createdPayment = await createPayment(
+      {
+        clinicId: context.clinic.id,
+        contactId: issuedInvoice.contactId || null,
+        invoiceId: issuedInvoice.id,
+        amount: initialPaymentPlan.amount,
+        currency: issuedInvoice.currency,
+        method: initialPaymentPlan.method,
+        status: 'recorded',
+        paidAt: payload.issuedAt || issuedInvoice.issuedAt || new Date().toISOString(),
+        externalReference: null,
+        notes: initialPaymentPlan.notes,
+        metadata: {
+          source: 'invoice_initial_payment_plan',
+          initialPaymentStatus: initialPaymentPlan.status
+        }
+      },
+      client
+    );
+
+    await createPaymentAllocation(
+      {
+        clinicId: context.clinic.id,
+        paymentId: createdPayment.id,
+        invoiceId: issuedInvoice.id,
+        amount: initialPaymentPlan.amount
+      },
+      client
+    );
+
+    return findInvoiceById(issuedInvoice.id, context.clinic.id, client);
+  });
 
   return {
     ok: true,
