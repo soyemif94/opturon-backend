@@ -30,6 +30,7 @@ const {
 } = require('../services/portal-users.service');
 const {
   listPortalContacts,
+  createPortalContactRecord,
   getPortalContactDetail,
   updatePortalContact
 } = require('../services/portal-contacts.service');
@@ -587,6 +588,44 @@ async function getPortalContacts(req, res) {
   }
 }
 
+async function postPortalContact(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalContactRecord(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_contact_name' ||
+        result.reason === 'invalid_contact_email'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.contact
+    });
+  } catch (error) {
+    logError('portal_contact_create_failed', {
+      tenantId,
+      error: error.message,
+      code: error.code || null
+    });
+
+    return res.status(500).json({
+      success: false,
+      error: 'portal_contact_create_failed'
+    });
+  }
+}
+
 async function getPortalContact(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const contactId = String(req.params.contactId || '').trim();
@@ -606,10 +645,16 @@ async function getPortalContact(req, res) {
       data: result.contact
     });
   } catch (error) {
+    logError('portal_contact_failed', {
+      tenantId,
+      contactId,
+      error: error.message,
+      code: error.code || null
+    });
+
     return res.status(500).json({
       success: false,
-      error: 'portal_contact_failed',
-      details: error.message
+      error: 'portal_contact_failed'
     });
   }
 }
@@ -641,10 +686,16 @@ async function patchPortalContact(req, res) {
       data: result.contact
     });
   } catch (error) {
+    logError('portal_contact_update_failed', {
+      tenantId,
+      contactId,
+      error: error.message,
+      code: error.code || null
+    });
+
     return res.status(500).json({
       success: false,
-      error: 'portal_contact_update_failed',
-      details: error.message
+      error: 'portal_contact_update_failed'
     });
   }
 }
@@ -1339,6 +1390,7 @@ module.exports = {
   updatePortalProduct,
   updatePortalProductStatus,
   getPortalContacts,
+  postPortalContact,
   getPortalContact,
   patchPortalContact,
   getPortalAutomations,

@@ -5,7 +5,7 @@ const env = require('./config/env');
 const { withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
 const { findChannelById } = require('./repositories/tenant.repository');
-const { findContactById } = require('./repositories/contact.repository');
+const { findContactById, findContactByIdAndClinicId } = require('./repositories/contact.repository');
 const {
   findConversationById,
   markLastOutbound,
@@ -1833,14 +1833,14 @@ async function processInboundJob(job) {
     throw new Error('Channel not found for job');
   }
 
-  const contact = await findContactById(payload.contactId);
-  if (!contact) {
-    throw new Error('Contact not found for job');
-  }
-
   const conversation = await findConversationById(payload.conversationId);
   if (!conversation || conversation.clinicId !== clinicId) {
     throw new Error('Conversation not found for job');
+  }
+
+  const contact = await findContactByIdAndClinicId(conversation.contactId || payload.contactId, clinicId);
+  if (!contact) {
+    throw new Error('Contact not found for job');
   }
 
   const clinic = await getClinic(clinicId);
@@ -2048,7 +2048,7 @@ async function processConversationReplyJob(job) {
     conversationRepo.getConversationById(conversationId),
     conversationRepo.getMessageById(inboundMessageId),
     findChannelById(channelId),
-    findContactById(contactId)
+    findContactByIdAndClinicId(contactId, conversation.clinicId)
   ]);
 
   if (!conversation) {

@@ -16,6 +16,7 @@ const {
   updatePortalProduct,
   updatePortalProductStatus,
   getPortalContacts,
+  postPortalContact,
   getPortalContact,
   patchPortalContact,
   getPortalAutomations,
@@ -60,6 +61,7 @@ router.get('/tenants/:tenantId/products/:productId', getPortalProduct);
 router.patch('/tenants/:tenantId/products/:productId', updatePortalProduct);
 router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProductStatus);
 router.get('/tenants/:tenantId/contacts', getPortalContacts);
+router.post('/tenants/:tenantId/contacts', postPortalContact);
 router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
 router.patch('/tenants/:tenantId/contacts/:contactId', patchPortalContact);
 router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
