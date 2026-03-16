@@ -1,8 +1,9 @@
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   listContactsByClinicId,
-  findContactByIdAndClinicId,
-  updateContact
+  findPortalContactById,
+  createPortalContact,
+  updatePortalContactById
 } = require('../repositories/contact.repository');
 
 function normalizeNullableText(value) {
@@ -64,6 +65,51 @@ async function listPortalContacts(tenantId) {
   };
 }
 
+async function createPortalContactRecord(tenantId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const name = String(payload && payload.name ? payload.name : '').trim();
+  if (!name) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'missing_contact_name'
+    };
+  }
+
+  const email = normalizeNullableText(payload && payload.email);
+  if (!isValidEmail(email)) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'invalid_contact_email'
+    };
+  }
+
+  const contact = await createPortalContact(context.clinic.id, {
+    name,
+    email,
+    phone: normalizeNullableText(payload && payload.phone),
+    whatsappPhone: normalizeNullableText(payload && payload.whatsappPhone),
+    taxId: normalizeNullableText(payload && payload.taxId),
+    taxCondition: normalizeNullableText(payload && payload.taxCondition),
+    companyName: normalizeNullableText(payload && payload.companyName),
+    notes: normalizeNullableText(payload && payload.notes)
+  });
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    contact: normalizeContact(contact)
+  };
+}
+
 async function getPortalContactDetail(tenantId, contactId) {
   const safeContactId = String(contactId || '').trim();
   if (!safeContactId) {
@@ -79,7 +125,7 @@ async function getPortalContactDetail(tenantId, contactId) {
     return context;
   }
 
-  const contact = await findContactByIdAndClinicId(safeContactId, context.clinic.id);
+  const contact = await findPortalContactById(context.clinic.id, safeContactId);
   if (!contact) {
     return {
       ok: false,
@@ -132,7 +178,7 @@ async function updatePortalContact(tenantId, contactId, payload) {
     };
   }
 
-  const existingContact = await findContactByIdAndClinicId(safeContactId, context.clinic.id);
+  const existingContact = await findPortalContactById(context.clinic.id, safeContactId);
   if (!existingContact) {
     return {
       ok: false,
@@ -142,7 +188,7 @@ async function updatePortalContact(tenantId, contactId, payload) {
     };
   }
 
-  const updatedContact = await updateContact(safeContactId, context.clinic.id, {
+  const updatedContact = await updatePortalContactById(context.clinic.id, safeContactId, {
     name,
     email,
     phone: normalizeNullableText(payload && payload.phone),
@@ -163,6 +209,7 @@ async function updatePortalContact(tenantId, contactId, payload) {
 
 module.exports = {
   listPortalContacts,
+  createPortalContactRecord,
   getPortalContactDetail,
   updatePortalContact
 };
