@@ -13,6 +13,15 @@ const {
   patchPortalOrderStatus
 } = require('../services/portal-orders.service');
 const {
+  listPortalInvoices,
+  getPortalInvoiceDetail,
+  listPortalInvoiceAllocations,
+  createPortalInvoice,
+  updatePortalInvoice,
+  issuePortalInvoice,
+  voidPortalInvoice
+} = require('../services/portal-invoices.service');
+const {
   listPortalProducts,
   getPortalProductDetail,
   createPortalProduct,
@@ -29,9 +38,17 @@ const {
   getPortalAuthUserByEmail
 } = require('../services/portal-users.service');
 const {
+  listPortalPayments,
+  getPortalPaymentDetail,
+  createPortalPayment,
+  createPortalPaymentAllocation,
+  listPortalPaymentAllocations,
+  voidPortalPayment
+} = require('../services/portal-payments.service');
+const {
   listPortalContacts,
-  createPortalContactRecord,
   getPortalContactDetail,
+  createPortalContact,
   updatePortalContact
 } = require('../services/portal-contacts.service');
 const {
@@ -261,9 +278,15 @@ async function postPortalOrder(req, res) {
         result.reason === 'invalid_order_item_product' ||
         result.reason === 'invalid_order_item_name' ||
         result.reason === 'invalid_order_item_price' ||
-        result.reason === 'invalid_order_item_quantity'
+        result.reason === 'invalid_order_item_quantity' ||
+        result.reason === 'invalid_order_item_amount' ||
+        result.reason === 'contact_not_found' ||
+        result.reason === 'conversation_not_found' ||
+        result.reason === 'conversation_contact_scope_mismatch'
           ? 400
-          : result.reason === 'order_item_product_inactive' || result.reason === 'order_item_insufficient_stock'
+          : result.reason === 'order_item_product_inactive' ||
+              result.reason === 'order_item_product_archived' ||
+              result.reason === 'order_item_insufficient_stock'
             ? 409
             : 404;
 
@@ -419,6 +442,7 @@ async function postPortalProduct(req, res) {
         result.reason === 'missing_tenant_id' ||
         result.reason === 'missing_product_name' ||
         result.reason === 'invalid_product_price' ||
+        result.reason === 'invalid_product_tax_rate' ||
         result.reason === 'invalid_product_stock' ||
         result.reason === 'invalid_product_status'
           ? 400
@@ -485,6 +509,7 @@ async function updatePortalProduct(req, res) {
         result.reason === 'missing_product_id' ||
         result.reason === 'missing_product_name' ||
         result.reason === 'invalid_product_price' ||
+        result.reason === 'invalid_product_tax_rate' ||
         result.reason === 'invalid_product_stock' ||
         result.reason === 'invalid_product_status'
           ? 400
@@ -588,44 +613,6 @@ async function getPortalContacts(req, res) {
   }
 }
 
-async function postPortalContact(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
-
-  try {
-    const result = await createPortalContactRecord(tenantId, req.body || {});
-    if (!result.ok) {
-      const status =
-        result.reason === 'missing_tenant_id' ||
-        result.reason === 'missing_contact_name' ||
-        result.reason === 'invalid_contact_email'
-          ? 400
-          : 404;
-
-      return res.status(status).json({
-        success: false,
-        error: result.reason,
-        tenantId: result.tenantId
-      });
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: result.contact
-    });
-  } catch (error) {
-    logError('portal_contact_create_failed', {
-      tenantId,
-      error: error.message,
-      code: error.code || null
-    });
-
-    return res.status(500).json({
-      success: false,
-      error: 'portal_contact_create_failed'
-    });
-  }
-}
-
 async function getPortalContact(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const contactId = String(req.params.contactId || '').trim();
@@ -633,10 +620,7 @@ async function getPortalContact(req, res) {
   try {
     const result = await getPortalContactDetail(tenantId, contactId);
     if (!result.ok) {
-      const status =
-        result.reason === 'missing_tenant_id' || result.reason === 'missing_contact_id'
-          ? 400
-          : 404;
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_contact_id' ? 400 : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
     }
 
@@ -645,16 +629,41 @@ async function getPortalContact(req, res) {
       data: result.contact
     });
   } catch (error) {
-    logError('portal_contact_failed', {
-      tenantId,
-      contactId,
-      error: error.message,
-      code: error.code || null
-    });
-
     return res.status(500).json({
       success: false,
-      error: 'portal_contact_failed'
+      error: 'portal_contact_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalContact(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalContact(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_contact_name' ||
+        result.reason === 'invalid_contact_email'
+          ? 400
+          : result.reason === 'duplicate_contact_identity'
+            ? 409
+            : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.contact
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_contact_create_failed',
+      details: error.message
     });
   }
 }
@@ -672,13 +681,11 @@ async function patchPortalContact(req, res) {
         result.reason === 'missing_contact_name' ||
         result.reason === 'invalid_contact_email'
           ? 400
-          : 404;
+          : result.reason === 'duplicate_contact_identity'
+            ? 409
+            : 404;
 
-      return res.status(status).json({
-        success: false,
-        error: result.reason,
-        tenantId: result.tenantId
-      });
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
     }
 
     return res.status(200).json({
@@ -686,16 +693,476 @@ async function patchPortalContact(req, res) {
       data: result.contact
     });
   } catch (error) {
-    logError('portal_contact_update_failed', {
-      tenantId,
-      contactId,
-      error: error.message,
-      code: error.code || null
-    });
-
     return res.status(500).json({
       success: false,
-      error: 'portal_contact_update_failed'
+      error: 'portal_contact_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoices(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalInvoices(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        invoices: result.invoices
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoices_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoice(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await getPortalInvoiceDetail(tenantId, invoiceId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_invoice_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.invoice
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInvoice(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalInvoice(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_invoice_items' ||
+        result.reason === 'invalid_invoice_item' ||
+        result.reason === 'invalid_credit_note_item' ||
+        result.reason === 'invalid_invoice_document_mode' ||
+        result.reason === 'invalid_invoice_amount_sign' ||
+        result.reason === 'invoice_void_requires_dedicated_action' ||
+        result.reason === 'credit_note_requires_parent_invoice' ||
+        result.reason === 'credit_note_parent_invalid' ||
+        result.reason === 'credit_note_amount_sign_invalid' ||
+        result.reason === 'invoice_cannot_have_parent_invoice' ||
+        result.reason === 'contact_not_found' ||
+        result.reason === 'order_not_found' ||
+        result.reason === 'parent_invoice_not_found' ||
+        result.reason === 'invoice_order_contact_scope_mismatch'
+          ? 400
+          : result.reason === 'invoice_item_product_not_found'
+            ? 404
+          : result.reason === 'invoice_order_amount_mismatch' ||
+              result.reason === 'duplicate_invoice_number'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.invoice
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalInvoice(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await updatePortalInvoice(tenantId, invoiceId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_invoice_item' ||
+        result.reason === 'invalid_credit_note_item' ||
+        result.reason === 'invalid_invoice_document_mode' ||
+        result.reason === 'invalid_invoice_amount_sign' ||
+        result.reason === 'invoice_issue_requires_dedicated_action' ||
+        result.reason === 'credit_note_requires_parent_invoice' ||
+        result.reason === 'credit_note_parent_invalid' ||
+        result.reason === 'credit_note_amount_sign_invalid' ||
+        result.reason === 'invoice_cannot_have_parent_invoice' ||
+        result.reason === 'contact_not_found' ||
+        result.reason === 'order_not_found' ||
+        result.reason === 'parent_invoice_not_found' ||
+        result.reason === 'invoice_order_contact_scope_mismatch'
+          ? 400
+          : result.reason === 'invoice_not_editable_in_current_status' ||
+              result.reason === 'invoice_order_amount_mismatch' ||
+              result.reason === 'duplicate_invoice_number'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.invoice
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInvoiceIssue(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await issuePortalInvoice(tenantId, invoiceId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_invoice_items' ||
+        result.reason === 'invalid_invoice_amount_sign' ||
+        result.reason === 'credit_note_requires_parent_invoice' ||
+        result.reason === 'credit_note_parent_invalid' ||
+        result.reason === 'credit_note_amount_sign_invalid' ||
+        result.reason === 'invoice_cannot_have_parent_invoice' ||
+        result.reason === 'contact_not_found' ||
+        result.reason === 'order_not_found' ||
+        result.reason === 'parent_invoice_not_found' ||
+        result.reason === 'invoice_order_contact_scope_mismatch'
+          ? 400
+          : result.reason === 'invoice_already_issued' ||
+              result.reason === 'void_invoice_cannot_be_issued' ||
+              result.reason === 'invoice_not_issuable_in_current_status' ||
+              result.reason === 'invoice_order_amount_mismatch'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.invoice
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_issue_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInvoiceVoid(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await voidPortalInvoice(tenantId, invoiceId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'invoice_already_void'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.invoice
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_void_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalPayments(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalPayments(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        payments: result.payments
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payments_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalPayment(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const paymentId = String(req.params.paymentId || '').trim();
+
+  try {
+    const result = await getPortalPaymentDetail(tenantId, paymentId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_payment_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.payment
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payment_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalPaymentAllocations(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const paymentId = String(req.params.paymentId || '').trim();
+
+  try {
+    const result = await listPortalPaymentAllocations(tenantId, paymentId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_payment_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        payment: result.payment,
+        allocations: result.allocations
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payment_allocations_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalPayment(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalPayment(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_payment_amount' ||
+        result.reason === 'contact_not_found' ||
+        result.reason === 'invoice_not_found' ||
+        result.reason === 'payment_invoice_contact_scope_mismatch' ||
+        result.reason === 'payment_currency_mismatch'
+          ? 400
+          : result.reason === 'payment_cannot_target_void_invoice' ||
+              result.reason === 'payment_cannot_target_non_issued_invoice' ||
+              result.reason === 'payment_cannot_target_credit_note' ||
+              result.reason === 'invoice_has_no_outstanding_amount' ||
+              result.reason === 'payment_exceeds_outstanding_amount'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.payment
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payment_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalPaymentAllocation(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const paymentId = String(req.params.paymentId || '').trim();
+
+  try {
+    const result = await createPortalPaymentAllocation(tenantId, paymentId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_payment_id' ||
+        result.reason === 'missing_invoice_id' ||
+        result.reason === 'invalid_payment_allocation_amount' ||
+        result.reason === 'payment_allocation_currency_mismatch' ||
+        result.reason === 'payment_allocation_contact_scope_mismatch'
+          ? 400
+          : result.reason === 'payment_not_allocatable_in_current_status' ||
+              result.reason === 'payment_allocation_cannot_target_void_invoice' ||
+              result.reason === 'payment_allocation_cannot_target_non_issued_invoice' ||
+              result.reason === 'payment_allocation_cannot_target_credit_note' ||
+              result.reason === 'payment_has_no_unallocated_amount' ||
+              result.reason === 'payment_allocation_exceeds_unallocated_amount' ||
+              result.reason === 'invoice_has_no_outstanding_amount' ||
+              result.reason === 'payment_allocation_exceeds_invoice_outstanding_amount'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        allocation: result.allocation,
+        payment: result.payment
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payment_allocation_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalPaymentVoid(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const paymentId = String(req.params.paymentId || '').trim();
+
+  try {
+    const result = await voidPortalPayment(tenantId, paymentId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_payment_id'
+          ? 400
+          : result.reason === 'payment_already_void' || result.reason === 'payment_not_voidable_in_current_status'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.payment
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payment_void_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoiceAllocations(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await listPortalInvoiceAllocations(tenantId, invoiceId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_invoice_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        invoice: result.invoice,
+        allocations: result.allocations
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_allocations_failed',
+      details: error.message
     });
   }
 }
@@ -1390,9 +1857,22 @@ module.exports = {
   updatePortalProduct,
   updatePortalProductStatus,
   getPortalContacts,
-  postPortalContact,
   getPortalContact,
+  postPortalContact,
   patchPortalContact,
+  getPortalInvoices,
+  getPortalInvoice,
+  getPortalInvoiceAllocations,
+  postPortalInvoice,
+  patchPortalInvoice,
+  postPortalInvoiceIssue,
+  postPortalInvoiceVoid,
+  getPortalPayments,
+  getPortalPayment,
+  getPortalPaymentAllocations,
+  postPortalPayment,
+  postPortalPaymentAllocation,
+  postPortalPaymentVoid,
   getPortalAutomations,
   getPortalBusiness,
   getPortalUsers,

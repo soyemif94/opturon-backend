@@ -16,9 +16,22 @@ const {
   updatePortalProduct,
   updatePortalProductStatus,
   getPortalContacts,
-  postPortalContact,
   getPortalContact,
+  postPortalContact,
   patchPortalContact,
+  getPortalInvoices,
+  getPortalInvoice,
+  getPortalInvoiceAllocations,
+  postPortalInvoice,
+  patchPortalInvoice,
+  postPortalInvoiceIssue,
+  postPortalInvoiceVoid,
+  getPortalPayments,
+  getPortalPayment,
+  getPortalPaymentAllocations,
+  postPortalPayment,
+  postPortalPaymentAllocation,
+  postPortalPaymentVoid,
   getPortalAutomations,
   getPortalBusiness,
   getPortalUsers,
@@ -64,6 +77,19 @@ router.get('/tenants/:tenantId/contacts', getPortalContacts);
 router.post('/tenants/:tenantId/contacts', postPortalContact);
 router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
 router.patch('/tenants/:tenantId/contacts/:contactId', patchPortalContact);
+router.get('/tenants/:tenantId/invoices', getPortalInvoices);
+router.post('/tenants/:tenantId/invoices', postPortalInvoice);
+router.get('/tenants/:tenantId/invoices/:invoiceId', getPortalInvoice);
+router.get('/tenants/:tenantId/invoices/:invoiceId/allocations', getPortalInvoiceAllocations);
+router.patch('/tenants/:tenantId/invoices/:invoiceId', patchPortalInvoice);
+router.post('/tenants/:tenantId/invoices/:invoiceId/issue', postPortalInvoiceIssue);
+router.post('/tenants/:tenantId/invoices/:invoiceId/void', postPortalInvoiceVoid);
+router.get('/tenants/:tenantId/payments', getPortalPayments);
+router.post('/tenants/:tenantId/payments', postPortalPayment);
+router.get('/tenants/:tenantId/payments/:paymentId', getPortalPayment);
+router.get('/tenants/:tenantId/payments/:paymentId/allocations', getPortalPaymentAllocations);
+router.post('/tenants/:tenantId/payments/:paymentId/allocations', postPortalPaymentAllocation);
+router.post('/tenants/:tenantId/payments/:paymentId/void', postPortalPaymentVoid);
 router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
 router.post('/tenants/:tenantId/automations', requirePortalInternalAuth, postPortalAutomation);
 router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBusiness);
