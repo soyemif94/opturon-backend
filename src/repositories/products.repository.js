@@ -80,8 +80,8 @@ async function createProduct(input, client = null) {
        metadata,
        "updatedAt"
      )
-     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, NOW())
-     RETURNING id`,
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
+      RETURNING id`,
     [
       input.clinicId,
       input.name,
