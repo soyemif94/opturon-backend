@@ -46,11 +46,26 @@ const {
   voidPortalPayment
 } = require('../services/portal-payments.service');
 const {
+  getSalesSummary,
+  getSalesMetrics,
+  listSalesOpportunities
+} = require('../services/portal-sales.service');
+const {
   listPortalContacts,
   getPortalContactDetail,
   createPortalContact,
   updatePortalContact
 } = require('../services/portal-contacts.service');
+const {
+  getPortalLoyaltyProgram,
+  updatePortalLoyaltyProgram,
+  listPortalLoyaltyRewards,
+  createPortalLoyaltyReward,
+  updatePortalLoyaltyReward,
+  getPortalLoyaltyContactDetail,
+  getPortalLoyaltyOverview,
+  redeemPortalLoyaltyReward
+} = require('../services/portal-loyalty.service');
 const {
   listPortalAutomations,
   createPortalAutomation
@@ -1140,6 +1155,329 @@ async function postPortalPaymentVoid(req, res) {
   }
 }
 
+async function getPortalSalesSummary(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getSalesSummary(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        summary: result.summary
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_sales_summary_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalSalesMetrics(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getSalesMetrics(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        metrics: result.metrics
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_sales_metrics_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalSalesOpportunities(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listSalesOpportunities(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        opportunities: result.opportunities
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_sales_opportunities_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalLoyaltyProgramController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalLoyaltyProgram(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        program: result.program
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_program_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalLoyaltyProgramController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await updatePortalLoyaltyProgram(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_loyalty_spend_amount' ||
+        result.reason === 'invalid_loyalty_points_amount'
+          ? 400
+          : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        program: result.program
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_program_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalLoyaltyRewardsController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalLoyaltyRewards(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        rewards: result.rewards
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_rewards_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalLoyaltyRewardController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalLoyaltyReward(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_loyalty_reward_name' ||
+        result.reason === 'invalid_loyalty_reward_points_cost'
+          ? 400
+          : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        reward: result.reward
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_reward_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalLoyaltyRewardController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const rewardId = String(req.params.rewardId || '').trim();
+
+  try {
+    const result = await updatePortalLoyaltyReward(tenantId, rewardId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_loyalty_reward_id' ||
+        result.reason === 'missing_loyalty_reward_name' ||
+        result.reason === 'invalid_loyalty_reward_points_cost'
+          ? 400
+          : result.reason === 'loyalty_reward_not_found'
+            ? 404
+            : 409;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        reward: result.reward
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_reward_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalLoyaltyContactController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const contactId = String(req.params.contactId || '').trim();
+
+  try {
+    const result = await getPortalLoyaltyContactDetail(tenantId, contactId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_contact_id'
+          ? 400
+          : result.reason === 'contact_not_found'
+            ? 404
+            : 409;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        contact: result.contact,
+        loyalty: result.loyalty
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_contact_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalLoyaltyOverviewController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalLoyaltyOverview(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        overview: result.overview
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_overview_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalLoyaltyRedeemController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await redeemPortalLoyaltyReward(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_contact_id' ||
+        result.reason === 'missing_loyalty_reward_id'
+          ? 400
+          : result.reason === 'contact_not_found' || result.reason === 'loyalty_reward_not_found'
+            ? 404
+            : result.reason === 'loyalty_reward_inactive' || result.reason === 'insufficient_loyalty_points'
+              ? 409
+              : 422;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        redemption: result.redemption,
+        contact: result.contact,
+        loyalty: result.loyalty
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_redeem_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalInvoiceAllocations(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const invoiceId = String(req.params.invoiceId || '').trim();
@@ -1873,6 +2211,17 @@ module.exports = {
   postPortalPayment,
   postPortalPaymentAllocation,
   postPortalPaymentVoid,
+  getPortalSalesSummary,
+  getPortalSalesMetrics,
+  getPortalSalesOpportunities,
+  getPortalLoyaltyProgramController,
+  patchPortalLoyaltyProgramController,
+  getPortalLoyaltyRewardsController,
+  postPortalLoyaltyRewardController,
+  patchPortalLoyaltyRewardController,
+  getPortalLoyaltyContactController,
+  getPortalLoyaltyOverviewController,
+  postPortalLoyaltyRedeemController,
   getPortalAutomations,
   getPortalBusiness,
   getPortalUsers,

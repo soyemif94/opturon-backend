@@ -21,8 +21,12 @@ const {
   calculatePaymentAllocationSnapshot
 } = require('./invoice-balance.service');
 const { quantizeDecimal } = require('../utils/money');
+const {
+  awardLoyaltyPointsForPayment,
+  reverseLoyaltyPointsForVoidedPayment
+} = require('./portal-loyalty.service');
 
-const PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'other', 'combined']);
+const PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'other']);
 const PAYMENT_STATUSES = new Set(['recorded', 'void']);
 
 function normalizeString(value) {
@@ -38,17 +42,6 @@ function normalizeMetadata(value) {
     return {};
   }
   return value;
-}
-
-function normalizePaymentMethod(value) {
-  const normalized = normalizeString(value).toLowerCase();
-  if (normalized === 'combined') {
-    return 'other';
-  }
-  if (PAYMENT_METHODS.has(normalized)) {
-    return normalized;
-  }
-  return 'other';
 }
 
 function buildError(tenantId, reason, details) {
@@ -153,7 +146,9 @@ async function createPortalPayment(tenantId, payload = {}) {
   const invoiceId = normalizeString(payload.invoiceId) || null;
   const amount = quantizeDecimal(payload.amount, 2, NaN);
   const currency = normalizeCurrency(payload.currency, 'ARS');
-  const method = normalizePaymentMethod(payload.method);
+  const method = PAYMENT_METHODS.has(normalizeString(payload.method).toLowerCase())
+    ? normalizeString(payload.method).toLowerCase()
+    : 'other';
   const status = PAYMENT_STATUSES.has(normalizeString(payload.status).toLowerCase())
     ? normalizeString(payload.status).toLowerCase()
     : 'recorded';
@@ -241,6 +236,10 @@ async function createPortalPayment(tenantId, payload = {}) {
         },
         client
       );
+    }
+
+    if (created.status === 'recorded') {
+      await awardLoyaltyPointsForPayment(context.clinic.id, created.id, client);
     }
 
     return findPaymentById(created.id, context.clinic.id, client);
@@ -422,8 +421,8 @@ async function voidPortalPayment(tenantId, paymentId, payload = {}) {
     return buildError(context.tenantId, 'payment_not_voidable_in_current_status');
   }
 
-  const payment = await withTransaction((client) =>
-    voidPayment(
+  const payment = await withTransaction(async (client) => {
+    const voidedPayment = await voidPayment(
       currentPayment.id,
       context.clinic.id,
       {
@@ -440,8 +439,11 @@ async function voidPortalPayment(tenantId, paymentId, payload = {}) {
         }
       },
       client
-    )
-  );
+    );
+
+    await reverseLoyaltyPointsForVoidedPayment(context.clinic.id, currentPayment.id, client);
+    return voidedPayment;
+  });
 
   return {
     ok: true,

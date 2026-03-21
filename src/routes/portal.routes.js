@@ -32,6 +32,17 @@ const {
   postPortalPayment,
   postPortalPaymentAllocation,
   postPortalPaymentVoid,
+  getPortalSalesSummary,
+  getPortalSalesMetrics,
+  getPortalSalesOpportunities,
+  getPortalLoyaltyProgramController,
+  patchPortalLoyaltyProgramController,
+  getPortalLoyaltyRewardsController,
+  postPortalLoyaltyRewardController,
+  patchPortalLoyaltyRewardController,
+  getPortalLoyaltyContactController,
+  getPortalLoyaltyOverviewController,
+  postPortalLoyaltyRedeemController,
   getPortalAutomations,
   getPortalBusiness,
   getPortalUsers,
@@ -90,6 +101,17 @@ router.get('/tenants/:tenantId/payments/:paymentId', getPortalPayment);
 router.get('/tenants/:tenantId/payments/:paymentId/allocations', getPortalPaymentAllocations);
 router.post('/tenants/:tenantId/payments/:paymentId/allocations', postPortalPaymentAllocation);
 router.post('/tenants/:tenantId/payments/:paymentId/void', postPortalPaymentVoid);
+router.get('/tenants/:tenantId/sales/summary', getPortalSalesSummary);
+router.get('/tenants/:tenantId/sales/metrics', getPortalSalesMetrics);
+router.get('/tenants/:tenantId/sales/opportunities', getPortalSalesOpportunities);
+router.get('/tenants/:tenantId/loyalty/program', requirePortalInternalAuth, getPortalLoyaltyProgramController);
+router.patch('/tenants/:tenantId/loyalty/program', requirePortalInternalAuth, patchPortalLoyaltyProgramController);
+router.get('/tenants/:tenantId/loyalty/rewards', requirePortalInternalAuth, getPortalLoyaltyRewardsController);
+router.post('/tenants/:tenantId/loyalty/rewards', requirePortalInternalAuth, postPortalLoyaltyRewardController);
+router.patch('/tenants/:tenantId/loyalty/rewards/:rewardId', requirePortalInternalAuth, patchPortalLoyaltyRewardController);
+router.get('/tenants/:tenantId/loyalty/contacts/:contactId', requirePortalInternalAuth, getPortalLoyaltyContactController);
+router.get('/tenants/:tenantId/loyalty/overview', requirePortalInternalAuth, getPortalLoyaltyOverviewController);
+router.post('/tenants/:tenantId/loyalty/redemptions', requirePortalInternalAuth, postPortalLoyaltyRedeemController);
 router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
 router.post('/tenants/:tenantId/automations', requirePortalInternalAuth, postPortalAutomation);
 router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBusiness);
