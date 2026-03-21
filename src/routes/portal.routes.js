@@ -25,6 +25,9 @@ const {
   getPortalInvoiceAllocations,
   postPortalInvoice,
   patchPortalInvoice,
+  patchPortalInvoiceAccountingController,
+  getPortalInvoicesCsvExport,
+  getPortalInvoiceDocumentController,
   postPortalInvoiceIssue,
   postPortalInvoiceVoid,
   getPortalPayments,
@@ -92,9 +95,12 @@ router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
 router.patch('/tenants/:tenantId/contacts/:contactId', patchPortalContact);
 router.get('/tenants/:tenantId/invoices', getPortalInvoices);
 router.post('/tenants/:tenantId/invoices', postPortalInvoice);
+router.get('/tenants/:tenantId/invoices/export.csv', getPortalInvoicesCsvExport);
 router.get('/tenants/:tenantId/invoices/:invoiceId', getPortalInvoice);
+router.get('/tenants/:tenantId/invoices/:invoiceId/document', getPortalInvoiceDocumentController);
 router.get('/tenants/:tenantId/invoices/:invoiceId/allocations', getPortalInvoiceAllocations);
 router.patch('/tenants/:tenantId/invoices/:invoiceId', patchPortalInvoice);
+router.patch('/tenants/:tenantId/invoices/:invoiceId/accounting', patchPortalInvoiceAccountingController);
 router.post('/tenants/:tenantId/invoices/:invoiceId/issue', postPortalInvoiceIssue);
 router.post('/tenants/:tenantId/invoices/:invoiceId/void', postPortalInvoiceVoid);
 router.get('/tenants/:tenantId/payments', getPortalPayments);

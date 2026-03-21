@@ -9,9 +9,11 @@ const {
   listInvoicesByParentInvoiceId,
   createInvoice,
   updateInvoice,
+  updateInvoiceAccounting,
   voidInvoice,
   issueInvoice
 } = require('../repositories/invoices.repository');
+const { getClinicBusinessProfileById } = require('../repositories/tenant.repository');
 const { createPayment } = require('../repositories/payments.repository');
 const {
   createPaymentAllocation,
@@ -26,6 +28,11 @@ const INVOICE_TYPES = new Set(['invoice', 'credit_note']);
 const DOCUMENT_MODES = new Set(['internal_only', 'external_provider', 'synced_external']);
 const INITIAL_PAYMENT_STATUSES = new Set(['unpaid', 'partial', 'paid']);
 const INITIAL_PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'other', 'combined']);
+const PREFACT_DOCUMENT_KINDS = new Set(['internal_invoice', 'proforma', 'order_summary']);
+const PREFACT_FISCAL_STATUSES = new Set(['draft', 'ready_for_accountant', 'delivered_to_accountant', 'invoiced_by_accountant']);
+const TAX_ID_TYPES = new Set(['DNI', 'CUIT', 'CUIL', 'NONE']);
+const SUGGESTED_VOUCHER_TYPES = new Set(['A', 'B', 'C', 'NONE']);
+const NO_FISCAL_LEGEND = 'Documento interno no valido como factura fiscal';
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -40,6 +47,288 @@ function normalizeMetadata(value) {
     return {};
   }
   return value;
+}
+
+function normalizeEnum(value, allowed, fallback) {
+  const normalized = normalizeString(value);
+  return allowed.has(normalized) ? normalized : fallback;
+}
+
+function inferTaxIdType(value) {
+  const digits = normalizeString(value).replace(/\D/g, '');
+  if (digits.length === 11) return 'CUIT';
+  if (digits.length >= 7 && digits.length <= 8) return 'DNI';
+  return 'NONE';
+}
+
+function mapLegacyDocumentKindToVoucherType(rawDocumentKind) {
+  const normalized = normalizeString(rawDocumentKind).toLowerCase();
+  if (normalized === 'invoice_a') return 'A';
+  if (normalized === 'invoice_b') return 'B';
+  if (normalized === 'invoice_c') return 'C';
+  return 'NONE';
+}
+
+function buildIssuerSnapshot(clinic, businessProfile, invoice = {}) {
+  const profile = businessProfile && typeof businessProfile === 'object' ? businessProfile : {};
+  return {
+    issuerLegalName: normalizeString(invoice.issuerLegalName || profile.issuerLegalName || clinic?.name) || null,
+    issuerTaxId: normalizeString(invoice.issuerTaxId || profile.issuerTaxId) || null,
+    issuerVatCondition: normalizeString(invoice.issuerVatCondition || profile.issuerVatCondition) || null
+  };
+}
+
+function buildCustomerSnapshot(contact, invoice = {}) {
+  const legalName =
+    normalizeString(invoice.customerLegalName) ||
+    normalizeString(contact?.companyName) ||
+    normalizeString(contact?.name) ||
+    null;
+  const taxId = normalizeString(invoice.customerTaxId || contact?.taxId) || null;
+  const taxIdType = normalizeEnum(
+    invoice.customerTaxIdType || inferTaxIdType(taxId),
+    TAX_ID_TYPES,
+    taxId ? inferTaxIdType(taxId) : 'NONE'
+  );
+
+  return {
+    customerLegalName: legalName,
+    customerTaxId: taxId,
+    customerTaxIdType: taxIdType,
+    customerVatCondition: normalizeString(invoice.customerVatCondition || contact?.taxCondition) || null
+  };
+}
+
+function buildAccountingSnapshot({ clinic, businessProfile, contact, invoice = {}, payload = {} }) {
+  const metadata = normalizeMetadata(payload.metadata !== undefined ? payload.metadata : invoice.metadata);
+  const issuer = buildIssuerSnapshot(clinic, businessProfile, invoice);
+  const customer = buildCustomerSnapshot(contact, invoice);
+  const rawDocumentKind = payload.documentKind || invoice.documentKind || metadata.documentKind;
+  const documentKind = normalizeEnum(
+    rawDocumentKind === 'invoice_a' || rawDocumentKind === 'invoice_b' || rawDocumentKind === 'invoice_c' || rawDocumentKind === 'delivery_note'
+      ? (normalizeString(rawDocumentKind).toLowerCase() === 'delivery_note' ? 'order_summary' : 'internal_invoice')
+      : rawDocumentKind,
+    PREFACT_DOCUMENT_KINDS,
+    invoice.documentKind || 'internal_invoice'
+  );
+  const suggestedVoucherFromPayload =
+    payload.suggestedFiscalVoucherType ||
+    invoice.suggestedFiscalVoucherType ||
+    mapLegacyDocumentKindToVoucherType(rawDocumentKind);
+
+  return {
+    documentKind,
+    fiscalStatus: normalizeEnum(payload.fiscalStatus || invoice.fiscalStatus, PREFACT_FISCAL_STATUSES, invoice.fiscalStatus || 'draft'),
+    customerTaxId: normalizeString(payload.customerTaxId ?? customer.customerTaxId) || null,
+    customerTaxIdType: normalizeEnum(payload.customerTaxIdType || customer.customerTaxIdType, TAX_ID_TYPES, customer.customerTaxIdType || 'NONE'),
+    customerLegalName: normalizeString(payload.customerLegalName ?? customer.customerLegalName) || null,
+    customerVatCondition: normalizeString(payload.customerVatCondition ?? customer.customerVatCondition) || null,
+    issuerLegalName: normalizeString(payload.issuerLegalName ?? issuer.issuerLegalName) || null,
+    issuerTaxId: normalizeString(payload.issuerTaxId ?? issuer.issuerTaxId) || null,
+    issuerVatCondition: normalizeString(payload.issuerVatCondition ?? issuer.issuerVatCondition) || null,
+    suggestedFiscalVoucherType: normalizeEnum(suggestedVoucherFromPayload, SUGGESTED_VOUCHER_TYPES, 'NONE'),
+    accountantNotes: normalizeString(payload.accountantNotes ?? invoice.accountantNotes) || null,
+    deliveredToAccountantAt: payload.deliveredToAccountantAt ?? invoice.deliveredToAccountantAt ?? null,
+    invoicedByAccountantAt: payload.invoicedByAccountantAt ?? invoice.invoicedByAccountantAt ?? null,
+    accountantReferenceNumber: normalizeString(payload.accountantReferenceNumber ?? invoice.accountantReferenceNumber) || null
+  };
+}
+
+function applyFiscalStatusTimestamps(snapshot, previousInvoice) {
+  const nextSnapshot = { ...snapshot };
+  if (nextSnapshot.fiscalStatus === 'draft' || nextSnapshot.fiscalStatus === 'ready_for_accountant') {
+    nextSnapshot.deliveredToAccountantAt = null;
+    nextSnapshot.invoicedByAccountantAt = null;
+  } else if (nextSnapshot.fiscalStatus === 'delivered_to_accountant') {
+    nextSnapshot.deliveredToAccountantAt = previousInvoice?.deliveredToAccountantAt || new Date().toISOString();
+    nextSnapshot.invoicedByAccountantAt = null;
+  } else if (nextSnapshot.fiscalStatus === 'invoiced_by_accountant') {
+    nextSnapshot.deliveredToAccountantAt = previousInvoice?.deliveredToAccountantAt || new Date().toISOString();
+    nextSnapshot.invoicedByAccountantAt = previousInvoice?.invoicedByAccountantAt || new Date().toISOString();
+  }
+  return nextSnapshot;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatDateLabel(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return new Intl.DateTimeFormat('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
+}
+
+function formatMoneyLabel(amount, currency) {
+  return new Intl.NumberFormat('es-AR', {
+    style: 'currency',
+    currency: normalizeCurrency(currency, 'ARS'),
+    maximumFractionDigits: 2
+  }).format(Number.isFinite(Number(amount)) ? Number(amount) : 0);
+}
+
+function buildInvoiceDocumentFilename(invoice) {
+  return `${invoice.internalDocumentNumber || invoice.invoiceNumber || invoice.id}.html`;
+}
+
+function buildInvoiceCsvFilename() {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return `opturon-prefacturacion-${stamp}.csv`;
+}
+
+function buildInvoiceDocumentHtml(invoice, clinic) {
+  const businessProfile = clinic?.businessProfile && typeof clinic.businessProfile === 'object' ? clinic.businessProfile : {};
+  const issueDate = invoice.issuedAt || invoice.createdAt;
+  const rows = Array.isArray(invoice.items)
+    ? invoice.items.map((item) => `
+      <tr>
+        <td>${escapeHtml(item.descriptionSnapshot)}</td>
+        <td style="text-align:right">${escapeHtml(item.quantity)}</td>
+        <td style="text-align:right">${escapeHtml(formatMoneyLabel(item.unitPrice, invoice.currency))}</td>
+        <td style="text-align:right">${escapeHtml(formatMoneyLabel(item.totalAmount, invoice.currency))}</td>
+      </tr>`).join('')
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(invoice.internalDocumentNumber || invoice.id)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 32px; color: #16202a; }
+      .banner { border: 1px solid #d97706; background: #fff7ed; color: #9a3412; padding: 12px 16px; border-radius: 12px; font-weight: 700; margin-bottom: 20px; }
+      .top { display:flex; justify-content:space-between; gap:24px; margin-bottom:24px; }
+      .card { border:1px solid #e5e7eb; border-radius:16px; padding:16px; flex:1; }
+      h1 { margin:0 0 8px; font-size:24px; }
+      h2 { margin:0 0 8px; font-size:14px; text-transform:uppercase; color:#64748b; letter-spacing:.08em; }
+      table { width:100%; border-collapse:collapse; margin-top:20px; }
+      th, td { border-bottom:1px solid #e5e7eb; padding:12px 8px; text-align:left; }
+      th { font-size:12px; text-transform:uppercase; color:#64748b; letter-spacing:.08em; }
+      .totals { margin-top:24px; width:320px; margin-left:auto; }
+      .totals div { display:flex; justify-content:space-between; padding:6px 0; }
+      .muted { color:#64748b; }
+      .notes { margin-top:24px; border:1px solid #e5e7eb; border-radius:16px; padding:16px; }
+    </style>
+  </head>
+  <body>
+    <div class="banner">${escapeHtml(NO_FISCAL_LEGEND)}</div>
+    <div class="top">
+      <div class="card">
+        <h2>Emisor</h2>
+        <h1>${escapeHtml(invoice.issuerLegalName || clinic?.name || 'Opturon')}</h1>
+        <div class="muted">CUIT/DNI: ${escapeHtml(invoice.issuerTaxId || '-')}</div>
+        <div class="muted">Condicion IVA: ${escapeHtml(invoice.issuerVatCondition || '-')}</div>
+        <div class="muted">Direccion: ${escapeHtml(businessProfile.address || '-')}</div>
+      </div>
+      <div class="card">
+        <h2>Documento interno</h2>
+        <h1>${escapeHtml(invoice.internalDocumentNumber || invoice.id)}</h1>
+        <div class="muted">Tipo: ${escapeHtml(invoice.documentKind)}</div>
+        <div class="muted">Estado contable: ${escapeHtml(invoice.fiscalStatus)}</div>
+        <div class="muted">Fecha: ${escapeHtml(formatDateLabel(issueDate))}</div>
+      </div>
+    </div>
+    <div class="top">
+      <div class="card">
+        <h2>Cliente</h2>
+        <div>${escapeHtml(invoice.customerLegalName || invoice.contact?.name || 'Consumidor final')}</div>
+        <div class="muted">Identificacion: ${escapeHtml(invoice.customerTaxId || '-')} (${escapeHtml(invoice.customerTaxIdType || 'NONE')})</div>
+        <div class="muted">Condicion IVA: ${escapeHtml(invoice.customerVatCondition || '-')}</div>
+      </div>
+      <div class="card">
+        <h2>Referencia contable</h2>
+        <div class="muted">Comprobante sugerido: ${escapeHtml(invoice.suggestedFiscalVoucherType || 'NONE')}</div>
+        <div class="muted">Estado de cobro: ${escapeHtml(invoice.receivableStatus || '-')}</div>
+        <div class="muted">Ref. contador: ${escapeHtml(invoice.accountantReferenceNumber || '-')}</div>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Detalle</th>
+          <th style="text-align:right">Cantidad</th>
+          <th style="text-align:right">Unitario</th>
+          <th style="text-align:right">Total</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="totals">
+      <div><span>Subtotal</span><strong>${escapeHtml(formatMoneyLabel(invoice.subtotalAmount, invoice.currency))}</strong></div>
+      <div><span>Impuestos</span><strong>${escapeHtml(formatMoneyLabel(invoice.taxAmount, invoice.currency))}</strong></div>
+      <div><span>Total</span><strong>${escapeHtml(formatMoneyLabel(invoice.totalAmount, invoice.currency))}</strong></div>
+    </div>
+    <div class="notes">
+      <h2>Notas para contador</h2>
+      <div>${escapeHtml(invoice.accountantNotes || 'Sin observaciones')}</div>
+    </div>
+  </body>
+</html>`;
+}
+
+function filterInvoicesForAccountant(invoices, filters = {}) {
+  const fiscalStatus = normalizeString(filters.fiscalStatus);
+  const contactId = normalizeString(filters.contactId);
+  const search = normalizeString(filters.search).toLowerCase();
+  const dateFrom = normalizeString(filters.dateFrom);
+  const dateTo = normalizeString(filters.dateTo);
+
+  return (Array.isArray(invoices) ? invoices : []).filter((invoice) => {
+    if (fiscalStatus && fiscalStatus !== 'all' && invoice.fiscalStatus !== fiscalStatus) return false;
+    if (contactId && contactId !== 'all' && invoice.contactId !== contactId) return false;
+    const referenceDate = invoice.issuedAt || invoice.createdAt;
+    if (dateFrom && referenceDate && new Date(referenceDate) < new Date(`${dateFrom}T00:00:00.000Z`)) return false;
+    if (dateTo && referenceDate && new Date(referenceDate) > new Date(`${dateTo}T23:59:59.999Z`)) return false;
+    if (!search) return true;
+    const haystack = [
+      invoice.internalDocumentNumber,
+      invoice.invoiceNumber,
+      invoice.customerLegalName,
+      invoice.customerTaxId,
+      invoice.contact?.name,
+      invoice.fiscalStatus
+    ].filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(search);
+  });
+}
+
+function buildInvoicesCsv(invoices) {
+  const header = [
+    'internalDocumentNumber',
+    'issueDate',
+    'customerLegalName',
+    'customerTaxId',
+    'customerVatCondition',
+    'suggestedFiscalVoucherType',
+    'subtotal',
+    'total',
+    'paymentStatus',
+    'fiscalStatus',
+    'accountantNotes'
+  ];
+  const rows = invoices.map((invoice) => [
+    invoice.internalDocumentNumber || '',
+    invoice.issuedAt || invoice.createdAt || '',
+    invoice.customerLegalName || invoice.contact?.name || '',
+    invoice.customerTaxId || '',
+    invoice.customerVatCondition || '',
+    invoice.suggestedFiscalVoucherType || 'NONE',
+    quantizeDecimal(invoice.subtotalAmount || 0, 2, 0),
+    quantizeDecimal(invoice.totalAmount || 0, 2, 0),
+    invoice.receivableStatus || '',
+    invoice.fiscalStatus || '',
+    (invoice.accountantNotes || '').replace(/\r?\n/g, ' ')
+  ]);
+
+  return [header, ...rows]
+    .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n');
 }
 
 function normalizeInitialPaymentMethod(value) {
@@ -149,6 +438,8 @@ function enrichInvoiceView(invoice) {
   return {
     ...invoice,
     lifecycle: buildInvoiceLifecycleView(invoice),
+    noFiscal: true,
+    noFiscalLegend: NO_FISCAL_LEGEND,
     balanceImpact: receivable.documentBalanceImpact,
     paidAmount: receivable.paidAmount,
     outstandingAmount: receivable.outstandingAmount,
@@ -508,6 +799,7 @@ async function createPortalInvoice(tenantId, payload) {
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
+  const clinicRecord = await getClinicBusinessProfileById(context.clinic.id);
 
   const requestedStatus = normalizeString(payload && payload.status).toLowerCase();
   const allowImmediateIssue = requestedStatus === 'issued';
@@ -550,6 +842,15 @@ async function createPortalInvoice(tenantId, payload) {
     tenantId: context.tenantId
   });
   if (!structureResult.ok) return structureResult;
+  const accountingSnapshot = applyFiscalStatusTimestamps(
+    buildAccountingSnapshot({
+      clinic: clinicRecord || context.clinic,
+      businessProfile: clinicRecord?.businessProfile,
+      contact: associationResult.contact,
+      payload: payload || {}
+    }),
+    null
+  );
 
   try {
     const invoice = await withTransaction(async (client) => {
@@ -572,6 +873,20 @@ async function createPortalInvoice(tenantId, payload) {
           dueAt: invoicePayload.dueAt,
           externalProvider: invoicePayload.externalProvider,
           externalReference: invoicePayload.externalReference,
+          documentKind: accountingSnapshot.documentKind,
+          fiscalStatus: accountingSnapshot.fiscalStatus,
+          customerTaxId: accountingSnapshot.customerTaxId,
+          customerTaxIdType: accountingSnapshot.customerTaxIdType,
+          customerLegalName: accountingSnapshot.customerLegalName,
+          customerVatCondition: accountingSnapshot.customerVatCondition,
+          issuerLegalName: accountingSnapshot.issuerLegalName,
+          issuerTaxId: accountingSnapshot.issuerTaxId,
+          issuerVatCondition: accountingSnapshot.issuerVatCondition,
+          suggestedFiscalVoucherType: accountingSnapshot.suggestedFiscalVoucherType,
+          accountantNotes: accountingSnapshot.accountantNotes,
+          deliveredToAccountantAt: accountingSnapshot.deliveredToAccountantAt,
+          invoicedByAccountantAt: accountingSnapshot.invoicedByAccountantAt,
+          accountantReferenceNumber: accountingSnapshot.accountantReferenceNumber,
           metadata: invoicePayload.metadata,
           items: itemsResult.items
         },
@@ -619,6 +934,7 @@ async function createPortalInvoice(tenantId, payload) {
 async function updatePortalInvoice(tenantId, invoiceId, payload) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
+  const clinicRecord = await getClinicBusinessProfileById(context.clinic.id);
 
   const currentInvoice = await resolveScopedInvoice(invoiceId, context.clinic.id);
   if (!currentInvoice) {
@@ -670,6 +986,16 @@ async function updatePortalInvoice(tenantId, invoiceId, payload) {
     tenantId: context.tenantId
   });
   if (!structureResult.ok) return structureResult;
+  const accountingSnapshot = applyFiscalStatusTimestamps(
+    buildAccountingSnapshot({
+      clinic: clinicRecord || context.clinic,
+      businessProfile: clinicRecord?.businessProfile,
+      contact: associationResult.contact,
+      invoice: currentInvoice,
+      payload: payload || {}
+    }),
+    currentInvoice
+  );
 
   try {
     const invoice = await withTransaction((client) =>
@@ -693,6 +1019,20 @@ async function updatePortalInvoice(tenantId, invoiceId, payload) {
           dueAt: invoicePayload.dueAt,
           externalProvider: invoicePayload.externalProvider,
           externalReference: invoicePayload.externalReference,
+          documentKind: accountingSnapshot.documentKind,
+          fiscalStatus: accountingSnapshot.fiscalStatus,
+          customerTaxId: accountingSnapshot.customerTaxId,
+          customerTaxIdType: accountingSnapshot.customerTaxIdType,
+          customerLegalName: accountingSnapshot.customerLegalName,
+          customerVatCondition: accountingSnapshot.customerVatCondition,
+          issuerLegalName: accountingSnapshot.issuerLegalName,
+          issuerTaxId: accountingSnapshot.issuerTaxId,
+          issuerVatCondition: accountingSnapshot.issuerVatCondition,
+          suggestedFiscalVoucherType: accountingSnapshot.suggestedFiscalVoucherType,
+          accountantNotes: accountingSnapshot.accountantNotes,
+          deliveredToAccountantAt: accountingSnapshot.deliveredToAccountantAt,
+          invoicedByAccountantAt: accountingSnapshot.invoicedByAccountantAt,
+          accountantReferenceNumber: accountingSnapshot.accountantReferenceNumber,
           metadata: invoicePayload.metadata,
           items: itemsResult.items
         },
@@ -802,6 +1142,49 @@ async function issuePortalInvoice(tenantId, invoiceId, payload = {}) {
   };
 }
 
+async function updatePortalInvoiceAccounting(tenantId, invoiceId, payload = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const currentInvoice = await resolveScopedInvoice(invoiceId, context.clinic.id);
+  if (!currentInvoice) {
+    return buildError(context.tenantId, 'invoice_not_found');
+  }
+
+  const clinicRecord = await getClinicBusinessProfileById(context.clinic.id);
+  const contact = currentInvoice.contactId
+    ? await findContactByIdAndClinicId(currentInvoice.contactId, context.clinic.id)
+    : null;
+  const accountingSnapshot = applyFiscalStatusTimestamps(
+    buildAccountingSnapshot({
+      clinic: clinicRecord || context.clinic,
+      businessProfile: clinicRecord?.businessProfile,
+      contact,
+      invoice: currentInvoice,
+      payload
+    }),
+    currentInvoice
+  );
+
+  try {
+    const updated = await withTransaction((client) =>
+      updateInvoiceAccounting(currentInvoice.id, context.clinic.id, accountingSnapshot, client)
+    );
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      invoice: enrichInvoiceView(updated)
+    };
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === '23505') {
+      return buildError(context.tenantId, 'duplicate_internal_document_number');
+    }
+    throw error;
+  }
+}
+
 async function voidPortalInvoice(tenantId, invoiceId, payload = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
@@ -844,15 +1227,61 @@ async function voidPortalInvoice(tenantId, invoiceId, payload = {}) {
   };
 }
 
+async function exportPortalInvoicesCsv(tenantId, filters = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const invoices = await listInvoicesByClinicId(context.clinic.id);
+  const withReceivables = await attachReceivables(context.clinic.id, invoices);
+  const enriched = withReceivables.map(enrichInvoiceView);
+  const filtered = filterInvoicesForAccountant(enriched, filters);
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    filename: buildInvoiceCsvFilename(),
+    csv: buildInvoicesCsv(filtered),
+    invoices: filtered
+  };
+}
+
+async function renderPortalInvoiceDocument(tenantId, invoiceId) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const detailResult = await getPortalInvoiceDetail(tenantId, invoiceId);
+  if (!detailResult.ok) return detailResult;
+  const clinicRecord = await getClinicBusinessProfileById(context.clinic.id);
+  const invoice = detailResult.invoice;
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    filename: buildInvoiceDocumentFilename(invoice),
+    html: buildInvoiceDocumentHtml(invoice, clinicRecord || context.clinic),
+    invoice
+  };
+}
+
 module.exports = {
   INVOICE_STATUSES: Array.from(INVOICE_STATUSES),
   INVOICE_TYPES: Array.from(INVOICE_TYPES),
   DOCUMENT_MODES: Array.from(DOCUMENT_MODES),
+  PREFACT_DOCUMENT_KINDS: Array.from(PREFACT_DOCUMENT_KINDS),
+  PREFACT_FISCAL_STATUSES: Array.from(PREFACT_FISCAL_STATUSES),
+  TAX_ID_TYPES: Array.from(TAX_ID_TYPES),
+  SUGGESTED_VOUCHER_TYPES: Array.from(SUGGESTED_VOUCHER_TYPES),
+  NO_FISCAL_LEGEND,
   listPortalInvoices,
   getPortalInvoiceDetail,
   listPortalInvoiceAllocations,
   createPortalInvoice,
   updatePortalInvoice,
+  updatePortalInvoiceAccounting,
   issuePortalInvoice,
-  voidPortalInvoice
+  voidPortalInvoice,
+  exportPortalInvoicesCsv,
+  renderPortalInvoiceDocument
 };

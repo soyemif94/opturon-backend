@@ -18,8 +18,11 @@ const {
   listPortalInvoiceAllocations,
   createPortalInvoice,
   updatePortalInvoice,
+  updatePortalInvoiceAccounting,
   issuePortalInvoice,
-  voidPortalInvoice
+  voidPortalInvoice,
+  exportPortalInvoicesCsv,
+  renderPortalInvoiceDocument
 } = require('../services/portal-invoices.service');
 const {
   listPortalProducts,
@@ -901,6 +904,86 @@ async function patchPortalInvoice(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_invoice_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalInvoiceAccountingController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await updatePortalInvoiceAccounting(tenantId, invoiceId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'duplicate_internal_document_number'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.invoice
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_accounting_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoicesCsvExport(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await exportPortalInvoicesCsv(tenantId, req.query || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.csv);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_export_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoiceDocumentController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await renderPortalInvoiceDocument(tenantId, invoiceId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_invoice_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.html);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_document_failed',
       details: error.message
     });
   }
@@ -2243,6 +2326,9 @@ module.exports = {
   getPortalInvoiceAllocations,
   postPortalInvoice,
   patchPortalInvoice,
+  patchPortalInvoiceAccountingController,
+  getPortalInvoicesCsvExport,
+  getPortalInvoiceDocumentController,
   postPortalInvoiceIssue,
   postPortalInvoiceVoid,
   getPortalPayments,
