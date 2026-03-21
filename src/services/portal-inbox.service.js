@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { query } = require('../db/client');
 const { findContactByIdAndClinicId, upsertContact } = require('../repositories/contact.repository');
 const { listEvents } = require('../repositories/conversation-events.repository');
+const { findPortalUserByIdAndClinicId, findPortalUserByNameAndClinicId } = require('../repositories/portal-users.repository');
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
@@ -177,6 +178,37 @@ function buildOwnershipSnapshot({ context, conversation, runtimeChannel }) {
   };
 }
 
+async function resolvePortalAssignee(clinicId, value) {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) {
+    return {
+      label: null,
+      userId: null
+    };
+  }
+
+  const byId = await findPortalUserByIdAndClinicId(rawValue, clinicId);
+  if (byId) {
+    return {
+      label: byId.name || rawValue,
+      userId: byId.id
+    };
+  }
+
+  const byName = await findPortalUserByNameAndClinicId(rawValue, clinicId);
+  if (byName) {
+    return {
+      label: byName.name || rawValue,
+      userId: byName.id
+    };
+  }
+
+  return {
+    label: rawValue,
+    userId: null
+  };
+}
+
 async function listPortalConversations(tenantId) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
@@ -317,7 +349,10 @@ async function getPortalConversationDetail(tenantId, conversationId) {
       notes: Array.isArray(contextData.portalNotes) ? contextData.portalNotes : [],
       tasks: Array.isArray(contextData.portalTasks) ? contextData.portalTasks : [],
       assignee: contextData.portalAssignedTo
-        ? { id: contextData.portalAssignedTo, name: contextData.portalAssignedTo }
+        ? {
+            id: contextData.portalAssignedToUserId || contextData.portalAssignedTo,
+            name: contextData.portalAssignedTo
+          }
         : undefined,
       quickReplies: defaultQuickReplies(),
       aiEvents: events.slice(0, 10).map((event) => ({
@@ -351,7 +386,9 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
   const nextContext = { ...currentContext };
 
   if (action === 'assign') {
-    nextContext.portalAssignedTo = safePayload.assignedTo ? String(safePayload.assignedTo) : null;
+    const resolvedAssignee = await resolvePortalAssignee(context.clinic.id, safePayload.assignedTo);
+    nextContext.portalAssignedTo = resolvedAssignee.label;
+    nextContext.portalAssignedToUserId = resolvedAssignee.userId;
   } else if (action === 'toggle_bot') {
     nextContext.portalBotEnabled = Boolean(safePayload.botEnabled);
   } else if (action === 'mark_hot') {
