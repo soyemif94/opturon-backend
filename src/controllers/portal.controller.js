@@ -27,7 +27,8 @@ const {
   createPortalProduct,
   createPortalProductsBulk,
   patchPortalProduct,
-  patchPortalProductStatus
+  patchPortalProductStatus,
+  deletePortalProduct
 } = require('../services/portal-products.service');
 const {
   listPortalUsers,
@@ -571,6 +572,44 @@ async function updatePortalProductStatus(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_product_status_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function destroyPortalProduct(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const productId = String(req.params.productId || '').trim();
+
+  try {
+    const result = await deletePortalProduct(tenantId, productId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_product_id'
+          ? 400
+          : result.reason === 'product_delete_blocked'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        productId: result.deletedProductId
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_delete_failed',
       details: error.message
     });
   }
@@ -2194,6 +2233,7 @@ module.exports = {
   postPortalProductsBulk,
   updatePortalProduct,
   updatePortalProductStatus,
+  destroyPortalProduct,
   getPortalContacts,
   getPortalContact,
   postPortalContact,

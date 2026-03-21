@@ -5,7 +5,8 @@ const {
   findProductById,
   createProduct,
   updateProduct,
-  updateProductStatus
+  updateProductStatus,
+  deleteProductById
 } = require('../repositories/products.repository');
 
 const PRODUCT_STATUSES = new Set(['active', 'inactive']);
@@ -251,6 +252,47 @@ async function createPortalProductsBulk(tenantId, payload) {
   };
 }
 
+async function deletePortalProduct(tenantId, productId) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const safeProductId = normalizeString(productId);
+  if (!safeProductId) {
+    return { ok: false, tenantId: context.tenantId, reason: 'missing_product_id' };
+  }
+
+  const current = await findProductById(safeProductId, context.clinic.id);
+  if (!current) {
+    return { ok: false, tenantId: context.tenantId, reason: 'product_not_found' };
+  }
+
+  try {
+    const deleted = await withTransaction((client) => deleteProductById(safeProductId, context.clinic.id, client));
+    if (!deleted) {
+      return { ok: false, tenantId: context.tenantId, reason: 'product_not_found' };
+    }
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      deletedProductId: safeProductId
+    };
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === '23503') {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        reason: 'product_delete_blocked',
+        details: error.detail || null
+      };
+    }
+    throw error;
+  }
+}
+
 module.exports = {
   PRODUCT_STATUSES: Array.from(PRODUCT_STATUSES),
   listPortalProducts,
@@ -258,5 +300,6 @@ module.exports = {
   createPortalProduct,
   createPortalProductsBulk,
   patchPortalProduct,
-  patchPortalProductStatus
+  patchPortalProductStatus,
+  deletePortalProduct
 };

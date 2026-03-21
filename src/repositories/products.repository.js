@@ -132,10 +132,24 @@ async function updateProductStatus(productId, clinicId, status, client = null) {
   return findProductById(productId, clinicId, client);
 }
 
+async function deleteProductById(productId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `DELETE FROM products
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+     RETURNING id`,
+    [productId, clinicId]
+  );
+
+  return Boolean(result.rows[0]);
+}
+
 module.exports = {
   listProductsByClinicId,
   findProductById,
   createProduct,
   updateProduct,
-  updateProductStatus
+  updateProductStatus,
+  deleteProductById
 };

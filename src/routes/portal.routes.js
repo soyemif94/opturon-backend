@@ -15,6 +15,7 @@ const {
   postPortalProductsBulk,
   updatePortalProduct,
   updatePortalProductStatus,
+  destroyPortalProduct,
   getPortalContacts,
   getPortalContact,
   postPortalContact,
@@ -84,6 +85,7 @@ router.post('/tenants/:tenantId/products/bulk', postPortalProductsBulk);
 router.get('/tenants/:tenantId/products/:productId', getPortalProduct);
 router.patch('/tenants/:tenantId/products/:productId', updatePortalProduct);
 router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProductStatus);
+router.delete('/tenants/:tenantId/products/:productId', destroyPortalProduct);
 router.get('/tenants/:tenantId/contacts', getPortalContacts);
 router.post('/tenants/:tenantId/contacts', postPortalContact);
 router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
