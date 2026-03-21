@@ -5,6 +5,15 @@ const {
   createPortalContact,
   updatePortalContactById
 } = require('../repositories/contact.repository');
+const { listInvoicesByContactId } = require('../repositories/invoices.repository');
+const { listPaymentsByContactId } = require('../repositories/payments.repository');
+const {
+  sumRecordedAllocatedAmountsByInvoiceIds,
+  sumRecordedAllocatedAmountsByPaymentIds
+} = require('../repositories/payment-allocations.repository');
+const { buildContactFinancialSnapshot } = require('./contact-financial-snapshot.service');
+const { calculateInvoiceReceivable, calculatePaymentAllocationSnapshot } = require('./invoice-balance.service');
+const { getLoyaltyContactSnapshotByClinicId } = require('./portal-loyalty.service');
 
 function normalizeNullableText(value) {
   const safeValue = String(value || '').trim();
@@ -47,6 +56,41 @@ function normalizeContact(row) {
     },
     relatedDocuments: [],
     relatedPayments: []
+  };
+}
+
+function normalizeRelatedDocument(document, paidAmount = 0) {
+  const receivable = calculateInvoiceReceivable({
+    invoice: document,
+    paidAmount
+  });
+
+  return {
+    id: document.id,
+    invoiceNumber: document.invoiceNumber || null,
+    type: document.type || 'invoice',
+    status: document.status || 'draft',
+    currency: document.currency || 'ARS',
+    totalAmount: Number(document.totalAmount || 0),
+    paidAmount: Number(receivable.paidAmount || 0),
+    outstandingAmount: Number(receivable.outstandingAmount || 0),
+    issuedAt: document.issuedAt || null,
+    createdAt: document.createdAt || null
+  };
+}
+
+function normalizeRelatedPayment(payment, allocatedAmount = 0) {
+  const allocationSnapshot = calculatePaymentAllocationSnapshot({ payment, allocatedAmount });
+
+  return {
+    id: payment.id,
+    amount: Number(payment.amount || 0),
+    currency: payment.currency || 'ARS',
+    method: payment.method || 'other',
+    status: payment.status || 'recorded',
+    paidAt: payment.paidAt || null,
+    allocatedAmount: Number(allocationSnapshot.allocatedAmount || 0),
+    unallocatedAmount: Number(allocationSnapshot.unallocatedAmount || 0)
   };
 }
 
@@ -135,11 +179,38 @@ async function getPortalContactDetail(tenantId, contactId) {
     };
   }
 
+  const [financialSnapshot, documents, payments, loyaltySnapshot] = await Promise.all([
+    buildContactFinancialSnapshot({
+      clinicId: context.clinic.id,
+      contactId: contact.id
+    }),
+    listInvoicesByContactId(context.clinic.id, contact.id),
+    listPaymentsByContactId(context.clinic.id, contact.id),
+    getLoyaltyContactSnapshotByClinicId(context.clinic.id, contact.id)
+  ]);
+
+  const [paidByInvoiceId, allocatedByPaymentId] = await Promise.all([
+    sumRecordedAllocatedAmountsByInvoiceIds(
+      context.clinic.id,
+      documents.map((document) => document.id).filter(Boolean)
+    ),
+    sumRecordedAllocatedAmountsByPaymentIds(
+      context.clinic.id,
+      payments.map((payment) => payment.id).filter(Boolean)
+    )
+  ]);
+
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    contact: normalizeContact(contact)
+    contact: {
+      ...normalizeContact(contact),
+      financialSnapshot,
+      loyalty: loyaltySnapshot,
+      relatedDocuments: documents.map((document) => normalizeRelatedDocument(document, paidByInvoiceId[document.id] || 0)),
+      relatedPayments: payments.map((payment) => normalizeRelatedPayment(payment, allocatedByPaymentId[payment.id] || 0))
+    }
   };
 }
 

@@ -9,7 +9,7 @@ const {
   deleteProductById
 } = require('../repositories/products.repository');
 
-const PRODUCT_STATUSES = new Set(['active', 'inactive']);
+const PRODUCT_STATUSES = new Set(['active', 'archived']);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -20,22 +20,37 @@ function normalizeNumber(value) {
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
+function normalizeMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return value;
+}
+
 function buildProductPayload(payload, fallbackStatus = 'active') {
   const requestedStatus = normalizeString(payload && payload.status).toLowerCase();
+  const unitPrice = normalizeNumber(payload && (payload.unitPrice ?? payload.price));
+  const vatRate = normalizeNumber(payload && (payload.vatRate ?? payload.taxRate ?? 0));
+
   return {
     name: normalizeString(payload && payload.name),
     description: normalizeString(payload && payload.description) || null,
-    price: normalizeNumber(payload && payload.price),
+    unitPrice,
+    price: unitPrice,
     currency: normalizeString((payload && payload.currency) || 'ARS').toUpperCase() || 'ARS',
+    vatRate,
+    taxRate: vatRate,
     stock: Number.parseInt(String((payload && payload.stock) ?? (payload && payload.stockQty) ?? 0), 10),
     status: PRODUCT_STATUSES.has(requestedStatus) ? requestedStatus : fallbackStatus,
-    sku: normalizeString(payload && payload.sku) || null
+    sku: normalizeString(payload && payload.sku) || null,
+    metadata: normalizeMetadata(payload && payload.metadata)
   };
 }
 
 function validateProductPayload(product) {
   if (!product.name) return 'missing_product_name';
-  if (!Number.isFinite(product.price) || product.price < 0) return 'invalid_product_price';
+  if (!Number.isFinite(product.unitPrice) || product.unitPrice < 0) return 'invalid_product_price';
+  if (!Number.isFinite(product.vatRate) || product.vatRate < 0) return 'invalid_product_tax_rate';
   if (!Number.isInteger(product.stock) || product.stock < 0) return 'invalid_product_stock';
   if (!PRODUCT_STATUSES.has(product.status)) return 'invalid_product_status';
   return null;
