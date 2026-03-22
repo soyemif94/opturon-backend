@@ -2059,16 +2059,16 @@ async function processConversationReplyJob(job) {
     throw new Error('Invalid conversation_reply payload: missing conversationId/inboundMessageId/channelId/contactId');
   }
 
-  const [conversation, inboundMessage, channel, contact] = await Promise.all([
-    conversationRepo.getConversationById(conversationId),
+  const conversation = await conversationRepo.getConversationById(conversationId);
+  if (!conversation) {
+    throw new Error('Conversation not found in automation runtime');
+  }
+
+  const [inboundMessage, channel, contact] = await Promise.all([
     conversationRepo.getMessageById(inboundMessageId),
     findChannelById(channelId),
     findContactByIdAndClinicId(contactId, conversation.clinicId)
   ]);
-
-  if (!conversation) {
-    throw new Error('Conversation not found for conversation_reply job');
-  }
   if (!inboundMessage) {
     throw new Error('Inbound message not found for conversation_reply job');
   }
@@ -2091,6 +2091,15 @@ async function processConversationReplyJob(job) {
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
   const recentMessages = await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5);
+
+  logInfo('automation_runtime_start', {
+    requestId,
+    jobId: job.id,
+    clinicId: conversation.clinicId,
+    conversationId: conversation.id,
+    messageCount: Array.isArray(recentMessages) ? recentMessages.length : 0
+  });
+
   const automationRuntime = await resolveAutomationReplyForInbound({
     clinic,
     conversation,
