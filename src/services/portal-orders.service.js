@@ -7,20 +7,23 @@ const {
   createOrder,
   updateOrderStatus
 } = require('../repositories/orders.repository');
-const productsRepository = require('../repositories/products.repository');
+const {
+  findContactByIdAndClinicId
+} = require('../repositories/contact.repository');
+const {
+  findProductById,
+  updateProduct
+} = require('../repositories/products.repository');
+const { findConversationById } = require('../repositories/conversation.repository');
+const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
 
-const { findProductById, updateProduct } = productsRepository;
-
-const ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
+const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
+const LEGACY_ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
 const PAYMENT_STATUSES = new Set(['unpaid', 'pending', 'paid', 'refunded', 'cancelled']);
+const ORDER_SOURCES = new Set(['manual', 'inbox', 'automation', 'api']);
 
 function normalizeString(value) {
   return String(value || '').trim();
-}
-
-function normalizeNumber(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : NaN;
 }
 
 function normalizeCurrency(value, fallback = 'ARS') {
@@ -36,12 +39,67 @@ function buildError(tenantId, reason, details) {
   };
 }
 
-function createStockAdjuster(methodName, direction) {
-  const repositoryMethod = productsRepository[methodName];
-  if (typeof repositoryMethod === 'function') {
-    return repositoryMethod.bind(productsRepository);
+function normalizeOrderStatus(value) {
+  const requested = normalizeString(value).toLowerCase();
+  if (ORDER_STATUSES.has(requested)) {
+    return requested;
   }
+  if (requested === 'paid' || requested === 'preparing' || requested === 'ready' || requested === 'delivered') {
+    return 'confirmed';
+  }
+  if (requested === 'new' || requested === 'pending_payment') {
+    return 'draft';
+  }
+  if (requested === 'cancelled') {
+    return 'cancelled';
+  }
+  return 'draft';
+}
 
+function deriveLegacyOrderStatus(status) {
+  if (status === 'confirmed') return 'paid';
+  if (status === 'cancelled') return 'cancelled';
+  return 'new';
+}
+
+function derivePaymentStatus(orderStatus, paymentStatus) {
+  const safePaymentStatus = normalizeString(paymentStatus).toLowerCase();
+  if (PAYMENT_STATUSES.has(safePaymentStatus)) {
+    return safePaymentStatus;
+  }
+  if (orderStatus === 'confirmed') {
+    return 'paid';
+  }
+  if (orderStatus === 'cancelled') {
+    return 'cancelled';
+  }
+  return 'pending';
+}
+
+function normalizeItemDraft(item, fallbackCurrency) {
+  const quantity = Number(item.quantity || 0);
+  const unitPrice = quantizeDecimal(item.unitPrice ?? item.priceSnapshot, 2, NaN);
+  const taxRate = quantizeDecimal(item.taxRate ?? 0, 2, NaN);
+  const descriptionSnapshot = normalizeString(item.descriptionSnapshot || item.nameSnapshot);
+  const lineAmounts = calculateLineAmounts({ unitPrice, quantity, taxRate, quantityScale: 0 });
+  const subtotalAmount = quantizeDecimal(item.subtotalAmount ?? (lineAmounts && lineAmounts.subtotalAmount), 2, NaN);
+  const totalAmount = quantizeDecimal(item.totalAmount ?? (lineAmounts && lineAmounts.totalAmount), 2, NaN);
+
+  return {
+    productId: normalizeString(item.productId) || null,
+    descriptionSnapshot,
+    skuSnapshot: normalizeString(item.skuSnapshot) || null,
+    unitPrice,
+    currencySnapshot: normalizeCurrency(item.currencySnapshot, fallbackCurrency),
+    quantity,
+    taxRate,
+    subtotalAmount,
+    totalAmount,
+    variant: normalizeString(item.variant) || null
+  };
+}
+
+function createStockAdjuster(direction) {
   return async (productId, clinicId, quantity, client) => {
     const product = await findProductById(productId, clinicId, client);
     if (!product) {
@@ -62,33 +120,21 @@ function createStockAdjuster(methodName, direction) {
       {
         name: product.name,
         description: product.description,
-        price: product.price,
+        unitPrice: product.unitPrice,
         currency: product.currency,
+        vatRate: product.vatRate,
         stock: nextStock,
         status: product.status,
-        sku: product.sku
+        sku: product.sku,
+        metadata: product.metadata
       },
       client
     );
   };
 }
 
-const decrementProductStock = createStockAdjuster('decrementProductStock', 'decrement');
-const incrementProductStock = createStockAdjuster('incrementProductStock', 'increment');
-
-function derivePaymentStatus(orderStatus, paymentStatus) {
-  const safePaymentStatus = normalizeString(paymentStatus).toLowerCase();
-  if (PAYMENT_STATUSES.has(safePaymentStatus)) {
-    return safePaymentStatus;
-  }
-  if (orderStatus === 'paid' || orderStatus === 'preparing' || orderStatus === 'ready' || orderStatus === 'delivered') {
-    return 'paid';
-  }
-  if (orderStatus === 'cancelled') {
-    return 'cancelled';
-  }
-  return 'pending';
-}
+const decrementProductStock = createStockAdjuster('decrement');
+const incrementProductStock = createStockAdjuster('increment');
 
 async function listPortalOrders(tenantId) {
   const context = await resolvePortalTenantContext(tenantId);
@@ -138,13 +184,43 @@ async function getPortalOrderDetail(tenantId, orderId) {
 }
 
 async function createOrderForContext(context, payload) {
-  const customerName = normalizeString(payload && payload.customerName);
-  const customerPhone = normalizeString(payload && payload.customerPhone);
-  const notes = normalizeString(payload && payload.notes);
+  const contactId = normalizeString(payload && payload.contactId) || null;
+  const conversationId = normalizeString(payload && payload.conversationId) || null;
   const requestedCurrency = normalizeCurrency(payload && payload.currency, 'ARS');
-  const requestedOrderStatus = normalizeString((payload && payload.orderStatus) || 'new').toLowerCase();
-  const orderStatus = ORDER_STATUSES.has(requestedOrderStatus) ? requestedOrderStatus : 'new';
+  const orderStatus = normalizeOrderStatus((payload && (payload.status || payload.orderStatus)) || 'draft');
+  const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
+  const requestedSource = normalizeString(payload && payload.source).toLowerCase();
+  const source = ORDER_SOURCES.has(requestedSource) ? requestedSource : 'manual';
+  const notes = normalizeString(payload && payload.notes) || null;
   const itemsInput = Array.isArray(payload && payload.items) ? payload.items : [];
+
+  if (itemsInput.length === 0) {
+    return buildError(context.tenantId, 'missing_order_items');
+  }
+
+  let contact = null;
+  if (contactId) {
+    contact = await findContactByIdAndClinicId(contactId, context.clinic.id);
+    if (!contact) {
+      return buildError(context.tenantId, 'contact_not_found');
+    }
+  }
+
+  if (conversationId) {
+    const conversation = await findConversationById(conversationId);
+    if (!conversation || conversation.clinicId !== context.clinic.id) {
+      return buildError(context.tenantId, 'conversation_not_found');
+    }
+    if (contactId && conversation.contactId && conversation.contactId !== contactId) {
+      return buildError(context.tenantId, 'conversation_contact_scope_mismatch');
+    }
+  }
+
+  const customerName = normalizeString(payload && payload.customerName) || (contact && (contact.fullName || contact.name)) || null;
+  const customerPhone =
+    normalizeString(payload && payload.customerPhone) ||
+    (contact && (contact.phone || contact.whatsappPhone || contact.waId)) ||
+    null;
 
   if (!customerName) {
     return buildError(context.tenantId, 'missing_customer_name');
@@ -152,23 +228,30 @@ async function createOrderForContext(context, payload) {
   if (!customerPhone) {
     return buildError(context.tenantId, 'missing_customer_phone');
   }
-  if (itemsInput.length === 0) {
-    return buildError(context.tenantId, 'missing_order_items');
-  }
 
-  const rawItems = itemsInput.map((item) => ({
-    productId: normalizeString(item && item.productId) || null,
-    nameSnapshot: normalizeString(item && item.nameSnapshot),
-    priceSnapshot: normalizeNumber(item && item.priceSnapshot),
-    quantity: Number.parseInt(String(item && item.quantity), 10),
-    variant: normalizeString(item && item.variant) || null
-  }));
+  const rawItems = itemsInput.map((item) => normalizeItemDraft(item || {}, requestedCurrency));
+
+  if (
+    rawItems.some(
+      (item) =>
+        !Number.isFinite(item.unitPrice) ||
+        item.unitPrice < 0 ||
+        !Number.isFinite(item.taxRate) ||
+        item.taxRate < 0 ||
+        !Number.isFinite(item.quantity)
+    )
+  ) {
+    return buildError(context.tenantId, 'invalid_order_item_amount');
+  }
 
   if (rawItems.some((item) => !Number.isInteger(item.quantity) || item.quantity <= 0)) {
     return buildError(context.tenantId, 'invalid_order_item_quantity');
   }
 
-  const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
+  if (rawItems.some((item) => !item.productId && !item.descriptionSnapshot)) {
+    return buildError(context.tenantId, 'invalid_order_item_name');
+  }
+
   let transactionResult;
   try {
     transactionResult = await withTransaction(async (client) => {
@@ -181,10 +264,7 @@ async function createOrderForContext(context, payload) {
             return buildError(context.tenantId, 'order_item_product_not_found', `Product ${item.productId} was not found.`);
           }
           if (String(product.status || '').toLowerCase() !== 'active') {
-            return buildError(context.tenantId, 'order_item_product_inactive', `Product ${product.name} is inactive.`);
-          }
-          if (!Number.isFinite(product.price) || product.price < 0) {
-            return buildError(context.tenantId, 'invalid_order_item_price');
+            return buildError(context.tenantId, 'order_item_product_archived', `Product ${product.name} is archived.`);
           }
           if (Number(product.stock) < item.quantity) {
             return buildError(
@@ -194,31 +274,40 @@ async function createOrderForContext(context, payload) {
             );
           }
 
-          const productCurrency = normalizeCurrency(product.currency, requestedCurrency || 'ARS');
+          const unitPrice = quantizeDecimal(product.unitPrice ?? product.price ?? 0, 2, 0);
+          const taxRate = quantizeDecimal(product.vatRate ?? product.taxRate ?? 0, 2, 0);
+          const amounts = calculateLineAmounts({ unitPrice, quantity: item.quantity, taxRate, quantityScale: 0 });
+
           items.push({
             productId: product.id,
-            nameSnapshot: product.name,
+            descriptionSnapshot: item.descriptionSnapshot || product.description || product.name,
             skuSnapshot: normalizeString(product.sku) || null,
-            priceSnapshot: Number(product.price),
-            currencySnapshot: productCurrency,
+            unitPrice,
+            currencySnapshot: normalizeCurrency(product.currency, requestedCurrency || 'ARS'),
             quantity: item.quantity,
+            taxRate,
+            subtotalAmount: amounts.subtotalAmount,
+            totalAmount: amounts.totalAmount,
             variant: item.variant || null
           });
         } else {
-          if (!item.nameSnapshot) {
-            return buildError(context.tenantId, 'invalid_order_item_name');
-          }
-          if (!Number.isFinite(item.priceSnapshot) || item.priceSnapshot < 0) {
-            return buildError(context.tenantId, 'invalid_order_item_price');
-          }
+          const amounts = calculateLineAmounts({
+            unitPrice: item.unitPrice,
+            quantity: item.quantity,
+            taxRate: item.taxRate,
+            quantityScale: 0
+          });
 
           items.push({
             productId: null,
-            nameSnapshot: item.nameSnapshot,
-            skuSnapshot: null,
-            priceSnapshot: item.priceSnapshot,
-            currencySnapshot: normalizeCurrency(requestedCurrency, 'ARS'),
+            descriptionSnapshot: item.descriptionSnapshot,
+            skuSnapshot: item.skuSnapshot,
+            unitPrice: item.unitPrice,
+            currencySnapshot: normalizeCurrency(item.currencySnapshot, requestedCurrency),
             quantity: item.quantity,
+            taxRate: item.taxRate,
+            subtotalAmount: amounts.subtotalAmount,
+            totalAmount: amounts.totalAmount,
             variant: item.variant || null
           });
         }
@@ -232,26 +321,32 @@ async function createOrderForContext(context, payload) {
           return buildError(
             context.tenantId,
             'order_item_insufficient_stock',
-            `Not enough stock to reserve ${item.quantity} unit(s) for ${item.nameSnapshot}.`
+            `Not enough stock to reserve ${item.quantity} unit(s) for ${item.descriptionSnapshot}.`
           );
         }
       }
 
       const orderCurrency = normalizeCurrency(items[0] && items[0].currencySnapshot, requestedCurrency || 'ARS');
-      const subtotal = Number(items.reduce((sum, item) => sum + item.priceSnapshot * item.quantity, 0).toFixed(2));
+      const subtotalAmount = sumQuantized(items.map((item) => item.subtotalAmount), 2);
+      const totalAmount = sumQuantized(items.map((item) => item.totalAmount), 2);
+      const taxAmount = quantizeDecimal(totalAmount - subtotalAmount, 2, 0);
 
       const order = await createOrder(
         {
           clinicId: context.clinic.id,
-          contactId: normalizeString(payload && payload.contactId) || null,
+          contactId,
           customerName,
           customerPhone,
-          notes: notes || null,
-          subtotal,
-          total: subtotal,
+          source,
+          status: orderStatus,
+          orderStatus: deriveLegacyOrderStatus(orderStatus),
+          notes,
+          subtotalAmount,
+          taxAmount,
+          totalAmount,
           currency: orderCurrency,
           paymentStatus,
-          orderStatus,
+          conversationId,
           items
         },
         client
@@ -259,9 +354,7 @@ async function createOrderForContext(context, payload) {
 
       return {
         ok: true,
-        order,
-        currency: orderCurrency,
-        itemCount: items.length
+        order
       };
     });
   } catch (error) {
@@ -328,8 +421,8 @@ async function patchOrderStatusForContext(context, orderId, payload) {
     };
   }
 
-  const requestedOrderStatus = normalizeString(payload && payload.orderStatus).toLowerCase();
-  if (!ORDER_STATUSES.has(requestedOrderStatus)) {
+  const requestedRawStatus = normalizeString(payload && (payload.status || payload.orderStatus)).toLowerCase();
+  if (!ORDER_STATUSES.has(normalizeOrderStatus(requestedRawStatus)) && !LEGACY_ORDER_STATUSES.has(requestedRawStatus)) {
     return {
       ok: false,
       tenantId: context.tenantId,
@@ -337,6 +430,7 @@ async function patchOrderStatusForContext(context, orderId, payload) {
     };
   }
 
+  const requestedOrderStatus = normalizeOrderStatus(requestedRawStatus);
   const paymentStatus = derivePaymentStatus(requestedOrderStatus, payload && payload.paymentStatus);
   let transactionResult;
   try {
@@ -346,14 +440,14 @@ async function patchOrderStatusForContext(context, orderId, payload) {
         return buildError(context.tenantId, 'order_not_found');
       }
 
-      if (currentOrder.orderStatus === requestedOrderStatus) {
+      if (currentOrder.status === requestedOrderStatus) {
         return {
           ok: true,
           order: currentOrder
         };
       }
 
-      if (requestedOrderStatus === 'cancelled' && currentOrder.orderStatus !== 'cancelled') {
+      if (requestedOrderStatus === 'cancelled' && currentOrder.status !== 'cancelled') {
         for (const item of currentOrder.items || []) {
           if (!item.productId) continue;
 
@@ -372,7 +466,8 @@ async function patchOrderStatusForContext(context, orderId, payload) {
         safeOrderId,
         context.clinic.id,
         {
-          orderStatus: requestedOrderStatus,
+          status: requestedOrderStatus,
+          orderStatus: deriveLegacyOrderStatus(requestedOrderStatus),
           paymentStatus
         },
         client

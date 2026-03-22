@@ -70,6 +70,16 @@ async function processInboundMessages({ body, headers, requestId }) {
   for (const event of events) {
     received += 1;
     try {
+      logInfo('conversation_inbound_received', {
+        requestId,
+        phoneNumberId: event.phoneNumberId || null,
+        waFrom: event.waFrom || null,
+        waTo: event.waTo || null,
+        waMessageId: event.waMessageId || null,
+        type: event.type || null,
+        text: event.text || null
+      });
+
       const channel = await findChannelByPhoneNumberId(event.phoneNumberId || '');
       if (!channel) {
         unrouted += 1;
@@ -126,6 +136,17 @@ async function processInboundMessages({ body, headers, requestId }) {
         continue;
       }
 
+      logInfo('conversation_enqueue_attempt', {
+        requestId,
+        clinicId: channel.clinicId,
+        channelId: channel.id,
+        contactId: contact.id,
+        conversationId: conversation.id,
+        waMessageId: event.waMessageId || null,
+        inboundMessageId: inboundWrite && inboundWrite.row ? inboundWrite.row.id : null,
+        jobType: 'conversation_reply'
+      });
+
       const job = await repo.enqueueJob('conversation_reply', {
         clinicId: channel.clinicId,
         channelId: channel.id,
@@ -139,7 +160,11 @@ async function processInboundMessages({ body, headers, requestId }) {
       logInfo('conversation_reply_enqueued', {
         requestId,
         jobId: job ? job.id : null,
+        clinicId: channel.clinicId,
+        channelId: channel.id,
         conversationId: conversation.id,
+        contactId: contact.id,
+        inboundMessageId: inboundWrite && inboundWrite.row ? inboundWrite.row.id : null,
         waMessageId: event.waMessageId
       });
     } catch (error) {

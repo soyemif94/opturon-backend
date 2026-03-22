@@ -8,37 +8,31 @@ dotenv.config({ path: envPath });
 
 const createApp = require('./app');
 const env = require('./config/env');
-const { logInfo } = require('./utils/logger');
+const { logInfo, logWarn, logError } = require('./utils/logger');
 const { autoDetectPhoneNumberId } = require('./whatsapp/whatsapp.service');
 const buildInfo = require('./utils/build');
-
-env.validateEnvOrExit();
 
 const app = createApp();
 const host = '0.0.0.0';
 const runWorkerInWeb = String(process.env.RUN_WORKER_IN_WEB || '').trim().toLowerCase() === 'true';
 const expectedMetaAppSecret = 'b6259ab44b50ea6976c928cd5d8c6932';
+const envValidation = env.collectEnvValidation();
 
 function fingerprint(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex');
 }
 
-console.log('[BOOT]', {
+logInfo('server_starting', {
+  host,
+  port: env.port,
+  env: env.nodeEnv,
+  pid: process.pid,
+  buildId: buildInfo.buildId,
   cwd: process.cwd(),
   envPath: buildInfo.envPath,
-  envExists: buildInfo.envExists
-});
-
-console.log('[BUILD]', {
-  buildId: buildInfo.buildId,
-  pid: process.pid,
-  file: buildInfo.file,
-  cwd: buildInfo.cwd
-});
-
-console.log('[ENV]', {
-  WHATSAPP_DEBUG: env.whatsappDebug,
-  DEBUG_API_ENABLED: env.debugApiEnabled
+  envExists: buildInfo.envExists,
+  runWorkerInWeb,
+  envValidation
 });
 
 if (env.whatsappDebug && env.debugApiEnabled) {
@@ -51,7 +45,7 @@ server.headersTimeout = 35000;
 server.keepAliveTimeout = 5000;
 
 server.listen(env.port, host, () => {
-  logInfo('Server started', {
+  logInfo('server_started', {
     host,
     port: env.port,
     env: env.nodeEnv,
@@ -62,6 +56,14 @@ server.listen(env.port, host, () => {
     debugEnabled: env.whatsappDebug,
     tokenLen: env.whatsappAccessToken.length
   });
+
+  if (envValidation.warnings.length > 0) {
+    logWarn('server_started_with_env_warnings', {
+      port: env.port,
+      env: env.nodeEnv,
+      warnings: envValidation.warnings
+    });
+  }
 
   logInfo('meta_app_secret_runtime_check', {
     exists: Boolean(env.metaAppSecret),
@@ -75,7 +77,8 @@ server.listen(env.port, host, () => {
 
   if (runWorkerInWeb) {
     const { startWorker } = require('./worker');
-    logInfo('worker_embed_requested', {
+    logInfo('worker_started', {
+      source: 'web_server',
       enabled: true
     });
     startWorker();
@@ -103,5 +106,15 @@ server.listen(env.port, host, () => {
       );
     });
   }
+});
+
+server.on('error', (error) => {
+  logError('server_start_failed', {
+    host,
+    port: env.port,
+    env: env.nodeEnv,
+    error: error.message
+  });
+  process.exit(1);
 });
 

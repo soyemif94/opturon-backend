@@ -94,6 +94,7 @@ const env = {
   aiEnabledChannelIds: parseCsvList(process.env.AI_ENABLED_CHANNEL_IDS, []),
   aiDisabledChannelIds: parseCsvList(process.env.AI_DISABLED_CHANNEL_IDS, []),
   autoReplyEnabled: parseBoolean(process.env.AUTO_REPLY_ENABLED, false),
+  legacyWebhookAutoReplyEnabled: parseBoolean(process.env.LEGACY_WEBHOOK_AUTO_REPLY_ENABLED, false),
 
   storageMode: String(process.env.STORAGE_MODE || 'json').trim().toLowerCase(),
   jsonDbPath: String(process.env.JSON_DB_PATH || './data/patients.json').trim(),
@@ -113,39 +114,46 @@ const env = {
   portalInternalKey: String(process.env.PORTAL_INTERNAL_KEY || '').trim()
 };
 
-function validateEnvOrExit() {
+function collectEnvValidation() {
   const missing = [];
 
   if (!env.port) {
     missing.push('PORT (positive integer)');
   }
 
-  if (!env.whatsappAccessToken) {
-    missing.push('WHATSAPP_ACCESS_TOKEN');
-  }
-
-  if (!env.whatsappPhoneNumberId) {
-    missing.push('WHATSAPP_PHONE_NUMBER_ID');
-  }
-
-  if (!env.metaVerifyToken) {
-    missing.push('META_VERIFY_TOKEN');
-  }
-
-  if (!env.databaseUrl) {
-    missing.push('DATABASE_URL');
-  }
-
   if (env.whatsappDebug && !env.whatsappDebugKey) {
     missing.push('WHATSAPP_DEBUG_KEY (required when WHATSAPP_DEBUG=true)');
   }
 
-  if (missing.length > 0) {
+  const warnings = [];
+  if (!env.whatsappAccessToken) warnings.push('WHATSAPP_ACCESS_TOKEN');
+  if (!env.whatsappPhoneNumberId) warnings.push('WHATSAPP_PHONE_NUMBER_ID');
+  if (!env.metaVerifyToken) warnings.push('META_VERIFY_TOKEN');
+  if (!env.databaseUrl) warnings.push('DATABASE_URL');
+
+  return {
+    missing,
+    warnings,
+    ok: missing.length === 0
+  };
+}
+
+function validateEnvOrExit() {
+  const validation = collectEnvValidation();
+
+  if (validation.missing.length > 0) {
     logError('Environment validation failed', {
-      missing,
+      missing: validation.missing,
       nodeEnv: env.nodeEnv
     });
     process.exit(1);
+  }
+
+  if (validation.warnings.length > 0) {
+    logWarn('Environment validation warnings', {
+      warnings: validation.warnings,
+      nodeEnv: env.nodeEnv
+    });
   }
 
   if (!env.metaAppSecret && env.verifySignature) {
@@ -176,6 +184,7 @@ function validateEnvOrExit() {
 
 module.exports = {
   ...env,
+  collectEnvValidation,
   validateEnvOrExit,
   getWhatsAppGraphVersion: () => resolvedWhatsAppGraphVersion
 };

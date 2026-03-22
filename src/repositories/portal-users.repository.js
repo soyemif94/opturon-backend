@@ -133,11 +133,67 @@ async function findPortalUserByEmail(email, client = null) {
   return result.rows[0] || null;
 }
 
+async function findPortalUserByIdAndClinicId(userId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            "clinicId",
+            name,
+            email,
+            CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+            active,
+            "createdAt",
+            "updatedAt"
+     FROM staff_users
+     WHERE id = $1
+       AND "clinicId" = $2
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND email IS NOT NULL
+       AND active = TRUE
+       AND role IN ${PORTAL_ROLE_SQL}
+     LIMIT 1`,
+    [userId, clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function findPortalUserByNameAndClinicId(name, clinicId, client = null) {
+  const safeName = String(name || '').trim();
+  if (!safeName) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            "clinicId",
+            name,
+            email,
+            CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+            active,
+            "createdAt",
+            "updatedAt"
+     FROM staff_users
+     WHERE "clinicId" = $1
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND email IS NOT NULL
+       AND active = TRUE
+       AND role IN ${PORTAL_ROLE_SQL}
+       AND LOWER(name) = LOWER($2)
+     ORDER BY "createdAt" ASC
+     LIMIT 1`,
+    [clinicId, safeName]
+  );
+
+  return result.rows[0] || null;
+}
+
 module.exports = {
   countOwnersByClinicId,
   listPortalUsersByClinicId,
   createPortalUser,
   updatePortalUserRole,
   deletePortalUserById,
-  findPortalUserByEmail
+  findPortalUserByEmail,
+  findPortalUserByIdAndClinicId,
+  findPortalUserByNameAndClinicId
 };

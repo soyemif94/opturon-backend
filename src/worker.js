@@ -19,6 +19,7 @@ const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
 const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
 const { createOrderForClinic, patchOrderStatusForClinic } = require('./services/portal-orders.service');
+const { evaluateConversationAutomation } = require('./services/automation-runtime.service');
 const { generateReply } = require('./ai/openai.client');
 const { buildAiMessages } = require('./ai/context.builder');
 const {
@@ -1190,7 +1191,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       if (
         orderResult.reason === 'order_item_insufficient_stock' ||
         orderResult.reason === 'order_item_product_not_found' ||
-        orderResult.reason === 'order_item_product_inactive'
+        orderResult.reason === 'order_item_product_inactive' ||
+        orderResult.reason === 'order_item_product_archived'
       ) {
         const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
         logInfo('commerce_order_create_failed_stock', {
@@ -2115,33 +2117,55 @@ async function processConversationReplyJob(job) {
 
   let decision = null;
   let decisionSource = null;
-  decision = await resolveCommerceDecision({
+  decision = await evaluateConversationAutomation({
+    clinicId: conversation.clinicId,
     conversation,
-    clinic,
     contact,
     inboundText
   });
   if (decision) {
-    decisionSource = 'commerce';
-    logInfo('commerce_flow_entered', {
+    decisionSource = decision.source || 'conversation_automation';
+    logInfo('conversation_automation_matched', {
       requestId,
       jobId: job.id,
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
       currentState,
       nextState: decision.newState || null,
-      inboundText: normalizedInboundText
-    });
-  } else {
-    logInfo('commerce_flow_skipped', {
-      requestId,
-      jobId: job.id,
-      conversationId: conversation.id,
-      clinicId: conversation.clinicId,
-      currentState,
       inboundText: normalizedInboundText,
-      reason: inboundLooksLikeCommerce ? 'resolve_commerce_returned_null' : 'not_a_commerce_command'
+      source: decisionSource
     });
+  }
+
+  if (!decision) {
+  decision = await resolveCommerceDecision({
+    conversation,
+    clinic,
+    contact,
+    inboundText
+  });
+    if (decision) {
+      decisionSource = 'commerce';
+      logInfo('commerce_flow_entered', {
+        requestId,
+        jobId: job.id,
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        currentState,
+        nextState: decision.newState || null,
+        inboundText: normalizedInboundText
+      });
+    } else {
+      logInfo('commerce_flow_skipped', {
+        requestId,
+        jobId: job.id,
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        currentState,
+        inboundText: normalizedInboundText,
+        reason: inboundLooksLikeCommerce ? 'resolve_commerce_returned_null' : 'not_a_commerce_command'
+      });
+    }
   }
 
   const managementIntent = detectTurnManagementIntent(inboundText);
@@ -2775,6 +2799,17 @@ async function processConversationReplyJob(job) {
     }
   );
 
+  logInfo('conversation_reply_worker_sent', {
+    requestId,
+    sourcePath: 'worker.conversation_reply',
+    jobId: job.id,
+    clinicId: conversation.clinicId || job.clinicId || null,
+    conversationId: conversation.id,
+    waMessageId,
+    outboundMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
+    automationSource: decisionSource || null
+  });
+
   const outboundWrite = await conversationRepo.insertOutboundMessage({
     conversationId: conversation.id,
     waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
@@ -2784,6 +2819,11 @@ async function processConversationReplyJob(job) {
     text: replyText,
     raw: {
       ...(sendResult && sendResult.raw ? sendResult.raw : {}),
+      automation: {
+        source: decisionSource || null,
+        automationId: decision && decision.automation ? decision.automation.id || null : null,
+        automationName: decision && decision.automation ? decision.automation.name || null : null
+      },
       ai: {
         enabled: aiEnabled && hasAiKey,
         attempted: aiAttempted,

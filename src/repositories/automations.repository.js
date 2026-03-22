@@ -35,6 +35,20 @@ async function listAutomationsByClinicId(clinicId, client = null) {
   return result.rows.map(normalizeAutomation);
 }
 
+async function findAutomationByClinicIdAndName(clinicId, name, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", "externalTenantId", name, trigger, conditions, actions, enabled, "createdAt", "updatedAt"
+     FROM automations
+     WHERE "clinicId" = $1::uuid
+       AND LOWER(name) = LOWER($2)
+     LIMIT 1`,
+    [clinicId, name]
+  );
+
+  return result.rows[0] ? normalizeAutomation(result.rows[0]) : null;
+}
+
 async function createAutomation(input, client = null) {
   const result = await dbQuery(
     client,
@@ -64,7 +78,37 @@ async function createAutomation(input, client = null) {
   return result.rows[0] ? normalizeAutomation(result.rows[0]) : null;
 }
 
+async function updateAutomation(id, input, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE automations
+     SET
+       "externalTenantId" = $2,
+       name = $3,
+       trigger = $4::jsonb,
+       conditions = $5::jsonb,
+       actions = $6::jsonb,
+       enabled = $7,
+       "updatedAt" = NOW()
+     WHERE id = $1::uuid
+     RETURNING id, "clinicId", "externalTenantId", name, trigger, conditions, actions, enabled, "createdAt", "updatedAt"`,
+    [
+      id,
+      input.externalTenantId || null,
+      input.name,
+      JSON.stringify(input.trigger || {}),
+      JSON.stringify(input.conditions || {}),
+      JSON.stringify(input.actions || []),
+      input.enabled !== false
+    ]
+  );
+
+  return result.rows[0] ? normalizeAutomation(result.rows[0]) : null;
+}
+
 module.exports = {
   listAutomationsByClinicId,
-  createAutomation
+  findAutomationByClinicIdAndName,
+  createAutomation,
+  updateAutomation
 };

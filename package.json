@@ -14,6 +14,7 @@
     "db:sync:wa-channel": "node src/db/sync-whatsapp-channel.js",
     "db:init": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup/postgres-init.ps1",
     "db:seed": "node src/db/seed.js",
+    "db:seed:conversation-automations": "node src/db/seed-conversation-automations.js",
     "prod:install-tasks": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup/install-tasks.ps1",
     "prod:uninstall-tasks": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup/uninstall-tasks.ps1",
     "prod:run-now": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup/run-now.ps1",

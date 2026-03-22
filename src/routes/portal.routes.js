@@ -15,7 +15,35 @@ const {
   postPortalProductsBulk,
   updatePortalProduct,
   updatePortalProductStatus,
+  destroyPortalProduct,
   getPortalContacts,
+  getPortalContact,
+  postPortalContact,
+  patchPortalContact,
+  getPortalInvoices,
+  getPortalInvoice,
+  getPortalInvoiceAllocations,
+  postPortalInvoice,
+  patchPortalInvoice,
+  postPortalInvoiceIssue,
+  postPortalInvoiceVoid,
+  getPortalPayments,
+  getPortalPayment,
+  getPortalPaymentAllocations,
+  postPortalPayment,
+  postPortalPaymentAllocation,
+  postPortalPaymentVoid,
+  getPortalSalesSummary,
+  getPortalSalesMetrics,
+  getPortalSalesOpportunities,
+  getPortalLoyaltyProgramController,
+  patchPortalLoyaltyProgramController,
+  getPortalLoyaltyRewardsController,
+  postPortalLoyaltyRewardController,
+  patchPortalLoyaltyRewardController,
+  getPortalLoyaltyContactController,
+  getPortalLoyaltyOverviewController,
+  postPortalLoyaltyRedeemController,
   getPortalAutomations,
   getPortalBusiness,
   getPortalUsers,
@@ -57,7 +85,35 @@ router.post('/tenants/:tenantId/products/bulk', postPortalProductsBulk);
 router.get('/tenants/:tenantId/products/:productId', getPortalProduct);
 router.patch('/tenants/:tenantId/products/:productId', updatePortalProduct);
 router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProductStatus);
+router.delete('/tenants/:tenantId/products/:productId', destroyPortalProduct);
 router.get('/tenants/:tenantId/contacts', getPortalContacts);
+router.post('/tenants/:tenantId/contacts', postPortalContact);
+router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
+router.patch('/tenants/:tenantId/contacts/:contactId', patchPortalContact);
+router.get('/tenants/:tenantId/invoices', getPortalInvoices);
+router.post('/tenants/:tenantId/invoices', postPortalInvoice);
+router.get('/tenants/:tenantId/invoices/:invoiceId', getPortalInvoice);
+router.get('/tenants/:tenantId/invoices/:invoiceId/allocations', getPortalInvoiceAllocations);
+router.patch('/tenants/:tenantId/invoices/:invoiceId', patchPortalInvoice);
+router.post('/tenants/:tenantId/invoices/:invoiceId/issue', postPortalInvoiceIssue);
+router.post('/tenants/:tenantId/invoices/:invoiceId/void', postPortalInvoiceVoid);
+router.get('/tenants/:tenantId/payments', getPortalPayments);
+router.post('/tenants/:tenantId/payments', postPortalPayment);
+router.get('/tenants/:tenantId/payments/:paymentId', getPortalPayment);
+router.get('/tenants/:tenantId/payments/:paymentId/allocations', getPortalPaymentAllocations);
+router.post('/tenants/:tenantId/payments/:paymentId/allocations', postPortalPaymentAllocation);
+router.post('/tenants/:tenantId/payments/:paymentId/void', postPortalPaymentVoid);
+router.get('/tenants/:tenantId/sales/summary', getPortalSalesSummary);
+router.get('/tenants/:tenantId/sales/metrics', getPortalSalesMetrics);
+router.get('/tenants/:tenantId/sales/opportunities', getPortalSalesOpportunities);
+router.get('/tenants/:tenantId/loyalty/program', requirePortalInternalAuth, getPortalLoyaltyProgramController);
+router.patch('/tenants/:tenantId/loyalty/program', requirePortalInternalAuth, patchPortalLoyaltyProgramController);
+router.get('/tenants/:tenantId/loyalty/rewards', requirePortalInternalAuth, getPortalLoyaltyRewardsController);
+router.post('/tenants/:tenantId/loyalty/rewards', requirePortalInternalAuth, postPortalLoyaltyRewardController);
+router.patch('/tenants/:tenantId/loyalty/rewards/:rewardId', requirePortalInternalAuth, patchPortalLoyaltyRewardController);
+router.get('/tenants/:tenantId/loyalty/contacts/:contactId', requirePortalInternalAuth, getPortalLoyaltyContactController);
+router.get('/tenants/:tenantId/loyalty/overview', requirePortalInternalAuth, getPortalLoyaltyOverviewController);
+router.post('/tenants/:tenantId/loyalty/redemptions', requirePortalInternalAuth, postPortalLoyaltyRedeemController);
 router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
 router.post('/tenants/:tenantId/automations', requirePortalInternalAuth, postPortalAutomation);
 router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBusiness);

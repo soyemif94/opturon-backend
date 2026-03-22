@@ -290,7 +290,16 @@ function extractInboxObservedEvents(payload) {
 }
 
 async function runAutoReplyIfEnabled(req, textEvents) {
-  if (!env.autoReplyEnabled) {
+  if (!env.autoReplyEnabled || !env.legacyWebhookAutoReplyEnabled) {
+    logInfo(
+      'legacy_auto_reply_skipped',
+      withRequestMeta(req, {
+        sourcePath: 'webhook.observeAndAutoReply',
+        autoReplyEnabled: env.autoReplyEnabled === true,
+        legacyWebhookAutoReplyEnabled: env.legacyWebhookAutoReplyEnabled === true,
+        textEventsCount: Array.isArray(textEvents) ? textEvents.length : 0
+      })
+    );
     return;
   }
 
@@ -317,6 +326,18 @@ async function runAutoReplyIfEnabled(req, textEvents) {
     const replyText = buildAutoReplyText(rule);
 
     try {
+      logInfo(
+        'legacy_auto_reply_entered',
+        withRequestMeta(req, {
+          sourcePath: 'webhook.observeAndAutoReply',
+          to: event.from,
+          messageId: event.messageId || null,
+          phoneNumberId: event.phoneNumberId || null,
+          rule,
+          inboundText: event.text || null
+        })
+      );
+
       const channel = await findChannelByPhoneNumberId(event.phoneNumberId);
       if (!channel) {
         logWarn(
@@ -362,8 +383,9 @@ async function runAutoReplyIfEnabled(req, textEvents) {
         }
       );
       logInfo(
-        'webhook_auto_reply_sent',
+        'legacy_auto_reply_sent',
         withRequestMeta(req, {
+          sourcePath: 'webhook.observeAndAutoReply',
           clinicId: channel.clinicId || null,
           channelId: channel.id || null,
           to: event.from,
@@ -374,8 +396,9 @@ async function runAutoReplyIfEnabled(req, textEvents) {
       );
     } catch (error) {
       logWarn(
-        'webhook_auto_reply_failed',
+        'legacy_auto_reply_failed',
         withRequestMeta(req, {
+          sourcePath: 'webhook.observeAndAutoReply',
           to: event.from,
           messageId: event.messageId || null,
           rule,
@@ -388,6 +411,14 @@ async function runAutoReplyIfEnabled(req, textEvents) {
 
 async function observeAndAutoReply(req, payload) {
   const observed = extractInboxObservedEvents(payload);
+  logInfo(
+    'legacy_auto_reply_observer_entered',
+    withRequestMeta(req, {
+      sourcePath: 'webhook.observeAndAutoReply',
+      observedItems: observed.items.length,
+      textEvents: observed.textEvents.length
+    })
+  );
   observed.items.forEach((item) => {
     pushInboxItem(item);
   });

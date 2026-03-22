@@ -47,7 +47,7 @@ function createApp() {
   app.use(globalLimiter);
 
   app.get('/health', (req, res) => {
-    res.status(200).json({ ok: true, service: 'odontology-automation-api' });
+    res.status(200).json({ status: 'ok' });
   });
 
   app.use('/webhook', webhookLimiter, webhookRoutes);
