@@ -19,6 +19,7 @@ const {
   createPortalInvoice,
   updatePortalInvoice,
   updatePortalInvoiceAccounting,
+  updatePortalInvoicesBulkStatus,
   issuePortalInvoice,
   voidPortalInvoice,
   exportPortalInvoicesCsv,
@@ -961,6 +962,44 @@ async function getPortalInvoicesCsvExport(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_invoice_export_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalInvoicesBulkStatus(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await updatePortalInvoicesBulkStatus(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_invoice_ids' ||
+        result.reason === 'invalid_fiscal_status'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        fiscalStatus: result.fiscalStatus,
+        invoices: result.updatedInvoices
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_bulk_status_failed',
       details: error.message
     });
   }
@@ -2327,6 +2366,7 @@ module.exports = {
   postPortalInvoice,
   patchPortalInvoice,
   patchPortalInvoiceAccountingController,
+  patchPortalInvoicesBulkStatus,
   getPortalInvoicesCsvExport,
   getPortalInvoiceDocumentController,
   postPortalInvoiceIssue,

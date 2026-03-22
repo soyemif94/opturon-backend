@@ -72,9 +72,18 @@ function mapLegacyDocumentKindToVoucherType(rawDocumentKind) {
 function buildIssuerSnapshot(clinic, businessProfile, invoice = {}) {
   const profile = businessProfile && typeof businessProfile === 'object' ? businessProfile : {};
   return {
-    issuerLegalName: normalizeString(invoice.issuerLegalName || profile.issuerLegalName || clinic?.name) || null,
-    issuerTaxId: normalizeString(invoice.issuerTaxId || profile.issuerTaxId) || null,
-    issuerVatCondition: normalizeString(invoice.issuerVatCondition || profile.issuerVatCondition) || null
+    issuerLegalName: normalizeString(invoice.issuerLegalName || profile.legalName || profile.issuerLegalName || clinic?.name) || null,
+    issuerTaxId: normalizeString(invoice.issuerTaxId || profile.taxId || profile.issuerTaxId) || null,
+    issuerTaxIdType: normalizeEnum(invoice.issuerTaxIdType || profile.taxIdType, TAX_ID_TYPES, inferTaxIdType(invoice.issuerTaxId || profile.taxId)),
+    issuerVatCondition: normalizeString(invoice.issuerVatCondition || profile.vatCondition || profile.issuerVatCondition) || null,
+    issuerGrossIncomeNumber: normalizeString(invoice.issuerGrossIncomeNumber || profile.grossIncomeNumber) || null,
+    issuerFiscalAddress: normalizeString(invoice.issuerFiscalAddress || profile.fiscalAddress || profile.address) || null,
+    issuerCity: normalizeString(invoice.issuerCity || profile.city) || null,
+    issuerProvince: normalizeString(invoice.issuerProvince || profile.province) || null,
+    pointOfSaleSuggested: normalizeString(invoice.pointOfSaleSuggested || profile.pointOfSaleSuggested) || null,
+    defaultSuggestedFiscalVoucherType: normalizeEnum(profile.defaultSuggestedFiscalVoucherType, SUGGESTED_VOUCHER_TYPES, 'NONE'),
+    accountantName: normalizeString(profile.accountantName) || null,
+    accountantEmail: normalizeString(profile.accountantEmail) || null
   };
 }
 
@@ -125,13 +134,34 @@ function buildAccountingSnapshot({ clinic, businessProfile, contact, invoice = {
     customerVatCondition: normalizeString(payload.customerVatCondition ?? customer.customerVatCondition) || null,
     issuerLegalName: normalizeString(payload.issuerLegalName ?? issuer.issuerLegalName) || null,
     issuerTaxId: normalizeString(payload.issuerTaxId ?? issuer.issuerTaxId) || null,
+    issuerTaxIdType: normalizeEnum(payload.issuerTaxIdType || issuer.issuerTaxIdType, TAX_ID_TYPES, issuer.issuerTaxIdType || 'NONE'),
     issuerVatCondition: normalizeString(payload.issuerVatCondition ?? issuer.issuerVatCondition) || null,
-    suggestedFiscalVoucherType: normalizeEnum(suggestedVoucherFromPayload, SUGGESTED_VOUCHER_TYPES, 'NONE'),
+    issuerGrossIncomeNumber: normalizeString(payload.issuerGrossIncomeNumber ?? issuer.issuerGrossIncomeNumber) || null,
+    issuerFiscalAddress: normalizeString(payload.issuerFiscalAddress ?? issuer.issuerFiscalAddress) || null,
+    issuerCity: normalizeString(payload.issuerCity ?? issuer.issuerCity) || null,
+    issuerProvince: normalizeString(payload.issuerProvince ?? issuer.issuerProvince) || null,
+    pointOfSaleSuggested: normalizeString(payload.pointOfSaleSuggested ?? issuer.pointOfSaleSuggested) || null,
+    suggestedFiscalVoucherType: normalizeEnum(suggestedVoucherFromPayload || issuer.defaultSuggestedFiscalVoucherType, SUGGESTED_VOUCHER_TYPES, 'NONE'),
     accountantNotes: normalizeString(payload.accountantNotes ?? invoice.accountantNotes) || null,
     deliveredToAccountantAt: payload.deliveredToAccountantAt ?? invoice.deliveredToAccountantAt ?? null,
     invoicedByAccountantAt: payload.invoicedByAccountantAt ?? invoice.invoicedByAccountantAt ?? null,
     accountantReferenceNumber: normalizeString(payload.accountantReferenceNumber ?? invoice.accountantReferenceNumber) || null
   };
+}
+
+function buildInvoiceMissingDataFlags(invoice) {
+  const flags = [];
+  if (!normalizeString(invoice.customerTaxId)) flags.push('missing_customer_tax_id');
+  if (!normalizeString(invoice.customerVatCondition)) flags.push('missing_customer_vat_condition');
+  if (!normalizeString(invoice.customerLegalName)) flags.push('missing_customer_legal_name');
+  if (!normalizeString(invoice.issuerLegalName)) flags.push('missing_issuer_legal_name');
+  if (!normalizeString(invoice.issuerTaxId)) flags.push('missing_issuer_tax_id');
+  if (!normalizeString(invoice.issuerVatCondition)) flags.push('missing_issuer_vat_condition');
+  if (!normalizeString(invoice.pointOfSaleSuggested)) flags.push('missing_point_of_sale');
+  if (!normalizeString(invoice.suggestedFiscalVoucherType) || normalizeString(invoice.suggestedFiscalVoucherType) === 'NONE') {
+    flags.push('missing_suggested_voucher_type');
+  }
+  return flags;
 }
 
 function applyFiscalStatusTimestamps(snapshot, previousInvoice) {
@@ -223,8 +253,11 @@ function buildInvoiceDocumentHtml(invoice, clinic) {
         <h2>Emisor</h2>
         <h1>${escapeHtml(invoice.issuerLegalName || clinic?.name || 'Opturon')}</h1>
         <div class="muted">CUIT/DNI: ${escapeHtml(invoice.issuerTaxId || '-')}</div>
+        <div class="muted">Tipo ID: ${escapeHtml(invoice.issuerTaxIdType || 'NONE')}</div>
         <div class="muted">Condicion IVA: ${escapeHtml(invoice.issuerVatCondition || '-')}</div>
-        <div class="muted">Direccion: ${escapeHtml(businessProfile.address || '-')}</div>
+        <div class="muted">IIBB: ${escapeHtml(invoice.issuerGrossIncomeNumber || '-')}</div>
+        <div class="muted">Direccion fiscal: ${escapeHtml(invoice.issuerFiscalAddress || businessProfile.address || '-')}</div>
+        <div class="muted">Ciudad / Provincia: ${escapeHtml([invoice.issuerCity, invoice.issuerProvince].filter(Boolean).join(' / ') || '-')}</div>
       </div>
       <div class="card">
         <h2>Documento interno</h2>
@@ -232,6 +265,7 @@ function buildInvoiceDocumentHtml(invoice, clinic) {
         <div class="muted">Tipo: ${escapeHtml(invoice.documentKind)}</div>
         <div class="muted">Estado contable: ${escapeHtml(invoice.fiscalStatus)}</div>
         <div class="muted">Fecha: ${escapeHtml(formatDateLabel(issueDate))}</div>
+        <div class="muted">Punto de venta sugerido: ${escapeHtml(invoice.pointOfSaleSuggested || '-')}</div>
       </div>
     </div>
     <div class="top">
@@ -246,6 +280,8 @@ function buildInvoiceDocumentHtml(invoice, clinic) {
         <div class="muted">Comprobante sugerido: ${escapeHtml(invoice.suggestedFiscalVoucherType || 'NONE')}</div>
         <div class="muted">Estado de cobro: ${escapeHtml(invoice.receivableStatus || '-')}</div>
         <div class="muted">Ref. contador: ${escapeHtml(invoice.accountantReferenceNumber || '-')}</div>
+        <div class="muted">Entregado al contador: ${escapeHtml(formatDateLabel(invoice.deliveredToAccountantAt))}</div>
+        <div class="muted">Facturado por contador: ${escapeHtml(formatDateLabel(invoice.invoicedByAccountantAt))}</div>
       </div>
     </div>
     <table>
@@ -276,12 +312,19 @@ function filterInvoicesForAccountant(invoices, filters = {}) {
   const fiscalStatus = normalizeString(filters.fiscalStatus);
   const contactId = normalizeString(filters.contactId);
   const search = normalizeString(filters.search).toLowerCase();
+  const documentKind = normalizeString(filters.documentKind);
+  const deliveredFilter = normalizeString(filters.deliveredFilter).toLowerCase();
+  const incompleteOnly = ['1', 'true', 'yes'].includes(normalizeString(filters.incompleteOnly).toLowerCase());
   const dateFrom = normalizeString(filters.dateFrom);
   const dateTo = normalizeString(filters.dateTo);
 
   return (Array.isArray(invoices) ? invoices : []).filter((invoice) => {
     if (fiscalStatus && fiscalStatus !== 'all' && invoice.fiscalStatus !== fiscalStatus) return false;
     if (contactId && contactId !== 'all' && invoice.contactId !== contactId) return false;
+    if (documentKind && documentKind !== 'all' && invoice.documentKind !== documentKind) return false;
+    if (deliveredFilter === 'delivered' && !invoice.deliveredToAccountantAt) return false;
+    if (deliveredFilter === 'pending' && invoice.deliveredToAccountantAt) return false;
+    if (incompleteOnly && (!Array.isArray(invoice.missingDataFlags) || invoice.missingDataFlags.length === 0)) return false;
     const referenceDate = invoice.issuedAt || invoice.createdAt;
     if (dateFrom && referenceDate && new Date(referenceDate) < new Date(`${dateFrom}T00:00:00.000Z`)) return false;
     if (dateTo && referenceDate && new Date(referenceDate) > new Date(`${dateTo}T23:59:59.999Z`)) return false;
@@ -300,7 +343,10 @@ function filterInvoicesForAccountant(invoices, filters = {}) {
 
 function buildInvoicesCsv(invoices) {
   const header = [
+    'issuerLegalName',
+    'issuerTaxId',
     'internalDocumentNumber',
+    'documentKind',
     'issueDate',
     'customerLegalName',
     'customerTaxId',
@@ -310,10 +356,17 @@ function buildInvoicesCsv(invoices) {
     'total',
     'paymentStatus',
     'fiscalStatus',
+    'deliveredToAccountantAt',
+    'invoicedByAccountantAt',
+    'accountantReferenceNumber',
+    'missingDataFlags',
     'accountantNotes'
   ];
   const rows = invoices.map((invoice) => [
+    invoice.issuerLegalName || '',
+    invoice.issuerTaxId || '',
     invoice.internalDocumentNumber || '',
+    invoice.documentKind || '',
     invoice.issuedAt || invoice.createdAt || '',
     invoice.customerLegalName || invoice.contact?.name || '',
     invoice.customerTaxId || '',
@@ -323,6 +376,10 @@ function buildInvoicesCsv(invoices) {
     quantizeDecimal(invoice.totalAmount || 0, 2, 0),
     invoice.receivableStatus || '',
     invoice.fiscalStatus || '',
+    invoice.deliveredToAccountantAt || '',
+    invoice.invoicedByAccountantAt || '',
+    invoice.accountantReferenceNumber || '',
+    (Array.isArray(invoice.missingDataFlags) ? invoice.missingDataFlags : []).join('|'),
     (invoice.accountantNotes || '').replace(/\r?\n/g, ' ')
   ]);
 
@@ -434,12 +491,15 @@ function enrichInvoiceView(invoice) {
     invoice,
     paidAmount: invoice && invoice.paidAmount ? invoice.paidAmount : 0
   });
+  const missingDataFlags = buildInvoiceMissingDataFlags(invoice);
 
   return {
     ...invoice,
     lifecycle: buildInvoiceLifecycleView(invoice),
     noFiscal: true,
     noFiscalLegend: NO_FISCAL_LEGEND,
+    missingDataFlags,
+    accountingComplete: missingDataFlags.length === 0,
     balanceImpact: receivable.documentBalanceImpact,
     paidAmount: receivable.paidAmount,
     outstandingAmount: receivable.outstandingAmount,
@@ -881,7 +941,13 @@ async function createPortalInvoice(tenantId, payload) {
           customerVatCondition: accountingSnapshot.customerVatCondition,
           issuerLegalName: accountingSnapshot.issuerLegalName,
           issuerTaxId: accountingSnapshot.issuerTaxId,
+          issuerTaxIdType: accountingSnapshot.issuerTaxIdType,
           issuerVatCondition: accountingSnapshot.issuerVatCondition,
+          issuerGrossIncomeNumber: accountingSnapshot.issuerGrossIncomeNumber,
+          issuerFiscalAddress: accountingSnapshot.issuerFiscalAddress,
+          issuerCity: accountingSnapshot.issuerCity,
+          issuerProvince: accountingSnapshot.issuerProvince,
+          pointOfSaleSuggested: accountingSnapshot.pointOfSaleSuggested,
           suggestedFiscalVoucherType: accountingSnapshot.suggestedFiscalVoucherType,
           accountantNotes: accountingSnapshot.accountantNotes,
           deliveredToAccountantAt: accountingSnapshot.deliveredToAccountantAt,
@@ -1027,7 +1093,13 @@ async function updatePortalInvoice(tenantId, invoiceId, payload) {
           customerVatCondition: accountingSnapshot.customerVatCondition,
           issuerLegalName: accountingSnapshot.issuerLegalName,
           issuerTaxId: accountingSnapshot.issuerTaxId,
+          issuerTaxIdType: accountingSnapshot.issuerTaxIdType,
           issuerVatCondition: accountingSnapshot.issuerVatCondition,
+          issuerGrossIncomeNumber: accountingSnapshot.issuerGrossIncomeNumber,
+          issuerFiscalAddress: accountingSnapshot.issuerFiscalAddress,
+          issuerCity: accountingSnapshot.issuerCity,
+          issuerProvince: accountingSnapshot.issuerProvince,
+          pointOfSaleSuggested: accountingSnapshot.pointOfSaleSuggested,
           suggestedFiscalVoucherType: accountingSnapshot.suggestedFiscalVoucherType,
           accountantNotes: accountingSnapshot.accountantNotes,
           deliveredToAccountantAt: accountingSnapshot.deliveredToAccountantAt,
@@ -1185,6 +1257,58 @@ async function updatePortalInvoiceAccounting(tenantId, invoiceId, payload = {}) 
   }
 }
 
+async function updatePortalInvoicesBulkStatus(tenantId, payload = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const invoiceIds = Array.isArray(payload.invoiceIds)
+    ? payload.invoiceIds.map((value) => normalizeString(value)).filter(Boolean)
+    : [];
+  const fiscalStatus = normalizeEnum(payload.fiscalStatus, PREFACT_FISCAL_STATUSES, '');
+  if (!invoiceIds.length) {
+    return buildError(context.tenantId, 'missing_invoice_ids');
+  }
+  if (!fiscalStatus) {
+    return buildError(context.tenantId, 'invalid_fiscal_status');
+  }
+
+  const clinicRecord = await getClinicBusinessProfileById(context.clinic.id);
+  const updatedInvoices = await withTransaction(async (client) => {
+    const updated = [];
+    for (const invoiceId of invoiceIds) {
+      const currentInvoice = await findInvoiceById(invoiceId, context.clinic.id, client);
+      if (!currentInvoice) continue;
+      const contact = currentInvoice.contactId
+        ? await findContactByIdAndClinicId(currentInvoice.contactId, context.clinic.id)
+        : null;
+      const accountingSnapshot = applyFiscalStatusTimestamps(
+        buildAccountingSnapshot({
+          clinic: clinicRecord || context.clinic,
+          businessProfile: clinicRecord?.businessProfile,
+          contact,
+          invoice: currentInvoice,
+          payload: { fiscalStatus }
+        }),
+        currentInvoice
+      );
+      const nextInvoice = await updateInvoiceAccounting(currentInvoice.id, context.clinic.id, accountingSnapshot, client);
+      if (nextInvoice) {
+        const paidByInvoiceId = await sumRecordedAllocatedAmountsByInvoiceIds(context.clinic.id, [nextInvoice.id]);
+        updated.push(enrichInvoiceView({ ...nextInvoice, paidAmount: paidByInvoiceId[nextInvoice.id] || 0 }));
+      }
+    }
+    return updated;
+  });
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    fiscalStatus,
+    updatedInvoices
+  };
+}
+
 async function voidPortalInvoice(tenantId, invoiceId, payload = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
@@ -1280,6 +1404,7 @@ module.exports = {
   createPortalInvoice,
   updatePortalInvoice,
   updatePortalInvoiceAccounting,
+  updatePortalInvoicesBulkStatus,
   issuePortalInvoice,
   voidPortalInvoice,
   exportPortalInvoicesCsv,
