@@ -23,6 +23,7 @@ const {
   issuePortalInvoice,
   voidPortalInvoice,
   exportPortalInvoicesCsv,
+  downloadPortalInvoicesBundle,
   renderPortalInvoiceDocument,
   downloadPortalInvoice
 } = require('../services/portal-invoices.service');
@@ -1001,6 +1002,37 @@ async function patchPortalInvoicesBulkStatus(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_invoice_bulk_status_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInvoicesBulkDownload(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await downloadPortalInvoicesBundle(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_invoice_ids'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.body);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_bulk_download_failed',
       details: error.message
     });
   }
@@ -2392,6 +2424,7 @@ module.exports = {
   patchPortalInvoice,
   patchPortalInvoiceAccountingController,
   patchPortalInvoicesBulkStatus,
+  postPortalInvoicesBulkDownload,
   getPortalInvoicesCsvExport,
   getPortalInvoiceDocumentController,
   getPortalInvoiceDownloadController,

@@ -217,13 +217,72 @@ function buildInvoiceCsvFilename() {
   return `opturon-prefacturacion-${stamp}.csv`;
 }
 
+function buildInvoiceBundleFilename() {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return `opturon-comprobantes-lote-${stamp}.html`;
+}
+
 function buildInvoiceDownloadFilename(invoice, format = 'json') {
   const baseName = invoice.internalDocumentNumber || invoice.invoiceNumber || invoice.id;
   const extension = normalizeString(format).toLowerCase() === 'document' ? 'html' : 'json';
   return `${baseName}.${extension}`;
 }
 
-function buildInvoiceDocumentHtml(invoice, clinic) {
+function formatDateTimeLabel(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return new Intl.DateTimeFormat('es-AR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(date);
+}
+
+function formatInvoiceFlagLabel(flag) {
+  const normalized = normalizeString(flag);
+  const labels = {
+    missing_customer_tax_id: 'Falta CUIT/DNI cliente',
+    missing_customer_vat_condition: 'Falta condicion IVA cliente',
+    missing_customer_legal_name: 'Falta razon social cliente',
+    missing_issuer_legal_name: 'Falta razon social emisor',
+    missing_issuer_tax_id: 'Falta CUIT emisor',
+    missing_issuer_vat_condition: 'Falta condicion IVA emisor',
+    missing_point_of_sale: 'Falta punto de venta',
+    missing_suggested_voucher_type: 'Falta tipo sugerido'
+  };
+  return labels[normalized] || normalized;
+}
+
+function formatInvoiceReceivableStatusLabel(value) {
+  const normalized = normalizeString(value);
+  if (normalized === 'paid') return 'Cobrado';
+  if (normalized === 'partial') return 'Parcial';
+  if (normalized === 'pending') return 'Pendiente';
+  if (normalized === 'overdue') return 'Vencido';
+  return normalized || '-';
+}
+
+function formatInvoiceFiscalStatusLabel(value) {
+  const normalized = normalizeString(value);
+  if (normalized === 'draft') return 'Borrador';
+  if (normalized === 'ready_for_accountant') return 'Listo para contador';
+  if (normalized === 'delivered_to_accountant') return 'Entregado al contador';
+  if (normalized === 'invoiced_by_accountant') return 'Facturado por contador';
+  return normalized || '-';
+}
+
+function formatInvoiceDocumentKindLabel(value) {
+  const normalized = normalizeString(value);
+  if (normalized === 'internal_invoice') return 'Comprobante interno';
+  if (normalized === 'proforma') return 'Proforma';
+  if (normalized === 'order_summary') return 'Resumen de pedido';
+  return normalized || '-';
+}
+
+function buildInvoiceDocumentContent(invoice, clinic) {
   const businessProfile = clinic?.businessProfile && typeof clinic.businessProfile === 'object' ? clinic.businessProfile : {};
   const issueDate = invoice.issuedAt || invoice.createdAt;
   const rows = Array.isArray(invoice.items)
@@ -236,28 +295,7 @@ function buildInvoiceDocumentHtml(invoice, clinic) {
       </tr>`).join('')
     : '';
 
-  return `<!DOCTYPE html>
-<html lang="es">
-  <head>
-    <meta charset="utf-8" />
-    <title>${escapeHtml(invoice.internalDocumentNumber || invoice.id)}</title>
-    <style>
-      body { font-family: Arial, sans-serif; margin: 32px; color: #16202a; }
-      .banner { border: 1px solid #d97706; background: #fff7ed; color: #9a3412; padding: 12px 16px; border-radius: 12px; font-weight: 700; margin-bottom: 20px; }
-      .top { display:flex; justify-content:space-between; gap:24px; margin-bottom:24px; }
-      .card { border:1px solid #e5e7eb; border-radius:16px; padding:16px; flex:1; }
-      h1 { margin:0 0 8px; font-size:24px; }
-      h2 { margin:0 0 8px; font-size:14px; text-transform:uppercase; color:#64748b; letter-spacing:.08em; }
-      table { width:100%; border-collapse:collapse; margin-top:20px; }
-      th, td { border-bottom:1px solid #e5e7eb; padding:12px 8px; text-align:left; }
-      th { font-size:12px; text-transform:uppercase; color:#64748b; letter-spacing:.08em; }
-      .totals { margin-top:24px; width:320px; margin-left:auto; }
-      .totals div { display:flex; justify-content:space-between; padding:6px 0; }
-      .muted { color:#64748b; }
-      .notes { margin-top:24px; border:1px solid #e5e7eb; border-radius:16px; padding:16px; }
-    </style>
-  </head>
-  <body>
+  return `
     <div class="banner">${escapeHtml(NO_FISCAL_LEGEND)}</div>
     <div class="top">
       <div class="card">
@@ -315,6 +353,111 @@ function buildInvoiceDocumentHtml(invoice, clinic) {
       <h2>Notas para contador</h2>
       <div>${escapeHtml(invoice.accountantNotes || 'Sin observaciones')}</div>
     </div>
+  `;
+}
+
+function buildInvoiceDocumentHtml(invoice, clinic) {
+  return `<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(invoice.internalDocumentNumber || invoice.id)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 32px; color: #16202a; }
+      .banner { border: 1px solid #d97706; background: #fff7ed; color: #9a3412; padding: 12px 16px; border-radius: 12px; font-weight: 700; margin-bottom: 20px; }
+      .top { display:flex; justify-content:space-between; gap:24px; margin-bottom:24px; }
+      .card { border:1px solid #e5e7eb; border-radius:16px; padding:16px; flex:1; }
+      h1 { margin:0 0 8px; font-size:24px; }
+      h2 { margin:0 0 8px; font-size:14px; text-transform:uppercase; color:#64748b; letter-spacing:.08em; }
+      table { width:100%; border-collapse:collapse; margin-top:20px; }
+      th, td { border-bottom:1px solid #e5e7eb; padding:12px 8px; text-align:left; }
+      th { font-size:12px; text-transform:uppercase; color:#64748b; letter-spacing:.08em; }
+      .totals { margin-top:24px; width:320px; margin-left:auto; }
+      .totals div { display:flex; justify-content:space-between; padding:6px 0; }
+      .muted { color:#64748b; }
+      .notes { margin-top:24px; border:1px solid #e5e7eb; border-radius:16px; padding:16px; }
+    </style>
+  </head>
+  <body>${buildInvoiceDocumentContent(invoice, clinic)}</body>
+</html>`;
+}
+
+function buildInvoicesBundleHtml(invoices, clinic) {
+  const sections = (Array.isArray(invoices) ? invoices : [])
+    .map(
+      (invoice, index) => `
+      <section class="document-sheet">
+        <div class="sheet-index">Comprobante ${index + 1} de ${invoices.length}</div>
+        ${buildInvoiceDocumentContent(invoice, clinic)}
+      </section>`
+    )
+    .join('');
+
+  const summary = (Array.isArray(invoices) ? invoices : [])
+    .map(
+      (invoice) => `
+        <tr>
+          <td>${escapeHtml(invoice.internalDocumentNumber || invoice.invoiceNumber || invoice.id)}</td>
+          <td>${escapeHtml(invoice.customerLegalName || invoice.contact?.name || 'Sin cliente')}</td>
+          <td>${escapeHtml(formatDateLabel(invoice.issuedAt || invoice.createdAt))}</td>
+          <td style="text-align:right">${escapeHtml(formatMoneyLabel(invoice.totalAmount, invoice.currency))}</td>
+          <td>${escapeHtml(formatInvoiceFiscalStatusLabel(invoice.fiscalStatus))}</td>
+        </tr>`
+    )
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lote de comprobantes internos</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 32px; color: #16202a; background: #f8fafc; }
+      .bundle-shell { max-width: 1180px; margin: 0 auto; }
+      .bundle-cover { background: white; border: 1px solid #e5e7eb; border-radius: 18px; padding: 24px; margin-bottom: 24px; }
+      .bundle-cover h1 { margin: 0 0 8px; font-size: 28px; }
+      .bundle-cover p { margin: 0; color: #475569; }
+      .bundle-summary { width: 100%; border-collapse: collapse; margin-top: 20px; }
+      .bundle-summary th, .bundle-summary td { border-bottom: 1px solid #e5e7eb; padding: 10px 8px; text-align: left; }
+      .bundle-summary th { font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: .08em; }
+      .document-sheet { background: white; border: 1px solid #e5e7eb; border-radius: 18px; padding: 24px; margin-bottom: 20px; page-break-after: always; }
+      .document-sheet:last-child { page-break-after: auto; }
+      .sheet-index { display: inline-block; margin-bottom: 12px; padding: 6px 10px; border-radius: 999px; background: #e2e8f0; color: #334155; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+      .banner { border: 1px solid #d97706; background: #fff7ed; color: #9a3412; padding: 12px 16px; border-radius: 12px; font-weight: 700; margin-bottom: 20px; }
+      .top { display:flex; justify-content:space-between; gap:24px; margin-bottom:24px; }
+      .card { border:1px solid #e5e7eb; border-radius:16px; padding:16px; flex:1; }
+      h2 { margin:0 0 8px; font-size:14px; text-transform:uppercase; color:#64748b; letter-spacing:.08em; }
+      h1 { margin:0 0 8px; font-size:24px; }
+      table { width:100%; border-collapse:collapse; margin-top:20px; }
+      th, td { border-bottom:1px solid #e5e7eb; padding:12px 8px; text-align:left; }
+      th { font-size:12px; text-transform:uppercase; color:#64748b; letter-spacing:.08em; }
+      .totals { margin-top:24px; width:320px; margin-left:auto; }
+      .totals div { display:flex; justify-content:space-between; padding:6px 0; }
+      .muted { color:#64748b; }
+      .notes { margin-top:24px; border:1px solid #e5e7eb; border-radius:16px; padding:16px; }
+    </style>
+  </head>
+  <body>
+    <div class="bundle-shell">
+      <section class="bundle-cover">
+        <h1>Lote de comprobantes internos</h1>
+        <p>Pre-facturacion contable lista para revision y entrega al contador.</p>
+        <p style="margin-top: 6px;">Documentos incluidos: ${escapeHtml(invoices.length)}</p>
+        <table class="bundle-summary">
+          <thead>
+            <tr>
+              <th>Comprobante</th>
+              <th>Cliente</th>
+              <th>Fecha</th>
+              <th style="text-align:right">Total</th>
+              <th>Estado contable</th>
+            </tr>
+          </thead>
+          <tbody>${summary}</tbody>
+        </table>
+      </section>
+      ${sections}
+    </div>
   </body>
 </html>`;
 }
@@ -354,30 +497,30 @@ function filterInvoicesForAccountant(invoices, filters = {}) {
 
 function buildInvoicesCsv(invoices) {
   const header = [
-    'date',
-    'internalDocumentNumber',
-    'invoice_number',
-    'customer_name',
-    'customer_tax_id',
-    'customer_vat_condition',
-    'issuer_name',
-    'issuer_tax_id',
-    'document_kind',
-    'suggested_voucher_type',
-    'subtotal',
-    'total',
-    'payment_status',
-    'fiscal_status',
-    'delivered_to_accountant_at',
-    'invoiced_by_accountant_at',
-    'accountant_reference_number',
-    'accountant_notes',
-    'missing_data_flags'
+    'Fecha',
+    'Comprobante interno',
+    'Numero interno',
+    'Cliente',
+    'CUIT/DNI',
+    'Condicion IVA cliente',
+    'Emisor',
+    'CUIT emisor',
+    'Tipo documento',
+    'Tipo sugerido',
+    'Subtotal',
+    'Total',
+    'Estado pago',
+    'Estado contable',
+    'Entregado a contador',
+    'Facturado por contador',
+    'Referencia contador',
+    'Notas contador',
+    'Faltantes detectados'
   ];
 
   const formatCsvAmount = (value) => quantizeDecimal(value || 0, 2, 0).toFixed(2).replace('.', ',');
   const rows = invoices.map((invoice) => [
-    invoice.issuedAt || invoice.createdAt || '',
+    formatDateLabel(invoice.issuedAt || invoice.createdAt),
     invoice.internalDocumentNumber || '',
     invoice.invoiceNumber || '',
     invoice.customerLegalName || invoice.contact?.name || '',
@@ -385,17 +528,17 @@ function buildInvoicesCsv(invoices) {
     invoice.customerVatCondition || '',
     invoice.issuerLegalName || '',
     invoice.issuerTaxId || '',
-    invoice.documentKind || '',
-    invoice.suggestedFiscalVoucherType || 'NONE',
+    formatInvoiceDocumentKindLabel(invoice.documentKind),
+    normalizeString(invoice.suggestedFiscalVoucherType) || '-',
     formatCsvAmount(invoice.subtotalAmount || 0),
     formatCsvAmount(invoice.totalAmount || 0),
-    invoice.receivableStatus || '',
-    invoice.fiscalStatus || '',
-    invoice.deliveredToAccountantAt || '',
-    invoice.invoicedByAccountantAt || '',
+    formatInvoiceReceivableStatusLabel(invoice.receivableStatus),
+    formatInvoiceFiscalStatusLabel(invoice.fiscalStatus),
+    formatDateTimeLabel(invoice.deliveredToAccountantAt),
+    formatDateTimeLabel(invoice.invoicedByAccountantAt),
     invoice.accountantReferenceNumber || '',
     (invoice.accountantNotes || '').replace(/\r?\n/g, ' '),
-    (Array.isArray(invoice.missingDataFlags) ? invoice.missingDataFlags : []).join('|')
+    (Array.isArray(invoice.missingDataFlags) ? invoice.missingDataFlags : []).map(formatInvoiceFlagLabel).join(' | ')
   ]);
 
   const csv = [header, ...rows]
@@ -1386,6 +1529,42 @@ async function exportPortalInvoicesCsv(tenantId, filters = {}) {
   };
 }
 
+async function downloadPortalInvoicesBundle(tenantId, payload = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const invoiceIds = Array.isArray(payload.invoiceIds)
+    ? payload.invoiceIds.map((value) => normalizeString(value)).filter(Boolean)
+    : [];
+  if (!invoiceIds.length) {
+    return buildError(context.tenantId, 'missing_invoice_ids');
+  }
+
+  const clinicRecord = await getClinicBusinessProfileById(context.clinic.id);
+  const invoices = [];
+
+  for (const invoiceId of invoiceIds) {
+    const detailResult = await getPortalInvoiceDetail(tenantId, invoiceId);
+    if (detailResult.ok && detailResult.invoice) {
+      invoices.push(detailResult.invoice);
+    }
+  }
+
+  if (!invoices.length) {
+    return buildError(context.tenantId, 'invoice_not_found');
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    invoices,
+    filename: buildInvoiceBundleFilename(),
+    contentType: 'text/html; charset=utf-8',
+    body: buildInvoicesBundleHtml(invoices, clinicRecord || context.clinic)
+  };
+}
+
 async function renderPortalInvoiceDocument(tenantId, invoiceId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
@@ -1460,6 +1639,7 @@ module.exports = {
   issuePortalInvoice,
   voidPortalInvoice,
   exportPortalInvoicesCsv,
+  downloadPortalInvoicesBundle,
   renderPortalInvoiceDocument,
   downloadPortalInvoice
 };
