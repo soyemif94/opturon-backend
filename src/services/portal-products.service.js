@@ -159,6 +159,30 @@ async function patchPortalProduct(tenantId, productId, payload) {
     {
       ...current,
       ...payload,
+      unitPrice:
+        payload && payload.unitPrice !== undefined
+          ? payload.unitPrice
+          : payload && payload.price !== undefined
+            ? payload.price
+            : current.unitPrice,
+      price:
+        payload && payload.price !== undefined
+          ? payload.price
+          : payload && payload.unitPrice !== undefined
+            ? payload.unitPrice
+            : current.unitPrice,
+      vatRate:
+        payload && payload.vatRate !== undefined
+          ? payload.vatRate
+          : payload && payload.taxRate !== undefined
+            ? payload.taxRate
+            : current.vatRate,
+      taxRate:
+        payload && payload.taxRate !== undefined
+          ? payload.taxRate
+          : payload && payload.vatRate !== undefined
+            ? payload.vatRate
+            : current.taxRate,
       stock: payload && payload.stock !== undefined ? payload.stock : payload && payload.stockQty !== undefined ? payload.stockQty : current.stock
     },
     current.status
