@@ -357,49 +357,51 @@ function buildInvoicesCsv(invoices) {
     'date',
     'internalDocumentNumber',
     'invoice_number',
-    'document_kind',
-    'status',
-    'payment_status',
     'customer_name',
     'customer_tax_id',
     'customer_vat_condition',
     'issuer_name',
     'issuer_tax_id',
+    'document_kind',
     'suggested_voucher_type',
     'subtotal',
     'total',
+    'payment_status',
+    'fiscal_status',
     'delivered_to_accountant_at',
     'invoiced_by_accountant_at',
     'accountant_reference_number',
-    'missing_data_flags',
-    'accountant_notes'
+    'accountant_notes',
+    'missing_data_flags'
   ];
+
+  const formatCsvAmount = (value) => quantizeDecimal(value || 0, 2, 0).toFixed(2).replace('.', ',');
   const rows = invoices.map((invoice) => [
     invoice.issuedAt || invoice.createdAt || '',
     invoice.internalDocumentNumber || '',
     invoice.invoiceNumber || '',
-    invoice.documentKind || '',
-    invoice.fiscalStatus || '',
-    invoice.receivableStatus || '',
     invoice.customerLegalName || invoice.contact?.name || '',
     invoice.customerTaxId || '',
     invoice.customerVatCondition || '',
     invoice.issuerLegalName || '',
     invoice.issuerTaxId || '',
+    invoice.documentKind || '',
     invoice.suggestedFiscalVoucherType || 'NONE',
-    quantizeDecimal(invoice.subtotalAmount || 0, 2, 0),
-    quantizeDecimal(invoice.totalAmount || 0, 2, 0),
+    formatCsvAmount(invoice.subtotalAmount || 0),
+    formatCsvAmount(invoice.totalAmount || 0),
+    invoice.receivableStatus || '',
+    invoice.fiscalStatus || '',
     invoice.deliveredToAccountantAt || '',
     invoice.invoicedByAccountantAt || '',
     invoice.accountantReferenceNumber || '',
-    (Array.isArray(invoice.missingDataFlags) ? invoice.missingDataFlags : []).join('|'),
-    (invoice.accountantNotes || '').replace(/\r?\n/g, ' ')
+    (invoice.accountantNotes || '').replace(/\r?\n/g, ' '),
+    (Array.isArray(invoice.missingDataFlags) ? invoice.missingDataFlags : []).join('|')
   ]);
 
   const csv = [header, ...rows]
-    .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+    .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(';'))
     .join('\n');
-  return `\uFEFF${csv}`;
+  return `\uFEFFsep=;\n${csv}`;
 }
 
 function normalizeInitialPaymentMethod(value) {
