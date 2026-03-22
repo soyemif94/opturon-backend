@@ -23,7 +23,8 @@ const {
   issuePortalInvoice,
   voidPortalInvoice,
   exportPortalInvoicesCsv,
-  renderPortalInvoiceDocument
+  renderPortalInvoiceDocument,
+  downloadPortalInvoice
 } = require('../services/portal-invoices.service');
 const {
   listPortalProducts,
@@ -1023,6 +1024,30 @@ async function getPortalInvoiceDocumentController(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_invoice_document_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoiceDownloadController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+  const format = String(req.query.format || '').trim();
+
+  try {
+    const result = await downloadPortalInvoice(tenantId, invoiceId, format);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_invoice_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.body);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_download_failed',
       details: error.message
     });
   }
@@ -2369,6 +2394,7 @@ module.exports = {
   patchPortalInvoicesBulkStatus,
   getPortalInvoicesCsvExport,
   getPortalInvoiceDocumentController,
+  getPortalInvoiceDownloadController,
   postPortalInvoiceIssue,
   postPortalInvoiceVoid,
   getPortalPayments,

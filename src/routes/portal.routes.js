@@ -29,6 +29,7 @@ const {
   patchPortalInvoicesBulkStatus,
   getPortalInvoicesCsvExport,
   getPortalInvoiceDocumentController,
+  getPortalInvoiceDownloadController,
   postPortalInvoiceIssue,
   postPortalInvoiceVoid,
   getPortalPayments,
@@ -100,6 +101,7 @@ router.get('/tenants/:tenantId/invoices/export.csv', getPortalInvoicesCsvExport)
 router.patch('/tenants/:tenantId/invoices/bulk-status', patchPortalInvoicesBulkStatus);
 router.get('/tenants/:tenantId/invoices/:invoiceId', getPortalInvoice);
 router.get('/tenants/:tenantId/invoices/:invoiceId/document', getPortalInvoiceDocumentController);
+router.get('/tenants/:tenantId/invoices/:invoiceId/download', getPortalInvoiceDownloadController);
 router.get('/tenants/:tenantId/invoices/:invoiceId/allocations', getPortalInvoiceAllocations);
 router.patch('/tenants/:tenantId/invoices/:invoiceId', patchPortalInvoice);
 router.patch('/tenants/:tenantId/invoices/:invoiceId/accounting', patchPortalInvoiceAccountingController);

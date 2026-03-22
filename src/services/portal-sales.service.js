@@ -211,6 +211,39 @@ async function listConversationCommercialContextByIds(clinicId, conversationIds)
   }, {});
 }
 
+async function listConversationResponseMetrics(clinicId) {
+  const result = await query(
+    `SELECT
+       c.id,
+       c.context,
+       COUNT(*)::int AS "totalMessages",
+       COUNT(*) FILTER (
+         WHERE m.direction = 'outbound'
+           AND COALESCE(m.raw->'ai'->>'used', 'false') <> 'true'
+       )::int AS "humanResponses",
+       COUNT(*) FILTER (
+         WHERE m.direction = 'outbound'
+           AND COALESCE(m.raw->'ai'->>'used', 'false') = 'true'
+       )::int AS "automatedResponses"
+     FROM conversations c
+     LEFT JOIN conversation_messages m
+       ON m."conversationId" = c.id
+     WHERE c."clinicId" = $1::uuid
+     GROUP BY c.id, c.context`,
+    [clinicId]
+  );
+
+  return result.rows.reduce((acc, row) => {
+    acc[row.id] = {
+      totalMessages: Number(row.totalMessages || 0),
+      humanResponses: Number(row.humanResponses || 0),
+      automatedResponses: Number(row.automatedResponses || 0),
+      responsible: buildResponsible(row.context)
+    };
+    return acc;
+  }, {});
+}
+
 function buildResponsible(context) {
   const safeContext = parseContext(context);
   const name = normalizeString(safeContext.portalAssignedTo);
@@ -302,7 +335,7 @@ async function buildUnifiedSalesOpportunities(clinicId) {
   });
 }
 
-function summarizeResponsiblePerformance(opportunities) {
+function summarizeResponsiblePerformance(opportunities, responseMetricsByConversationId = {}) {
   const grouped = new Map();
 
   for (const opportunity of opportunities) {
@@ -315,7 +348,8 @@ function summarizeResponsiblePerformance(opportunities) {
         responsibleName: opportunity.responsible.name,
         closedSales: 0,
         openOpportunities: 0,
-        closedRevenue: 0
+        closedRevenue: 0,
+        humanResponses: 0
       });
     }
 
@@ -328,7 +362,35 @@ function summarizeResponsiblePerformance(opportunities) {
     }
   }
 
+  const countedConversations = new Set();
+  for (const opportunity of opportunities) {
+    const conversationId = normalizeString(opportunity.conversationId);
+    if (!conversationId || countedConversations.has(conversationId)) continue;
+
+    const metrics = responseMetricsByConversationId[conversationId];
+    if (!metrics || !metrics.humanResponses) continue;
+
+    const responsible = opportunity.responsible?.name ? opportunity.responsible : metrics.responsible;
+    if (!responsible?.name) continue;
+
+    const key = `${responsible.id || responsible.name}:${responsible.name}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        responsibleId: responsible.id || null,
+        responsibleName: responsible.name,
+        closedSales: 0,
+        openOpportunities: 0,
+        closedRevenue: 0,
+        humanResponses: 0
+      });
+    }
+
+    grouped.get(key).humanResponses += Number(metrics.humanResponses || 0);
+    countedConversations.add(conversationId);
+  }
+
   return Array.from(grouped.values()).sort((left, right) => {
+    if (right.humanResponses !== left.humanResponses) return right.humanResponses - left.humanResponses;
     if (right.closedRevenue !== left.closedRevenue) return right.closedRevenue - left.closedRevenue;
     if (right.closedSales !== left.closedSales) return right.closedSales - left.closedSales;
     return right.openOpportunities - left.openOpportunities;
@@ -387,9 +449,10 @@ async function getSalesMetrics(tenantId) {
     return context;
   }
 
-  const [orders, opportunities] = await Promise.all([
+  const [orders, opportunities, responseMetricsByConversationId] = await Promise.all([
     listOrdersByClinicId(context.clinic.id),
-    buildUnifiedSalesOpportunities(context.clinic.id)
+    buildUnifiedSalesOpportunities(context.clinic.id),
+    listConversationResponseMetrics(context.clinic.id)
   ]);
 
   const closedOrders = orders.filter(isClosedOrder);
@@ -397,7 +460,23 @@ async function getSalesMetrics(tenantId) {
   const activeSalesConversations = new Set(
     opportunities.filter(isActiveSalesConversation).map((item) => item.conversationId).filter(Boolean)
   ).size;
-  const responsiblePerformance = summarizeResponsiblePerformance(opportunities);
+  const responsiblePerformance = summarizeResponsiblePerformance(opportunities, responseMetricsByConversationId);
+  const opportunityConversationIds = new Set(opportunities.map((item) => normalizeString(item.conversationId)).filter(Boolean));
+  const responseStats = Array.from(opportunityConversationIds).reduce(
+    (acc, conversationId) => {
+      const metrics = responseMetricsByConversationId[conversationId];
+      if (!metrics) return acc;
+      acc.humanResponsesCount += Number(metrics.humanResponses || 0);
+      acc.automatedResponsesCount += Number(metrics.automatedResponses || 0);
+      acc.totalConversationMessagesCount += Number(metrics.totalMessages || 0);
+      return acc;
+    },
+    {
+      humanResponsesCount: 0,
+      automatedResponsesCount: 0,
+      totalConversationMessagesCount: 0
+    }
+  );
 
   return {
     ok: true,
@@ -407,6 +486,9 @@ async function getSalesMetrics(tenantId) {
       closedSalesCount: closedOrders.length,
       openOpportunitiesCount: openOpportunities.length,
       activeSalesConversations,
+      humanResponsesCount: responseStats.humanResponsesCount,
+      automatedResponsesCount: responseStats.automatedResponsesCount,
+      totalConversationMessagesCount: responseStats.totalConversationMessagesCount,
       responsiblePerformance
     }
   };

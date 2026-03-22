@@ -217,6 +217,12 @@ function buildInvoiceCsvFilename() {
   return `opturon-prefacturacion-${stamp}.csv`;
 }
 
+function buildInvoiceDownloadFilename(invoice, format = 'json') {
+  const baseName = invoice.internalDocumentNumber || invoice.invoiceNumber || invoice.id;
+  const extension = normalizeString(format).toLowerCase() === 'document' ? 'html' : 'json';
+  return `${baseName}.${extension}`;
+}
+
 function buildInvoiceDocumentHtml(invoice, clinic) {
   const businessProfile = clinic?.businessProfile && typeof clinic.businessProfile === 'object' ? clinic.businessProfile : {};
   const issueDate = invoice.issuedAt || invoice.createdAt;
@@ -348,39 +354,41 @@ function filterInvoicesForAccountant(invoices, filters = {}) {
 
 function buildInvoicesCsv(invoices) {
   const header = [
-    'issuerLegalName',
-    'issuerTaxId',
+    'date',
     'internalDocumentNumber',
-    'documentKind',
-    'issueDate',
-    'customerLegalName',
-    'customerTaxId',
-    'customerVatCondition',
-    'suggestedFiscalVoucherType',
+    'invoice_number',
+    'document_kind',
+    'status',
+    'payment_status',
+    'customer_name',
+    'customer_tax_id',
+    'customer_vat_condition',
+    'issuer_name',
+    'issuer_tax_id',
+    'suggested_voucher_type',
     'subtotal',
     'total',
-    'paymentStatus',
-    'fiscalStatus',
-    'deliveredToAccountantAt',
-    'invoicedByAccountantAt',
-    'accountantReferenceNumber',
-    'missingDataFlags',
-    'accountantNotes'
+    'delivered_to_accountant_at',
+    'invoiced_by_accountant_at',
+    'accountant_reference_number',
+    'missing_data_flags',
+    'accountant_notes'
   ];
   const rows = invoices.map((invoice) => [
-    invoice.issuerLegalName || '',
-    invoice.issuerTaxId || '',
-    invoice.internalDocumentNumber || '',
-    invoice.documentKind || '',
     invoice.issuedAt || invoice.createdAt || '',
+    invoice.internalDocumentNumber || '',
+    invoice.invoiceNumber || '',
+    invoice.documentKind || '',
+    invoice.fiscalStatus || '',
+    invoice.receivableStatus || '',
     invoice.customerLegalName || invoice.contact?.name || '',
     invoice.customerTaxId || '',
     invoice.customerVatCondition || '',
+    invoice.issuerLegalName || '',
+    invoice.issuerTaxId || '',
     invoice.suggestedFiscalVoucherType || 'NONE',
     quantizeDecimal(invoice.subtotalAmount || 0, 2, 0),
     quantizeDecimal(invoice.totalAmount || 0, 2, 0),
-    invoice.receivableStatus || '',
-    invoice.fiscalStatus || '',
     invoice.deliveredToAccountantAt || '',
     invoice.invoicedByAccountantAt || '',
     invoice.accountantReferenceNumber || '',
@@ -388,9 +396,10 @@ function buildInvoicesCsv(invoices) {
     (invoice.accountantNotes || '').replace(/\r?\n/g, ' ')
   ]);
 
-  return [header, ...rows]
+  const csv = [header, ...rows]
     .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
     .join('\n');
+  return `\uFEFF${csv}`;
 }
 
 function normalizeInitialPaymentMethod(value) {
@@ -1394,6 +1403,42 @@ async function renderPortalInvoiceDocument(tenantId, invoiceId) {
   };
 }
 
+async function downloadPortalInvoice(tenantId, invoiceId, format = 'json') {
+  const safeFormat = normalizeString(format).toLowerCase() === 'document' ? 'document' : 'json';
+
+  if (safeFormat === 'document') {
+    const documentResult = await renderPortalInvoiceDocument(tenantId, invoiceId);
+    if (!documentResult.ok) return documentResult;
+
+    return {
+      ...documentResult,
+      filename: buildInvoiceDownloadFilename(documentResult.invoice, 'document'),
+      contentType: 'text/html; charset=utf-8',
+      body: documentResult.html
+    };
+  }
+
+  const detailResult = await getPortalInvoiceDetail(tenantId, invoiceId);
+  if (!detailResult.ok) return detailResult;
+
+  return {
+    ok: true,
+    tenantId: detailResult.tenantId,
+    clinic: detailResult.clinic,
+    invoice: detailResult.invoice,
+    filename: buildInvoiceDownloadFilename(detailResult.invoice, 'json'),
+    contentType: 'application/json; charset=utf-8',
+    body: JSON.stringify(
+      {
+        tenantId: detailResult.tenantId,
+        invoice: detailResult.invoice
+      },
+      null,
+      2
+    )
+  };
+}
+
 module.exports = {
   INVOICE_STATUSES: Array.from(INVOICE_STATUSES),
   INVOICE_TYPES: Array.from(INVOICE_TYPES),
@@ -1413,5 +1458,6 @@ module.exports = {
   issuePortalInvoice,
   voidPortalInvoice,
   exportPortalInvoicesCsv,
-  renderPortalInvoiceDocument
+  renderPortalInvoiceDocument,
+  downloadPortalInvoice
 };
