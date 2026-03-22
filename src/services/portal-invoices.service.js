@@ -124,6 +124,8 @@ function buildAccountingSnapshot({ clinic, businessProfile, contact, invoice = {
     payload.suggestedFiscalVoucherType ||
     invoice.suggestedFiscalVoucherType ||
     mapLegacyDocumentKindToVoucherType(rawDocumentKind);
+  const normalizedSuggestedVoucher = normalizeEnum(suggestedVoucherFromPayload, SUGGESTED_VOUCHER_TYPES, 'NONE');
+  const fallbackSuggestedVoucher = normalizeEnum(issuer.defaultSuggestedFiscalVoucherType, SUGGESTED_VOUCHER_TYPES, 'NONE');
 
   return {
     documentKind,
@@ -141,7 +143,10 @@ function buildAccountingSnapshot({ clinic, businessProfile, contact, invoice = {
     issuerCity: normalizeString(payload.issuerCity ?? issuer.issuerCity) || null,
     issuerProvince: normalizeString(payload.issuerProvince ?? issuer.issuerProvince) || null,
     pointOfSaleSuggested: normalizeString(payload.pointOfSaleSuggested ?? issuer.pointOfSaleSuggested) || null,
-    suggestedFiscalVoucherType: normalizeEnum(suggestedVoucherFromPayload || issuer.defaultSuggestedFiscalVoucherType, SUGGESTED_VOUCHER_TYPES, 'NONE'),
+    suggestedFiscalVoucherType:
+      normalizedSuggestedVoucher && normalizedSuggestedVoucher !== 'NONE'
+        ? normalizedSuggestedVoucher
+        : fallbackSuggestedVoucher,
     accountantNotes: normalizeString(payload.accountantNotes ?? invoice.accountantNotes) || null,
     deliveredToAccountantAt: payload.deliveredToAccountantAt ?? invoice.deliveredToAccountantAt ?? null,
     invoicedByAccountantAt: payload.invoicedByAccountantAt ?? invoice.invoicedByAccountantAt ?? null,
