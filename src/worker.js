@@ -2090,6 +2090,7 @@ async function processConversationReplyJob(job) {
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
+  const hasNewerInbound = await conversationRepo.hasNewerInboundMessage(conversation.id, inboundMessage.id);
   const recentMessages = await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5);
 
   logInfo('automation_runtime_start', {
@@ -2099,6 +2100,35 @@ async function processConversationReplyJob(job) {
     conversationId: conversation.id,
     messageCount: Array.isArray(recentMessages) ? recentMessages.length : 0
   });
+
+  if (hasNewerInbound) {
+    logInfo('conversation_reply_skipped_stale_inbound', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      inboundMessageId: inboundMessage.id,
+      waMessageId
+    });
+    return;
+  }
+
+  const existingAutomationOutbound = await conversationRepo.findAutomationOutboundByInboundMessageId(
+    conversation.id,
+    inboundMessage.id
+  );
+  if (existingAutomationOutbound) {
+    logInfo('conversation_reply_skipped_duplicate_inbound', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      inboundMessageId: inboundMessage.id,
+      outboundMessageId: existingAutomationOutbound.id,
+      waMessageId
+    });
+    return;
+  }
 
   const automationRuntime = await resolveAutomationReplyForInbound({
     clinic,
@@ -2843,6 +2873,12 @@ async function processConversationReplyJob(job) {
     text: replyText,
     raw: {
       ...(sendResult && sendResult.raw ? sendResult.raw : {}),
+      automation: {
+        inboundMessageId: inboundMessage.id,
+        inboundWaMessageId: waMessageId,
+        source: decisionSource || null,
+        jobId: job.id
+      },
       ai: {
         enabled: aiEnabled && hasAiKey,
         attempted: aiAttempted,
