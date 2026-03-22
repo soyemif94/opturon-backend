@@ -8,13 +8,15 @@ function dbQuery(client, text, params) {
 }
 
 function normalizeAutomation(row) {
+  const conditions = row.conditions && typeof row.conditions === 'object' ? row.conditions : {};
   return {
     id: row.id,
     clinicId: row.clinicId,
     externalTenantId: row.externalTenantId || null,
     name: row.name,
     trigger: row.trigger || {},
-    conditions: row.conditions || {},
+    description: typeof conditions.description === 'string' ? conditions.description : null,
+    conditions,
     actions: Array.isArray(row.actions) ? row.actions : [],
     enabled: Boolean(row.enabled),
     createdAt: row.createdAt,

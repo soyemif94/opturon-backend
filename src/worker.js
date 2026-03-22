@@ -46,6 +46,7 @@ const {
   countRecentEventsByType
 } = require('./repositories/conversation-events.repository');
 const { claimJobs, markJobDone, requeueOrFailJob } = require('./repositories/job.repository');
+const { resolveAutomationReplyForInbound } = require('./services/automation-runtime.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -84,6 +85,20 @@ function sanitizeDatabaseUrl(databaseUrl) {
     if (!match) return null;
     return { hostPort: match[1], dbname: match[2] || null };
   }
+}
+
+function mergeContextPatches(basePatch, extraPatch) {
+  if (!basePatch && !extraPatch) return null;
+  if (!basePatch) return extraPatch;
+  if (!extraPatch) return basePatch;
+
+  const merged = { ...basePatch, ...extraPatch };
+  if (Array.isArray(basePatch.portalTags) || Array.isArray(extraPatch.portalTags)) {
+    merged.portalTags = Array.from(
+      new Set([...(Array.isArray(basePatch.portalTags) ? basePatch.portalTags : []), ...(Array.isArray(extraPatch.portalTags) ? extraPatch.portalTags : [])])
+    );
+  }
+  return merged;
 }
 
 function normalizeText(input) {
@@ -2075,6 +2090,14 @@ async function processConversationReplyJob(job) {
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
+  const recentMessages = await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5);
+  const automationRuntime = await resolveAutomationReplyForInbound({
+    clinic,
+    conversation,
+    inboundText,
+    recentMessages
+  });
+  let automationContextPatch = automationRuntime.contextPatch || null;
 
   logInfo('incoming_whatsapp_message_received', {
     requestId,
@@ -2085,6 +2108,17 @@ async function processConversationReplyJob(job) {
     inboundText: normalizedInboundText,
     inboundMessageId
   });
+
+  if (automationRuntime.matched.length) {
+    logInfo('automation_match_found', {
+      requestId,
+      jobId: job.id,
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      automationIds: automationRuntime.matched.map((automation) => automation.id),
+      triggerTypes: automationRuntime.matched.map((automation) => automation.trigger?.type || null)
+    });
+  }
 
   const buildSuggestionsFromContext = async (count = 3) => {
     const timing = conversationRepo.resolveCandidateTiming(safeContext.appointmentCandidate || null);
@@ -2115,33 +2149,43 @@ async function processConversationReplyJob(job) {
 
   let decision = null;
   let decisionSource = null;
-  decision = await resolveCommerceDecision({
-    conversation,
-    clinic,
-    contact,
-    inboundText
-  });
-  if (decision) {
-    decisionSource = 'commerce';
-    logInfo('commerce_flow_entered', {
-      requestId,
-      jobId: job.id,
-      conversationId: conversation.id,
-      clinicId: conversation.clinicId,
-      currentState,
-      nextState: decision.newState || null,
-      inboundText: normalizedInboundText
+  if (automationRuntime.replyText) {
+    decision = {
+      replyText: automationRuntime.replyText,
+      newState: conversation.state || 'READY',
+      contextPatch: automationContextPatch
+    };
+    decisionSource = 'automation';
+  }
+  if (!decision) {
+    decision = await resolveCommerceDecision({
+      conversation,
+      clinic,
+      contact,
+      inboundText
     });
-  } else {
-    logInfo('commerce_flow_skipped', {
-      requestId,
-      jobId: job.id,
-      conversationId: conversation.id,
-      clinicId: conversation.clinicId,
-      currentState,
-      inboundText: normalizedInboundText,
-      reason: inboundLooksLikeCommerce ? 'resolve_commerce_returned_null' : 'not_a_commerce_command'
-    });
+    if (decision) {
+      decisionSource = 'commerce';
+      logInfo('commerce_flow_entered', {
+        requestId,
+        jobId: job.id,
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        currentState,
+        nextState: decision.newState || null,
+        inboundText: normalizedInboundText
+      });
+    } else {
+      logInfo('commerce_flow_skipped', {
+        requestId,
+        jobId: job.id,
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        currentState,
+        inboundText: normalizedInboundText,
+        reason: inboundLooksLikeCommerce ? 'resolve_commerce_returned_null' : 'not_a_commerce_command'
+      });
+    }
   }
 
   const managementIntent = detectTurnManagementIntent(inboundText);
@@ -2592,6 +2636,10 @@ async function processConversationReplyJob(job) {
     }
   }
 
+  if (decision && automationContextPatch) {
+    decision.contextPatch = mergeContextPatches(decision.contextPatch || null, automationContextPatch);
+  }
+
   if (!decision) {
     logInfo('legacy_clinic_flow_matched', {
       requestId,
@@ -2657,7 +2705,9 @@ async function processConversationReplyJob(job) {
     channelId: conversation.channelId || channelId || null
   });
 
-  if (aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok) {
+  if (decisionSource === 'automation') {
+    aiSkipReason = 'automation_matched';
+  } else if (aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok) {
     const budget = reserveAiBudget(conversation.id);
     if (!budget.allowed) {
       aiSkipReason = budget.reason || 'rate_limited';
@@ -2678,7 +2728,7 @@ async function processConversationReplyJob(job) {
     aiSkipReason = aiScope.reason;
   }
 
-  if (aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok && !aiSkipReason) {
+  if (decisionSource !== 'automation' && aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok && !aiSkipReason) {
     aiAttempted = true;
     logInfo('ai_request_start', {
       requestId,

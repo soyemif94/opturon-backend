@@ -36,6 +36,11 @@ function normalizeActions(payload) {
     .filter((item) => item.type);
 }
 
+function normalizeConditions(payload) {
+  const description = normalizeString(payload && payload.description);
+  return description ? { description } : {};
+}
+
 function validateAutomationPayload(input) {
   if (!input.name) return 'missing_automation_name';
   if (!ALLOWED_TRIGGERS.has(input.trigger.type)) return 'invalid_automation_trigger';
@@ -75,7 +80,7 @@ async function createPortalAutomation(tenantId, payload) {
   const input = {
     name: normalizeString(payload && payload.name),
     trigger: normalizeTrigger(payload && payload.trigger),
-    conditions: {},
+    conditions: normalizeConditions(payload),
     actions: normalizeActions(payload && payload.actions),
     enabled: payload && payload.enabled !== false
   };
