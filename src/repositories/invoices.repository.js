@@ -328,6 +328,17 @@ async function createInvoice(input, client = null) {
   );
 
   const invoiceId = result.rows[0].id;
+  await dbQuery(
+    client,
+    `UPDATE invoices
+     SET "internalDocumentNumber" = COALESCE(
+       "internalDocumentNumber",
+       'OPT-' || LPAD(nextval('opturon_internal_document_number_seq')::text, 8, '0')
+     ),
+         "updatedAt" = NOW()
+     WHERE id = $1::uuid`,
+    [invoiceId]
+  );
   await replaceInvoiceItems(invoiceId, input.items || [], client);
   if (finalStatus !== 'draft') {
     await dbQuery(
