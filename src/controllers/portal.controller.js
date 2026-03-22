@@ -75,7 +75,9 @@ const {
 } = require('../services/portal-loyalty.service');
 const {
   listPortalAutomations,
-  createPortalAutomation
+  createPortalAutomation,
+  updatePortalAutomation,
+  deletePortalAutomation
 } = require('../services/portal-automations.service');
 const {
   getPortalBusinessSettings,
@@ -1871,6 +1873,79 @@ async function postPortalAutomation(req, res) {
   }
 }
 
+async function patchPortalAutomation(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const automationId = String(req.params.automationId || '').trim();
+
+  try {
+    const result = await updatePortalAutomation(tenantId, automationId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_automation_id' ||
+        result.reason === 'invalid_automation_enabled'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        automation: result.automation
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_automation_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function destroyPortalAutomation(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const automationId = String(req.params.automationId || '').trim();
+
+  try {
+    const result = await deletePortalAutomation(tenantId, automationId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_automation_id'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        automation: result.automation
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_automation_delete_failed',
+      details: error.message
+    });
+  }
+}
+
 async function patchPortalUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const userId = String(req.params.userId || '').trim();
@@ -2452,6 +2527,8 @@ module.exports = {
   getPortalUsers,
   patchPortalBusiness,
   postPortalAutomation,
+  patchPortalAutomation,
+  destroyPortalAutomation,
   postPortalUser,
   patchPortalUser,
   destroyPortalUser,

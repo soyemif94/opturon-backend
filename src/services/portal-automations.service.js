@@ -1,5 +1,10 @@
 const { resolvePortalTenantContext } = require('./portal-context.service');
-const { createAutomation, listAutomationsByClinicId } = require('../repositories/automations.repository');
+const {
+  createAutomation,
+  listAutomationsByClinicId,
+  updateAutomationById,
+  deleteAutomationById
+} = require('../repositories/automations.repository');
 
 const ALLOWED_TRIGGERS = new Set(['message_received', 'keyword', 'off_hours', 'new_contact']);
 const ALLOWED_ACTIONS = new Set(['send_message', 'assign_human', 'tag_contact']);
@@ -104,9 +109,66 @@ async function createPortalAutomation(tenantId, payload) {
   };
 }
 
+async function updatePortalAutomation(tenantId, automationId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const normalizedAutomationId = normalizeString(automationId);
+  if (!normalizedAutomationId) {
+    return buildReason('missing_automation_id', null, { tenantId: context.tenantId });
+  }
+
+  if (typeof payload?.enabled !== 'boolean') {
+    return buildReason('invalid_automation_enabled', null, { tenantId: context.tenantId });
+  }
+
+  const automation = await updateAutomationById(context.clinic.id, normalizedAutomationId, {
+    enabled: payload.enabled
+  });
+
+  if (!automation) {
+    return buildReason('automation_not_found', null, { tenantId: context.tenantId });
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    automation
+  };
+}
+
+async function deletePortalAutomation(tenantId, automationId) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const normalizedAutomationId = normalizeString(automationId);
+  if (!normalizedAutomationId) {
+    return buildReason('missing_automation_id', null, { tenantId: context.tenantId });
+  }
+
+  const automation = await deleteAutomationById(context.clinic.id, normalizedAutomationId);
+  if (!automation) {
+    return buildReason('automation_not_found', null, { tenantId: context.tenantId });
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    automation
+  };
+}
+
 module.exports = {
   ALLOWED_TRIGGERS: Array.from(ALLOWED_TRIGGERS),
   ALLOWED_ACTIONS: Array.from(ALLOWED_ACTIONS),
   listPortalAutomations,
-  createPortalAutomation
+  createPortalAutomation,
+  updatePortalAutomation,
+  deletePortalAutomation
 };

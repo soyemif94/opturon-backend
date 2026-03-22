@@ -55,6 +55,8 @@ const {
   getPortalUsers,
   postPortalUser,
   postPortalAutomation,
+  patchPortalAutomation,
+  destroyPortalAutomation,
   patchPortalBusiness,
   patchPortalUser,
   destroyPortalUser,
@@ -128,6 +130,8 @@ router.get('/tenants/:tenantId/loyalty/overview', requirePortalInternalAuth, get
 router.post('/tenants/:tenantId/loyalty/redemptions', requirePortalInternalAuth, postPortalLoyaltyRedeemController);
 router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
 router.post('/tenants/:tenantId/automations', requirePortalInternalAuth, postPortalAutomation);
+router.patch('/tenants/:tenantId/automations/:automationId', requirePortalInternalAuth, patchPortalAutomation);
+router.delete('/tenants/:tenantId/automations/:automationId', requirePortalInternalAuth, destroyPortalAutomation);
 router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBusiness);
 router.patch('/tenants/:tenantId/business', requirePortalInternalAuth, patchPortalBusiness);
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);

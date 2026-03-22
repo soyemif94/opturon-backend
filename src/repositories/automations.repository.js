@@ -1,5 +1,7 @@
 const { query } = require('../db/client');
 
+const AUTOMATION_SELECT = `id, "clinicId", "externalTenantId", name, trigger, conditions, actions, enabled, "createdAt", "updatedAt"`;
+
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') {
     return client.query(text, params);
@@ -27,7 +29,7 @@ function normalizeAutomation(row) {
 async function listAutomationsByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", "externalTenantId", name, trigger, conditions, actions, enabled, "createdAt", "updatedAt"
+    `SELECT ${AUTOMATION_SELECT}
      FROM automations
      WHERE "clinicId" = $1::uuid
      ORDER BY "createdAt" DESC`,
@@ -66,7 +68,49 @@ async function createAutomation(input, client = null) {
   return result.rows[0] ? normalizeAutomation(result.rows[0]) : null;
 }
 
+async function updateAutomationById(clinicId, automationId, patch, client = null) {
+  const updates = [];
+  const params = [clinicId, automationId];
+
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'enabled')) {
+    params.push(Boolean(patch.enabled));
+    updates.push(`enabled = $${params.length}`);
+  }
+
+  if (!updates.length) {
+    return null;
+  }
+
+  const result = await dbQuery(
+    client,
+    `UPDATE automations
+     SET ${updates.join(', ')},
+         "updatedAt" = NOW()
+     WHERE "clinicId" = $1::uuid
+       AND id = $2::uuid
+     RETURNING ${AUTOMATION_SELECT}`,
+    params
+  );
+
+  return result.rows[0] ? normalizeAutomation(result.rows[0]) : null;
+}
+
+async function deleteAutomationById(clinicId, automationId, client = null) {
+  const result = await dbQuery(
+    client,
+    `DELETE FROM automations
+     WHERE "clinicId" = $1::uuid
+       AND id = $2::uuid
+     RETURNING ${AUTOMATION_SELECT}`,
+    [clinicId, automationId]
+  );
+
+  return result.rows[0] ? normalizeAutomation(result.rows[0]) : null;
+}
+
 module.exports = {
   listAutomationsByClinicId,
-  createAutomation
+  createAutomation,
+  updateAutomationById,
+  deleteAutomationById
 };
