@@ -10,6 +10,12 @@ function dbQuery(client, text, params) {
 const PORTAL_ROLE_SQL = `('owner', 'manager', 'seller', 'viewer', 'editor')`;
 const PORTAL_ACCOUNT_TYPE = 'client_portal';
 
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || '').trim()
+  );
+}
+
 async function listPortalUsersByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -134,6 +140,10 @@ async function findPortalUserByEmail(email, client = null) {
 }
 
 async function findPortalUserByIdAndClinicId(userId, clinicId, client = null) {
+  if (!isUuid(userId)) {
+    return null;
+  }
+
   const result = await dbQuery(
     client,
     `SELECT id,

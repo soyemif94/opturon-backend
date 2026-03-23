@@ -8,13 +8,6 @@ function dbQuery(client, text, params) {
   return query(text, params);
 }
 
-function parseMetadata(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
-  }
-  return value;
-}
-
 function normalizeProduct(row) {
   const unitPrice = quantizeDecimal(row.unitPrice ?? row.price ?? 0, 2, 0);
   const vatRate = quantizeDecimal(row.vatRate ?? 0, 2, 0);
@@ -34,7 +27,7 @@ function normalizeProduct(row) {
     status,
     active: status === 'active',
     sku: row.sku || null,
-    metadata: parseMetadata(row.metadata),
+    metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {},
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
   };
@@ -43,21 +36,7 @@ function normalizeProduct(row) {
 async function listProductsByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT
-       id,
-       "clinicId",
-       name,
-       description,
-       price,
-       "unitPrice",
-       currency,
-       "vatRate",
-       stock,
-       status,
-       sku,
-       metadata,
-       "createdAt",
-       "updatedAt"
+    `SELECT id, "clinicId", name, description, price, "unitPrice", currency, "vatRate", stock, status, sku, metadata, "createdAt", "updatedAt"
      FROM products
      WHERE "clinicId" = $1::uuid
      ORDER BY "createdAt" DESC`,
@@ -70,21 +49,7 @@ async function listProductsByClinicId(clinicId, client = null) {
 async function findProductById(productId, clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT
-       id,
-       "clinicId",
-       name,
-       description,
-       price,
-       "unitPrice",
-       currency,
-       "vatRate",
-       stock,
-       status,
-       sku,
-       metadata,
-       "createdAt",
-       "updatedAt"
+    `SELECT id, "clinicId", name, description, price, "unitPrice", currency, "vatRate", stock, status, sku, metadata, "createdAt", "updatedAt"
      FROM products
      WHERE id = $1::uuid
        AND "clinicId" = $2::uuid
@@ -116,7 +81,7 @@ async function createProduct(input, client = null) {
        "updatedAt"
      )
      VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
-     RETURNING id`,
+      RETURNING id`,
     [
       input.clinicId,
       input.name,

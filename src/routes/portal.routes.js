@@ -25,6 +25,12 @@ const {
   getPortalInvoiceAllocations,
   postPortalInvoice,
   patchPortalInvoice,
+  patchPortalInvoiceAccountingController,
+  patchPortalInvoicesBulkStatus,
+  postPortalInvoicesBulkDownload,
+  getPortalInvoicesCsvExport,
+  getPortalInvoiceDocumentController,
+  getPortalInvoiceDownloadController,
   postPortalInvoiceIssue,
   postPortalInvoiceVoid,
   getPortalPayments,
@@ -49,6 +55,8 @@ const {
   getPortalUsers,
   postPortalUser,
   postPortalAutomation,
+  patchPortalAutomation,
+  destroyPortalAutomation,
   patchPortalBusiness,
   patchPortalUser,
   destroyPortalUser,
@@ -92,9 +100,15 @@ router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
 router.patch('/tenants/:tenantId/contacts/:contactId', patchPortalContact);
 router.get('/tenants/:tenantId/invoices', getPortalInvoices);
 router.post('/tenants/:tenantId/invoices', postPortalInvoice);
+router.get('/tenants/:tenantId/invoices/export.csv', getPortalInvoicesCsvExport);
+router.patch('/tenants/:tenantId/invoices/bulk-status', patchPortalInvoicesBulkStatus);
+router.post('/tenants/:tenantId/invoices/bulk-download', postPortalInvoicesBulkDownload);
 router.get('/tenants/:tenantId/invoices/:invoiceId', getPortalInvoice);
+router.get('/tenants/:tenantId/invoices/:invoiceId/document', getPortalInvoiceDocumentController);
+router.get('/tenants/:tenantId/invoices/:invoiceId/download', getPortalInvoiceDownloadController);
 router.get('/tenants/:tenantId/invoices/:invoiceId/allocations', getPortalInvoiceAllocations);
 router.patch('/tenants/:tenantId/invoices/:invoiceId', patchPortalInvoice);
+router.patch('/tenants/:tenantId/invoices/:invoiceId/accounting', patchPortalInvoiceAccountingController);
 router.post('/tenants/:tenantId/invoices/:invoiceId/issue', postPortalInvoiceIssue);
 router.post('/tenants/:tenantId/invoices/:invoiceId/void', postPortalInvoiceVoid);
 router.get('/tenants/:tenantId/payments', getPortalPayments);
@@ -116,6 +130,8 @@ router.get('/tenants/:tenantId/loyalty/overview', requirePortalInternalAuth, get
 router.post('/tenants/:tenantId/loyalty/redemptions', requirePortalInternalAuth, postPortalLoyaltyRedeemController);
 router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
 router.post('/tenants/:tenantId/automations', requirePortalInternalAuth, postPortalAutomation);
+router.patch('/tenants/:tenantId/automations/:automationId', requirePortalInternalAuth, patchPortalAutomation);
+router.delete('/tenants/:tenantId/automations/:automationId', requirePortalInternalAuth, destroyPortalAutomation);
 router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBusiness);
 router.patch('/tenants/:tenantId/business', requirePortalInternalAuth, patchPortalBusiness);
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);

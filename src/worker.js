@@ -5,7 +5,7 @@ const env = require('./config/env');
 const { withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
 const { findChannelById } = require('./repositories/tenant.repository');
-const { findContactById } = require('./repositories/contact.repository');
+const { findContactById, findContactByIdAndClinicId } = require('./repositories/contact.repository');
 const {
   findConversationById,
   markLastOutbound,
@@ -19,7 +19,6 @@ const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
 const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
 const { createOrderForClinic, patchOrderStatusForClinic } = require('./services/portal-orders.service');
-const { evaluateConversationAutomation } = require('./services/automation-runtime.service');
 const { generateReply } = require('./ai/openai.client');
 const { buildAiMessages } = require('./ai/context.builder');
 const {
@@ -47,6 +46,7 @@ const {
   countRecentEventsByType
 } = require('./repositories/conversation-events.repository');
 const { claimJobs, markJobDone, requeueOrFailJob } = require('./repositories/job.repository');
+const { resolveAutomationReplyForInbound } = require('./services/automation-runtime.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -85,6 +85,20 @@ function sanitizeDatabaseUrl(databaseUrl) {
     if (!match) return null;
     return { hostPort: match[1], dbname: match[2] || null };
   }
+}
+
+function mergeContextPatches(basePatch, extraPatch) {
+  if (!basePatch && !extraPatch) return null;
+  if (!basePatch) return extraPatch;
+  if (!extraPatch) return basePatch;
+
+  const merged = { ...basePatch, ...extraPatch };
+  if (Array.isArray(basePatch.portalTags) || Array.isArray(extraPatch.portalTags)) {
+    merged.portalTags = Array.from(
+      new Set([...(Array.isArray(basePatch.portalTags) ? basePatch.portalTags : []), ...(Array.isArray(extraPatch.portalTags) ? extraPatch.portalTags : [])])
+    );
+  }
+  return merged;
 }
 
 function normalizeText(input) {
@@ -1191,8 +1205,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       if (
         orderResult.reason === 'order_item_insufficient_stock' ||
         orderResult.reason === 'order_item_product_not_found' ||
-        orderResult.reason === 'order_item_product_inactive' ||
-        orderResult.reason === 'order_item_product_archived'
+        orderResult.reason === 'order_item_product_inactive'
       ) {
         const products = buildCommerceCatalog(await listProductsByClinicId(conversation.clinicId));
         logInfo('commerce_order_create_failed_stock', {
@@ -1835,14 +1848,14 @@ async function processInboundJob(job) {
     throw new Error('Channel not found for job');
   }
 
-  const contact = await findContactById(payload.contactId);
-  if (!contact) {
-    throw new Error('Contact not found for job');
-  }
-
   const conversation = await findConversationById(payload.conversationId);
   if (!conversation || conversation.clinicId !== clinicId) {
     throw new Error('Conversation not found for job');
+  }
+
+  const contact = await findContactByIdAndClinicId(conversation.contactId || payload.contactId, clinicId);
+  if (!contact) {
+    throw new Error('Contact not found for job');
   }
 
   const clinic = await getClinic(clinicId);
@@ -2046,16 +2059,16 @@ async function processConversationReplyJob(job) {
     throw new Error('Invalid conversation_reply payload: missing conversationId/inboundMessageId/channelId/contactId');
   }
 
-  const [conversation, inboundMessage, channel, contact] = await Promise.all([
-    conversationRepo.getConversationById(conversationId),
+  const conversation = await conversationRepo.getConversationById(conversationId);
+  if (!conversation) {
+    throw new Error('Conversation not found in automation runtime');
+  }
+
+  const [inboundMessage, channel, contact] = await Promise.all([
     conversationRepo.getMessageById(inboundMessageId),
     findChannelById(channelId),
-    findContactById(contactId)
+    findContactByIdAndClinicId(contactId, conversation.clinicId)
   ]);
-
-  if (!conversation) {
-    throw new Error('Conversation not found for conversation_reply job');
-  }
   if (!inboundMessage) {
     throw new Error('Inbound message not found for conversation_reply job');
   }
@@ -2077,6 +2090,53 @@ async function processConversationReplyJob(job) {
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
+  const hasNewerInbound = await conversationRepo.hasNewerInboundMessage(conversation.id, inboundMessage.id);
+  const recentMessages = await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5);
+
+  logInfo('automation_runtime_start', {
+    requestId,
+    jobId: job.id,
+    clinicId: conversation.clinicId,
+    conversationId: conversation.id,
+    messageCount: Array.isArray(recentMessages) ? recentMessages.length : 0
+  });
+
+  if (hasNewerInbound) {
+    logInfo('conversation_reply_skipped_stale_inbound', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      inboundMessageId: inboundMessage.id,
+      waMessageId
+    });
+    return;
+  }
+
+  const existingAutomationOutbound = await conversationRepo.findAutomationOutboundByInboundMessageId(
+    conversation.id,
+    inboundMessage.id
+  );
+  if (existingAutomationOutbound) {
+    logInfo('conversation_reply_skipped_duplicate_inbound', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      inboundMessageId: inboundMessage.id,
+      outboundMessageId: existingAutomationOutbound.id,
+      waMessageId
+    });
+    return;
+  }
+
+  const automationRuntime = await resolveAutomationReplyForInbound({
+    clinic,
+    conversation,
+    inboundText,
+    recentMessages
+  });
+  let automationContextPatch = automationRuntime.contextPatch || null;
 
   logInfo('incoming_whatsapp_message_received', {
     requestId,
@@ -2087,6 +2147,17 @@ async function processConversationReplyJob(job) {
     inboundText: normalizedInboundText,
     inboundMessageId
   });
+
+  if (automationRuntime.matched.length) {
+    logInfo('automation_match_found', {
+      requestId,
+      jobId: job.id,
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      automationIds: automationRuntime.matched.map((automation) => automation.id),
+      triggerTypes: automationRuntime.matched.map((automation) => automation.trigger?.type || null)
+    });
+  }
 
   const buildSuggestionsFromContext = async (count = 3) => {
     const timing = conversationRepo.resolveCandidateTiming(safeContext.appointmentCandidate || null);
@@ -2117,33 +2188,21 @@ async function processConversationReplyJob(job) {
 
   let decision = null;
   let decisionSource = null;
-  decision = await evaluateConversationAutomation({
-    clinicId: conversation.clinicId,
-    conversation,
-    contact,
-    inboundText
-  });
-  if (decision) {
-    decisionSource = decision.source || 'conversation_automation';
-    logInfo('conversation_automation_matched', {
-      requestId,
-      jobId: job.id,
-      conversationId: conversation.id,
-      clinicId: conversation.clinicId,
-      currentState,
-      nextState: decision.newState || null,
-      inboundText: normalizedInboundText,
-      source: decisionSource
-    });
+  if (automationRuntime.replyText) {
+    decision = {
+      replyText: automationRuntime.replyText,
+      newState: conversation.state || 'READY',
+      contextPatch: automationContextPatch
+    };
+    decisionSource = 'automation';
   }
-
   if (!decision) {
-  decision = await resolveCommerceDecision({
-    conversation,
-    clinic,
-    contact,
-    inboundText
-  });
+    decision = await resolveCommerceDecision({
+      conversation,
+      clinic,
+      contact,
+      inboundText
+    });
     if (decision) {
       decisionSource = 'commerce';
       logInfo('commerce_flow_entered', {
@@ -2616,6 +2675,10 @@ async function processConversationReplyJob(job) {
     }
   }
 
+  if (decision && automationContextPatch) {
+    decision.contextPatch = mergeContextPatches(decision.contextPatch || null, automationContextPatch);
+  }
+
   if (!decision) {
     logInfo('legacy_clinic_flow_matched', {
       requestId,
@@ -2681,7 +2744,9 @@ async function processConversationReplyJob(job) {
     channelId: conversation.channelId || channelId || null
   });
 
-  if (aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok) {
+  if (decisionSource === 'automation') {
+    aiSkipReason = 'automation_matched';
+  } else if (aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok) {
     const budget = reserveAiBudget(conversation.id);
     if (!budget.allowed) {
       aiSkipReason = budget.reason || 'rate_limited';
@@ -2702,7 +2767,7 @@ async function processConversationReplyJob(job) {
     aiSkipReason = aiScope.reason;
   }
 
-  if (aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok && !aiSkipReason) {
+  if (decisionSource !== 'automation' && aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok && !aiSkipReason) {
     aiAttempted = true;
     logInfo('ai_request_start', {
       requestId,
@@ -2799,17 +2864,6 @@ async function processConversationReplyJob(job) {
     }
   );
 
-  logInfo('conversation_reply_worker_sent', {
-    requestId,
-    sourcePath: 'worker.conversation_reply',
-    jobId: job.id,
-    clinicId: conversation.clinicId || job.clinicId || null,
-    conversationId: conversation.id,
-    waMessageId,
-    outboundMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
-    automationSource: decisionSource || null
-  });
-
   const outboundWrite = await conversationRepo.insertOutboundMessage({
     conversationId: conversation.id,
     waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
@@ -2820,9 +2874,10 @@ async function processConversationReplyJob(job) {
     raw: {
       ...(sendResult && sendResult.raw ? sendResult.raw : {}),
       automation: {
+        inboundMessageId: inboundMessage.id,
+        inboundWaMessageId: waMessageId,
         source: decisionSource || null,
-        automationId: decision && decision.automation ? decision.automation.id || null : null,
-        automationName: decision && decision.automation ? decision.automation.name || null : null
+        jobId: job.id
       },
       ai: {
         enabled: aiEnabled && hasAiKey,

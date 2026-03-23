@@ -267,6 +267,41 @@ async function getMessageById(id, client = null) {
   return result.rows[0] || null;
 }
 
+async function hasNewerInboundMessage(conversationId, messageId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT 1
+     FROM conversation_messages current_message
+     INNER JOIN conversation_messages newer_message
+       ON newer_message."conversationId" = current_message."conversationId"
+      AND newer_message.direction = 'inbound'
+      AND newer_message."createdAt" > current_message."createdAt"
+     WHERE current_message.id = $1
+       AND current_message."conversationId" = $2
+       AND current_message.direction = 'inbound'
+     LIMIT 1`,
+    [messageId, conversationId]
+  );
+
+  return result.rowCount > 0;
+}
+
+async function findAutomationOutboundByInboundMessageId(conversationId, inboundMessageId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "conversationId", direction, "waMessageId", "from", "to", type, text, raw, "createdAt"
+     FROM conversation_messages
+     WHERE "conversationId" = $1
+       AND direction = 'outbound'
+       AND raw->'automation'->>'inboundMessageId' = $2
+     ORDER BY "createdAt" DESC
+     LIMIT 1`,
+    [conversationId, inboundMessageId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function updateConversationState({ conversationId, state, contextPatch = null }, client = null) {
   const result = await dbQuery(
     client,
@@ -1322,6 +1357,8 @@ module.exports = {
   getConversationById,
   getConversationByIdAndClinicId,
   getMessageById,
+  hasNewerInboundMessage,
+  findAutomationOutboundByInboundMessageId,
   updateConversationState,
   updateConversationStateForClinic,
   updateConversationStatusForClinic,

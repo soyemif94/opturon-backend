@@ -18,8 +18,14 @@ const {
   listPortalInvoiceAllocations,
   createPortalInvoice,
   updatePortalInvoice,
+  updatePortalInvoiceAccounting,
+  updatePortalInvoicesBulkStatus,
   issuePortalInvoice,
-  voidPortalInvoice
+  voidPortalInvoice,
+  exportPortalInvoicesCsv,
+  downloadPortalInvoicesBundle,
+  renderPortalInvoiceDocument,
+  downloadPortalInvoice
 } = require('../services/portal-invoices.service');
 const {
   listPortalProducts,
@@ -69,7 +75,9 @@ const {
 } = require('../services/portal-loyalty.service');
 const {
   listPortalAutomations,
-  createPortalAutomation
+  createPortalAutomation,
+  updatePortalAutomation,
+  deletePortalAutomation
 } = require('../services/portal-automations.service');
 const {
   getPortalBusinessSettings,
@@ -906,6 +914,179 @@ async function patchPortalInvoice(req, res) {
   }
 }
 
+async function patchPortalInvoiceAccountingController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await updatePortalInvoiceAccounting(tenantId, invoiceId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'duplicate_internal_document_number'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.invoice
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_accounting_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoicesCsvExport(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await exportPortalInvoicesCsv(tenantId, req.query || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.csv);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_export_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalInvoicesBulkStatus(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await updatePortalInvoicesBulkStatus(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_invoice_ids' ||
+        result.reason === 'invalid_fiscal_status'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        fiscalStatus: result.fiscalStatus,
+        invoices: result.updatedInvoices
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_bulk_status_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInvoicesBulkDownload(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await downloadPortalInvoicesBundle(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_invoice_ids'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.body);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_bulk_download_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoiceDocumentController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+
+  try {
+    const result = await renderPortalInvoiceDocument(tenantId, invoiceId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_invoice_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.html);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_document_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvoiceDownloadController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const invoiceId = String(req.params.invoiceId || '').trim();
+  const format = String(req.query.format || '').trim();
+
+  try {
+    const result = await downloadPortalInvoice(tenantId, invoiceId, format);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_invoice_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    return res.status(200).send(result.body);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invoice_download_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalInvoiceIssue(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const invoiceId = String(req.params.invoiceId || '').trim();
@@ -1692,6 +1873,79 @@ async function postPortalAutomation(req, res) {
   }
 }
 
+async function patchPortalAutomation(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const automationId = String(req.params.automationId || '').trim();
+
+  try {
+    const result = await updatePortalAutomation(tenantId, automationId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_automation_id' ||
+        result.reason === 'invalid_automation_enabled'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        automation: result.automation
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_automation_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function destroyPortalAutomation(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const automationId = String(req.params.automationId || '').trim();
+
+  try {
+    const result = await deletePortalAutomation(tenantId, automationId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_automation_id'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        automation: result.automation
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_automation_delete_failed',
+      details: error.message
+    });
+  }
+}
+
 async function patchPortalUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const userId = String(req.params.userId || '').trim();
@@ -2243,6 +2497,12 @@ module.exports = {
   getPortalInvoiceAllocations,
   postPortalInvoice,
   patchPortalInvoice,
+  patchPortalInvoiceAccountingController,
+  patchPortalInvoicesBulkStatus,
+  postPortalInvoicesBulkDownload,
+  getPortalInvoicesCsvExport,
+  getPortalInvoiceDocumentController,
+  getPortalInvoiceDownloadController,
   postPortalInvoiceIssue,
   postPortalInvoiceVoid,
   getPortalPayments,
@@ -2267,6 +2527,8 @@ module.exports = {
   getPortalUsers,
   patchPortalBusiness,
   postPortalAutomation,
+  patchPortalAutomation,
+  destroyPortalAutomation,
   postPortalUser,
   patchPortalUser,
   destroyPortalUser,

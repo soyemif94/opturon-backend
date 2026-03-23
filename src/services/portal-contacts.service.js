@@ -1,63 +1,61 @@
-const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
-  createContact,
-  updateContact,
-  findContactByIdentity,
-  findContactByIdAndClinicId,
-  listContactsByClinicId
+  listContactsByClinicId,
+  findPortalContactById,
+  createPortalContact,
+  updatePortalContactById
 } = require('../repositories/contact.repository');
 const { listInvoicesByContactId } = require('../repositories/invoices.repository');
 const { listPaymentsByContactId } = require('../repositories/payments.repository');
-const { buildContactFinancialSnapshot, buildContactFinancialSignalsByContactIds } = require('./contact-financial-snapshot.service');
-const { sumRecordedAllocatedAmountsByInvoiceIds, sumRecordedAllocatedAmountsByPaymentIds } = require('../repositories/payment-allocations.repository');
+const {
+  sumRecordedAllocatedAmountsByInvoiceIds,
+  sumRecordedAllocatedAmountsByPaymentIds
+} = require('../repositories/payment-allocations.repository');
+const { buildContactFinancialSnapshot } = require('./contact-financial-snapshot.service');
 const { calculateInvoiceReceivable, calculatePaymentAllocationSnapshot } = require('./invoice-balance.service');
 const { getLoyaltyContactSnapshotByClinicId } = require('./portal-loyalty.service');
 
-const CONTACT_STATUSES = new Set(['active', 'archived']);
-
-function normalizeString(value) {
-  return String(value || '').trim();
+function normalizeNullableText(value) {
+  const safeValue = String(value || '').trim();
+  return safeValue ? safeValue : null;
 }
 
-function normalizeMetadata(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
-  }
-  return value;
+function isValidEmail(email) {
+  if (!email) return true;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
 }
 
 function normalizeContact(row) {
-  const displayName =
-    row.name ||
-    row.fullName ||
-    row.companyName ||
-    row.email ||
-    row.phone ||
-    row.whatsappPhone ||
-    row.waId ||
-    'Contacto';
+  const safeName = String(row.name || '').trim();
 
   return {
     id: row.id,
     clinicId: row.clinicId,
     waId: row.waId || null,
     phone: row.phone || null,
-    whatsappPhone: row.whatsappPhone || row.phone || null,
+    name: safeName || row.companyName || row.waId || 'Contacto',
     email: row.email || null,
-    name: displayName,
-    fullName: row.fullName || row.name || row.companyName || displayName,
+    whatsappPhone: row.whatsappPhone || null,
     taxId: row.taxId || null,
     taxCondition: row.taxCondition || null,
     companyName: row.companyName || null,
     notes: row.notes || null,
-    metadata: normalizeMetadata(row.metadata),
     status: row.status || 'active',
     optedOut: row.optedOut === true,
+    createdAt: row.createdAt || null,
+    updatedAt: row.updatedAt || null,
     lastInteractionAt: row.lastInteractionAt || row.updatedAt || null,
     conversationCount: Number(row.conversationCount || 0),
-    createdAt: row.createdAt || null,
-    updatedAt: row.updatedAt || null
+    financialSnapshot: {
+      totalInvoiced: 0,
+      totalCredited: 0,
+      totalDocumentBalance: 0,
+      totalPaid: 0,
+      outstandingAmount: 0,
+      unallocatedPayments: 0
+    },
+    relatedDocuments: [],
+    relatedPayments: []
   };
 }
 
@@ -96,29 +94,6 @@ function normalizeRelatedPayment(payment, allocatedAmount = 0) {
   };
 }
 
-function buildContactPayload(payload) {
-  const requestedStatus = normalizeString(payload && payload.status).toLowerCase();
-
-  return {
-    waId: normalizeString(payload && payload.waId) || null,
-    phone: normalizeString(payload && payload.phone) || null,
-    whatsappPhone: normalizeString(payload && payload.whatsappPhone) || normalizeString(payload && payload.phone) || null,
-    email: normalizeString(payload && payload.email) || null,
-    name: normalizeString(payload && (payload.fullName || payload.name)),
-    taxId: normalizeString(payload && (payload.taxId || payload.documentNumber)) || null,
-    taxCondition: normalizeString(payload && payload.taxCondition) || null,
-    companyName: normalizeString(payload && payload.companyName) || null,
-    notes: normalizeString(payload && payload.notes) || null,
-    metadata: normalizeMetadata(payload && payload.metadata),
-    status: CONTACT_STATUSES.has(requestedStatus) ? requestedStatus : 'active'
-  };
-}
-
-function hasValidEmail(email) {
-  const safeEmail = normalizeString(email);
-  return !safeEmail || safeEmail.includes('@');
-}
-
 async function listPortalContacts(tenantId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -126,40 +101,82 @@ async function listPortalContacts(tenantId) {
   }
 
   const contacts = await listContactsByClinicId(context.clinic.id);
-  const signalsByContactId = await buildContactFinancialSignalsByContactIds({
-    clinicId: context.clinic.id,
-    contactIds: contacts.map((contact) => contact.id)
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    contacts: contacts.map(normalizeContact)
+  };
+}
+
+async function createPortalContactRecord(tenantId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const name = String(payload && payload.name ? payload.name : '').trim();
+  if (!name) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'missing_contact_name'
+    };
+  }
+
+  const email = normalizeNullableText(payload && payload.email);
+  if (!isValidEmail(email)) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'invalid_contact_email'
+    };
+  }
+
+  const contact = await createPortalContact(context.clinic.id, {
+    name,
+    email,
+    phone: normalizeNullableText(payload && payload.phone),
+    whatsappPhone: normalizeNullableText(payload && payload.whatsappPhone),
+    taxId: normalizeNullableText(payload && payload.taxId),
+    taxCondition: normalizeNullableText(payload && payload.taxCondition),
+    companyName: normalizeNullableText(payload && payload.companyName),
+    notes: normalizeNullableText(payload && payload.notes)
   });
 
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    contacts: contacts.map((contact) => ({
-      ...normalizeContact(contact),
-      financialSignal: signalsByContactId[contact.id] || {
-        outstandingAmount: 0,
-        unallocatedPayments: 0,
-        status: 'settled'
-      }
-    }))
+    contact: normalizeContact(contact)
   };
 }
 
 async function getPortalContactDetail(tenantId, contactId) {
+  const safeContactId = String(contactId || '').trim();
+  if (!safeContactId) {
+    return {
+      ok: false,
+      tenantId: String(tenantId || '').trim() || null,
+      reason: 'missing_contact_id'
+    };
+  }
+
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
 
-  const safeContactId = normalizeString(contactId);
-  if (!safeContactId) {
-    return { ok: false, tenantId: context.tenantId, reason: 'missing_contact_id' };
-  }
-
-  const contact = await findContactByIdAndClinicId(safeContactId, context.clinic.id);
+  const contact = await findPortalContactById(context.clinic.id, safeContactId);
   if (!contact) {
-    return { ok: false, tenantId: context.tenantId, reason: 'contact_not_found' };
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'contact_not_found'
+    };
   }
 
   const [financialSnapshot, documents, payments, loyaltySnapshot] = await Promise.all([
@@ -197,140 +214,73 @@ async function getPortalContactDetail(tenantId, contactId) {
   };
 }
 
-async function createPortalContact(tenantId, payload) {
+async function updatePortalContact(tenantId, contactId, payload) {
+  const safeContactId = String(contactId || '').trim();
+  if (!safeContactId) {
+    return {
+      ok: false,
+      tenantId: String(tenantId || '').trim() || null,
+      reason: 'missing_contact_id'
+    };
+  }
+
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
 
-  const contact = buildContactPayload(payload);
-  if (!contact.name && !contact.companyName) {
-    return { ok: false, tenantId: context.tenantId, reason: 'missing_contact_name' };
-  }
-  if (!hasValidEmail(contact.email)) {
-    return { ok: false, tenantId: context.tenantId, reason: 'invalid_contact_email' };
-  }
-
-  const existing = await findContactByIdentity({
-    clinicId: context.clinic.id,
-    waId: contact.waId,
-    email: contact.email,
-    taxId: contact.taxId,
-    phone: contact.phone,
-    whatsappPhone: contact.whatsappPhone
-  });
-  if (existing) {
+  const name = String(payload && payload.name ? payload.name : '').trim();
+  if (!name) {
     return {
       ok: false,
-      tenantId: context.tenantId,
-      reason: 'duplicate_contact_identity'
-    };
-  }
-
-  try {
-    const created = await withTransaction((client) =>
-      createContact(
-        {
-          clinicId: context.clinic.id,
-          name: contact.name || contact.companyName,
-          ...contact
-        },
-        client
-      )
-    );
-
-    return {
-      ok: true,
       tenantId: context.tenantId,
       clinic: context.clinic,
-      contact: normalizeContact(created)
+      reason: 'missing_contact_name'
     };
-  } catch (error) {
-    if (error && typeof error === 'object' && error.code === '23505') {
-      return {
-        ok: false,
-        tenantId: context.tenantId,
-        reason: 'duplicate_contact_identity'
-      };
-    }
-    throw error;
-  }
-}
-
-async function updatePortalContact(tenantId, contactId, payload) {
-  const context = await resolvePortalTenantContext(tenantId);
-  if (!context.ok || !context.clinic?.id) {
-    return context;
   }
 
-  const safeContactId = normalizeString(contactId);
-  if (!safeContactId) {
-    return { ok: false, tenantId: context.tenantId, reason: 'missing_contact_id' };
-  }
-
-  const existingContact = await findContactByIdAndClinicId(safeContactId, context.clinic.id);
-  if (!existingContact) {
-    return { ok: false, tenantId: context.tenantId, reason: 'contact_not_found' };
-  }
-
-  const contact = buildContactPayload({
-    ...existingContact,
-    ...(payload || {})
-  });
-
-  if (!contact.name && !contact.companyName) {
-    return { ok: false, tenantId: context.tenantId, reason: 'missing_contact_name' };
-  }
-  if (!hasValidEmail(contact.email)) {
-    return { ok: false, tenantId: context.tenantId, reason: 'invalid_contact_email' };
-  }
-
-  const duplicate = await findContactByIdentity({
-    clinicId: context.clinic.id,
-    waId: contact.waId,
-    email: contact.email,
-    taxId: contact.taxId,
-    phone: contact.phone,
-    whatsappPhone: contact.whatsappPhone,
-    excludeContactId: existingContact.id
-  });
-  if (duplicate) {
+  const email = normalizeNullableText(payload && payload.email);
+  if (!isValidEmail(email)) {
     return {
       ok: false,
       tenantId: context.tenantId,
-      reason: 'duplicate_contact_identity'
+      clinic: context.clinic,
+      reason: 'invalid_contact_email'
     };
   }
 
-  const updated = await withTransaction((client) =>
-    updateContact(
-      existingContact.id,
-      context.clinic.id,
-      {
-        ...contact,
-        name: contact.name || contact.companyName
-      },
-      client
-    )
-  );
+  const existingContact = await findPortalContactById(context.clinic.id, safeContactId);
+  if (!existingContact) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'contact_not_found'
+    };
+  }
+
+  const updatedContact = await updatePortalContactById(context.clinic.id, safeContactId, {
+    name,
+    email,
+    phone: normalizeNullableText(payload && payload.phone),
+    whatsappPhone: normalizeNullableText(payload && payload.whatsappPhone),
+    taxId: normalizeNullableText(payload && payload.taxId),
+    taxCondition: normalizeNullableText(payload && payload.taxCondition),
+    companyName: normalizeNullableText(payload && payload.companyName),
+    notes: normalizeNullableText(payload && payload.notes)
+  });
 
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    contact: {
-      ...normalizeContact(updated),
-      financialSnapshot: await buildContactFinancialSnapshot({
-        clinicId: context.clinic.id,
-        contactId: updated.id
-      })
-    }
+    contact: normalizeContact(updatedContact || existingContact)
   };
 }
 
 module.exports = {
   listPortalContacts,
+  createPortalContactRecord,
   getPortalContactDetail,
-  createPortalContact,
   updatePortalContact
 };

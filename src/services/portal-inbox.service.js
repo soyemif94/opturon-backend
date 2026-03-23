@@ -2,7 +2,11 @@ const crypto = require('crypto');
 const { query } = require('../db/client');
 const { findContactByIdAndClinicId, upsertContact } = require('../repositories/contact.repository');
 const { listEvents } = require('../repositories/conversation-events.repository');
-const { findPortalUserByIdAndClinicId, findPortalUserByNameAndClinicId } = require('../repositories/portal-users.repository');
+const {
+  findPortalUserByIdAndClinicId,
+  findPortalUserByNameAndClinicId,
+  listPortalUsersByClinicId
+} = require('../repositories/portal-users.repository');
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
@@ -201,6 +205,25 @@ async function resolvePortalAssignee(clinicId, value) {
       label: byName.name || rawValue,
       userId: byName.id
     };
+  }
+
+  const normalizeAssigneeName = (input) =>
+    String(input || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+
+  const normalizedRawValue = normalizeAssigneeName(rawValue);
+  if (normalizedRawValue) {
+    const users = await listPortalUsersByClinicId(clinicId);
+    const byNormalizedName = users.find((user) => normalizeAssigneeName(user && user.name) === normalizedRawValue);
+    if (byNormalizedName) {
+      return {
+        label: byNormalizedName.name || rawValue,
+        userId: byNormalizedName.id
+      };
+    }
   }
 
   return {

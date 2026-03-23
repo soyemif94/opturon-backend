@@ -94,11 +94,7 @@ async function buildContactFinancialSnapshot({ clinicId, contactId }) {
         acc.totalCredited = quantizeDecimal(acc.totalCredited + amount, 2, 0);
       }
 
-      acc.totalDocumentBalance = quantizeDecimal(
-        acc.totalDocumentBalance + Number(impact.amount || 0),
-        2,
-        0
-      );
+      acc.totalDocumentBalance = quantizeDecimal(acc.totalDocumentBalance + Number(impact.amount || 0), 2, 0);
       acc.totalPaid = quantizeDecimal(acc.totalPaid + Number(receivable.paidAmount || 0), 2, 0);
       acc.outstandingAmount = quantizeDecimal(
         acc.outstandingAmount + Number(receivable.outstandingAmount || 0),
