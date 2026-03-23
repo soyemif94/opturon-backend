@@ -30,6 +30,29 @@ function normalizeTrigger(payload) {
   };
 }
 
+function normalizeConditions(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return {};
+  }
+
+  const normalized = { ...payload };
+
+  if (normalized.priority !== undefined && normalized.priority !== null && normalized.priority !== '') {
+    const parsedPriority = Number(normalized.priority);
+    normalized.priority = Number.isFinite(parsedPriority) ? parsedPriority : undefined;
+  }
+
+  if (Array.isArray(normalized.exactKeywords)) {
+    normalized.exactKeywords = normalized.exactKeywords.map((item) => normalizeString(item)).filter(Boolean);
+  }
+
+  if (Array.isArray(normalized.containsKeywords)) {
+    normalized.containsKeywords = normalized.containsKeywords.map((item) => normalizeString(item)).filter(Boolean);
+  }
+
+  return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined));
+}
+
 function normalizeActions(payload) {
   const items = Array.isArray(payload) ? payload : [];
   return items
@@ -39,11 +62,6 @@ function normalizeActions(payload) {
       tag: normalizeString(item && item.tag) || null
     }))
     .filter((item) => item.type);
-}
-
-function normalizeConditions(payload) {
-  const description = normalizeString(payload && payload.description);
-  return description ? { description } : {};
 }
 
 function validateAutomationPayload(input) {
@@ -85,7 +103,7 @@ async function createPortalAutomation(tenantId, payload) {
   const input = {
     name: normalizeString(payload && payload.name),
     trigger: normalizeTrigger(payload && payload.trigger),
-    conditions: normalizeConditions(payload),
+    conditions: normalizeConditions(payload && payload.conditions),
     actions: normalizeActions(payload && payload.actions),
     enabled: payload && payload.enabled !== false
   };

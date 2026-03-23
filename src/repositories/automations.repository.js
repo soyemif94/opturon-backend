@@ -10,15 +10,13 @@ function dbQuery(client, text, params) {
 }
 
 function normalizeAutomation(row) {
-  const conditions = row.conditions && typeof row.conditions === 'object' ? row.conditions : {};
   return {
     id: row.id,
     clinicId: row.clinicId,
     externalTenantId: row.externalTenantId || null,
     name: row.name,
     trigger: row.trigger || {},
-    description: typeof conditions.description === 'string' ? conditions.description : null,
-    conditions,
+    conditions: row.conditions && typeof row.conditions === 'object' ? row.conditions : {},
     actions: Array.isArray(row.actions) ? row.actions : [],
     enabled: Boolean(row.enabled),
     createdAt: row.createdAt,
@@ -39,6 +37,20 @@ async function listAutomationsByClinicId(clinicId, client = null) {
   return result.rows.map(normalizeAutomation);
 }
 
+async function findAutomationByClinicIdAndName(clinicId, name, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT ${AUTOMATION_SELECT}
+     FROM automations
+     WHERE "clinicId" = $1::uuid
+       AND LOWER(name) = LOWER($2)
+     LIMIT 1`,
+    [clinicId, name]
+  );
+
+  return result.rows[0] ? normalizeAutomation(result.rows[0]) : null;
+}
+
 async function createAutomation(input, client = null) {
   const result = await dbQuery(
     client,
@@ -53,9 +65,37 @@ async function createAutomation(input, client = null) {
        "updatedAt"
      )
      VALUES ($1::uuid, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, NOW())
-     RETURNING id, "clinicId", "externalTenantId", name, trigger, conditions, actions, enabled, "createdAt", "updatedAt"`,
+     RETURNING ${AUTOMATION_SELECT}`,
     [
       input.clinicId,
+      input.externalTenantId || null,
+      input.name,
+      JSON.stringify(input.trigger || {}),
+      JSON.stringify(input.conditions || {}),
+      JSON.stringify(input.actions || []),
+      input.enabled !== false
+    ]
+  );
+
+  return result.rows[0] ? normalizeAutomation(result.rows[0]) : null;
+}
+
+async function updateAutomation(id, input, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE automations
+     SET
+       "externalTenantId" = $2,
+       name = $3,
+       trigger = $4::jsonb,
+       conditions = $5::jsonb,
+       actions = $6::jsonb,
+       enabled = $7,
+       "updatedAt" = NOW()
+     WHERE id = $1::uuid
+     RETURNING ${AUTOMATION_SELECT}`,
+    [
+      id,
       input.externalTenantId || null,
       input.name,
       JSON.stringify(input.trigger || {}),
@@ -110,7 +150,9 @@ async function deleteAutomationById(clinicId, automationId, client = null) {
 
 module.exports = {
   listAutomationsByClinicId,
+  findAutomationByClinicIdAndName,
   createAutomation,
+  updateAutomation,
   updateAutomationById,
   deleteAutomationById
 };
