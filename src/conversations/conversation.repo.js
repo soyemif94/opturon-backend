@@ -415,8 +415,15 @@ async function listConversationMessages(conversationId, limit = 100, client = nu
 }
 
 async function listConversationMessagesByClinicId(conversationId, clinicId, limit = 100, client = null) {
+  const hasExplicitLimit = !(limit === null || limit === undefined || String(limit).trim() === '');
   const parsedLimit = Number.isInteger(Number(limit)) ? Number(limit) : 100;
   const safeLimit = Math.max(1, Math.min(500, parsedLimit));
+  const params = [conversationId, clinicId];
+  const limitSql = hasExplicitLimit ? `\n     LIMIT $3` : '';
+
+  if (hasExplicitLimit) {
+    params.push(safeLimit);
+  }
 
   const result = await dbQuery(
     client,
@@ -425,9 +432,8 @@ async function listConversationMessagesByClinicId(conversationId, clinicId, limi
      INNER JOIN conversations c ON c.id = m."conversationId"
      WHERE m."conversationId" = $1
        AND c."clinicId" = $2
-     ORDER BY m."createdAt" ASC
-     LIMIT $3`,
-    [conversationId, clinicId, safeLimit]
+     ORDER BY m."createdAt" ASC${limitSql}`,
+    params
   );
   return result.rows;
 }

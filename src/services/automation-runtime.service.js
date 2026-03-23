@@ -58,6 +58,9 @@ const DEFAULT_PRODUCTS_EMPTY = [
   'Si querés, escribime qué estás buscando y te ayudo 👇'
 ].join('\n');
 
+const MENU_PRODUCTS_PAGE_SIZE = 5;
+const MORE_PRODUCTS_KEYWORDS = new Set(['mas', 'más', 'ver mas', 'ver más', 'mostrar mas', 'mostrar más', 'siguiente']);
+
 const DEFAULT_AUTOMATIONS = [
   {
     name: 'Conversational Welcome Menu',
@@ -262,31 +265,43 @@ function getFlowState(conversation) {
     menuActive: context.menuFlowActive === true,
     lastIntent: String(context.menuLastIntent || '').trim() || null,
     productsPreview: Array.isArray(context.menuProductsPreview) ? context.menuProductsPreview : [],
+    productsNextOffset: Number.isFinite(Number(context.menuProductsNextOffset)) ? Number(context.menuProductsNextOffset) : null,
+    productsTotal: Number.isFinite(Number(context.menuProductsTotal)) ? Number(context.menuProductsTotal) : 0,
     firstTouch: currentState === 'NEW'
   };
 }
 
-async function getMenuProductsPreview(clinicId) {
+async function getMenuProductsPreview(clinicId, { offset = 0, limit = MENU_PRODUCTS_PAGE_SIZE } = {}) {
   const products = await listProductsByClinicId(clinicId);
-  const activeProducts = products
-    .filter((product) => String(product.status || '').toLowerCase() === 'active')
-    .slice(0, 5)
-    .map((product, index) => ({
-      index: index + 1,
+  const safeOffset = Math.max(0, Number(offset || 0));
+  const safeLimit = Math.max(1, Math.min(20, Number(limit || MENU_PRODUCTS_PAGE_SIZE)));
+  const activeProducts = products.filter((product) => String(product.status || '').toLowerCase() === 'active');
+  const previewItems = activeProducts.slice(safeOffset, safeOffset + safeLimit).map((product, index) => ({
+      index: safeOffset + index + 1,
       id: product.id,
       name: product.name,
       price: Number(product.price || product.unitPrice || 0),
       currency: String(product.currency || 'ARS').toUpperCase() || 'ARS',
       description: product.description || null
     }));
+  const nextOffset = safeOffset + previewItems.length;
+  const hasMore = nextOffset < activeProducts.length;
 
   return {
-    items: activeProducts,
-    formattedList: activeProducts.length
-      ? activeProducts.map((product) => `${product.index}. ${product.name} — ${formatMoney(product.price, product.currency)}`).join('\n')
+    items: previewItems,
+    formattedList: previewItems.length
+      ? previewItems.map((product) => `${product.index}. ${product.name} — ${formatMoney(product.price, product.currency)}`).join('\n')
       : 'Aún no tenemos productos activos cargados.',
-    source: activeProducts.length ? 'catalog' : 'placeholder'
+    source: previewItems.length ? 'catalog' : 'placeholder',
+    total: activeProducts.length,
+    offset: safeOffset,
+    nextOffset: hasMore ? nextOffset : null,
+    hasMore
   };
+}
+
+function isMoreProductsRequest(normalizedInboundText) {
+  return MORE_PRODUCTS_KEYWORDS.has(normalizedInboundText);
 }
 
 async function maybeResolvePreviewSelection({ clinicId, flowState, normalizedInboundText }) {
@@ -363,13 +378,63 @@ function maybeResolvePricingFollowUp({ flowState, normalizedInboundText, inbound
   };
 }
 
-function buildContextPatch({ optionKey = null, productsPreview = null, handoffRequested = false } = {}) {
+async function maybeResolveMoreProducts({ clinicId, flowState, normalizedInboundText }) {
+  if (flowState.lastIntent !== 'products' || !isMoreProductsRequest(normalizedInboundText)) {
+    return null;
+  }
+
+  if (!flowState.productsNextOffset || flowState.productsNextOffset >= flowState.productsTotal) {
+    return {
+      replyText: [
+        'Ya te mostré todos los productos que tenemos cargados por ahora 👌',
+        '',
+        'Si querés, escribime el nombre de uno en particular o decime "3" para hablar con una persona 👇'
+      ].join('\n'),
+      newState: 'READY',
+      contextPatch: {
+        menuFlowActive: true,
+        menuLastIntent: 'products'
+      },
+      source: 'conversation_products_no_more',
+      automation: null
+    };
+  }
+
+  const preview = await getMenuProductsPreview(clinicId, {
+    offset: flowState.productsNextOffset,
+    limit: MENU_PRODUCTS_PAGE_SIZE
+  });
+
+  const extraLine = preview.hasMore
+    ? '\n\nSi querés ver más productos, escribí "más" 👇'
+    : '\n\nSi querés info de alguno, decime el nombre o el número 👇';
+
+  return {
+    replyText: `Te paso más productos 👌\n\n🛍️ ${preview.formattedList}${extraLine}`,
+    newState: 'READY',
+    contextPatch: {
+      menuFlowActive: true,
+      menuLastIntent: 'products',
+      menuProductsPreview: preview.items,
+      menuProductsOffset: preview.offset,
+      menuProductsNextOffset: preview.nextOffset,
+      menuProductsTotal: preview.total
+    },
+    source: 'conversation_products_more',
+    automation: null
+  };
+}
+
+function buildContextPatch({ optionKey = null, productsPreview = null, productsOffset = 0, productsNextOffset = null, productsTotal = 0, handoffRequested = false } = {}) {
   return {
     menuFlowActive: true,
     menuLastIntent: optionKey,
     menuLastMatchedAt: new Date().toISOString(),
     menuPresentedAt: optionKey ? null : new Date().toISOString(),
     menuProductsPreview: productsPreview || null,
+    menuProductsOffset: productsOffset,
+    menuProductsNextOffset: productsNextOffset,
+    menuProductsTotal: productsTotal,
     humanHandoffRequestedAt: handoffRequested ? new Date().toISOString() : null
   };
 }
@@ -416,10 +481,13 @@ async function buildDecisionFromAutomation({ automation, clinicId, conversation,
   let handoff = null;
 
   if (optionKey === 'products') {
-    const preview = await getMenuProductsPreview(clinicId);
+    const preview = await getMenuProductsPreview(clinicId, { offset: 0, limit: MENU_PRODUCTS_PAGE_SIZE });
     productsPreview = preview.items;
     if (replyText && replyText.includes('{{LISTA_PRODUCTOS}}')) {
       replyText = replyText.replace('{{LISTA_PRODUCTOS}}', preview.formattedList);
+      if (preview.hasMore) {
+        replyText = `${replyText}\n\nSi querés ver más productos, escribí "más" 👇`;
+      }
     } else {
       replyText = preview.items.length
         ? [
@@ -427,10 +495,29 @@ async function buildDecisionFromAutomation({ automation, clinicId, conversation,
             '',
             `🛍️ ${preview.formattedList}`,
             '',
-            'Si querés info de alguno en particular, decime el nombre o el número 👇'
+            preview.hasMore
+              ? 'Si querés ver más productos, escribí "más". También podés decirme el nombre o el número de alguno 👇'
+              : 'Si querés info de alguno en particular, decime el nombre o el número 👇'
           ].join('\n')
         : DEFAULT_PRODUCTS_EMPTY;
     }
+
+    return {
+      replyText,
+      newState: 'READY',
+      contextPatch: buildContextPatch({
+        optionKey,
+        productsPreview,
+        productsOffset: preview.offset,
+        productsNextOffset: preview.nextOffset,
+        productsTotal: preview.total,
+        handoffRequested: false
+      }),
+      source: `automation:${automation.name}`,
+      automation,
+      handoff: null,
+      catalogPrepared: true
+    };
   }
 
   if (!replyText && conditions.scope === 'fallback') {
@@ -451,6 +538,9 @@ async function buildDecisionFromAutomation({ automation, clinicId, conversation,
     contextPatch: buildContextPatch({
       optionKey,
       productsPreview,
+      productsOffset: 0,
+      productsNextOffset: null,
+      productsTotal: 0,
       handoffRequested: Boolean(handoff)
     }),
     source: `automation:${automation.name}`,
@@ -507,6 +597,18 @@ async function evaluateConversationAutomation({ clinicId, conversation, contact,
       reason: 'product_preview_selection'
     });
     return previewSelection;
+  }
+
+  const moreProducts = await maybeResolveMoreProducts({ clinicId, flowState, normalizedInboundText });
+  if (moreProducts) {
+    logInfo('automation_runtime_matched', {
+      clinicId,
+      conversationId: conversation && conversation.id ? conversation.id : null,
+      normalizedInboundText,
+      source: moreProducts.source,
+      reason: 'products_more'
+    });
+    return moreProducts;
   }
 
   const pricingFollowUp = maybeResolvePricingFollowUp({ flowState, normalizedInboundText, inboundText });

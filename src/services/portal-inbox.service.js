@@ -309,7 +309,7 @@ async function getPortalConversationDetail(tenantId, conversationId) {
 
   const [contact, messages, events, conversationChannel] = await Promise.all([
     findContactByIdAndClinicId(conversation.contactId, context.clinic.id),
-    conversationRepo.listConversationMessagesByClinicId(conversation.id, context.clinic.id, 200),
+    conversationRepo.listConversationMessagesByClinicId(conversation.id, context.clinic.id, null),
     listEvents(context.clinic.id, conversation.id, 20),
     conversation.channelId ? findChannelByIdAndClinicId(conversation.channelId, context.clinic.id) : null
   ]);
