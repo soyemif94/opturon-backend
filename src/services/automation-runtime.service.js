@@ -58,6 +58,54 @@ const DEFAULT_PRODUCTS_EMPTY = [
   'Si querés, escribime qué estás buscando y te ayudo 👇'
 ].join('\n');
 
+const SALES_WELCOME_MESSAGE = [
+  'Hola 👋 gracias por escribirnos.',
+  '',
+  'Estoy para ayudarte a elegir lo que necesitás 👇',
+  '',
+  '1️⃣ Ver productos',
+  '2️⃣ Consultar precios',
+  '3️⃣ Hablar con una persona',
+  '',
+  'Respondé con el número y te ayudo al instante 💬'
+].join('\n');
+
+const SALES_PRODUCTS_MESSAGE = [
+  'Estos son algunos de nuestros productos más elegidos 👇',
+  '',
+  '{{LISTA_PRODUCTOS}}',
+  '',
+  '👉 Podés pedirme uno por número o por nombre',
+  '',
+  'Si querés ver más, escribí "más" 👇'
+].join('\n');
+
+const SALES_PRICING_MESSAGE = [
+  'Decime qué producto te interesa y te paso el precio al instante 💬',
+  '',
+  'Si querés, también puedo recomendarte opciones 👍'
+].join('\n');
+
+const SALES_HUMAN_MESSAGE = [
+  'Perfecto 🙌',
+  '',
+  'Te conecto con alguien del equipo para ayudarte mejor.',
+  '',
+  'Mientras tanto, si querés, podés ver productos escribiendo "1" 👇'
+].join('\n');
+
+const SALES_FALLBACK_MESSAGE = [
+  'No llegué a entenderte 🤔',
+  '',
+  'Podés elegir una opción:',
+  '',
+  '1️⃣ Ver productos',
+  '2️⃣ Consultar precios',
+  '3️⃣ Hablar con una persona',
+  '',
+  'Estoy para ayudarte 👇'
+].join('\n');
+
 const MENU_PRODUCTS_PAGE_SIZE = 5;
 const MORE_PRODUCTS_KEYWORDS = new Set(['mas', 'más', 'ver mas', 'ver más', 'mostrar mas', 'mostrar más', 'siguiente']);
 
@@ -72,7 +120,7 @@ const DEFAULT_AUTOMATIONS = [
       genericGreetingsOnly: true,
       welcomeFallbackOnFirstMessage: true
     },
-    actions: [{ type: 'send_message', message: DEFAULT_WELCOME_MESSAGE }],
+    actions: [{ type: 'send_message', message: SALES_WELCOME_MESSAGE }],
     enabled: true
   },
   {
@@ -111,7 +159,7 @@ const DEFAULT_AUTOMATIONS = [
       exactKeywords: ['2', 'precio', 'precios'],
       containsKeywords: ['consultar precios', 'cuanto sale', 'cuánto sale', 'valor', 'costa', 'costo']
     },
-    actions: [{ type: 'send_message', message: DEFAULT_PRICING_MESSAGE }],
+    actions: [{ type: 'send_message', message: SALES_PRICING_MESSAGE }],
     enabled: true
   },
   {
@@ -127,7 +175,7 @@ const DEFAULT_AUTOMATIONS = [
     },
     actions: [
       { type: 'assign_human' },
-      { type: 'send_message', message: DEFAULT_HUMAN_MESSAGE }
+      { type: 'send_message', message: SALES_HUMAN_MESSAGE }
     ],
     enabled: true
   },
@@ -139,10 +187,15 @@ const DEFAULT_AUTOMATIONS = [
       scope: 'fallback',
       priority: 5
     },
-    actions: [{ type: 'send_message', message: DEFAULT_FALLBACK_MESSAGE }],
+    actions: [{ type: 'send_message', message: SALES_FALLBACK_MESSAGE }],
     enabled: true
   }
 ];
+
+const defaultProductsAutomation = DEFAULT_AUTOMATIONS.find((automation) => automation && automation.name === 'Conversational Menu Products');
+if (defaultProductsAutomation) {
+  defaultProductsAutomation.actions = [{ type: 'send_message', message: SALES_PRODUCTS_MESSAGE }];
+}
 
 function normalizeText(value) {
   return String(value || '')
@@ -336,6 +389,7 @@ async function maybeResolvePreviewSelection({ clinicId, flowState, normalizedInb
 
   return {
     replyText: `Perfecto 👌\n\n${name} está disponible por ${formatMoney(price, currency)}.${description}\n\nSi querés, también podés pedirme el precio de otro producto o escribir "3" para hablar con una persona 👇`,
+    replyText: `Perfecto 👌\n\n${name} está disponible por ${formatMoney(price, currency)}${description ? `\n${description.trim()}` : ''}\n\n👉 ¿Querés que te lo reserve o te paso más opciones?`,
     newState: 'READY',
     contextPatch: {
       menuFlowActive: true,
@@ -502,6 +556,13 @@ async function buildDecisionFromAutomation({ automation, clinicId, conversation,
         : DEFAULT_PRODUCTS_EMPTY;
     }
 
+    if (preview.items.length) {
+      replyText = SALES_PRODUCTS_MESSAGE.replace('{{LISTA_PRODUCTOS}}', preview.formattedList);
+      if (!preview.hasMore) {
+        replyText = replyText.replace('\n\nSi querés ver más, escribí "más" 👇', '');
+      }
+    }
+
     return {
       replyText,
       newState: 'READY',
@@ -521,11 +582,11 @@ async function buildDecisionFromAutomation({ automation, clinicId, conversation,
   }
 
   if (!replyText && conditions.scope === 'fallback') {
-    replyText = DEFAULT_FALLBACK_MESSAGE;
+    replyText = SALES_FALLBACK_MESSAGE;
   }
 
   if (!replyText && conditions.scope === 'welcome') {
-    replyText = DEFAULT_WELCOME_MESSAGE;
+    replyText = SALES_WELCOME_MESSAGE;
   }
 
   if (hasAssignHumanAction(automation) || optionKey === 'human') {
