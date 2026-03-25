@@ -34,9 +34,15 @@ const {
   postPortalInvoiceIssue,
   postPortalInvoiceVoid,
   getPortalPayments,
+  getPortalPaymentDestinations,
+  getPortalCashOverview,
   getPortalPayment,
   getPortalPaymentAllocations,
+  postPortalCashSession,
+  postPortalCashSessionClose,
   postPortalPayment,
+  postPortalPaymentDestination,
+  patchPortalPaymentDestinationController,
   postPortalPaymentAllocation,
   postPortalPaymentVoid,
   getPortalSalesSummary,
@@ -113,6 +119,12 @@ router.post('/tenants/:tenantId/invoices/:invoiceId/issue', postPortalInvoiceIss
 router.post('/tenants/:tenantId/invoices/:invoiceId/void', postPortalInvoiceVoid);
 router.get('/tenants/:tenantId/payments', getPortalPayments);
 router.post('/tenants/:tenantId/payments', postPortalPayment);
+router.get('/tenants/:tenantId/payment-destinations', getPortalPaymentDestinations);
+router.post('/tenants/:tenantId/payment-destinations', postPortalPaymentDestination);
+router.patch('/tenants/:tenantId/payment-destinations/:destinationId', patchPortalPaymentDestinationController);
+router.get('/tenants/:tenantId/cash-sessions', getPortalCashOverview);
+router.post('/tenants/:tenantId/cash-sessions', postPortalCashSession);
+router.post('/tenants/:tenantId/cash-sessions/:sessionId/close', postPortalCashSessionClose);
 router.get('/tenants/:tenantId/payments/:paymentId', getPortalPayment);
 router.get('/tenants/:tenantId/payments/:paymentId/allocations', getPortalPaymentAllocations);
 router.post('/tenants/:tenantId/payments/:paymentId/allocations', postPortalPaymentAllocation);

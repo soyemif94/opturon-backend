@@ -88,7 +88,13 @@ function normalizeOrder(row) {
     contactId: row.contactId || null,
     customerName: row.customerName || row.contactName || null,
     customerPhone: row.customerPhone || row.contactPhone || null,
+    customerType: row.customerType || 'registered_contact',
     source: row.source || null,
+    sellerUserId: row.sellerUserId || null,
+    sellerNameSnapshot: row.sellerNameSnapshot || null,
+    paymentDestinationId: row.paymentDestinationId || null,
+    paymentDestinationNameSnapshot: row.paymentDestinationNameSnapshot || null,
+    paymentDestinationTypeSnapshot: row.paymentDestinationTypeSnapshot || null,
     status,
     orderStatus: row.orderStatus || legacyOrderStatusFromBillingStatus(status),
     paymentStatus: row.paymentStatus || null,
@@ -109,6 +115,24 @@ function normalizeOrder(row) {
           phone: row.contactPhone || null
         }
       : null,
+    seller: row.sellerUserId || row.sellerNameSnapshot || row.sellerName
+      ? {
+          id: row.sellerUserId || null,
+          name: row.sellerName || row.sellerNameSnapshot || null,
+          role: row.sellerRole || null
+        }
+      : null,
+    paymentDestination:
+      row.paymentDestinationId || row.paymentDestinationNameSnapshot || row.paymentDestinationName
+        ? {
+            id: row.paymentDestinationId || null,
+            name: row.paymentDestinationName || row.paymentDestinationNameSnapshot || null,
+            type: row.paymentDestinationType || row.paymentDestinationTypeSnapshot || null,
+            isActive: row.paymentDestinationIsActive === null || row.paymentDestinationIsActive === undefined
+              ? null
+              : Boolean(row.paymentDestinationIsActive)
+          }
+        : null,
     items
   };
 }
@@ -122,7 +146,13 @@ async function listOrdersByClinicId(clinicId, client = null) {
        o."contactId",
        o."customerName",
        o."customerPhone",
+       o."customerType",
        o.source,
+       o."sellerUserId",
+       o."sellerNameSnapshot",
+       o."paymentDestinationId",
+       o."paymentDestinationNameSnapshot",
+       o."paymentDestinationTypeSnapshot",
        o.status,
        o.notes,
        o.subtotal,
@@ -138,9 +168,18 @@ async function listOrdersByClinicId(clinicId, client = null) {
        o."updatedAt",
        ct.name AS "contactName",
        ct.phone AS "contactPhone",
+       seller.name AS "sellerName",
+       CASE WHEN seller.role = 'editor' THEN 'seller' ELSE seller.role END AS "sellerRole",
+       pd.name AS "paymentDestinationName",
+       pd.type AS "paymentDestinationType",
+       pd."isActive" AS "paymentDestinationIsActive",
        COALESCE(items.items, '[]'::json) AS items
      FROM orders o
      LEFT JOIN contacts ct ON ct.id = o."contactId"
+     LEFT JOIN staff_users seller ON seller.id = o."sellerUserId"
+     LEFT JOIN payment_destinations pd
+       ON pd.id = o."paymentDestinationId"
+      AND pd."clinicId" = o."clinicId"
      LEFT JOIN LATERAL (
        SELECT json_agg(
          json_build_object(
@@ -181,7 +220,13 @@ async function findOrderById(orderId, clinicId, client = null) {
        o."contactId",
        o."customerName",
        o."customerPhone",
+       o."customerType",
        o.source,
+       o."sellerUserId",
+       o."sellerNameSnapshot",
+       o."paymentDestinationId",
+       o."paymentDestinationNameSnapshot",
+       o."paymentDestinationTypeSnapshot",
        o.status,
        o.notes,
        o.subtotal,
@@ -197,9 +242,18 @@ async function findOrderById(orderId, clinicId, client = null) {
        o."updatedAt",
        ct.name AS "contactName",
        ct.phone AS "contactPhone",
+       seller.name AS "sellerName",
+       CASE WHEN seller.role = 'editor' THEN 'seller' ELSE seller.role END AS "sellerRole",
+       pd.name AS "paymentDestinationName",
+       pd.type AS "paymentDestinationType",
+       pd."isActive" AS "paymentDestinationIsActive",
        COALESCE(items.items, '[]'::json) AS items
      FROM orders o
      LEFT JOIN contacts ct ON ct.id = o."contactId"
+     LEFT JOIN staff_users seller ON seller.id = o."sellerUserId"
+     LEFT JOIN payment_destinations pd
+       ON pd.id = o."paymentDestinationId"
+      AND pd."clinicId" = o."clinicId"
      LEFT JOIN LATERAL (
        SELECT json_agg(
          json_build_object(
@@ -246,7 +300,13 @@ async function createOrder(input, client = null) {
        "contactId",
        "customerName",
        "customerPhone",
+       "customerType",
        source,
+       "sellerUserId",
+       "sellerNameSnapshot",
+       "paymentDestinationId",
+       "paymentDestinationNameSnapshot",
+       "paymentDestinationTypeSnapshot",
        status,
        notes,
        subtotal,
@@ -260,14 +320,20 @@ async function createOrder(input, client = null) {
        "conversationId",
        "updatedAt"
      )
-     VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::uuid, NOW())
+     VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid, $8, $9::uuid, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::uuid, NOW())
      RETURNING id`,
     [
       input.clinicId,
       input.contactId || null,
       input.customerName || null,
       input.customerPhone || null,
+      input.customerType || 'registered_contact',
       input.source || null,
+      input.sellerUserId || null,
+      input.sellerNameSnapshot || null,
+      input.paymentDestinationId || null,
+      input.paymentDestinationNameSnapshot || null,
+      input.paymentDestinationTypeSnapshot || null,
       billingStatus,
       input.notes || null,
       subtotalAmount,
@@ -365,9 +431,66 @@ async function updateOrderStatus(orderId, clinicId, payload, client = null) {
   return findOrderById(orderId, clinicId, client);
 }
 
+async function listCashCountableOrdersByDestinationAndRange(clinicId, paymentDestinationId, openedAt, closedAt = null, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT
+       o.id,
+       o."clinicId",
+       o."contactId",
+       o."customerName",
+       o."customerPhone",
+       o."customerType",
+       o.source,
+       o."sellerUserId",
+       o."sellerNameSnapshot",
+       o."paymentDestinationId",
+       o."paymentDestinationNameSnapshot",
+       o."paymentDestinationTypeSnapshot",
+       o.status,
+       o.notes,
+       o.subtotal,
+       o.total,
+       o."subtotalAmount",
+       o."taxAmount",
+       o."totalAmount",
+       o.currency,
+       o."paymentStatus",
+       o."orderStatus",
+       o."conversationId",
+       o."createdAt",
+       o."updatedAt",
+       ct.name AS "contactName",
+       ct.phone AS "contactPhone",
+       seller.name AS "sellerName",
+       CASE WHEN seller.role = 'editor' THEN 'seller' ELSE seller.role END AS "sellerRole",
+       pd.name AS "paymentDestinationName",
+       pd.type AS "paymentDestinationType",
+       pd."isActive" AS "paymentDestinationIsActive",
+       '[]'::json AS items
+     FROM orders o
+     LEFT JOIN contacts ct ON ct.id = o."contactId"
+     LEFT JOIN staff_users seller ON seller.id = o."sellerUserId"
+     LEFT JOIN payment_destinations pd
+       ON pd.id = o."paymentDestinationId"
+      AND pd."clinicId" = o."clinicId"
+     WHERE o."clinicId" = $1::uuid
+       AND o."paymentDestinationId" = $2::uuid
+       AND o."createdAt" >= $3::timestamptz
+       AND ($4::timestamptz IS NULL OR o."createdAt" <= $4::timestamptz)
+       AND COALESCE(o."paymentStatus", '') = 'paid'
+       AND COALESCE(o.status, '') <> 'cancelled'
+     ORDER BY o."createdAt" DESC`,
+    [clinicId, paymentDestinationId, openedAt, closedAt]
+  );
+
+  return result.rows.map(normalizeOrder);
+}
+
 module.exports = {
   listOrdersByClinicId,
   findOrderById,
   createOrder,
-  updateOrderStatus
+  updateOrderStatus,
+  listCashCountableOrdersByDestinationAndRange
 };

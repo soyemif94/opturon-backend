@@ -10,6 +10,8 @@ const {
 const {
   findContactByIdAndClinicId
 } = require('../repositories/contact.repository');
+const { findPortalUserByIdAndClinicId } = require('../repositories/portal-users.repository');
+const { findPaymentDestinationById } = require('../repositories/payment-destinations.repository');
 const {
   findProductById,
   updateProduct
@@ -20,7 +22,8 @@ const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../util
 const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
 const LEGACY_ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
 const PAYMENT_STATUSES = new Set(['unpaid', 'pending', 'paid', 'refunded', 'cancelled']);
-const ORDER_SOURCES = new Set(['manual', 'inbox', 'automation', 'api']);
+const ORDER_SOURCES = new Set(['manual', 'inbox', 'automation', 'api', 'bot']);
+const ORDER_CUSTOMER_TYPES = new Set(['registered_contact', 'final_consumer']);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -74,6 +77,11 @@ function derivePaymentStatus(orderStatus, paymentStatus) {
     return 'cancelled';
   }
   return 'pending';
+}
+
+function normalizeCustomerType(value) {
+  const requested = normalizeString(value).toLowerCase();
+  return ORDER_CUSTOMER_TYPES.has(requested) ? requested : null;
 }
 
 function normalizeItemDraft(item, fallbackCurrency) {
@@ -191,6 +199,9 @@ async function createOrderForContext(context, payload) {
   const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
   const requestedSource = normalizeString(payload && payload.source).toLowerCase();
   const source = ORDER_SOURCES.has(requestedSource) ? requestedSource : 'manual';
+  const requestedCustomerType = normalizeCustomerType(payload && payload.customerType);
+  const sellerUserId = normalizeString(payload && payload.sellerUserId) || null;
+  const paymentDestinationId = normalizeString(payload && payload.paymentDestinationId) || null;
   const notes = normalizeString(payload && payload.notes) || null;
   const itemsInput = Array.isArray(payload && payload.items) ? payload.items : [];
 
@@ -206,6 +217,28 @@ async function createOrderForContext(context, payload) {
     }
   }
 
+  const hasManualCustomerData = Boolean(normalizeString(payload && payload.customerName) || normalizeString(payload && payload.customerPhone));
+  const customerType = requestedCustomerType || (contactId || hasManualCustomerData ? 'registered_contact' : 'final_consumer');
+
+  let seller = null;
+  if (sellerUserId) {
+    seller = await findPortalUserByIdAndClinicId(sellerUserId, context.clinic.id);
+    if (!seller || seller.role === 'viewer') {
+      return buildError(context.tenantId, 'seller_user_not_found');
+    }
+  }
+
+  let paymentDestination = null;
+  if (paymentDestinationId) {
+    paymentDestination = await findPaymentDestinationById(paymentDestinationId, context.clinic.id);
+    if (!paymentDestination) {
+      return buildError(context.tenantId, 'payment_destination_not_found');
+    }
+    if (!paymentDestination.isActive) {
+      return buildError(context.tenantId, 'payment_destination_inactive');
+    }
+  }
+
   if (conversationId) {
     const conversation = await findConversationById(conversationId);
     if (!conversation || conversation.clinicId !== context.clinic.id) {
@@ -216,17 +249,23 @@ async function createOrderForContext(context, payload) {
     }
   }
 
-  const customerName = normalizeString(payload && payload.customerName) || (contact && (contact.fullName || contact.name)) || null;
+  const customerName =
+    customerType === 'final_consumer'
+      ? normalizeString(payload && payload.customerName) || null
+      : normalizeString(payload && payload.customerName) || (contact && (contact.fullName || contact.name)) || null;
   const customerPhone =
-    normalizeString(payload && payload.customerPhone) ||
-    (contact && (contact.phone || contact.whatsappPhone || contact.waId)) ||
-    null;
+    customerType === 'final_consumer'
+      ? normalizeString(payload && payload.customerPhone) || null
+      : normalizeString(payload && payload.customerPhone) ||
+        (contact && (contact.phone || contact.whatsappPhone || contact.waId)) ||
+        null;
 
-  if (!customerName) {
-    return buildError(context.tenantId, 'missing_customer_name');
+  if (customerType === 'registered_contact' && !contactId && !customerName && !customerPhone) {
+    return buildError(context.tenantId, 'missing_contact_id');
   }
-  if (!customerPhone) {
-    return buildError(context.tenantId, 'missing_customer_phone');
+
+  if (source === 'manual' && !sellerUserId) {
+    return buildError(context.tenantId, 'missing_seller_user_id');
   }
 
   const rawItems = itemsInput.map((item) => normalizeItemDraft(item || {}, requestedCurrency));
@@ -337,7 +376,13 @@ async function createOrderForContext(context, payload) {
           contactId,
           customerName,
           customerPhone,
+          customerType,
           source,
+          sellerUserId,
+          sellerNameSnapshot: seller ? seller.name : null,
+          paymentDestinationId: paymentDestination ? paymentDestination.id : null,
+          paymentDestinationNameSnapshot: paymentDestination ? paymentDestination.name : null,
+          paymentDestinationTypeSnapshot: paymentDestination ? paymentDestination.type : null,
           status: orderStatus,
           orderStatus: deriveLegacyOrderStatus(orderStatus),
           notes,

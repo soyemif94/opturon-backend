@@ -53,6 +53,16 @@ const {
   voidPortalPayment
 } = require('../services/portal-payments.service');
 const {
+  listPortalPaymentDestinations,
+  createPortalPaymentDestination,
+  patchPortalPaymentDestination
+} = require('../services/portal-payment-destinations.service');
+const {
+  listPortalCashOverview,
+  openPortalCashSession,
+  closePortalCashSession
+} = require('../services/portal-cash.service');
+const {
   getSalesSummary,
   getSalesMetrics,
   listSalesOpportunities
@@ -298,13 +308,18 @@ async function postPortalOrder(req, res) {
         result.reason === 'missing_tenant_id' ||
         result.reason === 'missing_customer_name' ||
         result.reason === 'missing_customer_phone' ||
+        result.reason === 'missing_contact_id' ||
+        result.reason === 'missing_seller_user_id' ||
         result.reason === 'missing_order_items' ||
+        result.reason === 'payment_destination_not_found' ||
+        result.reason === 'payment_destination_inactive' ||
         result.reason === 'invalid_order_item_product' ||
         result.reason === 'invalid_order_item_name' ||
         result.reason === 'invalid_order_item_price' ||
         result.reason === 'invalid_order_item_quantity' ||
         result.reason === 'invalid_order_item_amount' ||
         result.reason === 'contact_not_found' ||
+        result.reason === 'seller_user_not_found' ||
         result.reason === 'conversation_not_found' ||
         result.reason === 'conversation_contact_scope_mismatch'
           ? 400
@@ -1191,6 +1206,211 @@ async function getPortalPayments(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_payments_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalPaymentDestinations(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const includeInactive = String(req.query.includeInactive || '').trim() === '1';
+
+  try {
+    const result = await listPortalPaymentDestinations(tenantId, { includeInactive });
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        paymentDestinations: result.paymentDestinations
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payment_destinations_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalPaymentDestination(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalPaymentDestination(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_payment_destination_name' ||
+        result.reason === 'invalid_payment_destination_type'
+          ? 400
+          : result.reason === 'payment_destination_name_conflict'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.paymentDestination
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payment_destination_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalPaymentDestinationController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const destinationId = String(req.params.destinationId || '').trim();
+
+  try {
+    const result = await patchPortalPaymentDestination(tenantId, destinationId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_payment_destination_id' ||
+        result.reason === 'missing_payment_destination_name' ||
+        result.reason === 'invalid_payment_destination_type'
+          ? 400
+          : result.reason === 'payment_destination_name_conflict'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.paymentDestination
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_payment_destination_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalCashOverview(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalCashOverview(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        cashBoxes: result.cashBoxes,
+        recentClosedSessions: result.recentClosedSessions
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_cash_overview_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalCashSession(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await openPortalCashSession(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_cash_box_destination_id' ||
+        result.reason === 'missing_opened_by_user_id' ||
+        result.reason === 'invalid_cash_opening_amount' ||
+        result.reason === 'cash_open_user_not_found'
+          ? 400
+          : result.reason === 'cash_session_already_open' || result.reason === 'cash_box_destination_inactive'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.session
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_cash_session_open_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalCashSessionClose(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const sessionId = String(req.params.sessionId || '').trim();
+
+  try {
+    const result = await closePortalCashSession(tenantId, sessionId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_cash_session_id' ||
+        result.reason === 'missing_closed_by_user_id' ||
+        result.reason === 'invalid_cash_counted_amount' ||
+        result.reason === 'cash_close_user_not_found'
+          ? 400
+          : result.reason === 'cash_session_not_open'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.session
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_cash_session_close_failed',
       details: error.message
     });
   }
@@ -2506,9 +2726,15 @@ module.exports = {
   postPortalInvoiceIssue,
   postPortalInvoiceVoid,
   getPortalPayments,
+  getPortalPaymentDestinations,
+  getPortalCashOverview,
   getPortalPayment,
   getPortalPaymentAllocations,
+  postPortalCashSession,
+  postPortalCashSessionClose,
   postPortalPayment,
+  postPortalPaymentDestination,
+  patchPortalPaymentDestinationController,
   postPortalPaymentAllocation,
   postPortalPaymentVoid,
   getPortalSalesSummary,
