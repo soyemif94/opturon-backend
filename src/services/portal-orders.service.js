@@ -270,14 +270,20 @@ async function createOrderForContext(context, payload) {
 
   const rawItems = itemsInput.map((item) => normalizeItemDraft(item || {}, requestedCurrency));
 
+  if (rawItems.some((item) => !Number.isFinite(item.quantity))) {
+    return buildError(context.tenantId, 'invalid_order_item_amount');
+  }
+
   if (
     rawItems.some(
       (item) =>
-        !Number.isFinite(item.unitPrice) ||
-        item.unitPrice < 0 ||
-        !Number.isFinite(item.taxRate) ||
-        item.taxRate < 0 ||
-        !Number.isFinite(item.quantity)
+        !item.productId &&
+        (
+          !Number.isFinite(item.unitPrice) ||
+          item.unitPrice < 0 ||
+          !Number.isFinite(item.taxRate) ||
+          item.taxRate < 0
+        )
     )
   ) {
     return buildError(context.tenantId, 'invalid_order_item_amount');

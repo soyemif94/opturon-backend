@@ -180,7 +180,6 @@ async function openPortalCashSession(tenantId, payload = {}) {
           paymentDestinationId,
           openedByUserId,
           openedByNameSnapshot: openedBy.name,
-          openedAt: new Date().toISOString(),
           openingAmount,
           notes
         },

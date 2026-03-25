@@ -107,14 +107,14 @@ async function createCashSession(input, client = null) {
        notes,
        "updatedAt"
      )
-     VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, 'open', $7, NOW())
+     VALUES ($1::uuid, $2::uuid, $3::uuid, $4, COALESCE($5::timestamptz, NOW()), $6, 'open', $7, NOW())
      RETURNING id`,
     [
       input.clinicId,
       input.paymentDestinationId,
       input.openedByUserId,
       input.openedByNameSnapshot,
-      input.openedAt,
+      input.openedAt || null,
       quantizeDecimal(input.openingAmount || 0, 2, 0),
       input.notes || null
     ]
