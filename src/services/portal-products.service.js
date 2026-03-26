@@ -13,7 +13,9 @@ const {
   findProductCategoryById,
   findProductCategoryByName,
   createProductCategory,
-  updateProductCategory
+  updateProductCategory,
+  countProductsForCategory,
+  deleteProductCategory
 } = require('../repositories/product-categories.repository');
 
 const PRODUCT_STATUSES = new Set(['active', 'archived']);
@@ -525,6 +527,73 @@ async function patchPortalProductCategoryRecord(tenantId, categoryId, payload) {
   }
 }
 
+async function deletePortalProductCategoryRecord(tenantId, categoryId) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const safeCategoryId = normalizeString(categoryId);
+  if (!safeCategoryId) {
+    return { ok: false, tenantId: context.tenantId, reason: 'missing_product_category_id' };
+  }
+
+  const current = await findProductCategoryById(safeCategoryId, context.clinic.id);
+  if (!current) {
+    return { ok: false, tenantId: context.tenantId, reason: 'product_category_not_found' };
+  }
+
+  try {
+    const deletion = await withTransaction(async (client) => {
+      const linkedProducts = await countProductsForCategory(safeCategoryId, context.clinic.id, client);
+      if (linkedProducts > 0) {
+        return {
+          ok: false,
+          reason: 'product_category_delete_blocked',
+          details: {
+            associatedProductsCount: linkedProducts
+          }
+        };
+      }
+
+      const deleted = await deleteProductCategory(safeCategoryId, context.clinic.id, client);
+      if (!deleted) {
+        return { ok: false, reason: 'product_category_not_found' };
+      }
+
+      return { ok: true };
+    });
+
+    if (!deletion.ok) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        reason: deletion.reason,
+        details: deletion.details || null
+      };
+    }
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      deletedCategoryId: safeCategoryId
+    };
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === '23503') {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        reason: 'product_category_delete_blocked',
+        details: {
+          associatedProductsCount: null
+        }
+      };
+    }
+    throw error;
+  }
+}
+
 async function deletePortalProduct(tenantId, productId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -575,6 +644,7 @@ module.exports = {
   createPortalProductsBulk,
   createPortalProductCategoryRecord,
   patchPortalProductCategoryRecord,
+  deletePortalProductCategoryRecord,
   patchPortalProduct,
   patchPortalProductStatus,
   deletePortalProduct

@@ -105,10 +105,38 @@ async function updateProductCategory(categoryId, clinicId, input, client = null)
   return findProductCategoryById(categoryId, clinicId, client);
 }
 
+async function countProductsForCategory(categoryId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT COUNT(*)::int AS count
+     FROM products
+     WHERE "clinicId" = $1::uuid
+       AND "categoryId" = $2::uuid`,
+    [clinicId, categoryId]
+  );
+
+  return Number(result.rows[0]?.count || 0);
+}
+
+async function deleteProductCategory(categoryId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `DELETE FROM product_categories
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+     RETURNING id`,
+    [categoryId, clinicId]
+  );
+
+  return Boolean(result.rows[0]?.id);
+}
+
 module.exports = {
   listProductCategoriesByClinicId,
   findProductCategoryById,
   findProductCategoryByName,
   createProductCategory,
-  updateProductCategory
+  updateProductCategory,
+  countProductsForCategory,
+  deleteProductCategory
 };

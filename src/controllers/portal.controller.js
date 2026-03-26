@@ -35,6 +35,7 @@ const {
   createPortalProductsBulk,
   createPortalProductCategoryRecord,
   patchPortalProductCategoryRecord,
+  deletePortalProductCategoryRecord,
   patchPortalProduct,
   patchPortalProductStatus,
   deletePortalProduct
@@ -657,6 +658,44 @@ async function updatePortalProductCategory(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_product_category_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function destroyPortalProductCategory(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const categoryId = String(req.params.categoryId || '').trim();
+
+  try {
+    const result = await deletePortalProductCategoryRecord(tenantId, categoryId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_product_category_id'
+          ? 400
+          : result.reason === 'product_category_delete_blocked'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        categoryId: result.deletedCategoryId
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_category_delete_failed',
       details: error.message
     });
   }
@@ -2801,6 +2840,7 @@ module.exports = {
   postPortalProductsBulk,
   updatePortalProduct,
   updatePortalProductCategory,
+  destroyPortalProductCategory,
   updatePortalProductStatus,
   destroyPortalProduct,
   getPortalContacts,
