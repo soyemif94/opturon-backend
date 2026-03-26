@@ -117,6 +117,9 @@ function createApp() {
     res.status(200).json({
       ok: true,
       buildId: buildInfo.buildId,
+      commitSha: buildInfo.commitSha,
+      branchName: buildInfo.branchName,
+      serviceName: buildInfo.serviceName,
       pid: process.pid,
       cwd: process.cwd(),
       file: __filename,

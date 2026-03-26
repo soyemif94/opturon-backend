@@ -29,9 +29,12 @@ const {
 } = require('../services/portal-invoices.service');
 const {
   listPortalProducts,
+  listPortalProductCategories,
   getPortalProductDetail,
   createPortalProduct,
   createPortalProductsBulk,
+  createPortalProductCategoryRecord,
+  patchPortalProductCategoryRecord,
   patchPortalProduct,
   patchPortalProductStatus,
   deletePortalProduct
@@ -471,6 +474,33 @@ async function getPortalProduct(req, res) {
   }
 }
 
+async function getPortalProductCategories(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const includeInactive = String(req.query.includeInactive || '').trim().toLowerCase() === 'true';
+
+  try {
+    const result = await listPortalProductCategories(tenantId, { includeInactive });
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        categories: result.categories
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_categories_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalProduct(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -498,6 +528,36 @@ async function postPortalProduct(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_product_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalProductCategory(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalProductCategoryRecord(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_category_name'
+          ? 400
+          : result.reason === 'duplicate_product_category_name'
+            ? 409
+            : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.category
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_category_create_failed',
       details: error.message
     });
   }
@@ -565,6 +625,38 @@ async function updatePortalProduct(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_product_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function updatePortalProductCategory(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const categoryId = String(req.params.categoryId || '').trim();
+
+  try {
+    const result = await patchPortalProductCategoryRecord(tenantId, categoryId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_category_id' ||
+        result.reason === 'missing_product_category_name'
+          ? 400
+          : result.reason === 'duplicate_product_category_name'
+            ? 409
+            : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.category
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_category_update_failed',
       details: error.message
     });
   }
@@ -2702,10 +2794,13 @@ module.exports = {
   postPortalOrder,
   updatePortalOrderStatus,
   getPortalProducts,
+  getPortalProductCategories,
   getPortalProduct,
   postPortalProduct,
+  postPortalProductCategory,
   postPortalProductsBulk,
   updatePortalProduct,
+  updatePortalProductCategory,
   updatePortalProductStatus,
   destroyPortalProduct,
   getPortalContacts,

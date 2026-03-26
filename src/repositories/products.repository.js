@@ -27,6 +27,8 @@ function normalizeProduct(row) {
     status,
     active: status === 'active',
     sku: row.sku || null,
+    categoryId: row.categoryId || null,
+    categoryName: row.categoryName || null,
     metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {},
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
@@ -36,10 +38,28 @@ function normalizeProduct(row) {
 async function listProductsByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", name, description, price, "unitPrice", currency, "vatRate", stock, status, sku, metadata, "createdAt", "updatedAt"
-     FROM products
-     WHERE "clinicId" = $1::uuid
-     ORDER BY "createdAt" DESC`,
+    `SELECT
+       p.id,
+       p."clinicId",
+       p.name,
+       p.description,
+       p.price,
+       p."unitPrice",
+       p.currency,
+       p."vatRate",
+       p.stock,
+       p.status,
+       p.sku,
+       p."categoryId",
+       c.name AS "categoryName",
+       p.metadata,
+       p."createdAt",
+       p."updatedAt"
+     FROM products p
+     LEFT JOIN product_categories c
+       ON c.id = p."categoryId"
+     WHERE p."clinicId" = $1::uuid
+     ORDER BY p."createdAt" DESC`,
     [clinicId]
   );
 
@@ -49,10 +69,28 @@ async function listProductsByClinicId(clinicId, client = null) {
 async function findProductById(productId, clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", name, description, price, "unitPrice", currency, "vatRate", stock, status, sku, metadata, "createdAt", "updatedAt"
-     FROM products
-     WHERE id = $1::uuid
-       AND "clinicId" = $2::uuid
+    `SELECT
+       p.id,
+       p."clinicId",
+       p.name,
+       p.description,
+       p.price,
+       p."unitPrice",
+       p.currency,
+       p."vatRate",
+       p.stock,
+       p.status,
+       p.sku,
+       p."categoryId",
+       c.name AS "categoryName",
+       p.metadata,
+       p."createdAt",
+       p."updatedAt"
+     FROM products p
+     LEFT JOIN product_categories c
+       ON c.id = p."categoryId"
+     WHERE p.id = $1::uuid
+       AND p."clinicId" = $2::uuid
      LIMIT 1`,
     [productId, clinicId]
   );
@@ -77,10 +115,11 @@ async function createProduct(input, client = null) {
        stock,
        status,
        sku,
+       "categoryId",
        metadata,
        "updatedAt"
      )
-     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid, $12::jsonb, NOW())
       RETURNING id`,
     [
       input.clinicId,
@@ -93,6 +132,7 @@ async function createProduct(input, client = null) {
       input.stock,
       input.status,
       input.sku || null,
+      input.categoryId || null,
       JSON.stringify(input.metadata || {})
     ]
   );
@@ -120,7 +160,8 @@ async function updateProduct(productId, clinicId, payload, client = null) {
        stock = $9,
        status = $10,
        sku = $11,
-       metadata = $12::jsonb,
+       "categoryId" = $12::uuid,
+       metadata = $13::jsonb,
        "updatedAt" = NOW()
      WHERE id = $1::uuid
        AND "clinicId" = $2::uuid`,
@@ -136,6 +177,7 @@ async function updateProduct(productId, clinicId, payload, client = null) {
       payload.stock,
       payload.status,
       payload.sku || null,
+      payload.categoryId || null,
       JSON.stringify(payload.metadata || {})
     ]
   );

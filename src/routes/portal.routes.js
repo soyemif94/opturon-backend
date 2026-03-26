@@ -10,10 +10,13 @@ const {
   postPortalOrder,
   updatePortalOrderStatus,
   getPortalProducts,
+  getPortalProductCategories,
   getPortalProduct,
   postPortalProduct,
+  postPortalProductCategory,
   postPortalProductsBulk,
   updatePortalProduct,
+  updatePortalProductCategory,
   updatePortalProductStatus,
   destroyPortalProduct,
   getPortalContacts,
@@ -94,10 +97,13 @@ router.post('/tenants/:tenantId/orders', postPortalOrder);
 router.get('/tenants/:tenantId/orders/:orderId', getPortalOrder);
 router.patch('/tenants/:tenantId/orders/:orderId/status', updatePortalOrderStatus);
 router.get('/tenants/:tenantId/products', getPortalProducts);
+router.get('/tenants/:tenantId/product-categories', getPortalProductCategories);
 router.post('/tenants/:tenantId/products', postPortalProduct);
+router.post('/tenants/:tenantId/product-categories', postPortalProductCategory);
 router.post('/tenants/:tenantId/products/bulk', postPortalProductsBulk);
 router.get('/tenants/:tenantId/products/:productId', getPortalProduct);
 router.patch('/tenants/:tenantId/products/:productId', updatePortalProduct);
+router.patch('/tenants/:tenantId/product-categories/:categoryId', updatePortalProductCategory);
 router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProductStatus);
 router.delete('/tenants/:tenantId/products/:productId', destroyPortalProduct);
 router.get('/tenants/:tenantId/contacts', getPortalContacts);

@@ -8,6 +8,12 @@ const {
   updateProductStatus,
   deleteProductById
 } = require('../repositories/products.repository');
+const {
+  listProductCategoriesByClinicId,
+  findProductCategoryById,
+  createProductCategory,
+  updateProductCategory
+} = require('../repositories/product-categories.repository');
 
 const PRODUCT_STATUSES = new Set(['active', 'archived']);
 
@@ -43,6 +49,7 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
     stock: Number.parseInt(String((payload && payload.stock) ?? (payload && payload.stockQty) ?? 0), 10),
     status: PRODUCT_STATUSES.has(requestedStatus) ? requestedStatus : fallbackStatus,
     sku: normalizeString(payload && payload.sku) || null,
+    categoryId: normalizeString(payload && payload.categoryId) || null,
     metadata: normalizeMetadata(payload && payload.metadata)
   };
 }
@@ -56,11 +63,30 @@ function validateProductPayload(product) {
   return null;
 }
 
+function buildCategoryPayload(payload, fallbackIsActive = true) {
+  return {
+    name: normalizeString(payload && payload.name),
+    isActive: payload && payload.isActive !== undefined ? payload.isActive === true : fallbackIsActive
+  };
+}
+
+function validateCategoryPayload(category) {
+  if (!category.name) return 'missing_product_category_name';
+  return null;
+}
+
 async function createProductForContext(context, payload) {
   const product = buildProductPayload(payload, 'active');
   const reason = validateProductPayload(product);
   if (reason) {
     return { ok: false, tenantId: context.tenantId, reason };
+  }
+
+  if (product.categoryId) {
+    const category = await findProductCategoryById(product.categoryId, context.clinic.id);
+    if (!category) {
+      return { ok: false, tenantId: context.tenantId, reason: 'product_category_not_found' };
+    }
   }
 
   try {
@@ -104,6 +130,22 @@ async function listPortalProducts(tenantId) {
     tenantId: context.tenantId,
     clinic: context.clinic,
     products
+  };
+}
+
+async function listPortalProductCategories(tenantId, options = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const includeInactive = options && options.includeInactive !== undefined ? options.includeInactive === true : true;
+  const categories = await listProductCategoriesByClinicId(context.clinic.id, { includeInactive });
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    categories
   };
 }
 
@@ -190,6 +232,13 @@ async function patchPortalProduct(tenantId, productId, payload) {
   const reason = validateProductPayload(next);
   if (reason) {
     return { ok: false, tenantId: context.tenantId, reason };
+  }
+
+  if (next.categoryId) {
+    const category = await findProductCategoryById(next.categoryId, context.clinic.id);
+    if (!category) {
+      return { ok: false, tenantId: context.tenantId, reason: 'product_category_not_found' };
+    }
   }
 
   const updated = await updateProduct(safeProductId, context.clinic.id, next);
@@ -291,6 +340,89 @@ async function createPortalProductsBulk(tenantId, payload) {
   };
 }
 
+async function createPortalProductCategoryRecord(tenantId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const category = buildCategoryPayload(payload, true);
+  const reason = validateCategoryPayload(category);
+  if (reason) {
+    return { ok: false, tenantId: context.tenantId, reason };
+  }
+
+  try {
+    const created = await withTransaction((client) =>
+      createProductCategory(
+        {
+          clinicId: context.clinic.id,
+          ...category
+        },
+        client
+      )
+    );
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      category: created
+    };
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === '23505') {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        reason: 'duplicate_product_category_name'
+      };
+    }
+    throw error;
+  }
+}
+
+async function patchPortalProductCategoryRecord(tenantId, categoryId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const safeCategoryId = normalizeString(categoryId);
+  if (!safeCategoryId) {
+    return { ok: false, tenantId: context.tenantId, reason: 'missing_product_category_id' };
+  }
+
+  const current = await findProductCategoryById(safeCategoryId, context.clinic.id);
+  if (!current) {
+    return { ok: false, tenantId: context.tenantId, reason: 'product_category_not_found' };
+  }
+
+  const next = buildCategoryPayload({ ...current, ...payload }, current.isActive !== false);
+  const reason = validateCategoryPayload(next);
+  if (reason) {
+    return { ok: false, tenantId: context.tenantId, reason };
+  }
+
+  try {
+    const updated = await updateProductCategory(safeCategoryId, context.clinic.id, next);
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      category: updated
+    };
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === '23505') {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        reason: 'duplicate_product_category_name'
+      };
+    }
+    throw error;
+  }
+}
+
 async function deletePortalProduct(tenantId, productId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -335,9 +467,12 @@ async function deletePortalProduct(tenantId, productId) {
 module.exports = {
   PRODUCT_STATUSES: Array.from(PRODUCT_STATUSES),
   listPortalProducts,
+  listPortalProductCategories,
   getPortalProductDetail,
   createPortalProduct,
   createPortalProductsBulk,
+  createPortalProductCategoryRecord,
+  patchPortalProductCategoryRecord,
   patchPortalProduct,
   patchPortalProductStatus,
   deletePortalProduct
