@@ -306,6 +306,71 @@ function mapConversationOpportunity(conversation) {
   };
 }
 
+function getOpportunityIdentity(opportunity) {
+  const contactId = normalizeString(opportunity && opportunity.contactId);
+  if (contactId) return `contact:${contactId}`;
+
+  const phone = normalizeString(opportunity && opportunity.customer && opportunity.customer.phone);
+  if (phone) return `phone:${phone}`;
+
+  return '';
+}
+
+function mergeOpenOpportunities(opportunities) {
+  const grouped = new Map();
+
+  for (const opportunity of opportunities) {
+    const key = getOpportunityIdentity(opportunity);
+    if (!key) {
+      grouped.set(`orphan:${opportunity.id}`, opportunity);
+      continue;
+    }
+
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, { ...opportunity });
+      continue;
+    }
+
+    const currentActivity = current.lastActivityAt ? new Date(current.lastActivityAt).getTime() : 0;
+    const nextActivity = opportunity.lastActivityAt ? new Date(opportunity.lastActivityAt).getTime() : 0;
+    const primary = nextActivity >= currentActivity ? opportunity : current;
+    const secondary = primary === opportunity ? current : opportunity;
+
+    grouped.set(key, {
+      ...primary,
+      customer: primary.customer || secondary.customer,
+      responsible: primary.responsible || secondary.responsible || null,
+      amount: Number(current.amount || 0) + Number(opportunity.amount || 0),
+      currency: primary.currency || secondary.currency || 'ARS',
+      source: primary.source || secondary.source || null,
+      conversationId: primary.conversationId || secondary.conversationId || null,
+      paymentStatus:
+        normalizeString(primary.paymentStatus).toLowerCase() === 'pending' ||
+        normalizeString(secondary.paymentStatus).toLowerCase() === 'pending'
+          ? 'pending'
+          : primary.paymentStatus || secondary.paymentStatus || 'pending'
+    });
+  }
+
+  return Array.from(grouped.values());
+}
+
+function consolidateActiveOpportunities(opportunities) {
+  const open = [];
+  const closed = [];
+
+  for (const opportunity of opportunities) {
+    if (isOpenOpportunityRecord(opportunity)) {
+      open.push(opportunity);
+    } else {
+      closed.push(opportunity);
+    }
+  }
+
+  return [...mergeOpenOpportunities(open), ...closed];
+}
+
 async function buildUnifiedSalesOpportunities(clinicId) {
   const [orders, conversations] = await Promise.all([
     listOrdersByClinicId(clinicId),
@@ -328,7 +393,7 @@ async function buildUnifiedSalesOpportunities(clinicId) {
     .filter((conversation) => hasCommercialConversationSignal(conversation))
     .map(mapConversationOpportunity);
 
-  return [...orderOpportunities, ...conversationOpportunities].sort((a, b) => {
+  return consolidateActiveOpportunities([...orderOpportunities, ...conversationOpportunities]).sort((a, b) => {
     const aTime = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
     const bTime = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
     return bTime - aTime;

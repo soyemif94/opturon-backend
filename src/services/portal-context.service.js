@@ -1,4 +1,7 @@
 const { findClinicByExternalTenantId, listWhatsAppChannelsByClinicId } = require('../repositories/tenant.repository');
+const { listProductsByClinicId } = require('../repositories/products.repository');
+const { listAutomationsByClinicId } = require('../repositories/automations.repository');
+const { query } = require('../db/client');
 const { logInfo, logWarn } = require('../utils/logger');
 
 function summarizeClinic(clinic) {
@@ -137,8 +140,23 @@ async function resolvePortalTenantContext(externalTenantId) {
     };
   }
 
-  const channels = await listWhatsAppChannelsByClinicId(clinic.id);
+  const [channels, products, automations, conversationsResult] = await Promise.all([
+    listWhatsAppChannelsByClinicId(clinic.id),
+    listProductsByClinicId(clinic.id),
+    listAutomationsByClinicId(clinic.id),
+    query(
+      `SELECT COUNT(*)::int AS total
+       FROM conversations
+       WHERE "clinicId" = $1::uuid`,
+      [clinic.id]
+    )
+  ]);
   const channelSelection = pickPortalChannel(channels, clinic);
+  const activeProducts = (Array.isArray(products) ? products : []).filter(
+    (product) => String(product && product.status ? product.status : '').trim().toLowerCase() === 'active'
+  );
+  const activeAutomations = (Array.isArray(automations) ? automations : []).filter((automation) => automation && automation.enabled !== false);
+  const conversationsCount = Number(conversationsResult.rows[0] && conversationsResult.rows[0].total ? conversationsResult.rows[0].total : 0);
 
   if (!channelSelection.channel && channelSelection.reason !== 'mapped_clinic_without_whatsapp_channel') {
     logWarn('portal_channel_selection_ambiguous', {
@@ -171,6 +189,15 @@ async function resolvePortalTenantContext(externalTenantId) {
       reason: channelSelection.reason,
       strategy: channelSelection.strategy || null,
       explicitChannelId: channelSelection.explicitChannelId || null
+    },
+    onboarding: {
+      hasChannel: Boolean(channelSelection.channel && String(channelSelection.channel.status || '').trim().toLowerCase() === 'active'),
+      hasProducts: activeProducts.length > 0,
+      hasMessages: conversationsCount > 0,
+      botEnabled: activeAutomations.length > 0,
+      productsCount: activeProducts.length,
+      conversationsCount,
+      automationsCount: activeAutomations.length
     },
     reason: channelSelection.reason
   };

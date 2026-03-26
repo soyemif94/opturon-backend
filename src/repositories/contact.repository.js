@@ -7,7 +7,68 @@ function dbQuery(client, text, params) {
   return query(text, params);
 }
 
+function normalizePhoneDigits(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits || null;
+}
+
+async function findFirstContactByPhone(clinicId, phone, client = null) {
+  const normalizedPhone = normalizePhoneDigits(phone);
+  if (!normalizedPhone) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT
+       id,
+       "clinicId",
+       "waId",
+       phone,
+       name,
+       email,
+       "whatsappPhone",
+       "taxId",
+       "taxCondition",
+       "companyName",
+       notes,
+       status,
+       "optedOut",
+       "createdAt",
+       "updatedAt"
+     FROM contacts
+     WHERE "clinicId" = $1
+       AND (
+         regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = $2
+         OR regexp_replace(COALESCE("whatsappPhone", ''), '\\D', '', 'g') = $2
+         OR regexp_replace(COALESCE("waId", ''), '\\D', '', 'g') = $2
+       )
+     ORDER BY "updatedAt" DESC NULLS LAST, "createdAt" DESC
+     LIMIT 1`,
+    [clinicId, normalizedPhone]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function upsertContact({ clinicId, waId, phone, name }, client = null) {
+  const reusableContact = await findFirstContactByPhone(clinicId, phone || waId, client);
+  if (reusableContact) {
+    const result = await dbQuery(
+      client,
+      `UPDATE contacts
+       SET
+         "waId" = COALESCE($3, "waId"),
+         phone = COALESCE($4, phone),
+         name = COALESCE($5, name),
+         "updatedAt" = NOW()
+       WHERE id = $1
+         AND "clinicId" = $2
+       RETURNING id, "clinicId", "waId", phone, name, "optedOut"`,
+      [reusableContact.id, clinicId, waId || null, phone || null, name || null]
+    );
+
+    return result.rows[0] || null;
+  }
+
   const result = await dbQuery(
     client,
     `INSERT INTO contacts ("clinicId", "waId", phone, name, "updatedAt")
@@ -164,6 +225,56 @@ async function listContactsByClinicId(clinicId, client = null) {
 // Portal/client-facing create. The caller must resolve clinic scope from route/context,
 // never from client-controlled tenant/body values.
 async function createPortalContact(clinicId, input, client = null) {
+  const reusableContact = await findFirstContactByPhone(clinicId, input.phone || input.whatsappPhone, client);
+  if (reusableContact) {
+    const result = await dbQuery(
+      client,
+      `UPDATE contacts
+       SET
+         name = COALESCE($3, name),
+         email = COALESCE($4, email),
+         phone = COALESCE($5, phone),
+         "whatsappPhone" = COALESCE($6, "whatsappPhone"),
+         "taxId" = COALESCE($7, "taxId"),
+         "taxCondition" = COALESCE($8, "taxCondition"),
+         "companyName" = COALESCE($9, "companyName"),
+         notes = COALESCE($10, notes),
+         "updatedAt" = NOW()
+       WHERE "clinicId" = $1
+         AND id = $2
+       RETURNING
+         id,
+         "clinicId",
+         "waId",
+         phone,
+         name,
+         email,
+         "whatsappPhone",
+         "taxId",
+         "taxCondition",
+         "companyName",
+         notes,
+         status,
+         "optedOut",
+         "createdAt",
+         "updatedAt"`,
+      [
+        clinicId,
+        reusableContact.id,
+        input.name,
+        input.email,
+        input.phone,
+        input.whatsappPhone,
+        input.taxId,
+        input.taxCondition,
+        input.companyName,
+        input.notes
+      ]
+    );
+
+    return result.rows[0] || null;
+  }
+
   const result = await dbQuery(
     client,
     `INSERT INTO contacts (
@@ -315,6 +426,7 @@ async function updatePortalContactById(clinicId, contactId, input, client = null
 module.exports = {
   // Generic/internal helpers.
   upsertContact,
+  findFirstContactByPhone,
   findContactById,
   findContactByIdAndClinicId,
   listContactsByClinicId,
