@@ -19,6 +19,10 @@ function normalizeCategory(row) {
   };
 }
 
+function normalizeCategoryName(value) {
+  return String(value || '').trim();
+}
+
 async function listProductCategoriesByClinicId(clinicId, { includeInactive = true } = {}, client = null) {
   const result = await dbQuery(
     client,
@@ -42,6 +46,24 @@ async function findProductCategoryById(categoryId, clinicId, client = null) {
        AND "clinicId" = $2::uuid
      LIMIT 1`,
     [categoryId, clinicId]
+  );
+
+  return normalizeCategory(result.rows[0] || null);
+}
+
+async function findProductCategoryByName(name, clinicId, client = null) {
+  const safeName = normalizeCategoryName(name);
+  if (!safeName) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", name, "isActive", "createdAt", "updatedAt"
+     FROM product_categories
+     WHERE "clinicId" = $1::uuid
+       AND lower(name) = lower($2)
+     ORDER BY "createdAt" DESC
+     LIMIT 1`,
+    [clinicId, safeName]
   );
 
   return normalizeCategory(result.rows[0] || null);
@@ -86,6 +108,7 @@ async function updateProductCategory(categoryId, clinicId, input, client = null)
 module.exports = {
   listProductCategoriesByClinicId,
   findProductCategoryById,
+  findProductCategoryByName,
   createProductCategory,
   updateProductCategory
 };

@@ -11,6 +11,7 @@ const {
 const {
   listProductCategoriesByClinicId,
   findProductCategoryById,
+  findProductCategoryByName,
   createProductCategory,
   updateProductCategory
 } = require('../repositories/product-categories.repository');
@@ -73,6 +74,24 @@ function buildCategoryPayload(payload, fallbackIsActive = true) {
 function validateCategoryPayload(category) {
   if (!category.name) return 'missing_product_category_name';
   return null;
+}
+
+function normalizeBulkCategoryLabel(value) {
+  const normalized = normalizeString(value);
+  if (!normalized) return null;
+
+  const lowered = normalized.toLowerCase();
+  if (
+    lowered === 'undefined' ||
+    lowered === 'null' ||
+    lowered === 'n/a' ||
+    lowered === 'na' ||
+    lowered === '-'
+  ) {
+    return null;
+  }
+
+  return normalized;
 }
 
 async function createProductForContext(context, payload) {
@@ -301,10 +320,40 @@ async function createPortalProductsBulk(tenantId, payload) {
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     try {
-      const result = await createProductForContext(context, {
-        ...item,
-        status: 'active'
+      const result = await withTransaction(async (client) => {
+        const product = buildProductPayload(
+          {
+            ...item,
+            status: 'active'
+          },
+          'active'
+        );
+        const reason = validateProductPayload(product);
+        if (reason) {
+          return { ok: false, reason };
+        }
+
+        const categoryResolution = await resolveBulkImportCategoryId(context, item, client);
+        if (!categoryResolution.ok) {
+          return categoryResolution;
+        }
+
+        product.categoryId = categoryResolution.categoryId;
+
+        const createdProduct = await createProduct(
+          {
+            clinicId: context.clinic.id,
+            ...product
+          },
+          client
+        );
+
+        return {
+          ok: true,
+          product: createdProduct
+        };
       });
+
       if (result.ok) {
         created += 1;
         results.push({
@@ -321,6 +370,16 @@ async function createPortalProductsBulk(tenantId, payload) {
         });
       }
     } catch (error) {
+      if (error && typeof error === 'object' && error.code === '23505') {
+        failed += 1;
+        results.push({
+          row: index + 1,
+          status: 'failed',
+          code: 'duplicate_product_sku'
+        });
+        continue;
+      }
+
       failed += 1;
       results.push({
         row: index + 1,
@@ -376,6 +435,49 @@ async function createPortalProductCategoryRecord(tenantId, payload) {
         tenantId: context.tenantId,
         reason: 'duplicate_product_category_name'
       };
+    }
+    throw error;
+  }
+}
+
+async function resolveBulkImportCategoryId(context, payload, client) {
+  const categoryId = normalizeString(payload && payload.categoryId) || null;
+  if (categoryId) {
+    const category = await findProductCategoryById(categoryId, context.clinic.id, client);
+    if (!category) {
+      return { ok: false, reason: 'product_category_not_found' };
+    }
+    return { ok: true, categoryId: category.id };
+  }
+
+  const categoryName = normalizeBulkCategoryLabel(
+    payload && (payload.categoryName ?? payload.category ?? payload.categoryLabel)
+  );
+  if (!categoryName) {
+    return { ok: true, categoryId: null };
+  }
+
+  const existing = await findProductCategoryByName(categoryName, context.clinic.id, client);
+  if (existing) {
+    return { ok: true, categoryId: existing.id };
+  }
+
+  try {
+    const created = await createProductCategory(
+      {
+        clinicId: context.clinic.id,
+        name: categoryName,
+        isActive: true
+      },
+      client
+    );
+    return { ok: true, categoryId: created.id };
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === '23505') {
+      const category = await findProductCategoryByName(categoryName, context.clinic.id, client);
+      if (category) {
+        return { ok: true, categoryId: category.id };
+      }
     }
     throw error;
   }
