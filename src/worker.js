@@ -412,6 +412,30 @@ function parseCommerceSelection(rawText, max) {
   return value;
 }
 
+function parseCommerceMultiSelection(rawText, max) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return [];
+
+  const normalized = text
+    .replace(/\sy\s/g, ',')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const seen = new Set();
+  const selections = [];
+
+  for (const chunk of normalized.split(/[,\s]+/)) {
+    const value = Number(chunk);
+    if (!/^\d{1,2}$/.test(chunk)) continue;
+    if (!Number.isInteger(value) || value < 1 || value > max) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    selections.push(value);
+  }
+
+  return selections;
+}
+
 function isCommerceMoreIntent(rawText) {
   return COMMERCE_MORE_KEYWORDS.has(normalizeCommandText(rawText));
 }
@@ -1063,6 +1087,111 @@ async function resolveCommerceCartAddition({
   };
 }
 
+async function resolveCommerceMultiCartAddition({
+  conversation,
+  catalogFromContext,
+  cartItems,
+  selections
+}) {
+  const safeCatalog = Array.isArray(catalogFromContext) ? catalogFromContext : [];
+  const safeSelections = Array.isArray(selections) ? selections : [];
+  let updatedCartItems = Array.isArray(cartItems) ? cartItems : [];
+  const addedItems = [];
+  const ignoredSelections = [];
+
+  for (const selection of safeSelections) {
+    const selectedProduct = safeCatalog[selection - 1] || null;
+    if (!selectedProduct || !selectedProduct.productId) {
+      ignoredSelections.push(selection);
+      continue;
+    }
+
+    const latestProduct = await findProductById(selectedProduct.productId, conversation.clinicId);
+    if (!latestProduct || String(latestProduct.status || '').toLowerCase() !== 'active') {
+      ignoredSelections.push(selection);
+      continue;
+    }
+
+    const existingItem = updatedCartItems.find((item) => String(item.productId || '') === String(latestProduct.id));
+    const requestedCartQuantity = Number(existingItem && existingItem.quantity ? existingItem.quantity : 0) + 1;
+    if (Number(latestProduct.stock || 0) < requestedCartQuantity) {
+      ignoredSelections.push(selection);
+      continue;
+    }
+
+    updatedCartItems = mergeCommerceCartItem(
+      updatedCartItems,
+      {
+        productId: latestProduct.id,
+        name: latestProduct.name,
+        price: Number(latestProduct.price || 0),
+        currency: String(latestProduct.currency || 'ARS').toUpperCase()
+      },
+      1
+    );
+
+    addedItems.push({
+      selection,
+      name: latestProduct.name
+    });
+
+    logInfo('commerce_cart_item_added', {
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      productId: latestProduct.id,
+      addedQuantity: 1,
+      cartQuantity: requestedCartQuantity,
+      source: 'multi_selection'
+    });
+  }
+
+  if (!addedItems.length) {
+    return {
+      replyText: safeCatalog.length
+        ? 'No pude agregar esos productos. Elegi numeros validos de la lista o escribi "ayuda" si queres ver las opciones.'
+        : 'No hay productos disponibles ahora mismo. Escribi "productos" para intentar de nuevo.',
+      newState: safeCatalog.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: buildCommerceResetPatch({
+        commerceCatalog: safeCatalog.length ? safeCatalog : null,
+        commerceCartItems: updatedCartItems.length ? updatedCartItems : null
+      })
+    };
+  }
+
+  const lines = [
+    'Agregue estos productos:',
+    ...addedItems.map((item, index) => `${index + 1}. ${item.name}`)
+  ];
+
+  if (ignoredSelections.length) {
+    lines.push('', `Ignore estos numeros porque no estaban disponibles o no eran validos: ${ignoredSelections.join(', ')}`);
+  }
+
+  lines.push(
+    '',
+    'Podes:',
+    '- elegir otro producto',
+    '- escribir "confirmar"',
+    '- escribir "deshacer"',
+    ...(safeCatalog.length && safeCatalog.some((item) => item && item.categoryId) ? ['- escribir "0" para volver a categorias'] : [])
+  );
+
+  return {
+    replyText: lines.join('\n'),
+    newState: 'WAITING_PRODUCT_SELECTION',
+    contextPatch: buildCommerceResetPatch({
+      commerceCatalog: safeCatalog.length
+        ? safeCatalog
+        : buildCommerceCatalogPage(await listProductsByClinicId(conversation.clinicId)).items,
+      commerceCartItems: updatedCartItems,
+      commerceLastAddedItem: {
+        productId: null,
+        quantity: addedItems.length
+      }
+    })
+  };
+}
+
 async function resolveCommerceCancellation({ conversation, inboundText, currentState, safeContext }) {
   if (!isCommerceCancelIntent(inboundText)) {
     return null;
@@ -1688,6 +1817,16 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const products = catalogFromContext.length
       ? catalogFromContext
       : buildCommerceCatalogPage(await loadClinicProducts(), { categoryId: activeCategoryId }).items;
+    const multiSelection = parseCommerceMultiSelection(inboundText, products.length);
+    if (multiSelection.length > 1) {
+      return resolveCommerceMultiCartAddition({
+        conversation,
+        catalogFromContext: products,
+        cartItems,
+        selections: multiSelection
+      });
+    }
+
     const selection = parseCommerceSelection(inboundText, products.length);
     if (!selection) {
       return {
