@@ -391,6 +391,7 @@ function buildCommerceCatalogReply(page) {
     'Podes:',
     '- escribir el numero del producto que queres agregar',
     ...(page && page.hasMore ? ['- escribir "más" para seguir viendo productos'] : []),
+    ...(page && page.categoryId ? ['- escribir "0" o "volver" para ver categorias'] : []),
     '- escribir "confirmar" para cerrar tu pedido',
     '- escribir "productos" para ver el catalogo otra vez',
     '- escribir "deshacer" para quitar el ultimo producto agregado',
@@ -413,6 +414,19 @@ function parseCommerceSelection(rawText, max) {
 
 function isCommerceMoreIntent(rawText) {
   return COMMERCE_MORE_KEYWORDS.has(normalizeCommandText(rawText));
+}
+
+function isCommerceBackToCategoriesIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  return (
+    text === '0' ||
+    text === 'volver' ||
+    text === 'ver categorias' ||
+    text === 'ver categoryias' ||
+    text === 'categorias' ||
+    text === 'categorias otra vez' ||
+    text === 'atras'
+  );
 }
 
 function parseCommerceCategorySelection(rawText, categories) {
@@ -1601,6 +1615,31 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       };
     }
 
+    if (activeCategoryId && isCommerceBackToCategoriesIntent(inboundText)) {
+      const categories = categoriesFromContext.length ? categoriesFromContext : buildCommerceCategories(await loadClinicProducts());
+      if (!categories.length) {
+        return buildCatalogEntryDecision();
+      }
+
+      traceCommerceFlow('catalog_categories', {
+        categoryCount: categories.length,
+        fromCategoryId: activeCategoryId,
+        fromCategoryName: activeCategoryName
+      });
+      return {
+        replyText: buildCommerceCategoriesReply(categories),
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: buildCommerceResetPatch({
+          commerceCategories: categories,
+          commerceCategorySelection: true,
+          commerceCartItems: cartItems.length ? cartItems : null,
+          commerceLastAddedItem: lastAddedItem,
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null
+        })
+      };
+    }
+
     if (isCommerceMoreIntent(inboundText)) {
       if (!catalogNextOffset || catalogNextOffset >= catalogTotal) {
         return {
@@ -1703,6 +1742,32 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
   if (currentState === 'WAITING_QUANTITY') {
     const selectedProduct = safeContext.commerceSelectedProduct || null;
+    if (activeCategoryId && isCommerceBackToCategoriesIntent(inboundText)) {
+      const categories = categoriesFromContext.length ? categoriesFromContext : buildCommerceCategories(await loadClinicProducts());
+      if (!categories.length) {
+        return buildCatalogEntryDecision();
+      }
+
+      traceCommerceFlow('catalog_categories', {
+        categoryCount: categories.length,
+        fromCategoryId: activeCategoryId,
+        fromCategoryName: activeCategoryName,
+        previousState: currentState
+      });
+      return {
+        replyText: buildCommerceCategoriesReply(categories),
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: buildCommerceResetPatch({
+          commerceCategories: categories,
+          commerceCategorySelection: true,
+          commerceCartItems: cartItems.length ? cartItems : null,
+          commerceLastAddedItem: lastAddedItem,
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null
+        })
+      };
+    }
+
     if (!selectedProduct || !selectedProduct.productId) {
       const page = buildCommerceCatalogPage(await loadClinicProducts(), { categoryId: activeCategoryId });
       return {
