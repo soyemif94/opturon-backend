@@ -9,7 +9,13 @@ const { insertInboundMessage } = require('../repositories/message.repository');
 const { enqueueInboundJob } = require('../repositories/job.repository');
 const { createFailure } = require('../repositories/inbound-failures.repository');
 const { insertWebhookEvent } = require('../repositories/webhook-event.repository');
-const { deriveEventType, extractWhatsAppMeta } = require('../webhook/webhook-event.parser');
+const {
+  deriveMetaWebhookProvider,
+  deriveMetaEventType,
+  extractMetaWebhookIdentifiers,
+  hasInstagramMessagingEntries,
+  hasWhatsAppChangeEntries
+} = require('../webhooks/meta.webhook');
 const { processInboundMessages } = require('../conversations/conversation.service');
 const { pushInboxItem } = require('../debug/inbox-store');
 const { pushWebhookEvent } = require('../debug/webhook-store');
@@ -616,8 +622,11 @@ async function handleWebhook(req, res) {
 
   const isMetaPayload = Array.isArray(payload.entry);
   const signatureValid = env.verifySignature ? (req.metaSignatureValid ?? null) : null;
-  const eventType = deriveEventType(payload);
-  const meta = extractWhatsAppMeta(payload);
+  const provider = deriveMetaWebhookProvider(payload);
+  const hasInstagramEntries = hasInstagramMessagingEntries(payload);
+  const hasWhatsAppEntries = hasWhatsAppChangeEntries(payload);
+  const eventType = deriveMetaEventType(payload);
+  const meta = extractMetaWebhookIdentifiers(payload);
   const safeHeaders = {
     'x-hub-signature-256': req.get('x-hub-signature-256') || null,
     'x-forwarded-for': req.get('x-forwarded-for') || null,
@@ -627,7 +636,7 @@ async function handleWebhook(req, res) {
   try {
     const persisted = await insertWebhookEvent({
       requestId: req.requestId || null,
-      provider: 'meta_whatsapp',
+      provider,
       object: sanitizeString(payload.object) || null,
       eventType,
       waMessageId: meta.waMessageId,
@@ -661,10 +670,39 @@ async function handleWebhook(req, res) {
 
   try {
     if (isMetaPayload) {
-      try {
-        await observeAndAutoReply(req, payload);
-      } catch (error) {
-        logWarn('webhook_observer_failed', withRequestMeta(req, { error: error.message }));
+      logInfo('meta_webhook_routed', withRequestMeta(req, {
+        provider,
+        object: sanitizeString(payload.object) || null,
+        eventType: eventType || null,
+        hasInstagramEntries,
+        hasWhatsAppEntries,
+        waMessageId: meta.waMessageId || null
+      }));
+
+      if (provider === 'meta_unknown') {
+        logWarn('meta_webhook_ignored_unknown_provider', withRequestMeta(req, {
+          object: sanitizeString(payload.object) || null,
+          eventType: eventType || null,
+          hasInstagramEntries,
+          hasWhatsAppEntries
+        }));
+
+        return res.status(200).json({
+          success: true,
+          received: 0,
+          enqueued: 0,
+          unrouted: 0,
+          duplicates: 0,
+          warning: 'ignored_unknown_meta_provider'
+        });
+      }
+
+      if (provider === 'meta_whatsapp') {
+        try {
+          await observeAndAutoReply(req, payload);
+        } catch (error) {
+          logWarn('webhook_observer_failed', withRequestMeta(req, { error: error.message }));
+        }
       }
 
       const processed = await processInboundMessages({
@@ -767,6 +805,7 @@ async function handleWebhook(req, res) {
     logWarn(
       'webhook_payload_ignored',
       withRequestMeta(req, {
+        provider,
         error: error.message,
         hasEntry: Array.isArray(payload && payload.entry),
         object: sanitizeString(payload && payload.object) || null

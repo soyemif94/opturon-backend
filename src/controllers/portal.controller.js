@@ -102,6 +102,10 @@ const {
   getPortalWhatsAppSignupStatus,
   finalizePortalWhatsAppSignup
 } = require('../services/portal-whatsapp-embedded-signup.service');
+const {
+  getPortalInstagramConnectionStatus,
+  connectPortalInstagramChannel
+} = require('../services/portal-instagram.service');
 const { connectPortalWhatsAppManual } = require('../services/portal-whatsapp-manual-onboarding.service');
 const { discoverTenantWhatsAppAssets } = require('../services/portal-whatsapp-discovery.service');
 const {
@@ -2822,6 +2826,77 @@ async function postPortalWhatsAppTemplatesSync(req, res) {
   }
 }
 
+async function getPortalInstagramStatus(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalInstagramConnectionStatus(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_instagram_status_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInstagramConnect(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await connectPortalInstagramChannel(tenantId, {
+      code: req.body && req.body.code,
+      redirectUri: req.body && req.body.redirectUri,
+      requestId: req.requestId || null
+    });
+
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_instagram_oauth_code' ||
+        result.reason === 'missing_instagram_redirect_uri'
+          ? 400
+          : result.reason === 'tenant_mapping_not_found'
+            ? 404
+            : result.reason === 'instagram_multiple_assets_found'
+              ? 409
+              : 409;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    const status =
+      error && (error.reason === 'instagram_channel_already_bound_to_other_clinic' || error.code === 'INSTAGRAM_CHANNEL_CROSS_CLINIC_CONFLICT')
+        ? 409
+        : 500;
+
+    return res.status(status).json({
+      success: false,
+      error: error.reason || 'portal_instagram_connect_failed',
+      details: error.details || error.message
+    });
+  }
+}
+
 module.exports = {
   getPortalTenantContext,
   getPortalConversations,
@@ -2900,6 +2975,8 @@ module.exports = {
   postPortalWhatsAppEmbeddedSignupFinalize,
   postPortalWhatsAppManualConnect,
   postPortalWhatsAppDiscoverAssets,
+  getPortalInstagramStatus,
+  postPortalInstagramConnect,
   getPortalWhatsAppDefaultChannel,
   patchPortalWhatsAppDefaultChannel,
   getPortalWhatsAppTemplateBlueprints,
