@@ -1668,6 +1668,21 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     return buildCatalogEntryDecision();
   }
 
+  if (currentState === 'WAITING_PRODUCT_SELECTION' && !categorySelectionActive) {
+    const products = catalogFromContext.length
+      ? catalogFromContext
+      : buildCommerceCatalogPage(await loadClinicProducts(), { categoryId: activeCategoryId }).items;
+    const multiSelection = parseCommerceMultiSelection(inboundText, products.length);
+    if (multiSelection.length > 1) {
+      return resolveCommerceMultiCartAddition({
+        conversation,
+        catalogFromContext: products,
+        cartItems,
+        selections: multiSelection
+      });
+    }
+  }
+
   const naturalOrder = parseCommerceNaturalOrder(inboundText);
   if (naturalOrder) {
     const products = catalogFromContext.length
@@ -1817,16 +1832,6 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const products = catalogFromContext.length
       ? catalogFromContext
       : buildCommerceCatalogPage(await loadClinicProducts(), { categoryId: activeCategoryId }).items;
-    const multiSelection = parseCommerceMultiSelection(inboundText, products.length);
-    if (multiSelection.length > 1) {
-      return resolveCommerceMultiCartAddition({
-        conversation,
-        catalogFromContext: products,
-        cartItems,
-        selections: multiSelection
-      });
-    }
-
     const selection = parseCommerceSelection(inboundText, products.length);
     if (!selection) {
       return {
