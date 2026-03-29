@@ -2427,12 +2427,7 @@ async function postPortalWhatsAppEmbeddedSignupBootstrap(req, res) {
     });
 
     if (!result.ok) {
-      const status =
-        result.reason === 'missing_tenant_id' || result.reason === 'missing_redirect_uri'
-          ? 400
-          : result.reason === 'tenant_mapping_not_found'
-            ? 404
-            : 409;
+      const status = mapPortalWhatsAppConnectReasonToStatus(result.reason, 409);
 
       return res.status(status).json({
         success: false,
@@ -2447,10 +2442,12 @@ async function postPortalWhatsAppEmbeddedSignupBootstrap(req, res) {
       data: result
     });
   } catch (error) {
-    return res.status(500).json({
+    const status = mapPortalWhatsAppConnectReasonToStatus(error.reason, 500);
+    return res.status(status).json({
       success: false,
-      error: 'portal_whatsapp_embedded_signup_bootstrap_failed',
-      details: error.message
+      error: error.reason || 'portal_whatsapp_embedded_signup_bootstrap_failed',
+      detail: error.message || null,
+      details: error.message || null
     });
   }
 }
@@ -2496,16 +2493,7 @@ async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
     });
 
     if (!result.ok) {
-      const status =
-        result.reason === 'missing_state_token' ||
-        result.reason === 'missing_meta_code' ||
-        result.reason === 'embedded_signup_redirect_uri_mismatch'
-          ? 400
-          : result.reason === 'embedded_signup_session_not_found'
-            ? 404
-            : result.reason === 'channel_belongs_to_another_workspace'
-              ? 409
-              : 422;
+      const status = mapPortalWhatsAppConnectReasonToStatus(result.reason, 422);
 
       return res.status(status).json({
         success: false,
@@ -2519,10 +2507,12 @@ async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
       data: result
     });
   } catch (error) {
-    return res.status(500).json({
+    const status = mapPortalWhatsAppConnectReasonToStatus(error.reason, 500);
+    return res.status(status).json({
       success: false,
-      error: 'portal_whatsapp_embedded_signup_finalize_failed',
-      details: error.message
+      error: error.reason || 'portal_whatsapp_embedded_signup_finalize_failed',
+      detail: error.message || null,
+      details: error.message || null
     });
   }
 }
@@ -2533,20 +2523,7 @@ async function postPortalWhatsAppManualConnect(req, res) {
   try {
     const result = await connectPortalWhatsAppManual(tenantId, req.body || {});
     if (!result.ok) {
-      const status =
-        result.reason === 'missing_tenant_id' ||
-        result.reason === 'missing_waba_id' ||
-        result.reason === 'missing_phone_number_id' ||
-        result.reason === 'missing_access_token'
-          ? 400
-          : result.reason === 'WHATSAPP_CHANNEL_ALREADY_CONNECTED' ||
-              result.reason === 'PHONE_NUMBER_NOT_IN_WABA'
-            ? 409
-            : result.reason === 'tenant_mapping_not_found'
-              ? 404
-              : result.reason === 'WHATSAPP_TOKEN_INVALID' || result.reason === 'WABA_NOT_ACCESSIBLE'
-                ? 422
-                : 422;
+      const status = mapPortalWhatsAppConnectReasonToStatus(result.reason, 422);
 
       return res.status(status).json({
         success: false,
@@ -2561,10 +2538,12 @@ async function postPortalWhatsAppManualConnect(req, res) {
       data: result
     });
   } catch (error) {
-    return res.status(500).json({
+    const status = mapPortalWhatsAppConnectReasonToStatus(error.reason, 500);
+    return res.status(status).json({
       success: false,
-      error: 'portal_whatsapp_manual_connect_failed',
-      details: error.message
+      error: error.reason || 'portal_whatsapp_manual_connect_failed',
+      detail: error.message || null,
+      details: error.message || null
     });
   }
 }
@@ -2575,14 +2554,7 @@ async function postPortalWhatsAppDiscoverAssets(req, res) {
   try {
     const result = await discoverTenantWhatsAppAssets(tenantId, req.body || {});
     if (!result.ok) {
-      const status =
-        result.reason === 'missing_tenant_id' || result.reason === 'missing_access_token'
-          ? 400
-          : result.reason === 'tenant_mapping_not_found'
-            ? 404
-            : result.reason === 'WHATSAPP_TOKEN_INVALID' || result.reason === 'WABA_NOT_ACCESSIBLE'
-              ? 422
-              : 422;
+      const status = mapPortalWhatsAppConnectReasonToStatus(result.reason, 422);
 
       return res.status(status).json({
         success: false,
@@ -2597,10 +2569,12 @@ async function postPortalWhatsAppDiscoverAssets(req, res) {
       data: result
     });
   } catch (error) {
-    return res.status(500).json({
+    const status = mapPortalWhatsAppConnectReasonToStatus(error.reason, 500);
+    return res.status(status).json({
       success: false,
-      error: 'portal_whatsapp_discover_assets_failed',
-      details: error.message
+      error: error.reason || 'portal_whatsapp_discover_assets_failed',
+      detail: error.message || null,
+      details: error.message || null
     });
   }
 }
@@ -2824,6 +2798,47 @@ async function postPortalWhatsAppTemplatesSync(req, res) {
       details: error.message
     });
   }
+}
+
+function mapPortalWhatsAppConnectReasonToStatus(reason, fallbackStatus = 422) {
+  if (
+    reason === 'missing_tenant_id' ||
+    reason === 'missing_redirect_uri' ||
+    reason === 'missing_waba_id' ||
+    reason === 'missing_phone_number_id' ||
+    reason === 'missing_access_token' ||
+    reason === 'missing_state_token' ||
+    reason === 'missing_meta_code' ||
+    reason === 'embedded_signup_redirect_uri_mismatch'
+  ) {
+    return 400;
+  }
+
+  if (reason === 'tenant_mapping_not_found' || reason === 'embedded_signup_session_not_found') {
+    return 404;
+  }
+
+  if (
+    reason === 'WHATSAPP_CHANNEL_ALREADY_CONNECTED' ||
+    reason === 'channel_belongs_to_another_workspace'
+  ) {
+    return 409;
+  }
+
+  if (
+    reason === 'meta_invalid_access_token' ||
+    reason === 'meta_insufficient_permissions' ||
+    reason === 'meta_waba_not_accessible' ||
+    reason === 'meta_phone_number_waba_mismatch' ||
+    reason === 'meta_app_subscription_failed' ||
+    reason === 'meta_business_assets_not_found' ||
+    reason === 'meta_embedded_signup_not_configured' ||
+    reason === 'meta_debug_token_not_configured'
+  ) {
+    return 422;
+  }
+
+  return fallbackStatus;
 }
 
 async function getPortalInstagramStatus(req, res) {

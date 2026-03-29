@@ -4,6 +4,11 @@ const { logInfo, logWarn, logError } = require('../utils/logger');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const graphClient = require('../whatsapp/whatsapp-graph.client');
 const {
+  extractGraphErrorMeta,
+  inferMetaDomainReason,
+  buildMetaGraphDetail
+} = require('./portal-whatsapp-assets.service');
+const {
   createOnboardingSession,
   expirePreviousPendingSessions,
   findOnboardingSessionByStateToken,
@@ -252,12 +257,15 @@ async function fetchAccessiblePhoneNumbers({ accessToken, wabaId, requestId = nu
   });
 
   if (!result.ok) {
-    const error = new Error(
-      (result.data && result.data.error && result.data.error.message) || 'meta_phone_numbers_lookup_failed'
-    );
-    error.reason = 'meta_phone_numbers_lookup_failed';
+    const meta = extractGraphErrorMeta(result);
+    const reason = inferMetaDomainReason(meta, 'manual_connect');
+    const error = new Error(buildMetaGraphDetail(reason, meta, 'manual_connect'));
+    error.reason = reason;
     error.graphStatus = result.status || null;
     error.body = result.data || null;
+    error.graphCode = meta.code;
+    error.graphSubcode = meta.subcode;
+    error.fbtraceId = meta.fbtraceId;
     throw error;
   }
 
@@ -392,6 +400,7 @@ async function subscribeCurrentAppToWaba({ accessToken, wabaId, requestId = null
 async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorUserId = null, metadata = null }) {
   const safeTenantId = String(tenantId || '').trim();
   const safeRedirectUri = String(redirectUri || '').trim();
+  const bootstrapRequestId = `wa_bootstrap_${crypto.randomUUID()}`;
   if (!safeTenantId) {
     return withReason('missing_tenant_id', 'No recibimos el tenantId para iniciar el onboarding con Meta.');
   }
@@ -405,6 +414,32 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
   }
 
   const metaConfig = buildMetaConfigStatus();
+  logInfo('portal_whatsapp_embedded_signup_bootstrap_started', {
+    tenantId: safeTenantId,
+    clinicId: context.clinic.id,
+    requestId: bootstrapRequestId,
+    redirectUri: safeRedirectUri,
+    backendMetaReady: metaConfig.ready
+  });
+
+  if (!metaConfig.ready) {
+    logWarn('portal_whatsapp_embedded_signup_bootstrap_failed', {
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id,
+      requestId: bootstrapRequestId,
+      reason: 'meta_embedded_signup_not_configured',
+      metaConfig
+    });
+    return withReason(
+      'meta_embedded_signup_not_configured',
+      'Faltan credenciales internas de Meta para iniciar el Embedded Signup en este entorno.',
+      {
+        tenantId: safeTenantId,
+        clinicId: context.clinic.id,
+        metaConfig
+      }
+    );
+  }
 
   const session = await withOnboardingTransaction(async (client) => {
     await expirePreviousPendingSessions(context.clinic.id, client);
@@ -427,19 +462,11 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
     tenantId: safeTenantId,
     clinicId: context.clinic.id,
     sessionId: session && session.id ? session.id : null,
+    requestId: bootstrapRequestId,
     stateToken: session && session.stateToken ? redactToken(session.stateToken) : null,
     redirectUri: safeRedirectUri,
     backendMetaReady: metaConfig.ready
   });
-
-  if (!metaConfig.ready) {
-    logWarn('portal_whatsapp_embedded_signup_config_missing', {
-      tenantId: safeTenantId,
-      clinicId: context.clinic.id,
-      sessionId: session && session.id ? session.id : null,
-      metaConfig
-    });
-  }
 
   return {
     ok: true,
@@ -605,6 +632,23 @@ async function finalizePortalWhatsAppSignup({
       wabaId: assets.wabaId,
       requestId
     });
+    if (!subscription.ok) {
+      const meta = extractGraphErrorMeta({
+        status: subscription.status || null,
+        data: subscription.body || null
+      });
+      logWarn('portal_whatsapp_embedded_signup_subscription_failed', {
+        requestId,
+        tenantId: session.externalTenantId,
+        clinicId: session.clinicId,
+        sessionId: session.id,
+        reason: 'meta_app_subscription_failed',
+        graphStatus: meta.status,
+        graphCode: meta.code,
+        graphSubcode: meta.subcode,
+        fbtraceId: meta.fbtraceId
+      });
+    }
 
     const persisted = await withOnboardingTransaction(async (client) => {
       const channelStatus = subscription.ok ? 'active' : 'pending';

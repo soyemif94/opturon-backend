@@ -12,6 +12,9 @@ const {
 const {
   normalizeString,
   buildReason,
+  extractGraphErrorMeta,
+  inferMetaDomainReason,
+  buildMetaGraphDetail,
   listWhatsAppAssetsForWaba
 } = require('./portal-whatsapp-assets.service');
 
@@ -43,7 +46,8 @@ async function subscribeCurrentAppToWaba(accessToken, wabaId, requestId) {
   return {
     ok: false,
     status: result.status || null,
-    body: result.data || null
+    body: result.data || null,
+    meta: extractGraphErrorMeta(result)
   };
 }
 
@@ -106,9 +110,17 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
 
   const matchedPhone = numbers.items.find((item) => normalizeString(item.phoneNumberId) === phoneNumberId);
   if (!matchedPhone) {
+    logWarn('portal_whatsapp_manual_connect_phone_validation_failed', {
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id,
+      requestId,
+      wabaId,
+      phoneNumberId,
+      availablePhones: numbers.items.length
+    });
     return buildReason(
-      'PHONE_NUMBER_NOT_IN_WABA',
-      'El número seleccionado no pertenece a la WABA validada con ese token.',
+      'meta_phone_number_waba_mismatch',
+      'El Phone Number ID seleccionado no pertenece a la WABA validada con ese token.',
       { tenantId: safeTenantId }
     );
   }
@@ -132,7 +144,7 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
       });
       return buildReason(
         'WHATSAPP_CHANNEL_ALREADY_CONNECTED',
-        'Ese número ya está asociado a otro workspace y no se puede vincular manualmente.'
+        'Ese numero ya esta asociado a otro workspace y no se puede vincular manualmente.'
       );
     } else {
       channelAction = 'repaired';
@@ -148,6 +160,35 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
   }
 
   const subscription = await subscribeCurrentAppToWaba(accessToken, wabaId, requestId);
+  if (!subscription.ok) {
+    const meta = subscription.meta || null;
+    const reason = inferMetaDomainReason(meta, 'subscription');
+    const detail = buildMetaGraphDetail(reason, meta, 'subscription');
+
+    logWarn('portal_whatsapp_manual_connect_subscription_failed', {
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id,
+      requestId,
+      wabaId,
+      phoneNumberId,
+      reason,
+      detail,
+      graphStatus: meta && meta.status ? meta.status : null,
+      graphCode: meta && meta.code ? meta.code : null,
+      graphSubcode: meta && meta.subcode ? meta.subcode : null,
+      fbtraceId: meta && meta.fbtraceId ? meta.fbtraceId : null
+    });
+
+    return buildReason(reason, detail, {
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id,
+      graphStatus: meta && meta.status ? meta.status : null,
+      graphCode: meta && meta.code ? meta.code : null,
+      graphSubcode: meta && meta.subcode ? meta.subcode : null,
+      fbtraceId: meta && meta.fbtraceId ? meta.fbtraceId : null
+    });
+  }
+
   const persisted = await withOnboardingTransaction(async (client) => {
     const nextChannelData = {
       clinicId: context.clinic.id,
@@ -156,16 +197,16 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
       accessToken,
       displayPhoneNumber: matchedPhone.displayPhoneNumber || null,
       verifiedName: matchedPhone.verifiedName || channelName || null,
-      status: subscription.ok ? 'active' : 'pending',
+      status: 'active',
       connectionSource: 'manual_assisted',
       connectionMetadata: {
         onboardingProvider: 'manual_assisted',
         requestId,
         channelName,
         wabaName: matchedPhone.wabaName || null,
-        subscriptionOk: subscription.ok,
+        subscriptionOk: true,
         subscriptionAlreadyExisted: subscription.alreadySubscribed || false,
-        subscriptionError: subscription.ok ? null : subscription.body || null,
+        subscriptionError: null,
         channelAction
       }
     };
@@ -187,7 +228,7 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     phoneNumberId: persisted.phoneNumberId,
     wabaId: persisted.wabaId,
     status: persisted.status,
-    subscriptionState: subscription.ok ? 'ok' : 'pending',
+    subscriptionState: 'ok',
     channelAction
   });
 
@@ -195,14 +236,14 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     ok: true,
     tenantId: safeTenantId,
     clinicId: context.clinic.id,
-    status: subscription.ok ? 'connected' : 'pending_meta',
+    status: 'connected',
     channelAction,
     channel: persisted,
     validation: {
       wabaName: matchedPhone.wabaName || null,
       displayPhoneNumber: matchedPhone.displayPhoneNumber || null,
       verifiedName: matchedPhone.verifiedName || null,
-      subscriptionOk: subscription.ok
+      subscriptionOk: true
     }
   };
 }
