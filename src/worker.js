@@ -237,8 +237,14 @@ function isQaAgendaBypassScope({ contact, channel, contactId, channelId }) {
   );
 }
 
-function shouldBypassCommerceForQa({ intent, contact, channel, contactId, channelId }) {
-  return intent === 'appointment' && isQaAgendaBypassScope({ contact, channel, contactId, channelId });
+function shouldBypassCommerceForQa({ contact, channel, contactId, channelId, inboundText }) {
+  const text = String(inboundText || '').toLowerCase();
+  const looksLikeAppointment =
+    text.includes('turno') ||
+    text.includes('horario') ||
+    text.includes('agenda');
+
+  return looksLikeAppointment && isQaAgendaBypassScope({ contact, channel, contactId, channelId });
 }
 
 function detectIntent(rawText) {
@@ -3010,11 +3016,11 @@ async function processConversationReplyJob(job) {
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
   const qaAgendaBypassActive = shouldBypassCommerceForQa({
-    intent,
     contact,
     channel,
     contactId,
-    channelId
+    channelId,
+    inboundText
   });
   const hasNewerInbound = await conversationRepo.hasNewerInboundMessage(conversation.id, inboundMessage.id);
   const recentMessages = await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5);
@@ -3122,6 +3128,7 @@ async function processConversationReplyJob(job) {
       inboundText: normalizedInboundText,
       bypass: {
         intent,
+        reason: 'keyword_match',
         contactScoped: QA_AGENDA_BYPASS_CONTACT_IDS.has(String(contact.id || '').trim()),
         waScoped: QA_AGENDA_BYPASS_CONTACT_WA_IDS.has(normalizeDigitsOnly(contact.waId || contact.phone || '')),
         channelScoped: QA_AGENDA_BYPASS_CHANNEL_IDS.has(String(channel.id || '').trim())
