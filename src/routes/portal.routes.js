@@ -40,10 +40,14 @@ const {
   getPortalPayments,
   getPortalPaymentDestinations,
   getPortalCashOverview,
+  getPortalAgenda,
+  getPortalAgendaAvailabilityController,
   getPortalPayment,
   getPortalPaymentAllocations,
   postPortalCashSession,
   postPortalCashSessionClose,
+  postPortalAgenda,
+  postPortalAgendaReservation,
   postPortalPayment,
   postPortalPaymentDestination,
   patchPortalPaymentDestinationController,
@@ -84,7 +88,9 @@ const {
   getPortalWhatsAppTemplateBlueprints,
   getPortalWhatsAppTemplates,
   postPortalWhatsAppTemplateFromBlueprint,
-  postPortalWhatsAppTemplatesSync
+  postPortalWhatsAppTemplatesSync,
+  patchPortalAgenda,
+  deletePortalAgenda
 } = require('../controllers/portal.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 
@@ -135,6 +141,12 @@ router.patch('/tenants/:tenantId/payment-destinations/:destinationId', patchPort
 router.get('/tenants/:tenantId/cash-sessions', getPortalCashOverview);
 router.post('/tenants/:tenantId/cash-sessions', postPortalCashSession);
 router.post('/tenants/:tenantId/cash-sessions/:sessionId/close', postPortalCashSessionClose);
+router.get('/tenants/:tenantId/agenda', requirePortalInternalAuth, getPortalAgenda);
+router.get('/tenants/:tenantId/agenda/availability', requirePortalInternalAuth, getPortalAgendaAvailabilityController);
+router.post('/tenants/:tenantId/agenda', requirePortalInternalAuth, postPortalAgenda);
+router.post('/tenants/:tenantId/agenda/reservations', requirePortalInternalAuth, postPortalAgendaReservation);
+router.patch('/tenants/:tenantId/agenda/:itemId', requirePortalInternalAuth, patchPortalAgenda);
+router.delete('/tenants/:tenantId/agenda/:itemId', requirePortalInternalAuth, deletePortalAgenda);
 router.get('/tenants/:tenantId/payments/:paymentId', getPortalPayment);
 router.get('/tenants/:tenantId/payments/:paymentId/allocations', getPortalPaymentAllocations);
 router.post('/tenants/:tenantId/payments/:paymentId/allocations', postPortalPaymentAllocation);

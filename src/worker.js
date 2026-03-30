@@ -47,6 +47,10 @@ const {
 } = require('./repositories/conversation-events.repository');
 const { claimJobs, markJobDone, requeueOrFailJob } = require('./repositories/job.repository');
 const { resolveAutomationReplyForInbound } = require('./services/automation-runtime.service');
+const {
+  suggestClinicAgendaSlots,
+  createClinicAgendaBotReservation
+} = require('./services/portal-agenda.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -62,6 +66,9 @@ const AI_ENABLED_CLINIC_IDS = new Set((env.aiEnabledClinicIds || []).map((s) => 
 const AI_DISABLED_CLINIC_IDS = new Set((env.aiDisabledClinicIds || []).map((s) => String(s || '').trim()).filter(Boolean));
 const AI_ENABLED_CHANNEL_IDS = new Set((env.aiEnabledChannelIds || []).map((s) => String(s || '').trim()).filter(Boolean));
 const AI_DISABLED_CHANNEL_IDS = new Set((env.aiDisabledChannelIds || []).map((s) => String(s || '').trim()).filter(Boolean));
+const QA_AGENDA_BYPASS_CONTACT_IDS = new Set((env.qaAgendaBypassContactIds || []).map((s) => String(s || '').trim()).filter(Boolean));
+const QA_AGENDA_BYPASS_CONTACT_WA_IDS = new Set((env.qaAgendaBypassContactWaIds || []).map((s) => normalizeDigitsOnly(s)).filter(Boolean));
+const QA_AGENDA_BYPASS_CHANNEL_IDS = new Set((env.qaAgendaBypassChannelIds || []).map((s) => String(s || '').trim()).filter(Boolean));
 
 let stopped = false;
 let polling = false;
@@ -216,6 +223,22 @@ function isAiAllowedForScope({ clinicId, channelId }) {
   }
 
   return { ok: true, reason: null };
+}
+
+function isQaAgendaBypassScope({ contact, channel, contactId, channelId }) {
+  const safeContactId = String((contact && contact.id) || contactId || '').trim();
+  const safeChannelId = String((channel && channel.id) || channelId || '').trim();
+  const safeWaId = normalizeDigitsOnly((contact && (contact.waId || contact.phone)) || '');
+
+  return Boolean(
+    (safeContactId && QA_AGENDA_BYPASS_CONTACT_IDS.has(safeContactId)) ||
+      (safeWaId && QA_AGENDA_BYPASS_CONTACT_WA_IDS.has(safeWaId)) ||
+      (safeChannelId && QA_AGENDA_BYPASS_CHANNEL_IDS.has(safeChannelId))
+  );
+}
+
+function shouldBypassCommerceForQa({ intent, contact, channel, contactId, channelId }) {
+  return intent === 'appointment' && isQaAgendaBypassScope({ contact, channel, contactId, channelId });
 }
 
 function detectIntent(rawText) {
@@ -2047,6 +2070,30 @@ function buildConfirmedContextPatch(startAt) {
   };
 }
 
+function buildEmptyAppointmentSuggestionPatch() {
+  return {
+    appointmentSuggestions: null,
+    appointmentSuggestionsForDate: null,
+    appointmentSuggestionsTimeWindow: null,
+    appointmentSuggestionsCreatedAt: null
+  };
+}
+
+function buildAppointmentSuggestionContextPatch({ appointmentCandidate, suggestions, dateISO, timeWindow }) {
+  const basePatch = {
+    appointmentSuggestions: suggestions,
+    appointmentSuggestionsForDate: dateISO || null,
+    appointmentSuggestionsTimeWindow: timeWindow || null,
+    appointmentSuggestionsCreatedAt: new Date().toISOString()
+  };
+
+  if (appointmentCandidate !== undefined) {
+    basePatch.appointmentCandidate = appointmentCandidate;
+  }
+
+  return basePatch;
+}
+
 function isCancellation(rawText) {
   const text = normalizeText(rawText);
   return /(cancelar|cancelo|cancelaci[oó]n|anular turno)/i.test(text);
@@ -2073,6 +2120,178 @@ function detectTurnManagementIntent(rawText) {
 
 function formatSlotForHuman(utcIso, timezone) {
   return DateTime.fromISO(String(utcIso), { zone: 'utc' }).setZone(timezone).toFormat('ccc dd/LL HH:mm');
+}
+
+async function suggestAppointmentOptions({ clinic, timing, count = 3 }) {
+  if (!clinic || !timing) {
+    return { source: 'none', timing: timing || {}, suggestions: [] };
+  }
+
+  const tryAgenda =
+    timing.startAt || (timing.dateISO && timing.timeWindow)
+      ? await suggestClinicAgendaSlots(
+          {
+            clinicId: clinic.id,
+            startAt: timing.startAt || null,
+            dateISO: timing.dateISO || null,
+            timeWindow: timing.timeWindow || null,
+            count,
+            stepMinutes: 30,
+            durationMinutes: 30,
+            maxLookaheadDays: 7
+          },
+          { clinic }
+        )
+      : null;
+
+  if (tryAgenda && tryAgenda.ok && tryAgenda.strategy === 'agenda') {
+    return {
+      source: 'agenda',
+      timing: {
+        ...timing,
+        dateISO: timing.dateISO || (tryAgenda.suggestions[0] && tryAgenda.suggestions[0].dateISO) || null
+      },
+      suggestions: tryAgenda.suggestions
+    };
+  }
+
+  if (tryAgenda && !tryAgenda.ok) {
+    logWarn('agenda_bot_suggestions_failed', {
+      clinicId: clinic.id,
+      reason: tryAgenda.reason,
+      detail: tryAgenda.detail || null,
+      dateISO: timing.dateISO || null,
+      startAt: timing.startAt || null,
+      timeWindow: timing.timeWindow || null
+    });
+  }
+
+  if (timing.startAt) {
+    const suggestions = await conversationRepo.suggestNextAvailableSlots({
+      clinicId: clinic.id,
+      startAt: timing.startAt,
+      count,
+      stepMinutes: 30,
+      maxLookaheadDays: 7
+    });
+    return { source: 'legacy', timing, suggestions };
+  }
+
+  if (timing.dateISO && timing.timeWindow) {
+    const suggestions = await conversationRepo.suggestSlotsForTimeWindow({
+      clinicId: clinic.id,
+      dateISO: timing.dateISO,
+      timeWindow: timing.timeWindow,
+      count,
+      stepMinutes: 30
+    });
+    return { source: 'legacy', timing, suggestions };
+  }
+
+  return { source: 'none', timing, suggestions: [] };
+}
+
+async function createBotReservationFromSuggestion({ clinic, conversation, contact, channel, safeContext, suggestion }) {
+  if (!suggestion || !suggestion.startAt) {
+    return { ok: false, source: 'none', reason: 'missing_startAt' };
+  }
+
+  if (suggestion.source === 'agenda') {
+    const agendaResult = await createClinicAgendaBotReservation(
+      {
+        clinicId: clinic.id,
+        contactId: contact.id,
+        patientName: (safeContext && safeContext.name) || contact.name || null,
+        title: (safeContext && safeContext.name) || contact.name || 'Turno reservado',
+        description: suggestion.displayText || null,
+        requestedText: suggestion.displayText || null,
+        startAt: suggestion.startAt,
+        endAt: suggestion.endAt || null,
+        status: 'pending'
+      },
+      { clinic }
+    );
+
+    if (agendaResult.ok) {
+      logInfo('agenda_bot_reservation_created', {
+        clinicId: clinic.id,
+        conversationId: conversation.id || null,
+        contactId: contact.id || null,
+        startAt: agendaResult.reservation.startAt || null,
+        itemId: agendaResult.reservation.id || null
+      });
+      return {
+        ok: true,
+        source: 'agenda',
+        reservation: agendaResult.reservation,
+        startAt: agendaResult.reservation.startAt
+      };
+    }
+
+    if (agendaResult.reason !== 'agenda_bot_availability_not_configured') {
+      logWarn('agenda_bot_reservation_rejected', {
+        clinicId: clinic.id,
+        conversationId: conversation.id || null,
+        contactId: contact.id || null,
+        reason: agendaResult.reason,
+        startAt: suggestion.startAt,
+        endAt: suggestion.endAt || null
+      });
+      return {
+        ok: false,
+        source: 'agenda',
+        reason: agendaResult.reason,
+        detail: agendaResult.detail || null
+      };
+    }
+  }
+
+  const available = await conversationRepo.isSlotAvailable({
+    clinicId: clinic.id,
+    startAt: suggestion.startAt
+  });
+  if (!available) {
+    return { ok: false, source: 'legacy', reason: 'agenda_time_conflict' };
+  }
+
+  const created = await conversationRepo.createAppointmentFromSuggestion({
+    clinicId: clinic.id,
+    channelId: conversation.channelId || channel.id,
+    conversationId: conversation.id,
+    contactId: contact.id,
+    waId: contact.waId || null,
+    patientName: (safeContext && safeContext.name) || contact.name || null,
+    startAt: suggestion.startAt,
+    endAt: suggestion.endAt || null,
+    requestedText: suggestion.displayText || null,
+    source: 'bot'
+  });
+
+  if (created && created.created) {
+    logInfo('legacy_bot_reservation_created', {
+      clinicId: clinic.id,
+      conversationId: conversation.id || null,
+      contactId: contact.id || null,
+      startAt: suggestion.startAt,
+      appointmentId: created.row && created.row.id ? created.row.id : null
+    });
+    return {
+      ok: true,
+      source: 'legacy',
+      reservation: created.row || null,
+      startAt: suggestion.startAt
+    };
+  }
+
+  logWarn('legacy_bot_reservation_rejected', {
+    clinicId: clinic.id,
+    conversationId: conversation.id || null,
+    contactId: contact.id || null,
+    reason: 'agenda_time_conflict',
+    startAt: suggestion.startAt,
+    endAt: suggestion.endAt || null
+  });
+  return { ok: false, source: 'legacy', reason: 'agenda_time_conflict' };
 }
 
 function normalizeChannelSendContext(channel, meta = {}) {
@@ -2272,7 +2491,7 @@ async function openHandoffFlow({ clinicId, conversationId, contact, lead, reason
   });
 }
 
-async function tryAppointmentSelection({ clinicId, conversationId, contact, lead, rawText, channel, timezone, requestId, messageId }) {
+async function tryAppointmentSelection({ clinicId, conversationId, contact, lead, rawText, channel, clinic, timezone, requestId, messageId }) {
   const selection = extractSelection(rawText);
   if (!selection) {
     return false;
@@ -2284,8 +2503,89 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
   }
 
   const chosen = offeredEvent.data.options.find((item) => Number(item.index) === selection);
-  if (!chosen || !chosen.slotId) {
+  if (!chosen || (!chosen.slotId && !chosen.startAt)) {
     return false;
+  }
+
+  if (chosen.source === 'agenda' && chosen.startAt) {
+    const booked = await createBotReservationFromSuggestion({
+      clinic,
+      conversation: {
+        id: conversationId,
+        channelId: channel.id,
+        clinicId
+      },
+      contact,
+      channel,
+      safeContext: { name: contact.name || null },
+      suggestion: chosen
+    });
+
+    if (!booked.ok) {
+      const alternatives = await suggestAppointmentOptions({
+        clinic,
+        timing: {
+          startAt: chosen.startAt,
+          dateISO: chosen.dateISO || null,
+          timeWindow: null
+        },
+        count: 5
+      });
+
+      const reply = alternatives.suggestions.length
+        ? [
+            'Ese turno ya no esta disponible. Te propongo estas opciones:',
+            ...alternatives.suggestions.slice(0, 5).map((item, index) => `${index + 1}) ${item.displayText}`),
+            'Responde con 1, 2, 3, 4 o 5.'
+          ].join('\n')
+        : 'Ese turno ya no esta disponible. Decime otro dia u horario y te propongo nuevas opciones.';
+
+      if (alternatives.suggestions.length) {
+        await addEvent({
+          clinicId,
+          conversationId,
+          type: 'SLOT_OFFERED',
+          data: {
+            source: alternatives.source,
+            options: alternatives.suggestions.slice(0, 5).map((item, index) => ({
+              index: index + 1,
+              source: item.source || alternatives.source,
+              startAt: item.startAt,
+              endAt: item.endAt || null,
+              dateISO: item.dateISO || null,
+              label: item.displayText,
+              displayText: item.displayText
+            }))
+          }
+        });
+      }
+
+      await sendAndPersistReply({
+        clinicId,
+        channel,
+        conversationId,
+        contact,
+        text: reply,
+        requestId,
+        correlationMessageId: messageId
+      });
+      return true;
+    }
+
+    const humanTime = formatSlotForHuman(booked.startAt, timezone);
+    const confirmation = `Listo, tu turno quedo confirmado para ${humanTime}. Queres agregar un motivo?`;
+
+    await sendAndPersistReply({
+      clinicId,
+      channel,
+      conversationId,
+      contact,
+      text: confirmation,
+      requestId,
+      correlationMessageId: messageId
+    });
+
+    return true;
   }
 
   const booked = await withTransaction(async (client) => {
@@ -2369,12 +2669,47 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
   const rules = await getOrCreateCalendarRules(clinicId);
   const nowUtc = DateTime.utc();
   const fromUtc = nowUtc.plus({ minutes: Number(rules.leadTimeMinutes || 60) });
-  const toUtc = nowUtc.plus({ days: DAYS_AHEAD });
+  const timezone = rules.timezone || clinic.timezone || 'America/Argentina/Buenos_Aires';
+  const agendaSuggestions = await suggestClinicAgendaSlots(
+    {
+      clinicId,
+      startAt: fromUtc.toISO(),
+      count: 5,
+      stepMinutes: 30,
+      durationMinutes: 30,
+      maxLookaheadDays: DAYS_AHEAD
+    },
+    { clinic }
+  );
 
-  await ensureSlotsForDateRange(clinicId, fromUtc.toISO(), toUtc.toISO());
-  const slots = await listAvailableSlots(clinicId, fromUtc.toISO(), toUtc.toISO(), 5);
+  let options = [];
+  const agendaConfigured = agendaSuggestions.ok && agendaSuggestions.strategy === 'agenda';
+  if (agendaConfigured) {
+    options = agendaSuggestions.suggestions.slice(0, 5).map((slot, idx) => ({
+      index: idx + 1,
+      source: 'agenda',
+      startAt: slot.startAt,
+      endAt: slot.endAt || null,
+      dateISO: slot.dateISO || null,
+      label: slot.displayText,
+      displayText: slot.displayText
+    }));
+  }
 
-  if (!slots.length) {
+  if (!options.length && !agendaConfigured) {
+    const toUtc = nowUtc.plus({ days: DAYS_AHEAD });
+    await ensureSlotsForDateRange(clinicId, fromUtc.toISO(), toUtc.toISO());
+    const slots = await listAvailableSlots(clinicId, fromUtc.toISO(), toUtc.toISO(), 5);
+    options = slots.slice(0, 5).map((slot, idx) => ({
+      index: idx + 1,
+      source: 'legacy',
+      slotId: slot.id,
+      startsAt: slot.startsAt,
+      label: formatSlotForHuman(slot.startsAt, timezone)
+    }));
+  }
+
+  if (!options.length) {
     await openHandoffFlow({
       clinicId,
       conversationId,
@@ -2388,14 +2723,6 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
     });
     return;
   }
-
-  const timezone = rules.timezone || clinic.timezone || 'America/Argentina/Buenos_Aires';
-  const options = slots.slice(0, 5).map((slot, idx) => ({
-    index: idx + 1,
-    slotId: slot.id,
-    startsAt: slot.startsAt,
-    label: formatSlotForHuman(slot.startsAt, timezone)
-  }));
 
   const intro =
     (clinic.settings && clinic.settings.appointmentIntroMessage) ||
@@ -2416,7 +2743,10 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
     clinicId,
     conversationId,
     type: 'SLOT_OFFERED',
-    data: { options }
+    data: {
+      source: options[0] && options[0].source ? options[0].source : 'legacy',
+      options
+    }
   });
 
   await updateLeadStatus(lead.id, 'offering', null);
@@ -2540,6 +2870,7 @@ async function processInboundJob(job) {
     lead,
     rawText: inboundText,
     channel,
+    clinic,
     timezone: clinic.timezone || 'America/Argentina/Buenos_Aires',
     requestId,
     messageId
@@ -2674,9 +3005,17 @@ async function processConversationReplyJob(job) {
   const currentState = String(conversation.state || '').toUpperCase();
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const normalizedInboundText = normalizeCommandText(inboundText);
+  const intent = detectIntent(inboundText);
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
+  const qaAgendaBypassActive = shouldBypassCommerceForQa({
+    intent,
+    contact,
+    channel,
+    contactId,
+    channelId
+  });
   const hasNewerInbound = await conversationRepo.hasNewerInboundMessage(conversation.id, inboundMessage.id);
   const recentMessages = await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5);
 
@@ -2718,12 +3057,22 @@ async function processConversationReplyJob(job) {
   }
 
   const workerOwnsCommerceFlow =
-    inboundLooksLikeCommerce ||
-    inboundLooksLikeCommerceCancel ||
-    commerceContextActive ||
-    currentState === 'WAITING_PRODUCT_SELECTION' ||
-    currentState === 'WAITING_QUANTITY';
-  const automationRuntime = workerOwnsCommerceFlow
+    !qaAgendaBypassActive &&
+    (
+      inboundLooksLikeCommerce ||
+      inboundLooksLikeCommerceCancel ||
+      commerceContextActive ||
+      currentState === 'WAITING_PRODUCT_SELECTION' ||
+      currentState === 'WAITING_QUANTITY'
+    );
+  const automationRuntime = qaAgendaBypassActive
+    ? {
+      replyText: null,
+      contextPatch: null,
+      matched: [],
+      source: 'qa.agenda_bypass'
+    }
+    : workerOwnsCommerceFlow
     ? {
       replyText: null,
       contextPatch: null,
@@ -2760,6 +3109,26 @@ async function processConversationReplyJob(job) {
     });
   }
 
+  if (qaAgendaBypassActive) {
+    logInfo('qa_agenda_bypass_activated', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      contactId: contact.id || null,
+      channelId: channel.id || null,
+      waId: contact.waId || null,
+      currentState,
+      inboundText: normalizedInboundText,
+      bypass: {
+        intent,
+        contactScoped: QA_AGENDA_BYPASS_CONTACT_IDS.has(String(contact.id || '').trim()),
+        waScoped: QA_AGENDA_BYPASS_CONTACT_WA_IDS.has(normalizeDigitsOnly(contact.waId || contact.phone || '')),
+        channelScoped: QA_AGENDA_BYPASS_CHANNEL_IDS.has(String(channel.id || '').trim())
+      }
+    });
+  }
+
   if (automationRuntime.matched.length) {
     logInfo('automation_match_found', {
       requestId,
@@ -2773,29 +3142,12 @@ async function processConversationReplyJob(job) {
 
   const buildSuggestionsFromContext = async (count = 3) => {
     const timing = conversationRepo.resolveCandidateTiming(safeContext.appointmentCandidate || null);
-    if (timing.startAt) {
-      const suggestions = await conversationRepo.suggestNextAvailableSlots({
-        clinicId: conversation.clinicId,
-        startAt: timing.startAt,
-        count,
-        stepMinutes: 30,
-        maxLookaheadDays: 7
-      });
-      return { suggestions, timing };
-    }
-
-    if (timing.dateISO && timing.timeWindow) {
-      const suggestions = await conversationRepo.suggestSlotsForTimeWindow({
-        clinicId: conversation.clinicId,
-        dateISO: timing.dateISO,
-        timeWindow: timing.timeWindow,
-        count,
-        stepMinutes: 30
-      });
-      return { suggestions, timing };
-    }
-
-    return { suggestions: [], timing };
+    const suggestionResult = await suggestAppointmentOptions({
+      clinic,
+      timing,
+      count
+    });
+    return { suggestions: suggestionResult.suggestions, timing: suggestionResult.timing, source: suggestionResult.source };
   };
 
   let decision = null;
@@ -2808,7 +3160,7 @@ async function processConversationReplyJob(job) {
     };
     decisionSource = 'automation';
   }
-  if (!decision) {
+  if (!decision && !qaAgendaBypassActive) {
     decision = await resolveCommerceDecision({
       conversation,
       clinic,
@@ -2855,12 +3207,7 @@ async function processConversationReplyJob(job) {
       decision = {
         replyText: 'No encuentro un turno confirmado. Decime dia y horario para sacar uno.',
         newState: 'ASKED_APPOINTMENT_DATETIME',
-        contextPatch: {
-          appointmentSuggestions: null,
-          appointmentSuggestionsForDate: null,
-          appointmentSuggestionsTimeWindow: null,
-          appointmentSuggestionsCreatedAt: null
-        }
+        contextPatch: buildEmptyAppointmentSuggestionPatch()
       };
     } else if (
       String(safeContext.appointmentStatus || '').toLowerCase() === 'cancelled' &&
@@ -2873,10 +3220,7 @@ async function processConversationReplyJob(job) {
           contextPatch: {
             appointmentStatus: 'cancelled',
             appointmentLastCancelledStartAt: latestAppointment.startAt || null,
-            appointmentSuggestions: null,
-            appointmentSuggestionsForDate: null,
-            appointmentSuggestionsTimeWindow: null,
-            appointmentSuggestionsCreatedAt: null
+            ...buildEmptyAppointmentSuggestionPatch()
           }
         };
       } else {
@@ -2887,10 +3231,7 @@ async function processConversationReplyJob(job) {
             appointmentStatus: 'cancelled',
             appointmentLastCancelledStartAt: latestAppointment.startAt || null,
             appointmentCandidate: null,
-            appointmentSuggestions: null,
-            appointmentSuggestionsForDate: null,
-            appointmentSuggestionsTimeWindow: null,
-            appointmentSuggestionsCreatedAt: null
+            ...buildEmptyAppointmentSuggestionPatch()
           }
         };
       }
@@ -2908,10 +3249,7 @@ async function processConversationReplyJob(job) {
             appointmentStatus: 'cancelled',
             appointmentCancelledAt: new Date().toISOString(),
             appointmentLastCancelledStartAt: cancelledStartAt,
-            appointmentSuggestions: null,
-            appointmentSuggestionsForDate: null,
-            appointmentSuggestionsTimeWindow: null,
-            appointmentSuggestionsCreatedAt: null
+            ...buildEmptyAppointmentSuggestionPatch()
           }
         };
       } else {
@@ -2923,10 +3261,7 @@ async function processConversationReplyJob(job) {
             appointmentCancelledAt: new Date().toISOString(),
             appointmentLastCancelledStartAt: cancelledStartAt,
             appointmentCandidate: null,
-            appointmentSuggestions: null,
-            appointmentSuggestionsForDate: null,
-            appointmentSuggestionsTimeWindow: null,
-            appointmentSuggestionsCreatedAt: null
+            ...buildEmptyAppointmentSuggestionPatch()
           }
         };
       }
@@ -2960,28 +3295,28 @@ async function processConversationReplyJob(job) {
       };
       const timing = conversationRepo.resolveCandidateTiming(patchedCandidate);
       if (timing.dateISO) {
-        const suggestions = await conversationRepo.suggestSlotsForTimeWindow({
-          clinicId: conversation.clinicId,
-          dateISO: timing.dateISO,
-          timeWindow: selectedWindow,
-          count: 3,
-          stepMinutes: 30
+        const suggestionResult = await suggestAppointmentOptions({
+          clinic,
+          timing: {
+            ...timing,
+            timeWindow: selectedWindow
+          },
+          count: 3
         });
-        if (suggestions.length > 0) {
+        if (suggestionResult.suggestions.length > 0) {
           decision = {
             replyText: buildSuggestionReply({
-              dateISO: timing.dateISO,
+              dateISO: suggestionResult.timing.dateISO || timing.dateISO,
               timeWindow: selectedWindow,
-              suggestions
+              suggestions: suggestionResult.suggestions
             }),
             newState: 'SELECT_APPOINTMENT_SLOT',
-            contextPatch: {
+            contextPatch: buildAppointmentSuggestionContextPatch({
               appointmentCandidate: patchedCandidate,
-              appointmentSuggestions: suggestions,
-              appointmentSuggestionsForDate: timing.dateISO,
-              appointmentSuggestionsTimeWindow: selectedWindow,
-              appointmentSuggestionsCreatedAt: new Date().toISOString()
-            }
+              suggestions: suggestionResult.suggestions,
+              dateISO: suggestionResult.timing.dateISO || timing.dateISO,
+              timeWindow: selectedWindow
+            })
           };
         }
       }
@@ -2993,12 +3328,7 @@ async function processConversationReplyJob(job) {
       decision = {
         replyText: 'Listo. Volvemos al menu:\n1) Sacar turno\n2) Precios\n3) Direccion',
         newState: 'READY',
-        contextPatch: {
-          appointmentSuggestions: null,
-          appointmentSuggestionsForDate: null,
-          appointmentSuggestionsTimeWindow: null,
-          appointmentSuggestionsCreatedAt: null
-        }
+        contextPatch: buildEmptyAppointmentSuggestionPatch()
       };
     } else {
       const selection = extractSelection(inboundText);
@@ -3017,12 +3347,7 @@ async function processConversationReplyJob(job) {
           decision = {
             replyText: 'No pude encontrar horarios en este momento. Decime dia y hora nuevamente (ej: lunes 10:30).',
             newState: 'ASKED_APPOINTMENT_DATETIME',
-            contextPatch: {
-              appointmentSuggestions: null,
-              appointmentSuggestionsForDate: null,
-              appointmentSuggestionsTimeWindow: null,
-              appointmentSuggestionsCreatedAt: null
-            }
+            contextPatch: buildEmptyAppointmentSuggestionPatch()
           };
         } else {
           decision = {
@@ -3032,12 +3357,11 @@ async function processConversationReplyJob(job) {
               suggestions: regen.suggestions
             }),
             newState: 'SELECT_APPOINTMENT_SLOT',
-            contextPatch: {
-              appointmentSuggestions: regen.suggestions,
-              appointmentSuggestionsForDate: regen.timing.dateISO || null,
-              appointmentSuggestionsTimeWindow: regen.timing.timeWindow || null,
-              appointmentSuggestionsCreatedAt: new Date().toISOString()
-            }
+            contextPatch: buildAppointmentSuggestionContextPatch({
+              suggestions: regen.suggestions,
+              dateISO: regen.timing.dateISO || null,
+              timeWindow: regen.timing.timeWindow || null
+            })
           };
         }
       } else {
@@ -3055,94 +3379,61 @@ async function processConversationReplyJob(job) {
             contextPatch: buildConfirmedContextPatch(chosen.startAt)
           };
         } else {
-          const available = await conversationRepo.isSlotAvailable({
-            clinicId: conversation.clinicId,
-            startAt: chosen.startAt
+          const created = await createBotReservationFromSuggestion({
+            clinic,
+            conversation,
+            contact,
+            channel,
+            safeContext,
+            suggestion: chosen
           });
 
-          if (!available) {
-            const alternatives = await conversationRepo.suggestNextAvailableSlots({
-              clinicId: conversation.clinicId,
-              startAt: chosen.startAt,
-              count: 3,
-              stepMinutes: 30,
-              maxLookaheadDays: 7
+          if (!created.ok) {
+            const alternativeResult = await suggestAppointmentOptions({
+              clinic,
+              timing: {
+                startAt: chosen.startAt,
+                dateISO: safeContext.appointmentSuggestionsForDate || null,
+                timeWindow: safeContext.appointmentSuggestionsTimeWindow || null
+              },
+              count: 3
             });
+            const alternatives = alternativeResult.suggestions;
             decision = {
               replyText: alternatives.length
                 ? `Ese horario se ocupo recien.\n${buildSuggestionReply({
-                    dateISO: safeContext.appointmentSuggestionsForDate || null,
-                    timeWindow: safeContext.appointmentSuggestionsTimeWindow || 'afternoon',
+                    dateISO:
+                      alternativeResult.timing.dateISO ||
+                      safeContext.appointmentSuggestionsForDate ||
+                      null,
+                    timeWindow:
+                      alternativeResult.timing.timeWindow ||
+                      safeContext.appointmentSuggestionsTimeWindow ||
+                      'afternoon',
                     suggestions: alternatives
                   })}`
                 : 'Ese horario se ocupo recien. Decime dia y hora nuevamente (ej: lunes 10:30).',
               newState: alternatives.length ? 'SELECT_APPOINTMENT_SLOT' : 'ASKED_APPOINTMENT_DATETIME',
               contextPatch: alternatives.length
-                ? {
-                    appointmentSuggestions: alternatives,
-                    appointmentSuggestionsForDate: safeContext.appointmentSuggestionsForDate || null,
-                    appointmentSuggestionsTimeWindow: safeContext.appointmentSuggestionsTimeWindow || null,
-                    appointmentSuggestionsCreatedAt: new Date().toISOString()
-                  }
-                : {
-                    appointmentSuggestions: null,
-                    appointmentSuggestionsForDate: null,
-                    appointmentSuggestionsTimeWindow: null,
-                    appointmentSuggestionsCreatedAt: null
-                  }
+                ? buildAppointmentSuggestionContextPatch({
+                    suggestions: alternatives,
+                    dateISO:
+                      alternativeResult.timing.dateISO ||
+                      safeContext.appointmentSuggestionsForDate ||
+                      null,
+                    timeWindow:
+                      alternativeResult.timing.timeWindow ||
+                      safeContext.appointmentSuggestionsTimeWindow ||
+                      null
+                  })
+                : buildEmptyAppointmentSuggestionPatch()
             };
           } else {
-            const created = await conversationRepo.createAppointmentFromSuggestion({
-              clinicId: conversation.clinicId,
-              channelId: conversation.channelId || channel.id,
-              conversationId: conversation.id,
-              contactId: contact.id,
-              waId: contact.waId || null,
-              patientName: (safeContext && safeContext.name) || contact.name || null,
-              startAt: chosen.startAt,
-              endAt: chosen.endAt || null,
-              requestedText: chosen.displayText || null,
-              source: 'bot'
-            });
-
-            if (created && created.created) {
-              decision = {
-                replyText: `Listo. Te reserve el turno para ${formatSlotForHuman(chosen.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}. Si necesitas cambiarlo, responde 'menu'.`,
-                newState: 'READY',
-                contextPatch: buildConfirmedContextPatch(chosen.startAt)
-              };
-            } else {
-              const alternatives = await conversationRepo.suggestNextAvailableSlots({
-                clinicId: conversation.clinicId,
-                startAt: chosen.startAt,
-                count: 3,
-                stepMinutes: 30,
-                maxLookaheadDays: 7
-              });
-              decision = {
-                replyText: alternatives.length
-                  ? `Ese horario se ocupo recien.\n${buildSuggestionReply({
-                      dateISO: safeContext.appointmentSuggestionsForDate || null,
-                      timeWindow: safeContext.appointmentSuggestionsTimeWindow || 'afternoon',
-                      suggestions: alternatives
-                    })}`
-                  : 'Ese horario se ocupo recien. Decime dia y hora nuevamente (ej: lunes 10:30).',
-                newState: alternatives.length ? 'SELECT_APPOINTMENT_SLOT' : 'ASKED_APPOINTMENT_DATETIME',
-                contextPatch: alternatives.length
-                  ? {
-                      appointmentSuggestions: alternatives,
-                      appointmentSuggestionsForDate: safeContext.appointmentSuggestionsForDate || null,
-                      appointmentSuggestionsTimeWindow: safeContext.appointmentSuggestionsTimeWindow || null,
-                      appointmentSuggestionsCreatedAt: new Date().toISOString()
-                    }
-                  : {
-                      appointmentSuggestions: null,
-                      appointmentSuggestionsForDate: null,
-                      appointmentSuggestionsTimeWindow: null,
-                      appointmentSuggestionsCreatedAt: null
-                    }
-              };
-            }
+            decision = {
+              replyText: `Listo. Te reserve el turno para ${formatSlotForHuman(chosen.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}. Si necesitas cambiarlo, responde 'menu'.`,
+              newState: 'READY',
+              contextPatch: buildConfirmedContextPatch(chosen.startAt)
+            };
           }
         }
       }
@@ -3162,87 +3453,91 @@ async function processConversationReplyJob(job) {
     }
 
     if (!decision && timing.startAt) {
-      const available = await conversationRepo.isSlotAvailable({
-        clinicId: conversation.clinicId,
-        startAt: timing.startAt
-      });
-
-      if (available) {
-        const created = await conversationRepo.createAppointmentFromSuggestion({
-          clinicId: conversation.clinicId,
-          channelId: conversation.channelId || channel.id,
-          conversationId: conversation.id,
-          contactId: contact.id,
-          waId: contact.waId || null,
-          patientName: (safeContext && safeContext.name) || contact.name || null,
+      const created = await createBotReservationFromSuggestion({
+        clinic,
+        conversation,
+        contact,
+        channel,
+        safeContext,
+        suggestion: {
+          source: 'agenda',
           startAt: timing.startAt,
           endAt: timing.endAt || null,
-          requestedText: timing.requestedText || null,
-          source: 'bot'
-        });
-
-        if (created && created.created) {
-          decision = {
-            replyText: `Listo. Te reserve el turno para ${formatSlotForHuman(timing.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}. Si necesitas cambiarlo, responde 'menu'.`,
-            newState: 'READY',
-            contextPatch: buildConfirmedContextPatch(timing.startAt)
-          };
+          dateISO: timing.dateISO || null,
+          displayText: timing.requestedText || formatSlotForHuman(timing.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')
         }
+      });
+
+      if (created.ok) {
+        decision = {
+          replyText: `Listo. Te reserve el turno para ${formatSlotForHuman(timing.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}. Si necesitas cambiarlo, responde 'menu'.`,
+          newState: 'READY',
+          contextPatch: buildConfirmedContextPatch(timing.startAt)
+        };
       }
 
       if (!decision) {
-        const alternatives = await conversationRepo.suggestNextAvailableSlots({
-          clinicId: conversation.clinicId,
-          startAt: timing.startAt,
-          count: 3,
-          stepMinutes: 30,
-          maxLookaheadDays: 7
+        const alternativeResult = await suggestAppointmentOptions({
+          clinic,
+          timing,
+          count: 3
         });
+        const alternatives = alternativeResult.suggestions;
         if (alternatives.length) {
           decision = {
             replyText: `Ese horario se ocupo recien.\n${buildSuggestionReply({
-              dateISO: timing.dateISO || safeContext.appointmentSuggestionsForDate || null,
-              timeWindow: timing.timeWindow || safeContext.appointmentSuggestionsTimeWindow || 'afternoon',
+              dateISO:
+                alternativeResult.timing.dateISO ||
+                timing.dateISO ||
+                safeContext.appointmentSuggestionsForDate ||
+                null,
+              timeWindow:
+                alternativeResult.timing.timeWindow ||
+                timing.timeWindow ||
+                safeContext.appointmentSuggestionsTimeWindow ||
+                'afternoon',
               suggestions: alternatives
             })}`,
             newState: 'SELECT_APPOINTMENT_SLOT',
-            contextPatch: {
-              appointmentSuggestions: alternatives,
-              appointmentSuggestionsForDate: timing.dateISO || null,
-              appointmentSuggestionsTimeWindow: timing.timeWindow || null,
-              appointmentSuggestionsCreatedAt: new Date().toISOString()
-            }
+            contextPatch: buildAppointmentSuggestionContextPatch({
+              suggestions: alternatives,
+              dateISO:
+                alternativeResult.timing.dateISO ||
+                timing.dateISO ||
+                null,
+              timeWindow:
+                alternativeResult.timing.timeWindow ||
+                timing.timeWindow ||
+                null
+            })
           };
         }
       }
     } else if (timing.timeWindow && timing.dateISO) {
-      const suggestions = await conversationRepo.suggestSlotsForTimeWindow({
-        clinicId: conversation.clinicId,
-        dateISO: timing.dateISO,
-        timeWindow: timing.timeWindow,
-        count: 3,
-        stepMinutes: 30
+      const suggestionResult = await suggestAppointmentOptions({
+        clinic,
+        timing,
+        count: 3
       });
-      if (suggestions.length) {
+      if (suggestionResult.suggestions.length) {
         decision = {
           replyText: buildSuggestionReply({
-            dateISO: timing.dateISO,
-            timeWindow: timing.timeWindow,
-            suggestions
+            dateISO: suggestionResult.timing.dateISO || timing.dateISO,
+            timeWindow: suggestionResult.timing.timeWindow || timing.timeWindow,
+            suggestions: suggestionResult.suggestions
           }),
           newState: 'SELECT_APPOINTMENT_SLOT',
-          contextPatch: {
-            appointmentSuggestions: suggestions,
-            appointmentSuggestionsForDate: timing.dateISO,
-            appointmentSuggestionsTimeWindow: timing.timeWindow,
-            appointmentSuggestionsCreatedAt: new Date().toISOString()
-          }
+          contextPatch: buildAppointmentSuggestionContextPatch({
+            suggestions: suggestionResult.suggestions,
+            dateISO: suggestionResult.timing.dateISO || timing.dateISO,
+            timeWindow: suggestionResult.timing.timeWindow || timing.timeWindow
+          })
         };
       }
     }
   }
 
-  if (!decision) {
+  if (!decision && !qaAgendaBypassActive) {
     if (inboundLooksLikeCommerceCancel || inboundLooksLikeCommerce || commerceContextActive) {
       logInfo('legacy_menu_blocked_for_commerce', {
         requestId,

@@ -67,6 +67,14 @@ const {
   closePortalCashSession
 } = require('../services/portal-cash.service');
 const {
+  listPortalAgendaItems,
+  getPortalAgendaAvailability,
+  createPortalAgendaItem,
+  createPortalAgendaReservation,
+  updatePortalAgendaItem,
+  deletePortalAgendaItem
+} = require('../services/portal-agenda.service');
+const {
   getSalesSummary,
   getSalesMetrics,
   listSalesOpportunities
@@ -1551,6 +1559,216 @@ async function postPortalCashSessionClose(req, res) {
   }
 }
 
+async function getPortalAgenda(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await listPortalAgendaItems(tenantId, req.query || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        range: result.range,
+        items: result.items
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_agenda_list_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalAgenda(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalAgendaItem(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_agenda_date' ||
+        result.reason === 'invalid_agenda_type' ||
+        result.reason === 'missing_agenda_title' ||
+        result.reason === 'invalid_agenda_status' ||
+        result.reason === 'invalid_agenda_time' ||
+        result.reason === 'invalid_agenda_time_range' ||
+        result.reason === 'missing_agenda_time_range' ||
+        result.reason === 'agenda_time_conflict' ||
+        result.reason === 'reservation_outside_availability' ||
+        result.reason === 'contact_not_found'
+          ? (result.reason === 'agenda_time_conflict' || result.reason === 'reservation_outside_availability' ? 409 : 400)
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.detail || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.item
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_agenda_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalAgendaAvailabilityController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalAgendaAvailability(tenantId, req.query || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        range: result.range,
+        days: result.days
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_agenda_availability_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalAgendaReservation(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await createPortalAgendaReservation(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_agenda_date' ||
+        result.reason === 'invalid_agenda_type' ||
+        result.reason === 'missing_agenda_title' ||
+        result.reason === 'invalid_agenda_status' ||
+        result.reason === 'invalid_agenda_time' ||
+        result.reason === 'invalid_agenda_time_range' ||
+        result.reason === 'missing_agenda_time_range' ||
+        result.reason === 'contact_not_found'
+          ? 400
+          : result.reason === 'agenda_time_conflict' || result.reason === 'reservation_outside_availability'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.detail || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.reservation
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_agenda_reservation_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalAgenda(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const itemId = String(req.params.itemId || '').trim();
+
+  try {
+    const result = await updatePortalAgendaItem(tenantId, itemId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_agenda_item_id' ||
+        result.reason === 'invalid_agenda_date' ||
+        result.reason === 'invalid_agenda_type' ||
+        result.reason === 'missing_agenda_title' ||
+        result.reason === 'invalid_agenda_status' ||
+        result.reason === 'invalid_agenda_time' ||
+        result.reason === 'invalid_agenda_time_range' ||
+        result.reason === 'missing_agenda_time_range' ||
+        result.reason === 'agenda_time_conflict' ||
+        result.reason === 'contact_not_found'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.detail || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.item
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_agenda_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function deletePortalAgenda(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const itemId = String(req.params.itemId || '').trim();
+
+  try {
+    const result = await deletePortalAgendaItem(tenantId, itemId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_agenda_item_id' ? 400 : 404;
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.detail || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.item
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_agenda_delete_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalPayment(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const paymentId = String(req.params.paymentId || '').trim();
@@ -2953,10 +3171,14 @@ module.exports = {
   getPortalPayments,
   getPortalPaymentDestinations,
   getPortalCashOverview,
+  getPortalAgenda,
+  getPortalAgendaAvailabilityController,
   getPortalPayment,
   getPortalPaymentAllocations,
   postPortalCashSession,
   postPortalCashSessionClose,
+  postPortalAgenda,
+  postPortalAgendaReservation,
   postPortalPayment,
   postPortalPaymentDestination,
   patchPortalPaymentDestinationController,
@@ -2997,5 +3219,7 @@ module.exports = {
   getPortalWhatsAppTemplateBlueprints,
   getPortalWhatsAppTemplates,
   postPortalWhatsAppTemplateFromBlueprint,
-  postPortalWhatsAppTemplatesSync
+  postPortalWhatsAppTemplatesSync,
+  patchPortalAgenda,
+  deletePortalAgenda
 };

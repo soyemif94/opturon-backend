@@ -93,6 +93,9 @@ const env = {
   aiDisabledClinicIds: parseCsvList(process.env.AI_DISABLED_CLINIC_IDS, []),
   aiEnabledChannelIds: parseCsvList(process.env.AI_ENABLED_CHANNEL_IDS, []),
   aiDisabledChannelIds: parseCsvList(process.env.AI_DISABLED_CHANNEL_IDS, []),
+  qaAgendaBypassContactIds: parseCsvList(process.env.QA_AGENDA_BYPASS_CONTACT_IDS, []),
+  qaAgendaBypassContactWaIds: parseCsvList(process.env.QA_AGENDA_BYPASS_CONTACT_WA_IDS, []),
+  qaAgendaBypassChannelIds: parseCsvList(process.env.QA_AGENDA_BYPASS_CHANNEL_IDS, []),
   autoReplyEnabled: parseBoolean(process.env.AUTO_REPLY_ENABLED, false),
   legacyWebhookAutoReplyEnabled: parseBoolean(process.env.LEGACY_WEBHOOK_AUTO_REPLY_ENABLED, false),
 
