@@ -1938,6 +1938,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     logInfo('commerce_order_create_attempt', {
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
+      contactId: contact.id || null,
       itemCount: cartItems.length,
       cartItems: cartItems.map((item) => ({
         productId: item.productId,
@@ -1945,7 +1946,10 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       }))
     });
 
-    const orderResult = await createOrderForClinic(conversation.clinicId, {
+    const orderPayload = {
+      source: 'bot',
+      contactId: contact.id || null,
+      conversationId: conversation.id,
       customerName: contact.name || `Cliente ${String(contact.waId || contact.phone || '').slice(-4) || 'WhatsApp'}`,
       customerPhone: contact.phone || contact.waId || null,
       notes: 'Pedido creado desde WhatsApp commerce',
@@ -1953,9 +1957,23 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         productId: item.productId,
         quantity: item.quantity
       }))
+    };
+
+    const orderResult = await createOrderForClinic(conversation.clinicId, {
+      ...orderPayload
     });
 
     if (!orderResult.ok) {
+      logError('commerce_order_create_failed', {
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId,
+        contactId: contact.id || null,
+        source: orderPayload.source,
+        itemCount: cartItems.length,
+        items: orderPayload.items,
+        reason: orderResult.reason || null,
+        details: orderResult.details || null
+      });
       if (
         orderResult.reason === 'order_item_insufficient_stock' ||
         orderResult.reason === 'order_item_product_not_found' ||
