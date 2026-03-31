@@ -262,6 +262,281 @@ function detectIntent(rawText) {
   return 'unknown';
 }
 
+const BOT_ROUTER_APPOINTMENT_STATES = new Set([
+  'ASKED_APPOINTMENT_DATETIME',
+  'ASKED_APPOINTMENT_TIMEWINDOW',
+  'SELECT_APPOINTMENT_SLOT',
+  'CONFIRM_APPOINTMENT'
+]);
+
+const BOT_ROUTER_COMMERCE_STATES = new Set([
+  'WAITING_PRODUCT_SELECTION',
+  'WAITING_QUANTITY'
+]);
+
+function parseClinicSettingsObject(clinic) {
+  if (!clinic || typeof clinic !== 'object') return {};
+  const raw = clinic.settings;
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  try {
+    const parsed = JSON.parse(String(raw));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveClinicBotMode(clinic) {
+  const settings = parseClinicSettingsObject(clinic);
+  const candidates = [
+    settings && settings.bot && settings.bot.mode,
+    settings && settings.botMode,
+    settings && settings.whatsapp && settings.whatsapp.botMode,
+    settings && settings.portal && settings.portal.botMode
+  ];
+
+  for (const value of candidates) {
+    const safe = String(value || '').trim().toLowerCase();
+    if (safe === 'sales' || safe === 'agenda' || safe === 'hybrid') {
+      return safe;
+    }
+  }
+
+  return 'sales';
+}
+
+function hasAgendaContext(safeContext) {
+  const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
+  return Boolean(
+    context.appointmentCandidate ||
+      context.appointmentStatus ||
+      context.appointmentLastCancelledStartAt ||
+      context.appointmentSuggestionsForDate ||
+      (Array.isArray(context.appointmentSuggestions) && context.appointmentSuggestions.length > 0)
+  );
+}
+
+function isExplicitCommerceTrigger(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  const triggers = [
+    'productos',
+    'producto',
+    'catalogo',
+    'catálogo',
+    'comprar',
+    'compra',
+    'precio',
+    'precios',
+    'plan',
+    'planes',
+    'pedido',
+    'pedidos'
+  ];
+
+  return triggers.some((trigger) => text.includes(normalizeCommandText(trigger)));
+}
+
+function looksLikeAgendaIntent({ inboundText, intent, managementIntent }) {
+  if (managementIntent) return true;
+  if (intent === 'appointment') return true;
+  const text = normalizeCommandText(inboundText);
+  return (
+    text.includes('turno') ||
+    text.includes('agenda') ||
+    text.includes('horario') ||
+    text.includes('reserv') ||
+    text.includes('disponib')
+  );
+}
+
+function normalizeConversationBotDomainOverride(safeContext) {
+  const safeValue = String(safeContext && safeContext.botDomainOverride ? safeContext.botDomainOverride : '')
+    .trim()
+    .toLowerCase();
+  if (safeValue === 'agenda' || safeValue === 'commerce') {
+    return safeValue;
+  }
+  return null;
+}
+
+function resolveConversationDomain({ currentState, safeContext }) {
+  const explicitDomain = String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase();
+  if (BOT_ROUTER_APPOINTMENT_STATES.has(currentState) || hasAgendaContext(safeContext)) {
+    return 'agenda';
+  }
+  if (BOT_ROUTER_COMMERCE_STATES.has(currentState) || hasCommerceContext(safeContext)) {
+    return 'commerce';
+  }
+  if (explicitDomain === 'agenda' || explicitDomain === 'commerce') {
+    return explicitDomain;
+  }
+  return null;
+}
+
+function resolveBotDomainRoute({
+  clinic,
+  currentState,
+  safeContext,
+  inboundText,
+  intent,
+  managementIntent,
+  inboundLooksLikeCommerce,
+  inboundLooksLikeCommerceCancel
+}) {
+  const botMode = resolveClinicBotMode(clinic);
+  const overrideDomain = normalizeConversationBotDomainOverride(safeContext);
+  const activeDomain = resolveConversationDomain({ currentState, safeContext });
+  const agendaIntent = looksLikeAgendaIntent({ inboundText, intent, managementIntent });
+  const explicitCommerceIntent =
+    inboundLooksLikeCommerce ||
+    inboundLooksLikeCommerceCancel ||
+    intent === 'pricing' ||
+    isExplicitCommerceTrigger(inboundText);
+
+  if (overrideDomain === 'agenda') {
+    return {
+      botMode,
+      domain: 'agenda',
+      allowCommerce: false,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      reason: 'conversation_override_agenda'
+    };
+  }
+
+  if (overrideDomain === 'commerce') {
+    return {
+      botMode,
+      domain: 'commerce',
+      allowCommerce: true,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      reason: 'conversation_override_commerce'
+    };
+  }
+
+  if (botMode === 'sales') {
+    return {
+      botMode,
+      domain: 'commerce',
+      allowCommerce: true,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      reason: 'bot_mode_sales'
+    };
+  }
+
+  if (botMode === 'agenda') {
+    return {
+      botMode,
+      domain: 'agenda',
+      allowCommerce: false,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      reason: agendaIntent ? 'agenda_intent' : 'bot_mode_agenda'
+    };
+  }
+
+  if (agendaIntent) {
+    return {
+      botMode,
+      domain: 'agenda',
+      allowCommerce: false,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      reason: 'hybrid_agenda_intent'
+    };
+  }
+
+  if (explicitCommerceIntent) {
+    return {
+      botMode,
+      domain: 'commerce',
+      allowCommerce: true,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      reason: 'hybrid_explicit_commerce'
+    };
+  }
+
+  if (activeDomain === 'agenda') {
+    return {
+      botMode,
+      domain: 'agenda',
+      allowCommerce: false,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      reason: 'hybrid_continue_agenda'
+    };
+  }
+
+  if (activeDomain === 'commerce') {
+    return {
+      botMode,
+      domain: 'commerce',
+      allowCommerce: true,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      reason: 'hybrid_continue_commerce'
+    };
+  }
+
+  return {
+    botMode,
+    domain: 'neutral',
+    allowCommerce: false,
+    agendaIntent,
+    explicitCommerceIntent,
+    activeDomain,
+    overrideDomain,
+    reason: 'hybrid_neutral'
+  };
+}
+
+function buildActiveBotDomainPatch({ decisionSource, botRoute, currentState, nextState, safeContext }) {
+  const safeDecisionSource = String(decisionSource || '').trim().toLowerCase();
+  const safeNextState = String(nextState || '').trim().toUpperCase();
+
+  if (safeDecisionSource.startsWith('commerce') || BOT_ROUTER_COMMERCE_STATES.has(safeNextState)) {
+    return { activeBotDomain: 'commerce' };
+  }
+
+  if (
+    botRoute.domain === 'agenda' ||
+    safeDecisionSource === 'legacy_appointment_management' ||
+    BOT_ROUTER_APPOINTMENT_STATES.has(currentState) ||
+    BOT_ROUTER_APPOINTMENT_STATES.has(safeNextState) ||
+    hasAgendaContext(safeContext)
+  ) {
+    return { activeBotDomain: 'agenda' };
+  }
+
+  if (botRoute.domain === 'commerce') {
+    return { activeBotDomain: 'commerce' };
+  }
+
+  return null;
+}
+
 function isCommerceEntryIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
@@ -3012,6 +3287,7 @@ async function processConversationReplyJob(job) {
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const normalizedInboundText = normalizeCommandText(inboundText);
   const intent = detectIntent(inboundText);
+  const managementIntent = detectTurnManagementIntent(inboundText);
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
@@ -3062,15 +3338,154 @@ async function processConversationReplyJob(job) {
     return;
   }
 
+  if (qaAgendaBypassActive) {
+    logInfo('qa_agenda_bypass_activated', {
+      marker: 'AGENDA_BYPASS_V2',
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      contactId: contact.id || null,
+      channelId: channel.id || null,
+      waId: contact.waId || null,
+      currentState,
+      inboundText: normalizedInboundText,
+      bypass: {
+        intent,
+        reason: 'keyword_match',
+        contactScoped: QA_AGENDA_BYPASS_CONTACT_IDS.has(String(contact.id || '').trim()),
+        waScoped: QA_AGENDA_BYPASS_CONTACT_WA_IDS.has(normalizeDigitsOnly(contact.waId || contact.phone || '')),
+        channelScoped: QA_AGENDA_BYPASS_CHANNEL_IDS.has(String(channel.id || '').trim())
+      }
+    });
+
+    const qaLead = await upsertLeadForConversation({
+      clinicId: conversation.clinicId,
+      channelId,
+      conversationId: conversation.id,
+      contactId: contact.id,
+      primaryIntent: 'appointment'
+    });
+
+    await processAppointmentIntent({
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      contact,
+      lead: qaLead,
+      channel,
+      clinic,
+      requestId,
+      messageId: waMessageId || inboundMessage.id
+    });
+    return;
+  }
+
+  const botRoute = resolveBotDomainRoute({
+    clinic,
+    currentState,
+    safeContext,
+    inboundText,
+    intent,
+    managementIntent,
+    inboundLooksLikeCommerce,
+    inboundLooksLikeCommerceCancel
+  });
+
+  const chosenBotPath =
+    qaAgendaBypassActive
+      ? 'agenda'
+      : botRoute.domain === 'agenda'
+        ? 'agenda'
+        : botRoute.domain === 'commerce'
+          ? 'commerce'
+          : 'fallback';
+
+  console.log('BOT_ROUTER_DECISION', {
+    botMode: botRoute.botMode,
+    botDomainOverride: botRoute.overrideDomain || 'automatic',
+    inboundText: normalizedInboundText,
+    chosenPath: chosenBotPath
+  });
+
+  console.log('BOT_OVERRIDE_RUNTIME_CHECK', {
+    conversationId: conversation.id,
+    botDomainOverride: botRoute.overrideDomain || 'automatic',
+    botMode: botRoute.botMode,
+    currentState,
+    inboundText: normalizedInboundText,
+    chosenPath: chosenBotPath
+  });
+
+  logInfo('bot_domain_route_resolved', {
+    requestId,
+    jobId: job.id,
+    clinicId: conversation.clinicId,
+    conversationId: conversation.id,
+    currentState,
+    inboundText: normalizedInboundText,
+    botMode: botRoute.botMode,
+    domain: botRoute.domain,
+    reason: botRoute.reason,
+    activeDomain: botRoute.activeDomain,
+    overrideDomain: botRoute.overrideDomain,
+    agendaIntent: botRoute.agendaIntent,
+    explicitCommerceIntent: botRoute.explicitCommerceIntent,
+    commerceContextActive
+  });
+
+  const shouldRouteDirectToAgenda =
+    botRoute.domain === 'agenda' &&
+    (
+      botRoute.overrideDomain === 'agenda' ||
+      botRoute.botMode === 'agenda' ||
+      botRoute.agendaIntent
+    ) &&
+    !BOT_ROUTER_APPOINTMENT_STATES.has(currentState);
+
+  if (
+    shouldRouteDirectToAgenda
+  ) {
+    const routedLead = await upsertLeadForConversation({
+      clinicId: conversation.clinicId,
+      channelId,
+      conversationId: conversation.id,
+      contactId: contact.id,
+      primaryIntent: botRoute.agendaIntent || botRoute.botMode === 'agenda' ? 'appointment' : (intent === 'unknown' ? null : intent)
+    });
+
+    await conversationRepo.updateConversationState({
+      conversationId: conversation.id,
+      state: conversation.state || null,
+      contextPatch: { activeBotDomain: 'agenda' }
+    });
+    await updateLeadStatus(routedLead.id, 'qualifying', null);
+
+    logInfo('bot_domain_agenda_routed', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      botMode: botRoute.botMode,
+      reason: botRoute.reason,
+      chosenPath: 'agenda'
+    });
+
+    await processAppointmentIntent({
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      contact,
+      lead: routedLead,
+      channel,
+      clinic,
+      requestId,
+      messageId: waMessageId || inboundMessage.id
+    });
+    return;
+  }
+
   const workerOwnsCommerceFlow =
     !qaAgendaBypassActive &&
-    (
-      inboundLooksLikeCommerce ||
-      inboundLooksLikeCommerceCancel ||
-      commerceContextActive ||
-      currentState === 'WAITING_PRODUCT_SELECTION' ||
-      currentState === 'WAITING_QUANTITY'
-    );
+    botRoute.domain === 'commerce';
   const automationRuntime = qaAgendaBypassActive
     ? {
       replyText: null,
@@ -3115,27 +3530,6 @@ async function processConversationReplyJob(job) {
     });
   }
 
-  if (qaAgendaBypassActive) {
-    logInfo('qa_agenda_bypass_activated', {
-      requestId,
-      jobId: job.id,
-      clinicId: conversation.clinicId,
-      conversationId: conversation.id,
-      contactId: contact.id || null,
-      channelId: channel.id || null,
-      waId: contact.waId || null,
-      currentState,
-      inboundText: normalizedInboundText,
-      bypass: {
-        intent,
-        reason: 'keyword_match',
-        contactScoped: QA_AGENDA_BYPASS_CONTACT_IDS.has(String(contact.id || '').trim()),
-        waScoped: QA_AGENDA_BYPASS_CONTACT_WA_IDS.has(normalizeDigitsOnly(contact.waId || contact.phone || '')),
-        channelScoped: QA_AGENDA_BYPASS_CHANNEL_IDS.has(String(channel.id || '').trim())
-      }
-    });
-  }
-
   if (automationRuntime.matched.length) {
     logInfo('automation_match_found', {
       requestId,
@@ -3168,37 +3562,57 @@ async function processConversationReplyJob(job) {
     decisionSource = 'automation';
   }
   if (!decision && !qaAgendaBypassActive) {
-    decision = await resolveCommerceDecision({
-      conversation,
-      clinic,
-      contact,
-      inboundText
-    });
-    if (decision) {
-      decisionSource = 'commerce';
-      logInfo('commerce_flow_entered', {
-        requestId,
-        jobId: job.id,
+    if (botRoute.allowCommerce) {
+      console.log('COMMERCE_PREEMPT_CHECK', {
         conversationId: conversation.id,
-        clinicId: conversation.clinicId,
+        botDomainOverride: botRoute.overrideDomain || 'automatic',
+        botMode: botRoute.botMode,
         currentState,
-        nextState: decision.newState || null,
         inboundText: normalizedInboundText
       });
+      decision = await resolveCommerceDecision({
+        conversation,
+        clinic,
+        contact,
+        inboundText
+      });
+      if (decision) {
+        decisionSource = 'commerce';
+        logInfo('commerce_flow_entered', {
+          requestId,
+          jobId: job.id,
+          conversationId: conversation.id,
+          clinicId: conversation.clinicId,
+          currentState,
+          nextState: decision.newState || null,
+          inboundText: normalizedInboundText
+        });
+      } else {
+        logInfo('commerce_flow_skipped', {
+          requestId,
+          jobId: job.id,
+          conversationId: conversation.id,
+          clinicId: conversation.clinicId,
+          currentState,
+          inboundText: normalizedInboundText,
+          reason: inboundLooksLikeCommerce ? 'resolve_commerce_returned_null' : 'not_a_commerce_command'
+        });
+      }
     } else {
-      logInfo('commerce_flow_skipped', {
+      logInfo('commerce_flow_blocked_by_bot_mode', {
         requestId,
         jobId: job.id,
         conversationId: conversation.id,
         clinicId: conversation.clinicId,
         currentState,
         inboundText: normalizedInboundText,
-        reason: inboundLooksLikeCommerce ? 'resolve_commerce_returned_null' : 'not_a_commerce_command'
+        botMode: botRoute.botMode,
+        domain: botRoute.domain,
+        reason: botRoute.reason
       });
     }
   }
 
-  const managementIntent = detectTurnManagementIntent(inboundText);
   if (
     !decision &&
     managementIntent &&
@@ -3544,7 +3958,7 @@ async function processConversationReplyJob(job) {
     }
   }
 
-  if (!decision && !qaAgendaBypassActive) {
+  if (!decision && !qaAgendaBypassActive && botRoute.allowCommerce) {
     if (inboundLooksLikeCommerceCancel || inboundLooksLikeCommerce || commerceContextActive) {
       logInfo('legacy_menu_blocked_for_commerce', {
         requestId,
@@ -3592,8 +4006,19 @@ async function processConversationReplyJob(job) {
     }
   }
 
+  const activeBotDomainPatch = buildActiveBotDomainPatch({
+    decisionSource,
+    botRoute,
+    currentState,
+    nextState: decision && decision.newState ? decision.newState : null,
+    safeContext
+  });
+
   if (decision && automationContextPatch) {
     decision.contextPatch = mergeContextPatches(decision.contextPatch || null, automationContextPatch);
+  }
+  if (decision && activeBotDomainPatch) {
+    decision.contextPatch = mergeContextPatches(decision.contextPatch || null, activeBotDomainPatch);
   }
 
   if (!decision) {
@@ -4163,6 +4588,12 @@ function startWorker() {
     batchSize: BATCH_SIZE,
     daysAhead: DAYS_AHEAD,
     holdMinutes: HOLD_MINUTES
+  });
+  logInfo('WORKER_IDENTITY', {
+    marker: 'AGENDA_BYPASS_V2',
+    workerId: WORKER_ID,
+    pid: process.pid,
+    timestamp: new Date().toISOString()
   });
 
   pollOnce()
