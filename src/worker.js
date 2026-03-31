@@ -5,7 +5,7 @@ const env = require('./config/env');
 const { withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
 const { findChannelById } = require('./repositories/tenant.repository');
-const { findContactById, findContactByIdAndClinicId } = require('./repositories/contact.repository');
+const { findContactById, findContactByIdAndClinicId, updateContact } = require('./repositories/contact.repository');
 const {
   findConversationById,
   markLastOutbound,
@@ -266,7 +266,9 @@ const BOT_ROUTER_APPOINTMENT_STATES = new Set([
   'ASKED_APPOINTMENT_DATETIME',
   'ASKED_APPOINTMENT_TIMEWINDOW',
   'SELECT_APPOINTMENT_SLOT',
-  'CONFIRM_APPOINTMENT'
+  'CONFIRM_APPOINTMENT',
+  'ASKED_APPOINTMENT_NAME',
+  'ASKED_APPOINTMENT_NOTE'
 ]);
 
 const BOT_ROUTER_COMMERCE_STATES = new Set([
@@ -362,6 +364,16 @@ function normalizeConversationBotDomainOverride(safeContext) {
   return null;
 }
 
+function normalizeConversationBotFlowLock(safeContext) {
+  const safeValue = String(safeContext && safeContext.botFlowLock ? safeContext.botFlowLock : '')
+    .trim()
+    .toLowerCase();
+  if (safeValue === 'agenda' || safeValue === 'commerce') {
+    return safeValue;
+  }
+  return null;
+}
+
 function resolveConversationDomain({ currentState, safeContext }) {
   const explicitDomain = String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase();
   if (BOT_ROUTER_APPOINTMENT_STATES.has(currentState) || hasAgendaContext(safeContext)) {
@@ -387,6 +399,7 @@ function resolveBotDomainRoute({
   inboundLooksLikeCommerceCancel
 }) {
   const botMode = resolveClinicBotMode(clinic);
+  const botFlowLock = normalizeConversationBotFlowLock(safeContext);
   const overrideDomain = normalizeConversationBotDomainOverride(safeContext);
   const activeDomain = resolveConversationDomain({ currentState, safeContext });
   const agendaIntent = looksLikeAgendaIntent({ inboundText, intent, managementIntent });
@@ -395,6 +408,34 @@ function resolveBotDomainRoute({
     inboundLooksLikeCommerceCancel ||
     intent === 'pricing' ||
     isExplicitCommerceTrigger(inboundText);
+
+  if (botFlowLock === 'agenda') {
+    return {
+      botMode,
+      domain: 'agenda',
+      allowCommerce: false,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      botFlowLock,
+      reason: 'conversation_flow_lock_agenda'
+    };
+  }
+
+  if (botFlowLock === 'commerce') {
+    return {
+      botMode,
+      domain: 'commerce',
+      allowCommerce: true,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      botFlowLock,
+      reason: 'conversation_flow_lock_commerce'
+    };
+  }
 
   if (overrideDomain === 'agenda') {
     return {
@@ -405,6 +446,7 @@ function resolveBotDomainRoute({
       explicitCommerceIntent,
       activeDomain,
       overrideDomain,
+      botFlowLock,
       reason: 'conversation_override_agenda'
     };
   }
@@ -418,6 +460,7 @@ function resolveBotDomainRoute({
       explicitCommerceIntent,
       activeDomain,
       overrideDomain,
+      botFlowLock,
       reason: 'conversation_override_commerce'
     };
   }
@@ -431,6 +474,7 @@ function resolveBotDomainRoute({
       explicitCommerceIntent,
       activeDomain,
       overrideDomain,
+      botFlowLock,
       reason: 'bot_mode_sales'
     };
   }
@@ -444,6 +488,7 @@ function resolveBotDomainRoute({
       explicitCommerceIntent,
       activeDomain,
       overrideDomain,
+      botFlowLock,
       reason: agendaIntent ? 'agenda_intent' : 'bot_mode_agenda'
     };
   }
@@ -457,6 +502,7 @@ function resolveBotDomainRoute({
       explicitCommerceIntent,
       activeDomain,
       overrideDomain,
+      botFlowLock,
       reason: 'hybrid_agenda_intent'
     };
   }
@@ -470,6 +516,7 @@ function resolveBotDomainRoute({
       explicitCommerceIntent,
       activeDomain,
       overrideDomain,
+      botFlowLock,
       reason: 'hybrid_explicit_commerce'
     };
   }
@@ -483,6 +530,7 @@ function resolveBotDomainRoute({
       explicitCommerceIntent,
       activeDomain,
       overrideDomain,
+      botFlowLock,
       reason: 'hybrid_continue_agenda'
     };
   }
@@ -496,6 +544,7 @@ function resolveBotDomainRoute({
       explicitCommerceIntent,
       activeDomain,
       overrideDomain,
+      botFlowLock,
       reason: 'hybrid_continue_commerce'
     };
   }
@@ -508,6 +557,7 @@ function resolveBotDomainRoute({
     explicitCommerceIntent,
     activeDomain,
     overrideDomain,
+    botFlowLock,
     reason: 'hybrid_neutral'
   };
 }
@@ -2344,6 +2394,10 @@ function buildConfirmedContextPatch(startAt) {
     appointmentStatus: 'confirmed',
     appointmentConfirmedAt: new Date().toISOString(),
     appointmentLastConfirmedStartAt: startAt || null,
+    appointmentFlowPhase: null,
+    appointmentSelectedSlot: null,
+    appointmentBookingName: null,
+    appointmentBookingNote: null,
     appointmentSuggestions: null,
     appointmentSuggestionsForDate: null,
     appointmentSuggestionsTimeWindow: null,
@@ -2353,6 +2407,10 @@ function buildConfirmedContextPatch(startAt) {
 
 function buildEmptyAppointmentSuggestionPatch() {
   return {
+    appointmentFlowPhase: null,
+    appointmentSelectedSlot: null,
+    appointmentBookingName: null,
+    appointmentBookingNote: null,
     appointmentSuggestions: null,
     appointmentSuggestionsForDate: null,
     appointmentSuggestionsTimeWindow: null,
@@ -2362,6 +2420,11 @@ function buildEmptyAppointmentSuggestionPatch() {
 
 function buildAppointmentSuggestionContextPatch({ appointmentCandidate, suggestions, dateISO, timeWindow }) {
   const basePatch = {
+    activeBotDomain: 'agenda',
+    appointmentFlowPhase: 'waiting_slot_selection',
+    appointmentSelectedSlot: null,
+    appointmentBookingName: null,
+    appointmentBookingNote: null,
     appointmentSuggestions: suggestions,
     appointmentSuggestionsForDate: dateISO || null,
     appointmentSuggestionsTimeWindow: timeWindow || null,
@@ -2373,6 +2436,76 @@ function buildAppointmentSuggestionContextPatch({ appointmentCandidate, suggesti
   }
 
   return basePatch;
+}
+
+function buildAppointmentSelectedSlotPatch({ suggestion, bookingName = null, bookingNote = null, phase = 'waiting_contact_note' }) {
+  return {
+    activeBotDomain: 'agenda',
+    appointmentFlowPhase: phase,
+    appointmentSelectedSlot: suggestion
+      ? {
+          source: suggestion.source || 'agenda',
+          startAt: suggestion.startAt || null,
+          endAt: suggestion.endAt || null,
+          dateISO: suggestion.dateISO || null,
+          displayText: suggestion.displayText || suggestion.label || null
+        }
+      : null,
+    appointmentBookingName: bookingName || null,
+    appointmentBookingNote: bookingNote || null
+  };
+}
+
+function hasUsableContactName(contact, safeContext) {
+  const candidates = [
+    safeContext && safeContext.appointmentBookingName,
+    safeContext && safeContext.name,
+    contact && contact.name
+  ];
+  return candidates.some((value) => String(value || '').trim().length >= 2);
+}
+
+function normalizeOptionalAppointmentNote(rawText) {
+  const safeText = String(rawText || '').trim();
+  const normalized = normalizeCommandText(safeText);
+  if (!safeText) return null;
+  if (['no', 'nop', 'ninguno', 'ninguna', 'sin motivo', 'sin nota', 'omitir'].includes(normalized)) {
+    return null;
+  }
+  return safeText;
+}
+
+function buildAppointmentReservationDescription({ contact, bookingName, bookingNote, suggestion }) {
+  const lines = [];
+  const safeName = String(bookingName || (contact && contact.name) || '').trim();
+  const safePhone = String((contact && (contact.phone || contact.waId)) || '').trim();
+  const safeNote = String(bookingNote || '').trim();
+  const safeSlot = String((suggestion && (suggestion.displayText || suggestion.label)) || '').trim();
+
+  if (safeName) lines.push(`Nombre: ${safeName}`);
+  if (safePhone) lines.push(`Telefono: ${safePhone}`);
+  if (safeNote) lines.push(`Motivo: ${safeNote}`);
+  if (safeSlot) lines.push(`Horario: ${safeSlot}`);
+  lines.push('Origen: WhatsApp');
+
+  return lines.join('\n');
+}
+
+function buildAppointmentFinalConfirmation({ timezone, suggestion, bookingName, bookingNote }) {
+  const startAt = suggestion && suggestion.startAt ? suggestion.startAt : null;
+  const safeName = String(bookingName || '').trim();
+  const safeNote = String(bookingNote || '').trim();
+  const formattedTime = startAt ? formatSlotForHuman(startAt, timezone) : String((suggestion && suggestion.displayText) || '').trim();
+  const lines = [`Listo. Tu turno quedo confirmado para ${formattedTime}.`];
+
+  if (safeName) {
+    lines.push(`Nombre: ${safeName}.`);
+  }
+  if (safeNote) {
+    lines.push(`Motivo: ${safeNote}.`);
+  }
+
+  return lines.join('\n');
 }
 
 function isCancellation(rawText) {
@@ -2478,13 +2611,24 @@ async function createBotReservationFromSuggestion({ clinic, conversation, contac
   }
 
   if (suggestion.source === 'agenda') {
+    const bookingName = String(
+      (safeContext && (safeContext.appointmentBookingName || safeContext.name)) ||
+        contact.name ||
+        ''
+    ).trim() || null;
+    const bookingNote = String((safeContext && safeContext.appointmentBookingNote) || '').trim() || null;
     const agendaResult = await createClinicAgendaBotReservation(
       {
         clinicId: clinic.id,
         contactId: contact.id,
-        patientName: (safeContext && safeContext.name) || contact.name || null,
-        title: (safeContext && safeContext.name) || contact.name || 'Turno reservado',
-        description: suggestion.displayText || null,
+        patientName: bookingName,
+        title: bookingName ? `Turno - ${bookingName}` : 'Turno reservado',
+        description: buildAppointmentReservationDescription({
+          contact,
+          bookingName,
+          bookingNote,
+          suggestion
+        }),
         requestedText: suggestion.displayText || null,
         startAt: suggestion.startAt,
         endAt: suggestion.endAt || null,
@@ -2985,7 +3129,10 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
       index: idx + 1,
       source: 'legacy',
       slotId: slot.id,
-      startsAt: slot.startsAt,
+      startAt: slot.startsAt,
+      endAt: null,
+      dateISO: DateTime.fromISO(String(slot.startsAt), { zone: 'utc' }).setZone(timezone).toISODate(),
+      displayText: formatSlotForHuman(slot.startsAt, timezone),
       label: formatSlotForHuman(slot.startsAt, timezone)
     }));
   }
@@ -3032,6 +3179,23 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
 
   await updateLeadStatus(lead.id, 'offering', null);
   await updateConversationStage(conversationId, 'offering');
+  await conversationRepo.updateConversationState({
+    conversationId,
+    state: 'SELECT_APPOINTMENT_SLOT',
+    contextPatch: buildAppointmentSuggestionContextPatch({
+      suggestions: options.map((option) => ({
+        source: option.source || 'agenda',
+        slotId: option.slotId || null,
+        startAt: option.startAt || option.startsAt || null,
+        endAt: option.endAt || null,
+        dateISO: option.dateISO || null,
+        displayText: option.displayText || option.label || null,
+        label: option.label || option.displayText || null
+      })),
+      dateISO: options[0] && options[0].dateISO ? options[0].dateISO : null,
+      timeWindow: null
+    })
+  });
 }
 
 async function processInboundJob(job) {
@@ -3291,6 +3455,9 @@ async function processConversationReplyJob(job) {
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
+  const activeBotDomain = String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase();
+  const appointmentFlowPhase = String(safeContext && safeContext.appointmentFlowPhase ? safeContext.appointmentFlowPhase : '').trim().toLowerCase();
+  const isInAgendaFlow = activeBotDomain === 'agenda' && !!appointmentFlowPhase;
   const qaAgendaBypassActive = shouldBypassCommerceForQa({
     contact,
     channel,
@@ -3308,6 +3475,19 @@ async function processConversationReplyJob(job) {
     conversationId: conversation.id,
     messageCount: Array.isArray(recentMessages) ? recentMessages.length : 0
   });
+
+  if (isInAgendaFlow) {
+    logInfo('agenda_flow_priority_guard_active', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      currentState,
+      inboundText: normalizedInboundText,
+      activeBotDomain,
+      appointmentFlowPhase
+    });
+  }
 
   if (hasNewerInbound) {
     logInfo('conversation_reply_skipped_stale_inbound', {
@@ -3402,6 +3582,7 @@ async function processConversationReplyJob(job) {
 
   console.log('BOT_ROUTER_DECISION', {
     botMode: botRoute.botMode,
+    botFlowLock: botRoute.botFlowLock || 'automatic',
     botDomainOverride: botRoute.overrideDomain || 'automatic',
     inboundText: normalizedInboundText,
     chosenPath: chosenBotPath
@@ -3409,6 +3590,7 @@ async function processConversationReplyJob(job) {
 
   console.log('BOT_OVERRIDE_RUNTIME_CHECK', {
     conversationId: conversation.id,
+    botFlowLock: botRoute.botFlowLock || 'automatic',
     botDomainOverride: botRoute.overrideDomain || 'automatic',
     botMode: botRoute.botMode,
     currentState,
@@ -3426,12 +3608,21 @@ async function processConversationReplyJob(job) {
     botMode: botRoute.botMode,
     domain: botRoute.domain,
     reason: botRoute.reason,
+    botFlowLock: botRoute.botFlowLock,
     activeDomain: botRoute.activeDomain,
     overrideDomain: botRoute.overrideDomain,
     agendaIntent: botRoute.agendaIntent,
     explicitCommerceIntent: botRoute.explicitCommerceIntent,
     commerceContextActive
   });
+
+  const shouldPrioritizeAgendaFlow =
+    isInAgendaFlow &&
+    (
+      currentState === 'SELECT_APPOINTMENT_SLOT' ||
+      currentState === 'ASKED_APPOINTMENT_NAME' ||
+      currentState === 'ASKED_APPOINTMENT_NOTE'
+    );
 
   const shouldRouteDirectToAgenda =
     botRoute.domain === 'agenda' &&
@@ -3485,6 +3676,7 @@ async function processConversationReplyJob(job) {
 
   const workerOwnsCommerceFlow =
     !qaAgendaBypassActive &&
+    !shouldPrioritizeAgendaFlow &&
     botRoute.domain === 'commerce';
   const automationRuntime = qaAgendaBypassActive
     ? {
@@ -3492,6 +3684,13 @@ async function processConversationReplyJob(job) {
       contextPatch: null,
       matched: [],
       source: 'qa.agenda_bypass'
+    }
+    : shouldPrioritizeAgendaFlow
+    ? {
+      replyText: null,
+      contextPatch: null,
+      matched: [],
+      source: 'agenda.flow_priority'
     }
     : workerOwnsCommerceFlow
     ? {
@@ -3561,10 +3760,11 @@ async function processConversationReplyJob(job) {
     };
     decisionSource = 'automation';
   }
-  if (!decision && !qaAgendaBypassActive) {
+  if (!decision && !qaAgendaBypassActive && !shouldPrioritizeAgendaFlow) {
     if (botRoute.allowCommerce) {
       console.log('COMMERCE_PREEMPT_CHECK', {
         conversationId: conversation.id,
+        botFlowLock: botRoute.botFlowLock || 'automatic',
         botDomainOverride: botRoute.overrideDomain || 'automatic',
         botMode: botRoute.botMode,
         currentState,
@@ -3800,63 +4000,165 @@ async function processConversationReplyJob(job) {
             contextPatch: buildConfirmedContextPatch(chosen.startAt)
           };
         } else {
-          const created = await createBotReservationFromSuggestion({
-            clinic,
-            conversation,
-            contact,
-            channel,
-            safeContext,
-            suggestion: chosen
-          });
+          const bookingName = String(
+            (safeContext && (safeContext.appointmentBookingName || safeContext.name)) ||
+              contact.name ||
+              ''
+          ).trim();
+          const selectedHumanTime = formatSlotForHuman(chosen.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires');
 
-          if (!created.ok) {
-            const alternativeResult = await suggestAppointmentOptions({
-              clinic,
-              timing: {
-                startAt: chosen.startAt,
-                dateISO: safeContext.appointmentSuggestionsForDate || null,
-                timeWindow: safeContext.appointmentSuggestionsTimeWindow || null
-              },
-              count: 3
-            });
-            const alternatives = alternativeResult.suggestions;
+          if (!bookingName) {
             decision = {
-              replyText: alternatives.length
-                ? `Ese horario se ocupo recien.\n${buildSuggestionReply({
-                    dateISO:
-                      alternativeResult.timing.dateISO ||
-                      safeContext.appointmentSuggestionsForDate ||
-                      null,
-                    timeWindow:
-                      alternativeResult.timing.timeWindow ||
-                      safeContext.appointmentSuggestionsTimeWindow ||
-                      'afternoon',
-                    suggestions: alternatives
-                  })}`
-                : 'Ese horario se ocupo recien. Decime dia y hora nuevamente (ej: lunes 10:30).',
-              newState: alternatives.length ? 'SELECT_APPOINTMENT_SLOT' : 'ASKED_APPOINTMENT_DATETIME',
-              contextPatch: alternatives.length
-                ? buildAppointmentSuggestionContextPatch({
-                    suggestions: alternatives,
-                    dateISO:
-                      alternativeResult.timing.dateISO ||
-                      safeContext.appointmentSuggestionsForDate ||
-                      null,
-                    timeWindow:
-                      alternativeResult.timing.timeWindow ||
-                      safeContext.appointmentSuggestionsTimeWindow ||
-                      null
-                  })
-                : buildEmptyAppointmentSuggestionPatch()
+              replyText: `Elegiste ${selectedHumanTime}. Antes de confirmarlo, decime tu nombre.`,
+              newState: 'ASKED_APPOINTMENT_NAME',
+              contextPatch: buildAppointmentSelectedSlotPatch({
+                suggestion: chosen,
+                phase: 'waiting_contact_name'
+              })
             };
           } else {
             decision = {
-              replyText: `Listo. Te reserve el turno para ${formatSlotForHuman(chosen.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}. Si necesitas cambiarlo, responde 'menu'.`,
-              newState: 'READY',
-              contextPatch: buildConfirmedContextPatch(chosen.startAt)
+              replyText: `Elegiste ${selectedHumanTime}. Si queres, decime un motivo o nota breve para el turno. Si no, responde "sin motivo".`,
+              newState: 'ASKED_APPOINTMENT_NOTE',
+              contextPatch: buildAppointmentSelectedSlotPatch({
+                suggestion: chosen,
+                bookingName,
+                phase: 'waiting_contact_note'
+              })
             };
           }
         }
+      }
+    }
+  }
+
+  if (!decision && currentState === 'ASKED_APPOINTMENT_NAME') {
+    const providedName = String(inboundText || '').trim();
+    if (providedName.length < 2) {
+      decision = {
+        replyText: 'Necesito tu nombre para confirmar el turno. Responde con tu nombre y apellido.',
+        newState: 'ASKED_APPOINTMENT_NAME',
+        contextPatch: null
+      };
+    } else {
+      await updateContact(contact.id, clinic.id, {
+        name: providedName,
+        email: contact.email || null,
+        phone: contact.phone || null,
+        whatsappPhone: contact.whatsappPhone || null,
+        taxId: contact.taxId || null,
+        taxCondition: contact.taxCondition || null,
+        companyName: contact.companyName || null,
+        notes: contact.notes || null
+      });
+      decision = {
+        replyText: 'Perfecto. Si queres, decime un motivo o nota breve para el turno. Si no, responde "sin motivo".',
+        newState: 'ASKED_APPOINTMENT_NOTE',
+        contextPatch: buildAppointmentSelectedSlotPatch({
+          suggestion: safeContext.appointmentSelectedSlot || null,
+          bookingName: providedName,
+          bookingNote: null,
+          phase: 'waiting_contact_note'
+        })
+      };
+    }
+  }
+
+  if (!decision && currentState === 'ASKED_APPOINTMENT_NOTE') {
+    const selectedSlot = safeContext && safeContext.appointmentSelectedSlot ? safeContext.appointmentSelectedSlot : null;
+    const bookingName = String(
+      (safeContext && (safeContext.appointmentBookingName || safeContext.name)) ||
+        contact.name ||
+        ''
+    ).trim();
+
+    if (!selectedSlot || !selectedSlot.startAt) {
+      decision = {
+        replyText: 'Perdi el horario elegido. Decime dia y hora nuevamente y te propongo opciones.',
+        newState: 'ASKED_APPOINTMENT_DATETIME',
+        contextPatch: buildEmptyAppointmentSuggestionPatch()
+      };
+    } else {
+      const bookingNote = normalizeOptionalAppointmentNote(inboundText);
+      const created = await createBotReservationFromSuggestion({
+        clinic,
+        conversation,
+        contact,
+        channel,
+        safeContext: {
+          ...safeContext,
+          appointmentBookingName: bookingName || null,
+          appointmentBookingNote: bookingNote || null,
+          name: bookingName || contact.name || null
+        },
+        suggestion: selectedSlot
+      });
+
+      if (created.ok) {
+        decision = {
+          replyText: buildAppointmentFinalConfirmation({
+            timezone: clinic.timezone || 'America/Argentina/Buenos_Aires',
+            suggestion: selectedSlot,
+            bookingName,
+            bookingNote
+          }),
+          newState: 'READY',
+          contextPatch: mergeContextPatches(
+            buildConfirmedContextPatch(selectedSlot.startAt),
+            {
+              appointmentBookingName: bookingName || null,
+              appointmentBookingNote: bookingNote || null
+            }
+          )
+        };
+      } else {
+        const alternativeResult = await suggestAppointmentOptions({
+          clinic,
+          timing: {
+            startAt: selectedSlot.startAt,
+            dateISO: safeContext.appointmentSuggestionsForDate || selectedSlot.dateISO || null,
+            timeWindow: safeContext.appointmentSuggestionsTimeWindow || null
+          },
+          count: 3
+        });
+        const alternatives = alternativeResult.suggestions;
+        decision = {
+          replyText: alternatives.length
+            ? `Ese horario se ocupo recien.\n${buildSuggestionReply({
+                dateISO:
+                  alternativeResult.timing.dateISO ||
+                  safeContext.appointmentSuggestionsForDate ||
+                  selectedSlot.dateISO ||
+                  null,
+                timeWindow:
+                  alternativeResult.timing.timeWindow ||
+                  safeContext.appointmentSuggestionsTimeWindow ||
+                  'afternoon',
+                suggestions: alternatives
+              })}`
+            : 'Ese horario se ocupo recien. Decime dia y hora nuevamente (ej: lunes 10:30).',
+          newState: alternatives.length ? 'SELECT_APPOINTMENT_SLOT' : 'ASKED_APPOINTMENT_DATETIME',
+          contextPatch: alternatives.length
+            ? mergeContextPatches(
+                buildAppointmentSuggestionContextPatch({
+                  suggestions: alternatives,
+                  dateISO:
+                    alternativeResult.timing.dateISO ||
+                    safeContext.appointmentSuggestionsForDate ||
+                    selectedSlot.dateISO ||
+                    null,
+                  timeWindow:
+                    alternativeResult.timing.timeWindow ||
+                    safeContext.appointmentSuggestionsTimeWindow ||
+                    null
+                }),
+                {
+                  appointmentBookingName: bookingName || null,
+                  appointmentBookingNote: bookingNote || null
+                }
+              )
+            : buildEmptyAppointmentSuggestionPatch()
+        };
       }
     }
   }
@@ -3958,7 +4260,7 @@ async function processConversationReplyJob(job) {
     }
   }
 
-  if (!decision && !qaAgendaBypassActive && botRoute.allowCommerce) {
+  if (!decision && !qaAgendaBypassActive && !shouldPrioritizeAgendaFlow && botRoute.allowCommerce) {
     if (inboundLooksLikeCommerceCancel || inboundLooksLikeCommerce || commerceContextActive) {
       logInfo('legacy_menu_blocked_for_commerce', {
         requestId,

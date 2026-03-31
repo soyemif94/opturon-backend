@@ -60,6 +60,18 @@ function mapDeal(context, contactId) {
   };
 }
 
+function normalizeBotDomainOverride(value) {
+  const safeValue = String(value || '').trim().toLowerCase();
+  if (safeValue === 'agenda' || safeValue === 'commerce') return safeValue;
+  return 'automatic';
+}
+
+function normalizeBotFlowLock(value) {
+  const safeValue = String(value || '').trim().toLowerCase();
+  if (safeValue === 'agenda' || safeValue === 'commerce') return safeValue;
+  return 'automatic';
+}
+
 function mapConversationRow(row) {
   const context = parseContext(row.context);
   return {
@@ -71,6 +83,8 @@ function mapConversationRow(row) {
     lastMessagePreview: row.lastMessagePreview || undefined,
     priority: String(context.portalPriority || 'normal') === 'hot' ? 'hot' : 'normal',
     botEnabled: boolFromContext(context, 'portalBotEnabled', true),
+    botFlowLock: normalizeBotFlowLock(context.botFlowLock),
+    botDomainOverride: normalizeBotDomainOverride(context.botDomainOverride),
     unreadCount: Number(row.unreadCount || 0),
     slaMinutes: computeSlaMinutes(row),
     contact: {
@@ -412,6 +426,20 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     const resolvedAssignee = await resolvePortalAssignee(context.clinic.id, safePayload.assignedTo);
     nextContext.portalAssignedTo = resolvedAssignee.label;
     nextContext.portalAssignedToUserId = resolvedAssignee.userId;
+  } else if (action === 'set_bot_flow_lock') {
+    const nextLock = normalizeBotFlowLock(safePayload.botFlowLock);
+    if (nextLock === 'automatic') {
+      delete nextContext.botFlowLock;
+    } else {
+      nextContext.botFlowLock = nextLock;
+    }
+  } else if (action === 'set_bot_domain_override') {
+    const nextOverride = normalizeBotDomainOverride(safePayload.botDomainOverride);
+    if (nextOverride === 'automatic') {
+      delete nextContext.botDomainOverride;
+    } else {
+      nextContext.botDomainOverride = nextOverride;
+    }
   } else if (action === 'toggle_bot') {
     nextContext.portalBotEnabled = Boolean(safePayload.botEnabled);
   } else if (action === 'mark_hot') {
