@@ -18,6 +18,11 @@ const runWorkerInWeb = String(process.env.RUN_WORKER_IN_WEB || '').trim().toLowe
 const expectedMetaAppSecret = 'b6259ab44b50ea6976c928cd5d8c6932';
 const envValidation = env.collectEnvValidation();
 
+console.log('WORKER_MODE', {
+  runInWeb: process.env.RUN_WORKER_IN_WEB,
+  pid: process.pid
+});
+
 function fingerprint(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex');
 }
@@ -80,6 +85,9 @@ server.listen(env.port, host, () => {
 
   if (runWorkerInWeb) {
     const { startWorker } = require('./worker');
+    console.log('WORKER_EMBEDDED_STARTED', {
+      pid: process.pid
+    });
     logInfo('worker_started', {
       source: 'web_server',
       enabled: true
