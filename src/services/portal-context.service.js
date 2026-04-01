@@ -41,6 +41,25 @@ function parseClinicSettings(clinic) {
   }
 }
 
+function resolveClinicBotMode(clinic) {
+  const settings = parseClinicSettings(clinic);
+  const candidates = [
+    settings && settings.bot && settings.bot.mode,
+    settings && settings.botMode,
+    settings && settings.whatsapp && settings.whatsapp.botMode,
+    settings && settings.portal && settings.portal.botMode
+  ];
+
+  for (const value of candidates) {
+    const safe = String(value || '').trim().toLowerCase();
+    if (safe === 'sales' || safe === 'agenda' || safe === 'hybrid') {
+      return safe;
+    }
+  }
+
+  return 'sales';
+}
+
 function extractExplicitPortalChannelId(clinic) {
   const settings = parseClinicSettings(clinic);
   const candidates = [
@@ -199,6 +218,7 @@ async function resolvePortalTenantContext(externalTenantId) {
       conversationsCount,
       automationsCount: activeAutomations.length
     },
+    botMode: resolveClinicBotMode(clinic),
     reason: channelSelection.reason
   };
 }

@@ -373,6 +373,61 @@ async function updateClinicBusinessProfileById(clinicId, businessProfile, client
   return result.rows[0] || null;
 }
 
+async function getClinicBotSettingsById(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            name,
+            timezone,
+            "externalTenantId",
+            settings,
+            settings -> 'bot' AS "botSettings",
+            settings -> 'bot' ->> 'mode' AS "botMode"
+     FROM clinics
+     WHERE id = $1
+     LIMIT 1`,
+    [clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function updateClinicBotModeById(clinicId, botMode, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE clinics
+     SET settings = jsonb_set(
+       COALESCE(settings, '{}'::jsonb),
+       '{bot}',
+       jsonb_set(
+         COALESCE(
+           CASE
+             WHEN jsonb_typeof(settings -> 'bot') = 'object' THEN settings -> 'bot'
+             ELSE '{}'::jsonb
+           END,
+           '{}'::jsonb
+         ),
+         '{mode}',
+         to_jsonb($2::text),
+         true
+       ),
+       true
+     ),
+     "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id,
+               name,
+               timezone,
+               "externalTenantId",
+               settings,
+               settings -> 'bot' AS "botSettings",
+               settings -> 'bot' ->> 'mode' AS "botMode"`,
+    [clinicId, botMode]
+  );
+
+  return result.rows[0] || null;
+}
+
 module.exports = {
   findChannelByPhoneNumberId,
   findChannelById,
@@ -387,6 +442,8 @@ module.exports = {
   getClinicWhatsAppSettingsById,
   updateClinicWhatsAppDefaultChannelId,
   getClinicBusinessProfileById,
-  updateClinicBusinessProfileById
+  updateClinicBusinessProfileById,
+  getClinicBotSettingsById,
+  updateClinicBotModeById
 };
 

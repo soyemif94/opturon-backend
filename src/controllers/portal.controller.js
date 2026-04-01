@@ -106,6 +106,10 @@ const {
   updatePortalBusinessSettings
 } = require('../services/portal-business.service');
 const {
+  getPortalBotSettings,
+  updatePortalBotSettings
+} = require('../services/portal-bot-settings.service');
+const {
   createPortalWhatsAppSignupSession,
   getPortalWhatsAppSignupStatus,
   finalizePortalWhatsAppSignup
@@ -3130,6 +3134,63 @@ async function postPortalInstagramConnect(req, res) {
   }
 }
 
+async function getPortalBotSettingsController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalBotSettings(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_bot_settings_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalBotSettingsController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await updatePortalBotSettings(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'invalid_bot_mode'
+          ? 400
+          : result.reason === 'bot_settings_not_saved'
+            ? 500
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId,
+        details: result.detail || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_bot_settings_update_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   getPortalTenantContext,
   getPortalConversations,
@@ -3214,6 +3275,8 @@ module.exports = {
   postPortalWhatsAppDiscoverAssets,
   getPortalInstagramStatus,
   postPortalInstagramConnect,
+  getPortalBotSettingsController,
+  patchPortalBotSettingsController,
   getPortalWhatsAppDefaultChannel,
   patchPortalWhatsAppDefaultChannel,
   getPortalWhatsAppTemplateBlueprints,

@@ -83,6 +83,8 @@ const {
   postPortalWhatsAppDiscoverAssets,
   getPortalInstagramStatus,
   postPortalInstagramConnect,
+  getPortalBotSettingsController,
+  patchPortalBotSettingsController,
   getPortalWhatsAppDefaultChannel,
   patchPortalWhatsAppDefaultChannel,
   getPortalWhatsAppTemplateBlueprints,
@@ -168,6 +170,8 @@ router.patch('/tenants/:tenantId/automations/:automationId', requirePortalIntern
 router.delete('/tenants/:tenantId/automations/:automationId', requirePortalInternalAuth, destroyPortalAutomation);
 router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBusiness);
 router.patch('/tenants/:tenantId/business', requirePortalInternalAuth, patchPortalBusiness);
+router.get('/tenants/:tenantId/bot-settings', requirePortalInternalAuth, getPortalBotSettingsController);
+router.patch('/tenants/:tenantId/bot-settings', requirePortalInternalAuth, patchPortalBotSettingsController);
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupBootstrap);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/finalize', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupFinalize);
