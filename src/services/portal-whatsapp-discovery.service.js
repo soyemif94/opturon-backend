@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const env = require('../config/env');
+const graphClient = require('../whatsapp/whatsapp-graph.client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const { logInfo, logWarn } = require('../utils/logger');
 const {
@@ -87,6 +88,177 @@ function extractCandidateWabaIds(debugTokenData) {
   return Array.from(ids);
 }
 
+function parseNextGraphPage(nextUrl) {
+  const safeUrl = normalizeString(nextUrl);
+  if (!safeUrl) return null;
+
+  const parsed = new URL(safeUrl);
+  const graphVersion = normalizeString(env.getWhatsAppGraphVersion());
+  const versionPrefix = `/${graphVersion}`;
+  const path = parsed.pathname.startsWith(versionPrefix)
+    ? parsed.pathname.slice(versionPrefix.length) || '/'
+    : parsed.pathname;
+
+  const query = {};
+  parsed.searchParams.forEach((value, key) => {
+    query[key] = value;
+  });
+
+  return {
+    path,
+    query
+  };
+}
+
+async function fetchPaginatedGraph(path, accessToken, requestId, query = null) {
+  const items = [];
+  let nextPath = normalizeString(path);
+  let nextQuery = query && typeof query === 'object' ? { ...query } : null;
+
+  while (nextPath) {
+    const result = await graphClient.request('GET', nextPath, {
+      requestId,
+      accessToken,
+      query: nextQuery
+    });
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        result
+      };
+    }
+
+    const pageItems = Array.isArray(result.data && result.data.data) ? result.data.data : [];
+    items.push(...pageItems);
+
+    const nextRef = parseNextGraphPage(result.data && result.data.paging && result.data.paging.next);
+    nextPath = nextRef && nextRef.path ? nextRef.path : null;
+    nextQuery = nextRef && nextRef.query ? nextRef.query : null;
+  }
+
+  return {
+    ok: true,
+    items
+  };
+}
+
+async function discoverAssetsViaBusinesses(accessToken, requestId) {
+  const businessesResult = await fetchPaginatedGraph('/me/businesses', accessToken, requestId, {
+    fields: 'id,name'
+  });
+
+  if (!businessesResult.ok) {
+    const meta = extractGraphErrorMeta(businessesResult.result);
+    const reason = inferMetaDomainReason(meta, 'discovery');
+    return buildReason(reason, buildMetaGraphDetail(reason, meta, 'discovery'), {
+      graphStatus: meta.status,
+      graphCode: meta.code,
+      graphSubcode: meta.subcode,
+      fbtraceId: meta.fbtraceId
+    });
+  }
+
+  const businesses = businessesResult.items
+    .map((item) => ({
+      id: normalizeString(item && item.id) || null,
+      name: normalizeString(item && item.name) || null
+    }))
+    .filter((item) => item.id);
+
+  const discovered = [];
+  let firstFailure = null;
+
+  for (const business of businesses) {
+    const wabasResult = await fetchPaginatedGraph(
+      `/${business.id}/owned_whatsapp_business_accounts`,
+      accessToken,
+      requestId,
+      {
+        fields: 'id,name'
+      }
+    );
+
+    if (!wabasResult.ok) {
+      const meta = extractGraphErrorMeta(wabasResult.result);
+      const reason = inferMetaDomainReason(meta, 'discovery');
+      const detail = buildMetaGraphDetail(reason, meta, 'discovery');
+      if (!firstFailure) {
+        firstFailure = buildReason(reason, detail, {
+          graphStatus: meta.status,
+          graphCode: meta.code,
+          graphSubcode: meta.subcode,
+          fbtraceId: meta.fbtraceId
+        });
+      }
+      logWarn('portal_whatsapp_discovery_fallback_business_failed', {
+        requestId,
+        businessId: business.id,
+        reason,
+        detail,
+        graphStatus: meta.status,
+        graphCode: meta.code,
+        graphSubcode: meta.subcode,
+        fbtraceId: meta.fbtraceId
+      });
+      continue;
+    }
+
+    const wabas = wabasResult.items
+      .map((item) => ({
+        id: normalizeString(item && item.id) || null,
+        name: normalizeString(item && item.name) || null
+      }))
+      .filter((item) => item.id);
+
+    for (const waba of wabas) {
+      const numbers = await listWhatsAppAssetsForWaba(accessToken, waba.id, requestId, {
+        context: 'discovery',
+        wabaName: waba.name || null
+      });
+      if (!numbers.ok) {
+        if (!firstFailure) firstFailure = numbers;
+        logWarn('portal_whatsapp_discovery_fallback_waba_failed', {
+          requestId,
+          businessId: business.id,
+          wabaId: waba.id,
+          reason: numbers.reason,
+          detail: numbers.detail
+        });
+        continue;
+      }
+
+      for (const item of numbers.items) {
+        if (item) discovered.push(item);
+      }
+    }
+  }
+
+  const deduped = Array.from(
+    new Map(discovered.map((item) => [`${item.wabaId}:${item.phoneNumberId}`, item])).values()
+  );
+
+  if (!deduped.length) {
+    return firstFailure
+      ? buildReason(firstFailure.reason, firstFailure.detail, {
+          graphStatus: firstFailure.graphStatus || null,
+          graphCode: firstFailure.graphCode || null,
+          graphSubcode: firstFailure.graphSubcode || null,
+          fbtraceId: firstFailure.fbtraceId || null
+        })
+      : buildReason(
+          'meta_business_assets_not_found',
+          'Meta no devolvio negocios, WABAs o numeros de WhatsApp accesibles para ese token.'
+        );
+  }
+
+  return {
+    ok: true,
+    items: deduped,
+    businessesCount: businesses.length
+  };
+}
+
 async function discoverTenantWhatsAppAssets(tenantId, payload) {
   const safeTenantId = normalizeString(tenantId);
   const accessToken = normalizeString(payload && payload.accessToken);
@@ -112,13 +284,19 @@ async function discoverTenantWhatsAppAssets(tenantId, payload) {
   });
 
   const debugToken = await debugMetaAccessToken(accessToken, requestId);
-  if (!debugToken.ok) {
+  const canFallback =
+    !debugToken.ok
+      ? debugToken.reason === 'meta_debug_token_not_configured'
+      : true;
+
+  if (!debugToken.ok && !canFallback) {
     logWarn('portal_whatsapp_discovery_failed', {
       tenantId: safeTenantId,
       clinicId: context.clinic.id,
       requestId,
       reason: debugToken.reason,
-      detail: debugToken.detail
+      detail: debugToken.detail,
+      strategy: 'debug_token'
     });
     return {
       ...debugToken,
@@ -127,95 +305,121 @@ async function discoverTenantWhatsAppAssets(tenantId, payload) {
     };
   }
 
-  const candidateWabaIds = extractCandidateWabaIds(debugToken.data);
-
-  if (!candidateWabaIds.length) {
-    logWarn('portal_whatsapp_discovery_failed', {
+  const candidateWabaIds = debugToken.ok ? extractCandidateWabaIds(debugToken.data) : [];
+  if (candidateWabaIds.length) {
+    logInfo('portal_whatsapp_discovery_primary_path_used', {
       tenantId: safeTenantId,
       clinicId: context.clinic.id,
       requestId,
-      reason: 'meta_business_assets_not_found',
-      candidateWabaIds: 0
+      strategy: 'debug_token_target_ids',
+      wabaCount: candidateWabaIds.length
     });
-    return buildReason(
-      'meta_business_assets_not_found',
-      'El token no expone WABAs accesibles para esta app. Revisa permisos y acceso al Business Manager.',
-      {
-        tenantId: safeTenantId,
-        clinicId: context.clinic.id
-      }
-    );
-  }
 
-  const discovered = [];
-  let firstFailure = null;
-  for (const wabaId of candidateWabaIds) {
-    const numbers = await listWhatsAppAssetsForWaba(accessToken, wabaId, requestId, {
-      context: 'discovery'
-    });
-    if (!numbers.ok) {
-      logWarn('portal_whatsapp_discovery_waba_failed', {
+    const discovered = [];
+    let firstFailure = null;
+    for (const wabaId of candidateWabaIds) {
+      const numbers = await listWhatsAppAssetsForWaba(accessToken, wabaId, requestId, {
+        context: 'discovery'
+      });
+      if (!numbers.ok) {
+        logWarn('portal_whatsapp_discovery_waba_failed', {
+          tenantId: safeTenantId,
+          clinicId: context.clinic.id,
+          requestId,
+          wabaId,
+          reason: numbers.reason,
+          detail: numbers.detail
+        });
+        if (!firstFailure) firstFailure = numbers;
+        continue;
+      }
+
+      for (const item of numbers.items) {
+        if (item) discovered.push(item);
+      }
+    }
+
+    const deduped = Array.from(
+      new Map(discovered.map((item) => [`${item.wabaId}:${item.phoneNumberId}`, item])).values()
+    );
+
+    if (deduped.length) {
+      logInfo('portal_whatsapp_discovery_completed', {
         tenantId: safeTenantId,
         clinicId: context.clinic.id,
         requestId,
-        wabaId,
-        reason: numbers.reason,
-        detail: numbers.detail
+        strategy: 'debug_token_target_ids',
+        items: deduped.length
       });
-      if (!firstFailure) firstFailure = numbers;
-      continue;
+      return {
+        ok: true,
+        tenantId: safeTenantId,
+        clinicId: context.clinic.id,
+        items: deduped
+      };
     }
 
-    for (const item of numbers.items) {
-      if (item) discovered.push(item);
+    if (firstFailure) {
+      logWarn('portal_whatsapp_discovery_primary_path_empty', {
+        tenantId: safeTenantId,
+        clinicId: context.clinic.id,
+        requestId,
+        strategy: 'debug_token_target_ids',
+        reason: firstFailure.reason,
+        detail: firstFailure.detail
+      });
     }
-  }
-
-  const deduped = Array.from(
-    new Map(discovered.map((item) => [`${item.wabaId}:${item.phoneNumberId}`, item])).values()
-  );
-
-  if (!deduped.length) {
-    const failure = firstFailure
-      ? buildReason(firstFailure.reason, firstFailure.detail, {
-          tenantId: safeTenantId,
-          clinicId: context.clinic.id,
-          graphStatus: firstFailure.graphStatus || null,
-          graphCode: firstFailure.graphCode || null,
-          graphSubcode: firstFailure.graphSubcode || null,
-          fbtraceId: firstFailure.fbtraceId || null
-        })
-      : buildReason(
-          'meta_business_assets_not_found',
-          'Meta no devolvio numeros de WhatsApp accesibles para el token recibido.',
-          {
-            tenantId: safeTenantId,
-            clinicId: context.clinic.id
-          }
-        );
-
-    logWarn('portal_whatsapp_discovery_failed', {
+  } else {
+    logInfo('portal_whatsapp_discovery_primary_path_used', {
       tenantId: safeTenantId,
       clinicId: context.clinic.id,
       requestId,
-      reason: failure.reason,
-      detail: failure.detail
+      strategy: debugToken.ok ? 'debug_token_target_ids_empty' : 'debug_token_unavailable',
+      wabaCount: 0
     });
-    return failure;
   }
 
-  logInfo('portal_whatsapp_discovery_completed', {
+  logInfo('portal_whatsapp_discovery_fallback_used', {
     tenantId: safeTenantId,
     clinicId: context.clinic.id,
     requestId,
-    items: deduped.length
+    strategy: 'me_businesses_owned_wabas'
+  });
+
+  const fallback = await discoverAssetsViaBusinesses(accessToken, requestId);
+  if (!fallback.ok) {
+    logWarn('portal_whatsapp_discovery_fallback_failed', {
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id,
+      requestId,
+      reason: fallback.reason,
+      detail: fallback.detail,
+      graphStatus: fallback.graphStatus || null,
+      graphCode: fallback.graphCode || null,
+      graphSubcode: fallback.graphSubcode || null,
+      fbtraceId: fallback.fbtraceId || null
+    });
+    return {
+      ...fallback,
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id
+    };
+  }
+
+  logInfo('portal_whatsapp_discovery_fallback_succeeded', {
+    tenantId: safeTenantId,
+    clinicId: context.clinic.id,
+    requestId,
+    strategy: 'me_businesses_owned_wabas',
+    businesses: fallback.businessesCount || 0,
+    items: fallback.items.length
   });
 
   return {
     ok: true,
     tenantId: safeTenantId,
     clinicId: context.clinic.id,
-    items: deduped
+    items: fallback.items
   };
 }
 
