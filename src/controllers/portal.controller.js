@@ -10,6 +10,7 @@ const {
   listPortalOrders,
   getPortalOrderDetail,
   createPortalOrder,
+  patchPortalOrder,
   patchPortalOrderStatus
 } = require('../services/portal-orders.service');
 const {
@@ -397,7 +398,11 @@ async function updatePortalOrderStatus(req, res) {
       const status =
         result.reason === 'missing_tenant_id' ||
         result.reason === 'missing_order_id' ||
-        result.reason === 'invalid_order_status'
+        result.reason === 'invalid_order_status' ||
+        result.reason === 'payment_destination_not_found' ||
+        result.reason === 'payment_destination_inactive' ||
+        result.reason === 'missing_payment_destination_for_paid_order' ||
+        result.reason === 'invalid_order_payment_amount'
           ? 400
           : result.reason === 'order_item_product_inactive' || result.reason === 'order_item_insufficient_stock'
             ? 409
@@ -513,6 +518,42 @@ async function getPortalProductCategories(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_product_categories_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalOrderController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const orderId = String(req.params.orderId || '').trim();
+
+  try {
+    const result = await patchPortalOrder(tenantId, orderId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_order_id' ||
+        result.reason === 'payment_destination_not_found' ||
+        result.reason === 'payment_destination_inactive'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.order
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_order_update_failed',
       details: error.message
     });
   }
@@ -3200,6 +3241,7 @@ module.exports = {
   getPortalOrders,
   getPortalOrder,
   postPortalOrder,
+  patchPortalOrderController,
   updatePortalOrderStatus,
   getPortalProducts,
   getPortalProductCategories,

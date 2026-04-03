@@ -431,6 +431,33 @@ async function updateOrderStatus(orderId, clinicId, payload, client = null) {
   return findOrderById(orderId, clinicId, client);
 }
 
+async function updateOrder(orderId, clinicId, payload = {}, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE orders
+     SET
+       "paymentDestinationId" = $3::uuid,
+       "paymentDestinationNameSnapshot" = $4,
+       "paymentDestinationTypeSnapshot" = $5,
+       notes = $6,
+       "updatedAt" = NOW()
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+     RETURNING id`,
+    [
+      orderId,
+      clinicId,
+      payload.paymentDestinationId || null,
+      payload.paymentDestinationNameSnapshot || null,
+      payload.paymentDestinationTypeSnapshot || null,
+      payload.notes || null
+    ]
+  );
+
+  if (!result.rows[0]) return null;
+  return findOrderById(orderId, clinicId, client);
+}
+
 async function listCashCountableOrdersByDestinationAndRange(clinicId, paymentDestinationId, openedAt, closedAt = null, client = null) {
   const result = await dbQuery(
     client,
@@ -492,5 +519,6 @@ module.exports = {
   findOrderById,
   createOrder,
   updateOrderStatus,
+  updateOrder,
   listCashCountableOrdersByDestinationAndRange
 };

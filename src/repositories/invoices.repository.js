@@ -221,6 +221,22 @@ async function listInvoicesByParentInvoiceId(parentInvoiceId, clinicId, client =
   return result.rows.map(normalizeInvoice);
 }
 
+async function findInvoiceByOrderId(orderId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `${baseInvoiceSelect()}
+     WHERE i."orderId" = $1::uuid
+       AND i."clinicId" = $2::uuid
+       AND i.type = 'invoice'
+       AND i.status <> 'void'
+     ORDER BY i."createdAt" DESC
+     LIMIT 1`,
+    [orderId, clinicId]
+  );
+
+  return result.rows[0] ? normalizeInvoice(result.rows[0]) : null;
+}
+
 async function lockInvoiceById(invoiceId, clinicId, client) {
   const result = await dbQuery(
     client,
@@ -596,6 +612,7 @@ module.exports = {
   listInvoicesByClinicId,
   listInvoicesByContactId,
   findInvoiceById,
+  findInvoiceByOrderId,
   listInvoicesByParentInvoiceId,
   lockInvoiceById,
   createInvoice,

@@ -5,7 +5,8 @@ const {
   listOrdersByClinicId,
   findOrderById,
   createOrder,
-  updateOrderStatus
+  updateOrderStatus,
+  updateOrder
 } = require('../repositories/orders.repository');
 const {
   findContactByIdAndClinicId
@@ -13,9 +14,16 @@ const {
 const { findPortalUserByIdAndClinicId } = require('../repositories/portal-users.repository');
 const { findPaymentDestinationById } = require('../repositories/payment-destinations.repository');
 const {
+  findInvoiceByOrderId,
+  createInvoice
+} = require('../repositories/invoices.repository');
+const { createPayment } = require('../repositories/payments.repository');
+const { sumRecordedAllocatedAmountsByInvoiceIds } = require('../repositories/payment-allocations.repository');
+const {
   findProductById,
   updateProduct
 } = require('../repositories/products.repository');
+const { getClinicBusinessProfileById } = require('../repositories/tenant.repository');
 const { findConversationById } = require('../repositories/conversation.repository');
 const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
 
@@ -60,23 +68,188 @@ function normalizeOrderStatus(value) {
 }
 
 function deriveLegacyOrderStatus(status) {
-  if (status === 'confirmed') return 'paid';
+  if (status === 'confirmed') return 'pending_payment';
   if (status === 'cancelled') return 'cancelled';
   return 'new';
 }
 
-function derivePaymentStatus(orderStatus, paymentStatus) {
+function deriveLegacyOrderStatusFromRequested(requestedStatus, fallbackStatus) {
+  const requested = normalizeString(requestedStatus).toLowerCase();
+  if (LEGACY_ORDER_STATUSES.has(requested)) {
+    return requested;
+  }
+  return deriveLegacyOrderStatus(fallbackStatus);
+}
+
+function derivePaymentStatus(orderStatus, paymentStatus, currentPaymentStatus = null, requestedStatus = '') {
   const safePaymentStatus = normalizeString(paymentStatus).toLowerCase();
   if (PAYMENT_STATUSES.has(safePaymentStatus)) {
     return safePaymentStatus;
   }
-  if (orderStatus === 'confirmed') {
+
+  const requested = normalizeString(requestedStatus).toLowerCase();
+  if (requested === 'paid') {
     return 'paid';
   }
-  if (orderStatus === 'cancelled') {
+  if (requested === 'cancelled' || orderStatus === 'cancelled') {
     return 'cancelled';
   }
-  return 'pending';
+  if (requested === 'new' || orderStatus === 'draft') {
+    return 'unpaid';
+  }
+  if (requested === 'pending_payment') {
+    return 'pending';
+  }
+  return PAYMENT_STATUSES.has(normalizeString(currentPaymentStatus).toLowerCase())
+    ? normalizeString(currentPaymentStatus).toLowerCase()
+    : 'pending';
+}
+
+function derivePaymentMethodFromDestination(destination) {
+  if (!destination) return 'other';
+  if (destination.type === 'cash_box') return 'cash';
+  if (destination.type === 'bank' || destination.type === 'wallet') return 'bank_transfer';
+  return 'other';
+}
+
+function normalizeTaxIdType(value) {
+  const requested = normalizeString(value).toUpperCase();
+  if (requested === 'CUIT' || requested === 'CUIL' || requested === 'DNI' || requested === 'NONE') {
+    return requested;
+  }
+  return 'NONE';
+}
+
+function normalizeSuggestedVoucherType(value) {
+  const requested = normalizeString(value).toUpperCase();
+  if (requested === 'A' || requested === 'B' || requested === 'C' || requested === 'NONE') {
+    return requested;
+  }
+  return 'NONE';
+}
+
+function buildInvoiceItemsFromOrder(order) {
+  return (order.items || []).map((item) => ({
+    productId: item.productId || null,
+    descriptionSnapshot: item.descriptionSnapshot || item.nameSnapshot,
+    quantity: quantizeDecimal(item.quantity || 0, 3, 0),
+    unitPrice: quantizeDecimal(item.unitPrice || item.priceSnapshot || 0, 2, 0),
+    taxRate: quantizeDecimal(item.taxRate || 0, 2, 0),
+    subtotalAmount: quantizeDecimal(item.subtotalAmount || 0, 2, 0),
+    totalAmount: quantizeDecimal(item.totalAmount || 0, 2, 0)
+  }));
+}
+
+function buildInternalInvoiceDraft(order, clinicRecord, contact) {
+  const businessProfile = clinicRecord && typeof clinicRecord.businessProfile === 'object'
+    ? clinicRecord.businessProfile
+    : {};
+  const customerLegalName =
+    normalizeString(contact && (contact.companyName || contact.name)) ||
+    normalizeString(order.customerName) ||
+    (order.customerType === 'final_consumer' ? 'Consumidor final' : null);
+  const customerTaxId = normalizeString(contact && contact.taxId) || null;
+  const customerTaxIdDigits = customerTaxId ? customerTaxId.replace(/\D/g, '') : '';
+  const customerTaxIdType = normalizeTaxIdType(
+    customerTaxIdDigits.length === 11 ? 'CUIT' : customerTaxIdDigits.length >= 7 && customerTaxIdDigits.length <= 8 ? 'DNI' : 'NONE'
+  );
+
+  return {
+    contactId: order.contactId || null,
+    orderId: order.id,
+    type: 'invoice',
+    status: 'draft',
+    documentMode: 'internal_only',
+    providerStatus: null,
+    currency: normalizeCurrency(order.currency, 'ARS'),
+    subtotalAmount: quantizeDecimal(order.subtotalAmount || order.subtotal || 0, 2, 0),
+    taxAmount: quantizeDecimal(order.taxAmount || 0, 2, 0),
+    totalAmount: quantizeDecimal(order.totalAmount || order.total || 0, 2, 0),
+    issuedAt: null,
+    dueAt: null,
+    externalProvider: null,
+    externalReference: null,
+    documentKind: 'order_summary',
+    fiscalStatus: 'draft',
+    customerTaxId,
+    customerTaxIdType,
+    customerLegalName,
+    customerVatCondition: normalizeString(contact && contact.taxCondition) || null,
+    issuerLegalName: normalizeString(businessProfile.legalName || clinicRecord?.name) || null,
+    issuerTaxId: normalizeString(businessProfile.taxId) || null,
+    issuerTaxIdType: normalizeTaxIdType(businessProfile.taxIdType),
+    issuerVatCondition: normalizeString(businessProfile.vatCondition) || null,
+    issuerGrossIncomeNumber: normalizeString(businessProfile.grossIncomeNumber) || null,
+    issuerFiscalAddress: normalizeString(businessProfile.fiscalAddress || businessProfile.address) || null,
+    issuerCity: normalizeString(businessProfile.city) || null,
+    issuerProvince: normalizeString(businessProfile.province) || null,
+    pointOfSaleSuggested: normalizeString(businessProfile.pointOfSaleSuggested) || null,
+    suggestedFiscalVoucherType: normalizeSuggestedVoucherType(businessProfile.defaultSuggestedFiscalVoucherType),
+    accountantNotes: null,
+    deliveredToAccountantAt: null,
+    invoicedByAccountantAt: null,
+    accountantReferenceNumber: null,
+    metadata: {
+      source: 'order_payment_sync',
+      orderId: order.id,
+      sourceChannel: order.source || null
+    },
+    items: buildInvoiceItemsFromOrder(order)
+  };
+}
+
+async function syncOrderPaidArtifacts({ context, order, paymentDestination, client }) {
+  if (!paymentDestination) {
+    return buildError(context.tenantId, 'missing_payment_destination_for_paid_order');
+  }
+
+  const clinicRecord = await getClinicBusinessProfileById(context.clinic.id);
+  const contact = order.contactId
+    ? await findContactByIdAndClinicId(order.contactId, context.clinic.id)
+    : null;
+  let invoice = await findInvoiceByOrderId(order.id, context.clinic.id, client);
+
+  if (!invoice) {
+    invoice = await createInvoice(buildInternalInvoiceDraft(order, clinicRecord || context.clinic, contact), client);
+  }
+
+  const paymentAmount = quantizeDecimal(order.totalAmount || order.total || 0, 2, 0);
+  if (!(paymentAmount > 0)) {
+    return buildError(context.tenantId, 'invalid_order_payment_amount');
+  }
+
+  const paidByInvoiceId = await sumRecordedAllocatedAmountsByInvoiceIds(context.clinic.id, [invoice.id], client);
+  const alreadyPaidAmount = quantizeDecimal(paidByInvoiceId[invoice.id] || 0, 2, 0);
+  const remainingAmount = quantizeDecimal(paymentAmount - alreadyPaidAmount, 2, 0);
+
+  if (!(remainingAmount > 0)) {
+    return { ok: true, invoice };
+  }
+
+  await createPayment(
+    {
+      clinicId: context.clinic.id,
+      contactId: order.contactId || null,
+      invoiceId: invoice.id,
+      amount: remainingAmount,
+      currency: normalizeCurrency(order.currency, 'ARS'),
+      method: derivePaymentMethodFromDestination(paymentDestination),
+      status: 'recorded',
+      paidAt: new Date().toISOString(),
+      externalReference: null,
+      notes: normalizeString(order.notes) || null,
+      metadata: {
+        source: 'order_payment_sync',
+        orderId: order.id,
+        destinationId: paymentDestination.id,
+        destinationName: paymentDestination.name,
+        destinationType: paymentDestination.type
+      }
+    },
+    client
+  );
+
+  return { ok: true, invoice };
 }
 
 function normalizeCustomerType(value) {
@@ -196,7 +369,7 @@ async function createOrderForContext(context, payload) {
   const conversationId = normalizeString(payload && payload.conversationId) || null;
   const requestedCurrency = normalizeCurrency(payload && payload.currency, 'ARS');
   const orderStatus = normalizeOrderStatus((payload && (payload.status || payload.orderStatus)) || 'draft');
-  const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus);
+  const paymentStatus = derivePaymentStatus(orderStatus, payload && payload.paymentStatus, null, payload && (payload.status || payload.orderStatus));
   const requestedSource = normalizeString(payload && payload.source).toLowerCase();
   const source = ORDER_SOURCES.has(requestedSource) ? requestedSource : 'manual';
   const requestedCustomerType = normalizeCustomerType(payload && payload.customerType);
@@ -390,7 +563,7 @@ async function createOrderForContext(context, payload) {
           paymentDestinationNameSnapshot: paymentDestination ? paymentDestination.name : null,
           paymentDestinationTypeSnapshot: paymentDestination ? paymentDestination.type : null,
           status: orderStatus,
-          orderStatus: deriveLegacyOrderStatus(orderStatus),
+          orderStatus: deriveLegacyOrderStatusFromRequested(payload && (payload.status || payload.orderStatus), orderStatus),
           notes,
           subtotalAmount,
           taxAmount,
@@ -482,7 +655,7 @@ async function patchOrderStatusForContext(context, orderId, payload) {
   }
 
   const requestedOrderStatus = normalizeOrderStatus(requestedRawStatus);
-  const paymentStatus = derivePaymentStatus(requestedOrderStatus, payload && payload.paymentStatus);
+  const requestedPaymentDestinationId = normalizeString(payload && payload.paymentDestinationId) || null;
   let transactionResult;
   try {
     transactionResult = await withTransaction(async (client) => {
@@ -491,7 +664,43 @@ async function patchOrderStatusForContext(context, orderId, payload) {
         return buildError(context.tenantId, 'order_not_found');
       }
 
-      if (currentOrder.status === requestedOrderStatus) {
+      let paymentDestination = currentOrder.paymentDestination || null;
+      let nextPaymentDestinationId = currentOrder.paymentDestinationId || null;
+      let nextPaymentDestinationNameSnapshot = currentOrder.paymentDestinationNameSnapshot || null;
+      let nextPaymentDestinationTypeSnapshot = currentOrder.paymentDestinationTypeSnapshot || null;
+
+      if (requestedPaymentDestinationId || (payload && Object.prototype.hasOwnProperty.call(payload, 'paymentDestinationId'))) {
+        if (requestedPaymentDestinationId) {
+          paymentDestination = await findPaymentDestinationById(requestedPaymentDestinationId, context.clinic.id, client);
+          if (!paymentDestination) {
+            return buildError(context.tenantId, 'payment_destination_not_found');
+          }
+          if (!paymentDestination.isActive) {
+            return buildError(context.tenantId, 'payment_destination_inactive');
+          }
+          nextPaymentDestinationId = paymentDestination.id;
+          nextPaymentDestinationNameSnapshot = paymentDestination.name;
+          nextPaymentDestinationTypeSnapshot = paymentDestination.type;
+        } else {
+          paymentDestination = null;
+          nextPaymentDestinationId = null;
+          nextPaymentDestinationNameSnapshot = null;
+          nextPaymentDestinationTypeSnapshot = null;
+        }
+      }
+
+      const nextPaymentStatus = derivePaymentStatus(
+        requestedOrderStatus,
+        payload && payload.paymentStatus,
+        currentOrder.paymentStatus,
+        requestedRawStatus
+      );
+      const needsOrderFieldUpdate =
+        nextPaymentDestinationId !== (currentOrder.paymentDestinationId || null) ||
+        nextPaymentDestinationNameSnapshot !== (currentOrder.paymentDestinationNameSnapshot || null) ||
+        nextPaymentDestinationTypeSnapshot !== (currentOrder.paymentDestinationTypeSnapshot || null);
+
+      if (currentOrder.status === requestedOrderStatus && currentOrder.paymentStatus === nextPaymentStatus && !needsOrderFieldUpdate) {
         return {
           ok: true,
           order: currentOrder
@@ -518,8 +727,8 @@ async function patchOrderStatusForContext(context, orderId, payload) {
         context.clinic.id,
         {
           status: requestedOrderStatus,
-          orderStatus: deriveLegacyOrderStatus(requestedOrderStatus),
-          paymentStatus
+          orderStatus: deriveLegacyOrderStatusFromRequested(requestedRawStatus, requestedOrderStatus),
+          paymentStatus: nextPaymentStatus
         },
         client
       );
@@ -528,9 +737,39 @@ async function patchOrderStatusForContext(context, orderId, payload) {
         return buildError(context.tenantId, 'order_not_found');
       }
 
+      const orderWithDestination = needsOrderFieldUpdate
+        ? await updateOrder(
+            safeOrderId,
+            context.clinic.id,
+            {
+              paymentDestinationId: nextPaymentDestinationId,
+              paymentDestinationNameSnapshot: nextPaymentDestinationNameSnapshot,
+              paymentDestinationTypeSnapshot: nextPaymentDestinationTypeSnapshot,
+              notes: order.notes
+            },
+            client
+          )
+        : order;
+
+      if (!orderWithDestination) {
+        return buildError(context.tenantId, 'order_not_found');
+      }
+
+      if (nextPaymentStatus === 'paid' && currentOrder.paymentStatus !== 'paid') {
+        const paymentSyncResult = await syncOrderPaidArtifacts({
+          context,
+          order: orderWithDestination,
+          paymentDestination,
+          client
+        });
+        if (!paymentSyncResult.ok) {
+          return paymentSyncResult;
+        }
+      }
+
       return {
         ok: true,
-        order
+        order: orderWithDestination
       };
     });
   } catch (error) {
@@ -560,6 +799,75 @@ async function patchOrderStatusForContext(context, orderId, payload) {
   };
 }
 
+async function patchOrderForContext(context, orderId, payload) {
+  const safeOrderId = normalizeString(orderId);
+  if (!safeOrderId) {
+    return buildError(context.tenantId, 'missing_order_id');
+  }
+
+  const requestedPaymentDestinationId = normalizeString(payload && payload.paymentDestinationId) || null;
+  try {
+    const result = await withTransaction(async (client) => {
+      const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client);
+      if (!currentOrder) {
+        return buildError(context.tenantId, 'order_not_found');
+      }
+
+      let paymentDestination = null;
+      if (requestedPaymentDestinationId) {
+        paymentDestination = await findPaymentDestinationById(requestedPaymentDestinationId, context.clinic.id, client);
+        if (!paymentDestination) {
+          return buildError(context.tenantId, 'payment_destination_not_found');
+        }
+        if (!paymentDestination.isActive) {
+          return buildError(context.tenantId, 'payment_destination_inactive');
+        }
+      }
+
+      const order = await updateOrder(
+        safeOrderId,
+        context.clinic.id,
+        {
+          paymentDestinationId: paymentDestination ? paymentDestination.id : null,
+          paymentDestinationNameSnapshot: paymentDestination ? paymentDestination.name : null,
+          paymentDestinationTypeSnapshot: paymentDestination ? paymentDestination.type : null,
+          notes: currentOrder.notes
+        },
+        client
+      );
+
+      if (!order) {
+        return buildError(context.tenantId, 'order_not_found');
+      }
+
+      return { ok: true, order };
+    });
+
+    if (!result.ok) {
+      return result;
+    }
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      order: result.order
+    };
+  } catch (error) {
+    logError('portal_order_patch_transaction_failed', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      orderId: safeOrderId,
+      error: error.message,
+      code: error.code || null,
+      detail: error.detail || null,
+      where: error.where || null,
+      constraint: error.constraint || null
+    });
+    throw error;
+  }
+}
+
 async function patchPortalOrderStatus(tenantId, orderId, payload) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -587,12 +895,22 @@ async function patchOrderStatusForClinic(clinicId, orderId, payload) {
   );
 }
 
+async function patchPortalOrder(tenantId, orderId, payload) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  return patchOrderForContext(context, orderId, payload);
+}
+
 module.exports = {
   ORDER_STATUSES: Array.from(ORDER_STATUSES),
   listPortalOrders,
   getPortalOrderDetail,
   createPortalOrder,
   createOrderForClinic,
+  patchPortalOrder,
   patchPortalOrderStatus,
   patchOrderStatusForClinic
 };
