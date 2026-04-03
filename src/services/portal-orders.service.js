@@ -155,6 +155,7 @@ function buildInternalInvoiceDraft(order, clinicRecord, contact) {
   );
 
   return {
+    clinicId: order.clinicId || clinicRecord?.id || null,
     contactId: order.contactId || null,
     orderId: order.id,
     type: 'invoice',
