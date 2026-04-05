@@ -255,6 +255,22 @@ async function getConversationByIdAndClinicId(id, clinicId, client = null) {
   return result.rows[0] || null;
 }
 
+async function listConversationsByIds(conversationIds = [], client = null) {
+  const ids = Array.isArray(conversationIds) ? conversationIds.filter(Boolean) : [];
+  if (!ids.length) return [];
+
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+            "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
+     FROM conversations
+     WHERE id = ANY($1::uuid[])`,
+    [ids]
+  );
+
+  return result.rows;
+}
+
 async function getMessageById(id, client = null) {
   const result = await dbQuery(
     client,
@@ -1362,6 +1378,7 @@ module.exports = {
   insertOutboundMessage,
   getConversationById,
   getConversationByIdAndClinicId,
+  listConversationsByIds,
   getMessageById,
   hasNewerInboundMessage,
   findAutomationOutboundByInboundMessageId,

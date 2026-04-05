@@ -417,11 +417,21 @@ async function listPortalOrders(tenantId) {
   }
 
   const orders = await listOrdersByClinicId(context.clinic.id);
+  const conversationIds = Array.from(new Set(orders.map((order) => order.conversationId).filter(Boolean)));
+  const conversations = conversationIds.length
+    ? await conversationStateRepo.listConversationsByIds(conversationIds)
+    : [];
+  const conversationById = new Map(
+    conversations
+      .filter((conversation) => conversation && conversation.clinicId === context.clinic.id)
+      .map((conversation) => [conversation.id, conversation])
+  );
+
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    orders
+    orders: orders.map((order) => buildOrderDetailPayload(order, conversationById.get(order.conversationId || '') || null))
   };
 }
 
