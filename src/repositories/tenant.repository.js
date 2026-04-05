@@ -464,6 +464,42 @@ async function updateClinicBotRuntimeConfigById(clinicId, runtimeConfig, client 
   return result.rows[0] || null;
 }
 
+async function updateClinicBotTransferConfigById(clinicId, transferConfig, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE clinics
+     SET settings = jsonb_set(
+       COALESCE(settings, '{}'::jsonb),
+       '{bot}',
+       jsonb_set(
+         COALESCE(
+           CASE
+             WHEN jsonb_typeof(settings -> 'bot') = 'object' THEN settings -> 'bot'
+             ELSE '{}'::jsonb
+           END,
+           '{}'::jsonb
+         ),
+         '{transferConfig}',
+         $2::jsonb,
+         true
+       ),
+       true
+     ),
+     "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id,
+               name,
+               timezone,
+               "externalTenantId",
+               settings,
+               settings -> 'bot' AS "botSettings",
+               settings -> 'bot' -> 'transferConfig' AS "botTransferConfig"`,
+    [clinicId, JSON.stringify(transferConfig || {})]
+  );
+
+  return result.rows[0] || null;
+}
+
 module.exports = {
   findChannelByPhoneNumberId,
   findChannelById,
@@ -481,6 +517,7 @@ module.exports = {
   updateClinicBusinessProfileById,
   getClinicBotSettingsById,
   updateClinicBotModeById,
-  updateClinicBotRuntimeConfigById
+  updateClinicBotRuntimeConfigById,
+  updateClinicBotTransferConfigById
 };
 

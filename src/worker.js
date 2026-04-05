@@ -1953,19 +1953,107 @@ function parseGeneratedBotEditIntent(input) {
     return 'sales';
   }
 
-  if (normalized.includes('mas simple') || normalized.includes('más simple') || normalized.includes('simple')) {
+  if (
+    normalized.includes('mas simple') ||
+    normalized.includes('más simple') ||
+    normalized.includes('mas corto') ||
+    normalized.includes('más corto') ||
+    normalized.includes('simple')
+  ) {
     return 'simple';
   }
 
-  if (normalized.includes('cambiar bienvenida') || normalized.includes('bienvenida')) {
+  if (
+    normalized.includes('cambiar bienvenida') ||
+    normalized.includes('cambia la bienvenida') ||
+    normalized.includes('cambiá la bienvenida') ||
+    normalized.includes('bienvenida') ||
+    normalized.includes('no digas te ayudo')
+  ) {
     return 'welcome';
+  }
+
+  if (
+    normalized.includes('mensaje final') ||
+    normalized.includes('cambiar cierre') ||
+    normalized.includes('cambiá el mensaje final')
+  ) {
+    return 'closing';
   }
 
   return null;
 }
 
 function buildGeneratedBotPreviewHelpReply() {
-  return 'Si querés, puedo adaptarlo a tu negocio, hacerlo más formal, más vendedor, más simple o cambiar la bienvenida.';
+  return 'Si querés, puedo adaptarlo a tu negocio, hacerlo más formal, más vendedor, más simple, cambiar la bienvenida o ajustar el mensaje final.';
+}
+
+function parseActiveBotRuntimeEditIntent(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return null;
+
+  if (
+    normalized === 'lo adaptamos' ||
+    normalized.includes('adaptalo a mi negocio') ||
+    normalized.includes('adáptalo a mi negocio') ||
+    normalized.includes('adaptalo al negocio')
+  ) {
+    return 'business';
+  }
+
+  if (
+    normalized === 'mas formal' ||
+    normalized === 'más formal' ||
+    normalized.includes('ponelo mas formal') ||
+    normalized.includes('ponelo más formal') ||
+    normalized.includes('hacelo mas formal') ||
+    normalized.includes('hacelo más formal')
+  ) {
+    return 'formal';
+  }
+
+  if (
+    normalized === 'mas vendedor' ||
+    normalized === 'más vendedor' ||
+    normalized.includes('ponelo mas vendedor') ||
+    normalized.includes('ponelo más vendedor') ||
+    normalized.includes('hacelo mas vendedor') ||
+    normalized.includes('hacelo más vendedor')
+  ) {
+    return 'sales';
+  }
+
+  if (
+    normalized === 'mas simple' ||
+    normalized === 'más simple' ||
+    normalized === 'mas corto' ||
+    normalized === 'más corto' ||
+    normalized.includes('ponelo mas simple') ||
+    normalized.includes('ponelo más simple') ||
+    normalized.includes('hacelo mas simple') ||
+    normalized.includes('hacelo más simple')
+  ) {
+    return 'simple';
+  }
+
+  if (
+    normalized.includes('cambiar bienvenida') ||
+    normalized.includes('cambia la bienvenida') ||
+    normalized.includes('cambiá la bienvenida') ||
+    normalized.includes('no digas te ayudo')
+  ) {
+    return 'welcome';
+  }
+
+  if (
+    normalized.includes('cambiá el mensaje final') ||
+    normalized.includes('cambia el mensaje final') ||
+    normalized.includes('cambiar cierre')
+  ) {
+    return 'closing';
+  }
+
+  return null;
 }
 
 function isGeneratedBotActivationIntent(input) {
@@ -1982,9 +2070,16 @@ function isGeneratedBotActivationIntent(input) {
   ].includes(normalized);
 }
 
+function resolveGeneratedPreviewEditMode(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['business', 'formal', 'sales', 'simple', 'welcome', 'closing'].includes(normalized)
+    ? normalized
+    : 'default';
+}
+
 function buildInitialBotFlowFromOnboarding(onboarding, options = {}) {
   const safeOnboarding = onboarding && typeof onboarding === 'object' ? onboarding : {};
-  const editMode = String(options && options.editMode ? options.editMode : 'default').trim().toLowerCase() || 'default';
+  const editMode = resolveGeneratedPreviewEditMode(options && options.editMode ? options.editMode : 'default');
   const type = detectOnboardingFlowType(safeOnboarding);
   const offer = String(safeOnboarding.mainOffer || 'tus productos o servicios').trim();
   const goal = String(safeOnboarding.goal || 'responder rápido y vender mejor').trim();
@@ -2035,6 +2130,9 @@ function buildInitialBotFlowFromOnboarding(onboarding, options = {}) {
   } else if (editMode === 'welcome') {
     botWelcome = `Hola 👋 Bienvenido. Estoy para ayudarte con ${offer}.`;
     summary = `${summary} Ajustado con una bienvenida nueva.`;
+  } else if (editMode === 'closing') {
+    botRecommendation = 'Si querés, te puedo orientar con una recomendación puntual y dejar encaminado el siguiente paso.\n\n¿Querés que avancemos?';
+    summary = `${summary} Ajustado con un cierre nuevo.`;
   }
 
   const introByEditMode = editMode === 'business'
@@ -2047,6 +2145,8 @@ function buildInitialBotFlowFromOnboarding(onboarding, options = {}) {
           ? 'Listo 🙌\n\nTe lo simplifiqué para que se sienta más directo.'
           : editMode === 'welcome'
             ? 'Perfecto 🙌\n\nTe cambié la bienvenida.'
+            : editMode === 'closing'
+              ? 'Perfecto 🙌\n\nTe ajusté el mensaje final.'
             : 'Listo 🙌\n\nTe armé una primera versión de tu bot.';
 
   return {
@@ -2086,6 +2186,7 @@ function buildInitialBotFlowFromOnboarding(onboarding, options = {}) {
       '- "más vendedor"',
       '- "más simple"',
       '- "cambiar bienvenida"',
+      '- "cambiá el mensaje final"',
       '- "cargar productos"',
       '- "conectar WhatsApp"'
     ].join('\n')
@@ -2097,7 +2198,7 @@ function buildEditedBotPreview(previousPreview, onboarding, editMode) {
 }
 
 function getGeneratedBotTone(generatedPreview) {
-  const lastEditMode = String(generatedPreview && generatedPreview.lastEditMode ? generatedPreview.lastEditMode : '').trim().toLowerCase();
+  const lastEditMode = resolveGeneratedPreviewEditMode(generatedPreview && generatedPreview.lastEditMode ? generatedPreview.lastEditMode : '');
   if (lastEditMode === 'formal' || lastEditMode === 'sales' || lastEditMode === 'simple') {
     return lastEditMode;
   }
@@ -2111,6 +2212,7 @@ function buildExecutableBotConfigFromPreview(onboardingData, generatedPreview) {
   const businessType = String(onboarding.businessType || 'tu negocio').trim();
   const offer = String(onboarding.mainOffer || 'tus productos o servicios').trim();
   const tone = getGeneratedBotTone(preview);
+  const editMode = resolveGeneratedPreviewEditMode(preview.lastEditMode);
 
   let welcomeMessage = 'Hola 👋 Te ayudo.';
   let offerDescription = `Tenemos ${offer} disponible.`;
@@ -2120,12 +2222,10 @@ function buildExecutableBotConfigFromPreview(onboardingData, generatedPreview) {
   if (type === 'store') {
     welcomeMessage = tone === 'formal'
       ? 'Hola, gracias por escribirnos. Estoy para ayudarte.'
-      : tone === 'welcome'
-        ? `Hola 👋 Bienvenido. Estoy para ayudarte con ${offer}.`
-        : tone === 'simple'
+      : tone === 'simple'
           ? `Hola 👋 Te ayudo con ${offer}.`
           : 'Hola 👋 Te ayudo.';
-    offerDescription = tone === 'business'
+    offerDescription = editMode === 'business'
       ? `Tenemos ${offer} disponible para ${businessType}. Decime qué tipo buscás y te oriento.`
       : `Tenemos ${offer} disponible. Si buscás algo puntual, decime qué tipo necesitás y te recomiendo opciones.`;
     recommendationMessage = tone === 'sales'
@@ -2175,6 +2275,14 @@ function buildExecutableBotConfigFromPreview(onboardingData, generatedPreview) {
     closingCta = tone === 'simple' ? '¿Querés verla?' : '¿Querés que te muestre algunas alternativas?';
   }
 
+  if (editMode === 'welcome') {
+    welcomeMessage = `Hola 👋 Bienvenido. Estoy para ayudarte con ${offer}.`;
+  }
+
+  if (editMode === 'closing') {
+    closingCta = '¿Querés que avancemos con una recomendación puntual?';
+  }
+
   return {
     enabled: true,
     type,
@@ -2187,6 +2295,104 @@ function buildExecutableBotConfigFromPreview(onboardingData, generatedPreview) {
   };
 }
 
+function inferOfferFromRuntimeConfig(onboardingData, config) {
+  const onboarding = onboardingData && typeof onboardingData === 'object' ? onboardingData : {};
+  if (String(onboarding.mainOffer || '').trim()) {
+    return String(onboarding.mainOffer).trim();
+  }
+
+  const offerDescription = String(config && config.offerDescription ? config.offerDescription : '').trim();
+  const extracted = offerDescription.match(/(?:Tenemos|Ofrecemos)\s+(.+?)\s+(?:disponible|y te|\.|$)/i);
+  if (extracted && extracted[1]) {
+    return extracted[1].trim();
+  }
+
+  return 'tus productos o servicios';
+}
+
+function buildEditedActiveBotConfig(currentConfig, onboardingData, editMode) {
+  const config = currentConfig && typeof currentConfig === 'object' ? currentConfig : null;
+  if (!config) return null;
+
+  const onboarding = onboardingData && typeof onboardingData === 'object' ? onboardingData : {};
+  const businessType = String(onboarding.businessType || config.businessType || 'tu negocio').trim();
+  const offer = inferOfferFromRuntimeConfig(onboarding, config);
+  const type = String(config.type || detectOnboardingFlowType(onboarding)).trim() || 'generic';
+  const tone = editMode === 'formal' || editMode === 'sales' || editMode === 'simple'
+    ? editMode
+    : String(config.tone || 'default').trim().toLowerCase() || 'default';
+
+  const nextConfig = {
+    ...config,
+    enabled: true,
+    type,
+    tone,
+    businessType
+  };
+
+  if (editMode === 'formal') {
+    nextConfig.welcomeMessage = 'Hola, gracias por escribirnos. Estoy para ayudarte.';
+    nextConfig.recommendationMessage = type === 'services'
+      ? 'Puedo sugerirte una alternativa adecuada para avanzar con una propuesta conveniente.'
+      : 'Puedo sugerirte una alternativa adecuada para empezar de forma conveniente.';
+    nextConfig.closingCta = 'Si querés, te comparto algunas opciones.';
+  } else if (editMode === 'sales') {
+    nextConfig.recommendationMessage = type === 'services'
+      ? 'Te recomiendo una opción inicial que deja encaminado el avance y ayuda a cerrar la consulta.'
+      : 'Te puedo recomendar una opción de entrada que funciona muy bien y deja encaminada la compra.';
+    nextConfig.closingCta = 'Si querés, te muestro las mejores alternativas ahora mismo.';
+  } else if (editMode === 'simple') {
+    nextConfig.welcomeMessage = type === 'services' || type === 'store' || type === 'restaurant'
+      ? `Hola 👋 Te ayudo con ${offer}.`
+      : 'Hola 👋 Te ayudo.';
+    nextConfig.recommendationMessage = 'Te recomiendo una opción simple para empezar.';
+    nextConfig.closingCta = '¿Querés verla?';
+  } else if (editMode === 'business') {
+    nextConfig.offerDescription = type === 'services'
+      ? `Ofrecemos ${offer} para ${businessType}. Contame qué necesitás y te digo qué opción te conviene más.`
+      : `Tenemos ${offer} disponible para ${businessType}. Decime qué tipo buscás y te oriento.`;
+    const businessTail = 'La idea es que el cliente entienda rápido qué ofrecés y avance sin fricción.';
+    const currentRecommendation = String(nextConfig.recommendationMessage || '').trim();
+    nextConfig.recommendationMessage = currentRecommendation.includes(businessTail)
+      ? currentRecommendation
+      : `${currentRecommendation}\n\n${businessTail}`.trim();
+  } else if (editMode === 'welcome') {
+    nextConfig.welcomeMessage = `Hola 👋 Bienvenido. Estoy para ayudarte con ${offer}.`;
+  } else if (editMode === 'closing') {
+    nextConfig.closingCta = '¿Querés que avancemos con una recomendación puntual?';
+  } else {
+    return null;
+  }
+
+  return nextConfig;
+}
+
+function buildActiveBotEditReply(updatedConfig, editIntent) {
+  const editLabel = editIntent === 'formal'
+    ? 'más formal'
+    : editIntent === 'sales'
+      ? 'más vendedor'
+      : editIntent === 'simple'
+        ? 'más simple'
+        : editIntent === 'business'
+          ? 'más adaptado a tu negocio'
+          : editIntent === 'welcome'
+            ? 'con una bienvenida nueva'
+            : 'con un cierre nuevo';
+
+  return [
+    'Perfecto 🙌',
+    '',
+    `Ya actualicé tu bot activo y quedó ${editLabel}.`,
+    '',
+    'Así va a responder ahora:',
+    `- Bienvenida: ${updatedConfig.welcomeMessage}`,
+    `- Presentación: ${updatedConfig.offerDescription}`,
+    `- Recomendación: ${updatedConfig.recommendationMessage}`,
+    `- Cierre: ${updatedConfig.closingCta}`
+  ].join('\n');
+}
+
 function getActiveGeneratedBotConfig(clinic) {
   const settings = parseClinicSettingsObject(clinic);
   const config = settings && settings.bot && settings.bot.runtimeConfig && typeof settings.bot.runtimeConfig === 'object'
@@ -2194,6 +2400,145 @@ function getActiveGeneratedBotConfig(clinic) {
     : null;
   if (!config || config.enabled !== true) return null;
   return config;
+}
+
+function getClinicTransferConfig(clinic) {
+  const settings = parseClinicSettingsObject(clinic);
+  const config = settings && settings.bot && settings.bot.transferConfig && typeof settings.bot.transferConfig === 'object'
+    ? settings.bot.transferConfig
+    : null;
+  if (!config || config.enabled !== true) return null;
+  return config;
+}
+
+function hasConfiguredTransferData(transferConfig) {
+  if (!transferConfig || typeof transferConfig !== 'object') return false;
+  return Boolean(
+    String(transferConfig.alias || '').trim() ||
+    String(transferConfig.cbu || '').trim() ||
+    String(transferConfig.holderName || '').trim() ||
+    String(transferConfig.bankName || '').trim()
+  );
+}
+
+function parseTransferPaymentIntent(input) {
+  const text = normalizeCommandText(input);
+  if (!text) return null;
+
+  if (
+    text.includes('ya pague') ||
+    text.includes('ya pagué') ||
+    text.includes('te mando el comprobante') ||
+    text.includes('te envio el comprobante') ||
+    text.includes('te envié el comprobante') ||
+    text.includes('mando comprobante') ||
+    text.includes('envio comprobante') ||
+    text.includes('envié comprobante')
+  ) {
+    return 'proof_notice';
+  }
+
+  if (
+    text.includes('quiero pagar') ||
+    text.includes('te transfiero') ||
+    text.includes('pasame alias') ||
+    text.includes('pasame cbu') ||
+    text.includes('como hago el pago') ||
+    text.includes('cómo hago el pago') ||
+    text.includes('pagar por transferencia') ||
+    text.includes('transferencia')
+  ) {
+    return 'request';
+  }
+
+  return null;
+}
+
+function isInboundPaymentProofMessage(inboundMessage) {
+  if (!inboundMessage || typeof inboundMessage !== 'object') return false;
+  const type = String(inboundMessage.type || '').trim().toLowerCase();
+  return type === 'image' || type === 'document';
+}
+
+function extractPaymentProofMetadata(inboundMessage) {
+  if (!inboundMessage || typeof inboundMessage !== 'object') return null;
+  const raw = inboundMessage.raw && typeof inboundMessage.raw === 'object' ? inboundMessage.raw : {};
+  const message = raw.message && typeof raw.message === 'object' ? raw.message : {};
+  const type = String(inboundMessage.type || '').trim().toLowerCase();
+  const media = type === 'document'
+    ? (message.document && typeof message.document === 'object' ? message.document : {})
+    : (message.image && typeof message.image === 'object' ? message.image : {});
+
+  return {
+    messageId: inboundMessage.id || null,
+    providerMessageId: inboundMessage.waMessageId || inboundMessage.providerMessageId || null,
+    type: type || null,
+    mediaId: media.id || null,
+    mimeType: media.mime_type || null,
+    sha256: media.sha256 || null,
+    caption: media.caption || null,
+    filename: media.filename || null
+  };
+}
+
+function buildTransferInstructionsReply(transferConfig) {
+  const lines = [
+    'Perfecto.',
+    '',
+    'Podés pagar por transferencia con estos datos:'
+  ];
+
+  if (transferConfig.alias) lines.push(`- Alias: ${String(transferConfig.alias).trim()}`);
+  if (transferConfig.cbu) lines.push(`- CBU: ${String(transferConfig.cbu).trim()}`);
+  if (transferConfig.holderName) lines.push(`- Titular: ${String(transferConfig.holderName).trim()}`);
+  if (transferConfig.bankName) lines.push(`- Banco: ${String(transferConfig.bankName).trim()}`);
+  if (transferConfig.reference) lines.push(`- Referencia: ${String(transferConfig.reference).trim()}`);
+
+  lines.push('');
+  lines.push('Cuando hagas la transferencia, mandame el comprobante por acá y lo dejo registrado.');
+
+  return lines.join('\n');
+}
+
+function buildTransferMissingConfigReply() {
+  return [
+    'Todavía no tengo datos de transferencia configurados para pasarte por acá.',
+    '',
+    'Si querés, te puede ayudar alguien del equipo para terminar el cobro.'
+  ].join('\n');
+}
+
+function buildTransferProofRequestReply() {
+  return [
+    'Perfecto.',
+    '',
+    'Mandame la foto o el archivo del comprobante y lo dejo registrado para validación.'
+  ].join('\n');
+}
+
+function buildTransferPendingValidationReply() {
+  return [
+    'Recibí tu comprobante.',
+    '',
+    'Lo dejé registrado y quedó pendiente de validación.',
+    'Te aviso por acá cuando esté validado.'
+  ].join('\n');
+}
+
+function buildTransferPendingStatusReply() {
+  return [
+    'Tu comprobante ya quedó registrado.',
+    '',
+    'Por ahora sigue pendiente de validación. Ni bien se revise, te avisamos por acá.'
+  ].join('\n');
+}
+
+function buildTransferHelpReply(transferConfig) {
+  if (hasConfiguredTransferData(transferConfig)) {
+    return 'Si querés, te paso alias/CBU para transferir o podés mandarme el comprobante si ya pagaste.';
+  }
+
+  return buildTransferMissingConfigReply();
 }
 
 function isConfiguredBotOfferIntent(input) {
@@ -2619,7 +2964,7 @@ async function resolveCommerceCancellation({ conversation, inboundText, currentS
   };
 }
 
-async function resolveCommerceDecision({ conversation, clinic, contact, inboundText }) {
+async function resolveCommerceDecision({ conversation, clinic, contact, inboundText, inboundMessage = null }) {
   const currentState = String(conversation.state || '').toUpperCase();
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const catalogFromContext = Array.isArray(safeContext.commerceCatalog) ? safeContext.commerceCatalog : [];
@@ -2751,6 +3096,170 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   });
   if (cancelDecision) {
     return cancelDecision;
+  }
+
+  const activeRuntimeConfig = getActiveGeneratedBotConfig(clinic);
+  const runtimeEditIntent = parseActiveBotRuntimeEditIntent(inboundText);
+  if (activeRuntimeConfig && runtimeEditIntent && ['READY', 'NEW', 'IDLE'].includes(currentState)) {
+    const updatedRuntimeConfig = buildEditedActiveBotConfig(activeRuntimeConfig, getOnboardingData(safeContext), runtimeEditIntent);
+    if (updatedRuntimeConfig) {
+      await updateClinicBotRuntimeConfigById(conversation.clinicId, updatedRuntimeConfig);
+      return {
+        replyText: buildActiveBotEditReply(updatedRuntimeConfig, runtimeEditIntent),
+        newState: 'READY',
+        newStage: 'offering',
+        contextPatch: {
+          activeBotDomain: 'commerce',
+          botRuntimeConfig: updatedRuntimeConfig
+        }
+      };
+    }
+  }
+
+  const transferConfig = getClinicTransferConfig(clinic);
+  const transferIntent = parseTransferPaymentIntent(inboundText);
+  const transferContext = safeContext.transferPayment && typeof safeContext.transferPayment === 'object'
+    ? safeContext.transferPayment
+    : null;
+  const transferOrderId = String(
+    (transferContext && transferContext.orderId) ||
+    (safeContext && safeContext.commerceLastOrderId) ||
+    ''
+  ).trim() || null;
+  const transferFlowActive = currentState === 'PAYMENT_TRANSFER' || Boolean(transferContext && transferContext.orderId);
+  const ensureOrderPendingForTransfer = async () => {
+    if (!transferOrderId) return null;
+    const patchPayload = {
+      paymentStatus: 'pending'
+    };
+
+    if (transferConfig && transferConfig.destinationId) {
+      patchPayload.paymentDestinationId = transferConfig.destinationId;
+    }
+
+    const patchResult = await patchOrderStatusForClinic(conversation.clinicId, transferOrderId, patchPayload);
+    return patchResult && patchResult.ok ? patchResult.order : null;
+  };
+
+  if (transferOrderId && isInboundPaymentProofMessage(inboundMessage) && transferFlowActive) {
+    const order = await ensureOrderPendingForTransfer();
+    const proofMetadata = extractPaymentProofMetadata(inboundMessage);
+    return {
+      replyText: buildTransferPendingValidationReply(),
+      newState: 'PAYMENT_TRANSFER',
+      newStage: 'payment_pending_validation',
+      contextPatch: {
+        commerceLastOrderId: transferOrderId,
+        commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : new Date().toISOString(),
+        transferPayment: {
+          orderId: transferOrderId,
+          status: 'payment_pending_validation',
+          paymentMethod: 'bank_transfer',
+          destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+          requestedAt: transferContext && transferContext.requestedAt ? transferContext.requestedAt : new Date().toISOString(),
+          proofSubmittedAt: new Date().toISOString(),
+          proofMessageId: inboundMessage && inboundMessage.id ? inboundMessage.id : null,
+          proofMetadata,
+          orderPaymentStatus: order && order.paymentStatus ? order.paymentStatus : 'pending'
+        }
+      }
+    };
+  }
+
+  if (transferIntent === 'request' || transferIntent === 'proof_notice') {
+    if (!transferOrderId) {
+      return {
+        replyText: 'Primero dejemos tu plan o pedido confirmado, y ahí sí te paso cómo seguir con el pago.',
+        newState: currentState || 'READY',
+        contextPatch: null
+      };
+    }
+
+    if (!hasConfiguredTransferData(transferConfig)) {
+      return {
+        replyText: buildTransferMissingConfigReply(),
+        newState: 'PAYMENT_TRANSFER',
+        newStage: 'payment_requested',
+        contextPatch: {
+          commerceLastOrderId: transferOrderId,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : new Date().toISOString(),
+          transferPayment: {
+            orderId: transferOrderId,
+            status: 'payment_requested',
+            paymentMethod: 'bank_transfer',
+            destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+            requestedAt: new Date().toISOString()
+          }
+        }
+      };
+    }
+
+    const order = await ensureOrderPendingForTransfer();
+    if (transferIntent === 'proof_notice') {
+      return {
+        replyText: buildTransferProofRequestReply(),
+        newState: 'PAYMENT_TRANSFER',
+        newStage: 'payment_requested',
+        contextPatch: {
+          commerceLastOrderId: transferOrderId,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : new Date().toISOString(),
+          transferPayment: {
+            orderId: transferOrderId,
+            status: 'payment_requested',
+            paymentMethod: 'bank_transfer',
+            destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+            requestedAt: transferContext && transferContext.requestedAt ? transferContext.requestedAt : new Date().toISOString(),
+            orderPaymentStatus: order && order.paymentStatus ? order.paymentStatus : 'pending'
+          }
+        }
+      };
+    }
+
+    return {
+      replyText: buildTransferInstructionsReply(transferConfig),
+      newState: 'PAYMENT_TRANSFER',
+      newStage: 'payment_requested',
+      contextPatch: {
+        commerceLastOrderId: transferOrderId,
+        commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : new Date().toISOString(),
+        transferPayment: {
+          orderId: transferOrderId,
+          status: 'payment_requested',
+          paymentMethod: 'bank_transfer',
+          destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+          requestedAt: new Date().toISOString(),
+          orderPaymentStatus: order && order.paymentStatus ? order.paymentStatus : 'pending'
+        }
+      }
+    };
+  }
+
+  if (currentState === 'PAYMENT_TRANSFER') {
+    if (transferContext && transferContext.status === 'payment_pending_validation') {
+      return {
+        replyText: buildTransferPendingStatusReply(),
+        newState: 'PAYMENT_TRANSFER',
+        newStage: 'payment_pending_validation',
+        contextPatch: {
+          transferPayment: transferContext
+        }
+      };
+    }
+
+    return {
+      replyText: buildTransferHelpReply(transferConfig),
+      newState: 'PAYMENT_TRANSFER',
+      newStage: 'payment_requested',
+      contextPatch: {
+        transferPayment: transferContext || {
+          orderId: transferOrderId,
+          status: 'payment_requested',
+          paymentMethod: 'bank_transfer',
+          destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+          requestedAt: new Date().toISOString()
+        }
+      }
+    };
   }
 
   if (currentState === 'POST_CONFIRMATION') {
@@ -2967,8 +3476,16 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
       if (existingPreview && editIntent) {
         const preview = buildEditedBotPreview(existingPreview, onboarding, editIntent);
+        const persistedRuntimeConfig = activeRuntimeConfig
+          ? buildEditedActiveBotConfig(activeRuntimeConfig, onboarding, editIntent)
+          : null;
+        if (persistedRuntimeConfig) {
+          await updateClinicBotRuntimeConfigById(conversation.clinicId, persistedRuntimeConfig);
+        }
         return {
-          replyText: preview.text,
+          replyText: persistedRuntimeConfig
+            ? `${preview.text}\n\n---\n\nYa guardé este cambio en tu bot activo.`
+            : preview.text,
           newState: 'ONBOARDING',
           newStage: getOnboardingStageKey(5),
           contextPatch: {
@@ -2980,6 +3497,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
               lastEditMode: preview.lastEditMode,
               previewText: preview.text
             },
+            botRuntimeConfig: persistedRuntimeConfig || null,
             commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
             commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
             commerceActivationOfferState: 'onboarding_completed',
@@ -5380,7 +5898,8 @@ async function processConversationReplyJob(job) {
         conversation,
         clinic,
         contact,
-        inboundText
+        inboundText,
+        inboundMessage
       });
       if (decision) {
         decisionSource = 'commerce';
