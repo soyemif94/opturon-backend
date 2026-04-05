@@ -5817,6 +5817,14 @@ async function processConversationReplyJob(job) {
       inboundText,
       recentMessages
     });
+  const shouldBypassAutomationForRuntimeEdit = Boolean(
+    getActiveGeneratedBotConfig(clinic) &&
+    parseActiveBotRuntimeEditIntent(inboundText)
+  );
+  if (shouldBypassAutomationForRuntimeEdit) {
+    automationRuntime.replyText = null;
+    automationRuntime.contextPatch = null;
+  }
   let automationContextPatch = automationRuntime.contextPatch || null;
 
   logInfo('incoming_whatsapp_message_received', {
@@ -5849,6 +5857,17 @@ async function processConversationReplyJob(job) {
       clinicId: conversation.clinicId,
       automationIds: automationRuntime.matched.map((automation) => automation.id),
       triggerTypes: automationRuntime.matched.map((automation) => automation.trigger?.type || null)
+    });
+  }
+
+  if (shouldBypassAutomationForRuntimeEdit) {
+    logInfo('automation_runtime_bypassed_for_active_bot_edit', {
+      requestId,
+      jobId: job.id,
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      currentState,
+      inboundText: normalizedInboundText
     });
   }
 
