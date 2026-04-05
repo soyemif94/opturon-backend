@@ -4,6 +4,12 @@ const {
   updateClinicBotModeById,
   updateClinicBotTransferConfigById
 } = require('../repositories/tenant.repository');
+const {
+  buildTransferInstructionsText,
+  normalizeHumanText,
+  normalizeTransferConfig,
+  validateTransferConfig
+} = require('../utils/transfer-config');
 
 const ALLOWED_BOT_MODES = new Set(['sales', 'agenda', 'hybrid']);
 
@@ -34,44 +40,25 @@ function mapBotSettings(tenantId, clinic, botMode) {
   };
 }
 
-function normalizeTransferFlag(value, fallback = false) {
-  if (typeof value === 'boolean') return value;
-  const safe = normalizeString(value).toLowerCase();
-  if (!safe) return fallback;
-  return safe === 'true' || safe === '1' || safe === 'yes' || safe === 'si' || safe === 'sí';
-}
-
-function mapTransferConfig(rawConfig) {
-  const safe = rawConfig && typeof rawConfig === 'object' ? rawConfig : {};
-  return {
-    enabled: normalizeTransferFlag(safe.enabled, false),
-    alias: normalizeString(safe.alias),
-    cbu: normalizeString(safe.cbu),
-    titular: normalizeString(safe.titular || safe.holderName),
-    bank: normalizeString(safe.bank || safe.bankName),
-    instructions: normalizeString(safe.instructions),
-    destinationId: normalizeString(safe.destinationId) || null,
-    reference: normalizeString(safe.reference) || null
-  };
-}
-
 function mapPortalTransferSettings(tenantId, clinic) {
   const botSettings = clinic && clinic.botSettings && typeof clinic.botSettings === 'object'
     ? clinic.botSettings
     : {};
+  const transferConfig = normalizeTransferConfig(botSettings.transferConfig, false);
 
   return {
     tenantId,
     clinicId: clinic.id,
     clinicName: clinic.name || null,
-    transferConfig: mapTransferConfig(botSettings.transferConfig)
+    transferConfig,
+    previewText: buildTransferInstructionsText(transferConfig)
   };
 }
 
 async function getPortalBotSettings(tenantId) {
   const safeTenantId = normalizeString(tenantId);
   if (!safeTenantId) {
-    return buildReason('missing_tenant_id', 'No recibimos el tenant para cargar la configuracion del bot.');
+    return buildReason('missing_tenant_id', 'No recibimos el tenant para cargar la configuración del bot.');
   }
 
   const context = await resolvePortalTenantContext(safeTenantId);
@@ -81,7 +68,7 @@ async function getPortalBotSettings(tenantId) {
 
   const clinic = await getClinicBotSettingsById(context.clinic.id);
   if (!clinic) {
-    return buildReason('tenant_mapping_not_found', 'No encontramos la clinica asociada a este workspace.', {
+    return buildReason('tenant_mapping_not_found', 'No encontramos la clínica asociada a este workspace.', {
       tenantId: safeTenantId
     });
   }
@@ -97,7 +84,7 @@ async function getPortalBotSettings(tenantId) {
 async function updatePortalBotSettings(tenantId, payload) {
   const safeTenantId = normalizeString(tenantId);
   if (!safeTenantId) {
-    return buildReason('missing_tenant_id', 'No recibimos el tenant para guardar la configuracion del bot.');
+    return buildReason('missing_tenant_id', 'No recibimos el tenant para guardar la configuración del bot.');
   }
 
   const context = await resolvePortalTenantContext(safeTenantId);
@@ -114,7 +101,7 @@ async function updatePortalBotSettings(tenantId, payload) {
 
   const clinic = await updateClinicBotModeById(context.clinic.id, nextMode);
   if (!clinic) {
-    return buildReason('bot_settings_not_saved', 'No pudimos persistir la configuracion del bot.', {
+    return buildReason('bot_settings_not_saved', 'No pudimos persistir la configuración del bot.', {
       tenantId: safeTenantId
     });
   }
@@ -130,7 +117,7 @@ async function updatePortalBotSettings(tenantId, payload) {
 async function getPortalBotTransferConfig(tenantId) {
   const safeTenantId = normalizeString(tenantId);
   if (!safeTenantId) {
-    return buildReason('missing_tenant_id', 'No recibimos el tenant para cargar la configuracion de transferencia.');
+    return buildReason('missing_tenant_id', 'No recibimos el tenant para cargar la configuración de transferencia.');
   }
 
   const context = await resolvePortalTenantContext(safeTenantId);
@@ -140,7 +127,7 @@ async function getPortalBotTransferConfig(tenantId) {
 
   const clinic = await getClinicBotSettingsById(context.clinic.id);
   if (!clinic) {
-    return buildReason('tenant_mapping_not_found', 'No encontramos la clinica asociada a este workspace.', {
+    return buildReason('tenant_mapping_not_found', 'No encontramos la clínica asociada a este workspace.', {
       tenantId: safeTenantId
     });
   }
@@ -156,7 +143,7 @@ async function getPortalBotTransferConfig(tenantId) {
 async function updatePortalBotTransferConfig(tenantId, payload) {
   const safeTenantId = normalizeString(tenantId);
   if (!safeTenantId) {
-    return buildReason('missing_tenant_id', 'No recibimos el tenant para guardar la configuracion de transferencia.');
+    return buildReason('missing_tenant_id', 'No recibimos el tenant para guardar la configuración de transferencia.');
   }
 
   const context = await resolvePortalTenantContext(safeTenantId);
@@ -166,7 +153,7 @@ async function updatePortalBotTransferConfig(tenantId, payload) {
 
   const clinic = await getClinicBotSettingsById(context.clinic.id);
   if (!clinic) {
-    return buildReason('tenant_mapping_not_found', 'No encontramos la clinica asociada a este workspace.', {
+    return buildReason('tenant_mapping_not_found', 'No encontramos la clínica asociada a este workspace.', {
       tenantId: safeTenantId
     });
   }
@@ -177,25 +164,35 @@ async function updatePortalBotTransferConfig(tenantId, payload) {
 
   const nextTransferConfig = {
     ...existingTransferConfig,
-    enabled: normalizeTransferFlag(payload && payload.enabled, false),
-    alias: normalizeString(payload && payload.alias),
-    cbu: normalizeString(payload && payload.cbu),
-    titular: normalizeString(payload && payload.titular),
-    bank: normalizeString(payload && payload.bank),
-    instructions: normalizeString(payload && payload.instructions),
-    holderName: normalizeString(payload && payload.titular),
-    bankName: normalizeString(payload && payload.bank)
+    ...normalizeTransferConfig(
+      {
+        ...existingTransferConfig,
+        enabled: payload && payload.enabled,
+        alias: normalizeHumanText(payload && payload.alias),
+        cbu: normalizeString(payload && payload.cbu),
+        titular: normalizeHumanText(payload && payload.titular),
+        bank: normalizeHumanText(payload && payload.bank),
+        instructions: normalizeHumanText(payload && payload.instructions)
+      },
+      false
+    )
   };
 
-  if (nextTransferConfig.enabled && !normalizeString(nextTransferConfig.alias) && !normalizeString(nextTransferConfig.cbu)) {
-    return buildReason('invalid_transfer_config', 'Para activar transferencia, cargá al menos alias o CBU.', {
-      tenantId: safeTenantId
-    });
+  const validation = validateTransferConfig(nextTransferConfig);
+  if (!validation.ok) {
+    return buildReason(
+      'invalid_transfer_config',
+      validation.errors.general || validation.errors.alias || validation.errors.cbu || 'Configuración de transferencia inválida.',
+      {
+        tenantId: safeTenantId,
+        fieldErrors: validation.errors
+      }
+    );
   }
 
   const updatedClinic = await updateClinicBotTransferConfigById(context.clinic.id, nextTransferConfig);
   if (!updatedClinic) {
-    return buildReason('transfer_config_not_saved', 'No pudimos guardar la configuracion de transferencia.', {
+    return buildReason('transfer_config_not_saved', 'No pudimos guardar la configuración de transferencia.', {
       tenantId: safeTenantId
     });
   }

@@ -3285,7 +3285,9 @@ async function patchPortalBotSettingsController(req, res) {
         success: false,
         error: result.reason,
         tenantId: result.tenantId || tenantId,
-        details: result.detail || null
+        detail: result.detail || null,
+        details: result.detail || null,
+        fieldErrors: result.fieldErrors || null
       });
     }
 

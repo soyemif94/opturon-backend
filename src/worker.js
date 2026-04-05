@@ -52,6 +52,11 @@ const {
   suggestClinicAgendaSlots,
   createClinicAgendaBotReservation
 } = require('./services/portal-agenda.service');
+const {
+  buildTransferInstructionsText,
+  hasConfiguredTransferData,
+  normalizeTransferConfig
+} = require('./utils/transfer-config');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -2419,28 +2424,7 @@ function getClinicTransferConfig(clinic) {
     ? settings.bot.transferConfig
     : null;
   if (!config || config.enabled !== true) return null;
-  return {
-    ...config,
-    alias: String(config.alias || '').trim(),
-    cbu: String(config.cbu || '').trim(),
-    titular: String(config.titular || config.holderName || '').trim(),
-    bank: String(config.bank || config.bankName || '').trim(),
-    instructions: String(config.instructions || '').trim(),
-    holderName: String(config.holderName || config.titular || '').trim(),
-    bankName: String(config.bankName || config.bank || '').trim()
-  };
-}
-
-function hasConfiguredTransferData(transferConfig) {
-  if (!transferConfig || typeof transferConfig !== 'object') return false;
-  return Boolean(
-    String(transferConfig.alias || '').trim() ||
-    String(transferConfig.cbu || '').trim() ||
-    String(transferConfig.titular || '').trim() ||
-    String(transferConfig.bank || '').trim() ||
-    String(transferConfig.holderName || '').trim() ||
-    String(transferConfig.bankName || '').trim()
-  );
+  return normalizeTransferConfig(config, true);
 }
 
 function parseTransferPaymentIntent(input) {
@@ -2504,25 +2488,7 @@ function extractPaymentProofMetadata(inboundMessage) {
 }
 
 function buildTransferInstructionsReply(transferConfig) {
-  const lines = [
-    'Perfecto.',
-    '',
-    'Podés pagar por transferencia con estos datos:'
-  ];
-
-  if (transferConfig.alias) lines.push(`- Alias: ${String(transferConfig.alias).trim()}`);
-  if (transferConfig.cbu) lines.push(`- CBU: ${String(transferConfig.cbu).trim()}`);
-  if (transferConfig.titular || transferConfig.holderName) lines.push(`- Titular: ${String(transferConfig.titular || transferConfig.holderName).trim()}`);
-  if (transferConfig.bank || transferConfig.bankName) lines.push(`- Banco: ${String(transferConfig.bank || transferConfig.bankName).trim()}`);
-  if (transferConfig.reference) lines.push(`- Referencia: ${String(transferConfig.reference).trim()}`);
-
-  lines.push('');
-  lines.push(
-    String(transferConfig.instructions || '').trim() ||
-    'Cuando hagas la transferencia, mandame el comprobante por acá y lo dejo registrado.'
-  );
-
-  return lines.join('\n');
+  return buildTransferInstructionsText(transferConfig);
 }
 
 function buildTransferMissingConfigReply() {
