@@ -1,4 +1,5 @@
-const { withTransaction } = require('../db/client');
+const { DateTime } = require('luxon');
+const { query, withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const { logError } = require('../utils/logger');
 const {
@@ -432,6 +433,76 @@ async function listPortalOrders(tenantId) {
     tenantId: context.tenantId,
     clinic: context.clinic,
     orders: orders.map((order) => buildOrderDetailPayload(order, conversationById.get(order.conversationId || '') || null))
+  };
+}
+
+function normalizeTransferMetricsRange(range, timezone) {
+  const safeRange = String(range || 'last_7_days').trim().toLowerCase();
+  const zone = timezone || 'America/Argentina/Buenos_Aires';
+  const now = DateTime.now().setZone(zone);
+
+  if (safeRange === 'today') {
+    return {
+      range: 'today',
+      fromIso: now.startOf('day').toUTC().toISO(),
+      toIso: now.endOf('day').toUTC().toISO()
+    };
+  }
+
+  if (safeRange === 'last_30_days') {
+    return {
+      range: 'last_30_days',
+      fromIso: now.minus({ days: 29 }).startOf('day').toUTC().toISO(),
+      toIso: now.endOf('day').toUTC().toISO()
+    };
+  }
+
+  return {
+    range: 'last_7_days',
+    fromIso: now.minus({ days: 6 }).startOf('day').toUTC().toISO(),
+    toIso: now.endOf('day').toUTC().toISO()
+  };
+}
+
+async function getPortalOrderPaymentMetrics(tenantId, range) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const normalizedRange = normalizeTransferMetricsRange(range, context.clinic.timezone);
+  const result = await query(
+    `SELECT
+       COALESCE(SUM(CASE
+         WHEN context->'transferPayment'->>'status' = 'payment_pending_validation'
+           AND NULLIF(context->'transferPayment'->>'orderId', '') IS NOT NULL
+           AND NULLIF(context->'transferPayment'->>'proofSubmittedAt', '')::timestamptz BETWEEN $2::timestamptz AND $3::timestamptz
+         THEN 1 ELSE 0 END), 0)::int AS pending,
+       COALESCE(SUM(CASE
+         WHEN context->'transferPayment'->>'status' = 'payment_confirmed'
+           AND NULLIF(context->'transferPayment'->>'validatedAt', '')::timestamptz BETWEEN $2::timestamptz AND $3::timestamptz
+         THEN 1 ELSE 0 END), 0)::int AS approved,
+       COALESCE(SUM(CASE
+         WHEN context->'transferPayment'->>'status' = 'payment_rejected'
+           AND NULLIF(context->'transferPayment'->>'validatedAt', '')::timestamptz BETWEEN $2::timestamptz AND $3::timestamptz
+         THEN 1 ELSE 0 END), 0)::int AS rejected
+     FROM conversations
+     WHERE "clinicId" = $1::uuid
+       AND context ? 'transferPayment'`,
+    [context.clinic.id, normalizedRange.fromIso, normalizedRange.toIso]
+  );
+
+  const row = result.rows[0] || {};
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    metrics: {
+      range: normalizedRange.range,
+      pending: Number(row.pending || 0),
+      approved: Number(row.approved || 0),
+      rejected: Number(row.rejected || 0)
+    }
   };
 }
 
@@ -1160,6 +1231,7 @@ async function validatePortalOrderTransferPayment(tenantId, orderId, payload = {
 module.exports = {
   ORDER_STATUSES: Array.from(ORDER_STATUSES),
   listPortalOrders,
+  getPortalOrderPaymentMetrics,
   getPortalOrderDetail,
   createPortalOrder,
   createOrderForClinic,
