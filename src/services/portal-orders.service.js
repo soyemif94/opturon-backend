@@ -179,10 +179,33 @@ function summarizeTransferPayment(order, conversation) {
   };
 }
 
-function buildOrderDetailPayload(order, conversation) {
+function buildConversationPreview(conversation, messages = []) {
+  if (!conversation || !conversation.id) return null;
+  const previewMessages = Array.isArray(messages)
+    ? messages
+        .slice(-5)
+        .map((message) => ({
+          id: message.id,
+          direction: message.direction,
+          text: normalizeString(message.text) || '',
+          timestamp: message.createdAt,
+          type: normalizeString(message.type) || null
+        }))
+    : [];
+
+  return {
+    conversationId: conversation.id,
+    state: conversation.state || null,
+    stage: conversation.stage || null,
+    messages: previewMessages
+  };
+}
+
+function buildOrderDetailPayload(order, conversation, conversationMessages = []) {
   return {
     ...order,
-    transferPayment: summarizeTransferPayment(order, conversation)
+    transferPayment: summarizeTransferPayment(order, conversation),
+    conversationPreview: buildConversationPreview(conversation, conversationMessages)
   };
 }
 
@@ -539,7 +562,13 @@ async function getPortalOrderDetail(tenantId, orderId) {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    order: buildOrderDetailPayload(order, conversation && conversation.clinicId === context.clinic.id ? conversation : null)
+    order: buildOrderDetailPayload(
+      order,
+      conversation && conversation.clinicId === context.clinic.id ? conversation : null,
+      conversation && conversation.clinicId === context.clinic.id && order.conversationId
+        ? await conversationStateRepo.listConversationMessagesByClinicId(order.conversationId, context.clinic.id, 5)
+        : []
+    )
   };
 }
 

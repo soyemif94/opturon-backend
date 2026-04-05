@@ -7,6 +7,7 @@ const {
   findPortalUserByNameAndClinicId,
   listPortalUsersByClinicId
 } = require('../repositories/portal-users.repository');
+const { findLatestOrderByConversationId, findOrderById } = require('../repositories/orders.repository');
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
@@ -60,6 +61,27 @@ function mapDeal(context, contactId) {
   };
 }
 
+function getTransferPaymentContext(context) {
+  const safeContext = parseContext(context);
+  const transferPayment = safeContext.transferPayment;
+  return transferPayment && typeof transferPayment === 'object' && !Array.isArray(transferPayment)
+    ? transferPayment
+    : null;
+}
+
+function buildRelatedOrderSummary(order) {
+  if (!order || !order.id) return null;
+  return {
+    id: order.id,
+    orderStatus: order.orderStatus || null,
+    paymentStatus: order.paymentStatus || null,
+    total: order.total || 0,
+    currency: order.currency || 'ARS',
+    customerName: order.customerName || null,
+    createdAt: order.createdAt || null
+  };
+}
+
 function normalizeBotDomainOverride(value) {
   const safeValue = String(value || '').trim().toLowerCase();
   if (safeValue === 'agenda' || safeValue === 'commerce') return safeValue;
@@ -74,6 +96,7 @@ function normalizeBotFlowLock(value) {
 
 function mapConversationRow(row) {
   const context = parseContext(row.context);
+  const transferPayment = getTransferPaymentContext(context);
   return {
     id: row.id,
     channelId: row.channelId || null,
@@ -93,7 +116,13 @@ function mapConversationRow(row) {
       phone: row.contactPhone || row.waFrom || undefined,
       tags: []
     },
-    deal: mapDeal(context, row.contactId)
+    deal: mapDeal(context, row.contactId),
+    transferPaymentStatus: transferPayment && String(transferPayment.status || '').trim()
+      ? String(transferPayment.status || '').trim()
+      : null,
+    transferPaymentOrderId: transferPayment && String(transferPayment.orderId || '').trim()
+      ? String(transferPayment.orderId || '').trim()
+      : null
   };
 }
 
@@ -329,6 +358,13 @@ async function getPortalConversationDetail(tenantId, conversationId) {
   ]);
 
   const contextData = parseContext(conversation.context);
+  const transferPayment = getTransferPaymentContext(contextData);
+  const transferOrderId = transferPayment && String(transferPayment.orderId || '').trim()
+    ? String(transferPayment.orderId || '').trim()
+    : null;
+  const relatedOrder =
+    (transferOrderId ? await findOrderById(transferOrderId, context.clinic.id) : null) ||
+    await findLatestOrderByConversationId(conversation.id, context.clinic.id);
   const detailRow = mapConversationRow({
     ...conversation,
     contactId: contact ? contact.id : conversation.contactId,
@@ -397,7 +433,8 @@ async function getPortalConversationDetail(tenantId, conversationId) {
         text: event.type,
         createdAt: event.createdAt
       })),
-      channelBinding
+      channelBinding,
+      relatedOrder: buildRelatedOrderSummary(relatedOrder)
     }
   };
 }

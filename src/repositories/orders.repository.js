@@ -286,6 +286,82 @@ async function findOrderById(orderId, clinicId, client = null) {
   return result.rows[0] ? normalizeOrder(result.rows[0]) : null;
 }
 
+async function findLatestOrderByConversationId(conversationId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT
+       o.id,
+       o."clinicId",
+       o."contactId",
+       o."customerName",
+       o."customerPhone",
+       o."customerType",
+       o.source,
+       o."sellerUserId",
+       o."sellerNameSnapshot",
+       o."paymentDestinationId",
+       o."paymentDestinationNameSnapshot",
+       o."paymentDestinationTypeSnapshot",
+       o.status,
+       o.notes,
+       o.subtotal,
+       o.total,
+       o."subtotalAmount",
+       o."taxAmount",
+       o."totalAmount",
+       o.currency,
+       o."paymentStatus",
+       o."orderStatus",
+       o."conversationId",
+       o."createdAt",
+       o."updatedAt",
+       ct.name AS "contactName",
+       ct.phone AS "contactPhone",
+       seller.name AS "sellerName",
+       CASE WHEN seller.role = 'editor' THEN 'seller' ELSE seller.role END AS "sellerRole",
+       pd.name AS "paymentDestinationName",
+       pd.type AS "paymentDestinationType",
+       pd."isActive" AS "paymentDestinationIsActive",
+       COALESCE(items.items, '[]'::json) AS items
+     FROM orders o
+     LEFT JOIN contacts ct ON ct.id = o."contactId"
+     LEFT JOIN staff_users seller ON seller.id = o."sellerUserId"
+     LEFT JOIN payment_destinations pd
+       ON pd.id = o."paymentDestinationId"
+      AND pd."clinicId" = o."clinicId"
+     LEFT JOIN LATERAL (
+       SELECT json_agg(
+         json_build_object(
+           'id', oi.id,
+           'productId', oi."productId",
+           'descriptionSnapshot', COALESCE(oi."descriptionSnapshot", oi."nameSnapshot"),
+           'nameSnapshot', oi."nameSnapshot",
+           'skuSnapshot', oi."skuSnapshot",
+           'unitPrice', COALESCE(oi."unitPrice", oi."priceSnapshot"),
+           'priceSnapshot', oi."priceSnapshot",
+           'currencySnapshot', oi."currencySnapshot",
+           'quantity', oi.quantity,
+           'taxRate', oi."taxRate",
+           'subtotalAmount', oi."subtotalAmount",
+           'totalAmount', oi."totalAmount",
+           'variant', oi.variant,
+           'createdAt', oi."createdAt"
+         )
+         ORDER BY oi."createdAt" ASC
+       ) AS items
+       FROM order_items oi
+       WHERE oi."orderId" = o.id
+     ) items ON TRUE
+     WHERE o."conversationId" = $1::uuid
+       AND o."clinicId" = $2::uuid
+     ORDER BY o."createdAt" DESC
+     LIMIT 1`,
+    [conversationId, clinicId]
+  );
+
+  return result.rows[0] ? normalizeOrder(result.rows[0]) : null;
+}
+
 async function createOrder(input, client = null) {
   const billingStatus = normalizeOrderStatus(input.status || input.orderStatus);
   const legacyOrderStatus = input.orderStatus || legacyOrderStatusFromBillingStatus(billingStatus);
@@ -517,6 +593,7 @@ async function listCashCountableOrdersByDestinationAndRange(clinicId, paymentDes
 module.exports = {
   listOrdersByClinicId,
   findOrderById,
+  findLatestOrderByConversationId,
   createOrder,
   updateOrderStatus,
   updateOrder,
