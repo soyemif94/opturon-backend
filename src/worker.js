@@ -1881,6 +1881,118 @@ function getOnboardingData(context) {
   };
 }
 
+function detectOnboardingFlowType(onboarding) {
+  const businessType = normalizeCommandText(onboarding && onboarding.businessType ? onboarding.businessType : '');
+  const mainOffer = normalizeCommandText(onboarding && onboarding.mainOffer ? onboarding.mainOffer : '');
+
+  if (businessType.includes('restaurante') || businessType.includes('comida') || mainOffer.includes('comida')) {
+    return 'restaurant';
+  }
+
+  if (
+    businessType.includes('servicio') ||
+    businessType.includes('consult') ||
+    businessType.includes('agencia') ||
+    mainOffer.includes('servicio')
+  ) {
+    return 'services';
+  }
+
+  if (
+    businessType.includes('tienda') ||
+    businessType.includes('online') ||
+    businessType.includes('ecommerce') ||
+    businessType.includes('shop') ||
+    mainOffer.includes('ropa') ||
+    mainOffer.includes('producto')
+  ) {
+    return 'store';
+  }
+
+  return 'generic';
+}
+
+function parseOnboardingCompleteOption(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return null;
+
+  if (normalized === '1' || normalized.includes('configurar tu bot') || normalized.includes('bot inicial')) return '1';
+  if (normalized === '2' || normalized.includes('cargar productos') || normalized.includes('cargar servicios')) return '2';
+  if (normalized === '3' || normalized.includes('conectar whatsapp') || normalized.includes('conectar whatsapp')) return '3';
+  if (normalized.includes('adapt')) return 'adapt';
+  return null;
+}
+
+function buildInitialBotFlowFromOnboarding(onboarding) {
+  const safeOnboarding = onboarding && typeof onboarding === 'object' ? onboarding : {};
+  const type = detectOnboardingFlowType(safeOnboarding);
+  const offer = String(safeOnboarding.mainOffer || 'tus productos o servicios').trim();
+  const goal = String(safeOnboarding.goal || 'responder rápido y vender mejor').trim();
+  const businessType = String(safeOnboarding.businessType || 'tu negocio').trim();
+
+  let customerOpening = '"Hola, qué opciones tenés?"';
+  let botWelcome = 'Hola 👋 Te ayudo.';
+  let customerNeed = '"Busco algo económico"';
+  let botRecommendation = 'Si querés algo para empezar, te puedo recomendar una opción simple y conveniente.\n\n¿Querés que te muestre algunas alternativas?';
+  let summary = `Flujo base para ${businessType}: responde, recomienda y ayuda a cerrar conversaciones iniciales.`;
+
+  if (type === 'store') {
+    customerOpening = '"Hola, qué tenés?"';
+    botWelcome = `Hola 👋 Te ayudo.\n\nTenemos ${offer} disponible.\n\nSi buscás algo puntual, decime qué tipo necesitás y te recomiendo opciones.`;
+    botRecommendation = 'Si querés algo para empezar, te puedo recomendar algunas opciones accesibles que están funcionando bien.\n\n¿Querés que te muestre algunas?';
+    summary = `Flujo base para tienda: muestra ${offer}, orienta por necesidad y empuja una recomendación simple.`;
+  } else if (type === 'restaurant') {
+    customerOpening = '"Hola, qué tienen hoy?"';
+    botWelcome = `Hola 👋 Te ayudo.\n\nHoy podés consultar ${offer} y te recomiendo según lo que tengas ganas de pedir.\n\nSi querés algo puntual, decime y te oriento.`;
+    botRecommendation = 'Si buscás algo económico, te puedo sugerir opciones accesibles que salen muy bien.\n\n¿Querés que te muestre algunas?';
+    summary = `Flujo base para restaurante: responde rápido, orienta el pedido y empuja el cierre.`;
+  } else if (type === 'services') {
+    customerOpening = '"Hola, qué servicio ofrecen?"';
+    botWelcome = `Hola 👋 Te ayudo.\n\nOfrecemos ${offer}.\n\nContame qué necesitás y te digo qué opción te conviene más.`;
+    botRecommendation = 'Si querés empezar simple, te recomiendo una opción inicial para avanzar sin fricción.\n\n¿Querés que te cuente cómo sería?';
+    summary = `Flujo base para servicios: detecta la consulta, recomienda una opción y propone avanzar.`;
+  }
+
+  return {
+    type,
+    summary,
+    generatedAt: new Date().toISOString(),
+    text: [
+      'Listo 🙌',
+      '',
+      'Te armé una primera versión de tu bot.',
+      '',
+      'Así respondería a un cliente:',
+      '',
+      'Cliente:',
+      customerOpening,
+      '',
+      'Bot:',
+      `"${botWelcome}"`,
+      '',
+      'Cliente:',
+      customerNeed,
+      '',
+      'Bot:',
+      `"${botRecommendation}"`,
+      '',
+      '---',
+      '',
+      'Este flujo ya está pensado para:',
+      '- responder rápido',
+      '- guiar al cliente',
+      '- empujar la venta',
+      '',
+      `Objetivo base: ${goal}.`,
+      '',
+      'Ahora podemos seguir con:',
+      '- "lo adaptamos"',
+      '- "cargar productos"',
+      '- "conectar WhatsApp"'
+    ].join('\n')
+  };
+}
+
 function isRecentCommerceOrder(lastOrderAt) {
   if (!lastOrderAt) return false;
   const parsedAt = Date.parse(String(lastOrderAt));
@@ -2581,6 +2693,63 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           commerceActivationChoice: '1'
         }
       };
+    }
+
+    if (onboardingStep === 5) {
+      const completeOption = parseOnboardingCompleteOption(inboundText);
+      if (completeOption === '1') {
+        const preview = buildInitialBotFlowFromOnboarding(onboarding);
+        return {
+          replyText: preview.text,
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding,
+            generatedBotPreview: {
+              type: preview.type,
+              summary: preview.summary,
+              generatedAt: preview.generatedAt
+            },
+            commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+            commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+            commerceActivationOfferState: 'onboarding_completed',
+            commerceActivationChoice: '1'
+          }
+        };
+      }
+
+      if (completeOption === '2') {
+        return {
+          replyText: 'Perfecto. El siguiente paso es cargar tus productos o servicios para que el bot pueda recomendarlos mejor. Cuando quieras, seguimos por ahí.',
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding
+          }
+        };
+      }
+
+      if (completeOption === '3') {
+        return {
+          replyText: 'Perfecto. El siguiente paso es conectar tu WhatsApp para que este flujo pueda empezar a atender conversaciones reales.',
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding
+          }
+        };
+      }
+
+      if (completeOption === 'adapt') {
+        return {
+          replyText: 'Perfecto. Podemos adaptarlo al tono de tu negocio, a tus productos o a tu forma de vender. Si querés, contame qué te gustaría ajustar primero.',
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding
+          }
+        };
+      }
     }
 
     return {
