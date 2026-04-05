@@ -1325,6 +1325,7 @@ function buildCommerceResetPatch(extra = {}) {
     commerceSuggestedProductName: null,
     commerceActivationOfferState: null,
     commerceActivationChoice: null,
+    commerceDemoStep: null,
     ...extra
   };
 }
@@ -1665,14 +1666,7 @@ function buildPostConfirmationOptionReply(option) {
   }
 
   if (option === '2') {
-    return [
-      'Perfecto.',
-      '',
-      'Te hago una demo rápida para que veas cómo funciona Opturon en la práctica.',
-      '',
-      'En 2 minutos te muestro cómo toma consultas, recomienda planes y ayuda a cerrar ventas por WhatsApp.',
-      'Si querés, decime "seguir" y arrancamos.'
-    ].join('\n');
+    return null;
   }
 
   return [
@@ -1682,6 +1676,118 @@ function buildPostConfirmationOptionReply(option) {
     '',
     'Mientras tanto, si querés, también puedo mostrarte los planes otra vez o seguir por acá.'
   ].join('\n');
+}
+
+function getDemoStageKey(step) {
+  const safeStep = Number.isInteger(step) && step > 0 ? step : 1;
+  if (safeStep <= 1) return 'demo_step_1';
+  if (safeStep === 2) return 'demo_step_2';
+  if (safeStep === 3) return 'demo_step_3';
+  if (safeStep === 4) return 'demo_step_4';
+  return 'demo_close';
+}
+
+function buildDemoExperienceReply(step) {
+  const safeStep = Number.isInteger(step) && step > 0 ? step : 1;
+
+  if (safeStep === 1) {
+    return [
+      'Perfecto 🙌',
+      '',
+      'Te muestro cómo funciona Opturon en la práctica.',
+      '',
+      'Imaginá que un cliente te escribe por WhatsApp preguntando por tus productos 👇',
+      '',
+      'Cliente:',
+      '"Hola, qué opciones tenés?"',
+      '',
+      'Escribí "seguir" y te muestro cómo respondería Opturon.'
+    ].join('\n');
+  }
+
+  if (safeStep === 2) {
+    return [
+      'Bot:',
+      '"Hola 👋 Te ayudo a elegir.',
+      '',
+      'Estos son algunos productos disponibles:',
+      '1️⃣ Producto A',
+      '2️⃣ Producto B',
+      '3️⃣ Producto C"',
+      '',
+      'Escribí "seguir" y avanzamos.'
+    ].join('\n');
+  }
+
+  if (safeStep === 3) {
+    return [
+      'Cliente:',
+      '"Busco algo económico"',
+      '',
+      'Escribí "seguir" y te muestro cómo sigue la conversación.'
+    ].join('\n');
+  }
+
+  if (safeStep === 4) {
+    return [
+      'Bot:',
+      '"Si querés algo simple para empezar, te recomiendo Producto A.',
+      '',
+      'Es una buena opción para arrancar sin complicarte y ya te queda lista para avanzar hoy.',
+      '',
+      'Si querés, te lo dejo reservado ahora mismo."',
+      '',
+      'Escribí "seguir" para ver el cierre.'
+    ].join('\n');
+  }
+
+  return [
+    'Esto es lo que hace Opturon automáticamente por vos:',
+    '- responde',
+    '- recomienda',
+    '- guía la conversación',
+    '- ayuda a cerrar ventas',
+    '',
+    '¿Querés que lo activemos en tu negocio?',
+    '',
+    'Podés escribir:',
+    '- "activar"',
+    '- "volver"',
+    '- "ver planes"'
+  ].join('\n');
+}
+
+function isDemoAdvanceIntent(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return false;
+
+  return [
+    'seguir',
+    'ok',
+    'dale',
+    'continuar',
+    'siguiente',
+    'si',
+    'bueno',
+    'genial'
+  ].includes(normalized) || normalized.length <= 20;
+}
+
+function isDemoActivateIntent(input) {
+  const normalized = normalizeCommandText(input);
+  return [
+    'activar',
+    'activar ahora',
+    'quiero activar',
+    'lo activamos',
+    'avanzar',
+    'seguir con la activacion'
+  ].includes(normalized);
+}
+
+function isDemoBackIntent(input) {
+  const normalized = normalizeCommandText(input);
+  return normalized === 'volver' || normalized === 'volver atras';
 }
 
 function isRecentCommerceOrder(lastOrderAt) {
@@ -2184,6 +2290,22 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   if (currentState === 'POST_CONFIRMATION') {
     const activationOption = parsePostConfirmationOption(inboundText);
     if (activationOption) {
+      if (activationOption === '2') {
+        return {
+          replyText: buildDemoExperienceReply(1),
+          newState: 'DEMO',
+          newStage: getDemoStageKey(1),
+          contextPatch: buildCommerceResetPatch({
+            commerceCartItems: null,
+            commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+            commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+            commerceActivationOfferState: 'demo',
+            commerceActivationChoice: activationOption,
+            commerceDemoStep: 1
+          })
+        };
+      }
+
       return {
         replyText: buildPostConfirmationOptionReply(activationOption),
         newState: 'IDLE',
@@ -2212,6 +2334,92 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
         commerceActivationOfferState: 'pending',
         commerceActivationChoice: null
+      })
+    };
+  }
+
+  if (currentState === 'DEMO') {
+    const demoStep = Number.isInteger(Number(safeContext.commerceDemoStep))
+      ? Number(safeContext.commerceDemoStep)
+      : 1;
+
+    if (isDemoActivateIntent(inboundText)) {
+      return {
+        replyText: buildPostConfirmationOptionReply('1'),
+        newState: 'IDLE',
+        newStage: 'activation_followup',
+        contextPatch: buildCommerceResetPatch({
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceActivationOfferState: 'completed',
+          commerceActivationChoice: '1'
+        })
+      };
+    }
+
+    if (isDemoBackIntent(inboundText)) {
+      return {
+        replyText: buildPostConfirmationFallbackReply(),
+        newState: 'POST_CONFIRMATION',
+        newStage: 'activation_offer',
+        contextPatch: buildCommerceResetPatch({
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceActivationOfferState: 'pending',
+          commerceActivationChoice: null
+        })
+      };
+    }
+
+    if (isRelistPlansCommand(inboundText) || isCommerceEntryIntent(inboundText)) {
+      const catalogDecision = await buildCatalogEntryDecision();
+      return {
+        ...catalogDecision,
+        newStage: 'offering'
+      };
+    }
+
+    if (demoStep >= 5) {
+      return {
+        replyText: buildDemoExperienceReply(5),
+        newState: 'DEMO',
+        newStage: getDemoStageKey(5),
+        contextPatch: buildCommerceResetPatch({
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceActivationOfferState: 'demo',
+          commerceActivationChoice: '2',
+          commerceDemoStep: 5
+        })
+      };
+    }
+
+    if (isDemoAdvanceIntent(inboundText)) {
+      const nextDemoStep = Math.min(demoStep + 1, 5);
+      return {
+        replyText: buildDemoExperienceReply(nextDemoStep),
+        newState: 'DEMO',
+        newStage: getDemoStageKey(nextDemoStep),
+        contextPatch: buildCommerceResetPatch({
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceActivationOfferState: 'demo',
+          commerceActivationChoice: '2',
+          commerceDemoStep: nextDemoStep
+        })
+      };
+    }
+
+    return {
+      replyText: buildDemoExperienceReply(demoStep),
+      newState: 'DEMO',
+      newStage: getDemoStageKey(demoStep),
+      contextPatch: buildCommerceResetPatch({
+        commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+        commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+        commerceActivationOfferState: 'demo',
+        commerceActivationChoice: '2',
+        commerceDemoStep: demoStep
       })
     };
   }
