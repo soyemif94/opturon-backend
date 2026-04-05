@@ -338,7 +338,12 @@ function isExplicitCommerceTrigger(rawText) {
     'pedidos'
   ];
 
-  return triggers.some((trigger) => text.includes(normalizeCommandText(trigger)));
+  return (
+    triggers.some((trigger) => text.includes(normalizeCommandText(trigger))) ||
+    isPlanComparisonIntent(text) ||
+    isPlanRecommendationIntent(text) ||
+    isPlanPricingIntent(text)
+  );
 }
 
 function looksLikeAgendaIntent({ inboundText, intent, managementIntent }) {
@@ -721,6 +726,248 @@ function isPlanCatalog(products) {
   return planCount >= Math.ceil(products.length * 0.6);
 }
 
+function getOrderedPlanProducts(products) {
+  const safeProducts = Array.isArray(products) ? products.filter(isPlanProduct) : [];
+  if (!safeProducts.length) return [];
+
+  const ordered = [];
+  const usedIds = new Set();
+  const groups = [
+    ['inicial', 'start', 'starter'],
+    ['crecimiento', 'grow', 'growth'],
+    ['empresa', 'pro', 'enterprise']
+  ];
+
+  for (const group of groups) {
+    const matched = safeProducts.find((product) => {
+      const name = normalizeCommandText(product && product.name ? product.name : '');
+      const sku = normalizeCommandText(product && product.sku ? product.sku : '');
+      return group.some((keyword) => name.includes(keyword) || sku.includes(keyword));
+    });
+
+    if (matched && !usedIds.has(String(matched.id || matched.productId || ''))) {
+      usedIds.add(String(matched.id || matched.productId || ''));
+      ordered.push(matched);
+    }
+  }
+
+  const remaining = safeProducts
+    .filter((product) => !usedIds.has(String(product.id || product.productId || '')))
+    .sort((left, right) => Number(left.price || 0) - Number(right.price || 0));
+
+  return [...ordered, ...remaining];
+}
+
+function extractPlanDescription(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const descriptionLines = String(safeProduct.description || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return {
+    headline: descriptionLines[0] || 'Es una gran opción para empezar a automatizar ventas con Opturon.',
+    featureLines: descriptionLines.slice(1, 4)
+  };
+}
+
+function buildPlanSalesCta(text = 'Si querés, te recomiendo uno según lo que buscás o te muestro el que más te convenga.') {
+  return text;
+}
+
+function isPlanComparisonIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return [
+    'cual me conviene',
+    'cuál me conviene',
+    'cual recomendas',
+    'cuál recomendás',
+    'cual recomiendan',
+    'que cambia entre planes',
+    'qué cambia entre planes',
+    'que diferencia hay',
+    'qué diferencia hay',
+    'que plan me sirve',
+    'qué plan me sirve',
+    'que cambia',
+    'qué cambia'
+  ].some((pattern) => text.includes(normalizeCommandText(pattern)));
+}
+
+function resolvePlanNeedHint(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  if (
+    text.includes('algo simple') ||
+    text.includes('recien empiezo') ||
+    text.includes('recién empiezo') ||
+    text.includes('empezar simple') ||
+    text.includes('plan inicial') ||
+    text.includes('basico') ||
+    text.includes('básico')
+  ) {
+    return 'starter';
+  }
+
+  if (
+    text.includes('vender mas') ||
+    text.includes('vender más') ||
+    text.includes('automatizar mejor') ||
+    text.includes('mas completo') ||
+    text.includes('más completo') ||
+    text.includes('quiero crecer')
+  ) {
+    return 'growth';
+  }
+
+  if (
+    text.includes('empresa') ||
+    text.includes('personalizado') ||
+    text.includes('integraciones') ||
+    text.includes('soporte prioritario') ||
+    text.includes('a medida')
+  ) {
+    return 'enterprise';
+  }
+
+  return null;
+}
+
+function isPlanRecommendationIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return Boolean(resolvePlanNeedHint(text)) || [
+    'cual me conviene',
+    'cuál me conviene',
+    'cual recomendas',
+    'cuál recomendás',
+    'cual recomiendan',
+    'que plan me sirve',
+    'qué plan me sirve'
+  ].some((pattern) => text.includes(normalizeCommandText(pattern)));
+}
+
+function isPlanPricingIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('cuanto sale') ||
+    text.includes('cuánto sale') ||
+    text.includes('precio') ||
+    text.includes('precios') ||
+    text.includes('valor') ||
+    text.includes('costo') ||
+    text.includes('que incluye') ||
+    text.includes('qué incluye') ||
+    text.includes('incluye cada uno')
+  );
+}
+
+function findPlanByNeedHint(products, needHint) {
+  const orderedPlans = getOrderedPlanProducts(products);
+  if (!orderedPlans.length) return null;
+
+  if (needHint === 'starter') {
+    return orderedPlans.find((product) => normalizeCommandText(product.name || '').includes('inicial')) || orderedPlans[0];
+  }
+
+  if (needHint === 'growth') {
+    return orderedPlans.find((product) => normalizeCommandText(product.name || '').includes('crecimiento')) || orderedPlans[1] || orderedPlans[0];
+  }
+
+  if (needHint === 'enterprise') {
+    return orderedPlans.find((product) => normalizeCommandText(product.name || '').includes('empresa')) || orderedPlans[orderedPlans.length - 1];
+  }
+
+  return null;
+}
+
+function findReferencedPlan(products, rawText) {
+  const orderedPlans = getOrderedPlanProducts(products);
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  const exact = orderedPlans.find((product) => text.includes(normalizeCommandText(product.name || '')));
+  if (exact) return exact;
+
+  const namedTokens = orderedPlans.map((product) => {
+    const normalizedName = normalizeCommandText(product.name || '');
+    const remainder = normalizedName.replace(/\bplan\b/g, '').trim();
+    return {
+      product,
+      normalizedName,
+      remainder
+    };
+  });
+
+  return namedTokens.find((entry) => entry.remainder && text.includes(entry.remainder))?.product || null;
+}
+
+function buildPlanComparisonReply(products) {
+  const orderedPlans = getOrderedPlanProducts(products);
+  if (!orderedPlans.length) {
+    return 'Puedo ayudarte a comparar los planes de Opturon, pero ahora mismo no encuentro planes activos para mostrarte.';
+  }
+
+  return [
+    'Te comparo los planes de Opturon 👇',
+    '',
+    ...orderedPlans.slice(0, 3).map((product) => {
+      const { headline } = extractPlanDescription(product);
+      return `• ${product.name} — ${formatMoney(product.price, product.currency)}: ${headline}`;
+    }),
+    '',
+    'Si querés una recomendación rápida, Plan Crecimiento suele ser el más conveniente para negocios que quieren vender más por WhatsApp.',
+    '',
+    buildPlanSalesCta()
+  ].join('\n');
+}
+
+function buildPlanRecommendationReply(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const { headline, featureLines } = extractPlanDescription(safeProduct);
+
+  return [
+    `Te recomiendo ${safeProduct.name || 'este plan'}.`,
+    '',
+    headline,
+    '',
+    ...(featureLines.length
+      ? [
+          'Incluye:',
+          ...featureLines.map((line) => `- ${line}`),
+          ''
+        ]
+      : []),
+    buildPlanSalesCta('Si querés, te muestro ese plan o lo dejamos listo para avanzar.')
+  ].join('\n');
+}
+
+function buildPlanDetailReply(product, { includePrice = true, includeFeatures = true } = {}) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const { headline, featureLines } = extractPlanDescription(safeProduct);
+
+  return [
+    `${safeProduct.name || 'Este plan'}${includePrice ? ` cuesta ${formatMoney(safeProduct.price, safeProduct.currency)}` : ''}.`,
+    '',
+    headline,
+    '',
+    ...(includeFeatures && featureLines.length
+      ? [
+          'Incluye:',
+          ...featureLines.map((line) => `- ${line}`),
+          ''
+        ]
+      : []),
+    buildPlanSalesCta('Si querés, te muestro este plan o lo dejamos listo para avanzar.')
+  ].join('\n');
+}
+
 function buildCommerceCategoriesReply(categories) {
   if (!categories.length) {
     return 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos categorias activas con productos disponibles.';
@@ -1074,6 +1321,8 @@ function buildCommerceResetPatch(extra = {}) {
     commerceCatalogTotal: null,
     commerceSelectedProduct: null,
     commerceLastAddedItem: null,
+    commerceSuggestedProductId: null,
+    commerceSuggestedProductName: null,
     ...extra
   };
 }
@@ -1764,7 +2013,36 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       ...extra
     });
   };
-  const loadClinicProducts = () => listProductsByClinicId(conversation.clinicId);
+  let cachedClinicProducts = null;
+  const loadClinicProducts = async () => {
+    if (!cachedClinicProducts) {
+      cachedClinicProducts = await listProductsByClinicId(conversation.clinicId);
+    }
+    return cachedClinicProducts;
+  };
+  const buildPlanSalesDecision = async (replyText, suggestedProduct = null) => {
+    const products = await loadClinicProducts();
+    const page = buildCommerceCatalogPage(products);
+
+    return {
+      replyText,
+      newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: buildCommerceResetPatch({
+        commerceCatalog: page.items,
+        commerceCatalogOffset: page.offset,
+        commerceCatalogNextOffset: page.nextOffset,
+        commerceCatalogTotal: page.total,
+        commerceCartItems: cartItems.length ? cartItems : null,
+        commerceLastAddedItem: lastAddedItem,
+        commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+        commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+        commerceSuggestedProductId: suggestedProduct && (suggestedProduct.id || suggestedProduct.productId)
+          ? String(suggestedProduct.id || suggestedProduct.productId)
+          : null,
+        commerceSuggestedProductName: suggestedProduct && suggestedProduct.name ? String(suggestedProduct.name) : null
+      })
+    };
+  };
   const buildCatalogEntryDecision = async () => {
     const products = await loadClinicProducts();
     if (isPlanCatalog(buildCommerceEligibleProducts(products))) {
@@ -2039,7 +2317,27 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   if (isCommerceConfirmIntent(inboundText)) {
     const lastOrderId = String(safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : '').trim();
     const lastOrderAt = safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null;
-    if (!cartItems.length && lastOrderId && isRecentCommerceOrder(lastOrderAt)) {
+    let confirmCartItems = cartItems;
+    if (!confirmCartItems.length) {
+      const suggestedProductId = String(safeContext && safeContext.commerceSuggestedProductId ? safeContext.commerceSuggestedProductId : '').trim();
+      if (suggestedProductId) {
+        const suggestedProduct = await findProductById(suggestedProductId, conversation.clinicId);
+        if (suggestedProduct && String(suggestedProduct.status || '').toLowerCase() === 'active' && isPlanProduct(suggestedProduct)) {
+          confirmCartItems = [
+            {
+              productId: suggestedProduct.id,
+              name: suggestedProduct.name,
+              price: Number(suggestedProduct.price || 0),
+              currency: String(suggestedProduct.currency || 'ARS').toUpperCase(),
+              quantity: 1,
+              sku: suggestedProduct.sku || null
+            }
+          ];
+        }
+      }
+    }
+
+    if (!confirmCartItems.length && lastOrderId && isRecentCommerceOrder(lastOrderAt)) {
       return {
         replyText: buildCommerceAlreadyConfirmedReply(lastOrderId),
         newState: 'IDLE',
@@ -2051,7 +2349,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       };
     }
 
-    if (!cartItems.length) {
+    if (!confirmCartItems.length) {
       return {
         replyText: 'Tu carrito está vacío por ahora. Escribí "productos" para ver el catálogo.',
         newState: 'IDLE',
@@ -2065,8 +2363,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
       contactId: contact.id || null,
-      itemCount: cartItems.length,
-      cartItems: cartItems.map((item) => ({
+      itemCount: confirmCartItems.length,
+      cartItems: confirmCartItems.map((item) => ({
         productId: item.productId,
         quantity: item.quantity
       }))
@@ -2079,7 +2377,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       customerName: contact.name || `Cliente ${String(contact.waId || contact.phone || '').slice(-4) || 'WhatsApp'}`,
       customerPhone: contact.phone || contact.waId || null,
       notes: 'Pedido creado desde WhatsApp commerce',
-      items: cartItems.map((item) => ({
+      items: confirmCartItems.map((item) => ({
         productId: item.productId,
         quantity: item.quantity
       }))
@@ -2095,7 +2393,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         clinicId: conversation.clinicId,
         contactId: contact.id || null,
         source: orderPayload.source,
-        itemCount: cartItems.length,
+        itemCount: confirmCartItems.length,
         items: orderPayload.items,
         reason: orderResult.reason || null,
         details: orderResult.details || null
@@ -2109,7 +2407,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         logInfo('commerce_order_create_failed_stock', {
           conversationId: conversation.id,
           clinicId: conversation.clinicId,
-          itemCount: cartItems.length,
+          itemCount: confirmCartItems.length,
           reason: orderResult.reason,
           details: orderResult.details || null
         });
@@ -2122,7 +2420,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
             commerceCatalogOffset: products.offset,
             commerceCatalogNextOffset: products.nextOffset,
             commerceCatalogTotal: products.total,
-            commerceCartItems: cartItems
+            commerceCartItems: confirmCartItems
           })
         };
       }
@@ -2131,7 +2429,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         replyText: 'No pude registrar tu pedido en este momento. Intenta nuevamente en unos minutos.',
         newState: 'IDLE',
         contextPatch: buildCommerceResetPatch({
-          commerceCartItems: cartItems
+          commerceCartItems: confirmCartItems
         })
       };
     }
@@ -2141,18 +2439,18 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
       orderId: order.id || null,
-      itemCount: cartItems.length,
+      itemCount: confirmCartItems.length,
       total: Number(order.total || 0),
-      currency: order.currency || (cartItems[0] && cartItems[0].currency) || 'ARS'
+      currency: order.currency || (confirmCartItems[0] && confirmCartItems[0].currency) || 'ARS'
     });
     traceCommerceFlow('cart_confirm', {
       orderId: order.id || null,
-      itemCount: cartItems.length,
+      itemCount: confirmCartItems.length,
       total: Number(order.total || 0)
     });
 
     return {
-      replyText: buildCommerceOrderConfirmation(order, cartItems),
+      replyText: buildCommerceOrderConfirmation(order, confirmCartItems),
       newState: 'IDLE',
       contextPatch: buildCommerceResetPatch({
         commerceCartItems: null,
@@ -2190,6 +2488,48 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         cartItems,
         selections: multiSelection
       });
+    }
+  }
+
+  const clinicProducts = await loadClinicProducts();
+  const availablePlanProducts = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+  const planSalesActive = isPlanCatalog(availablePlanProducts);
+
+  if (planSalesActive) {
+    const referencedPlan = findReferencedPlan(availablePlanProducts, inboundText);
+    const needHint = resolvePlanNeedHint(inboundText);
+
+    if (isPlanComparisonIntent(inboundText)) {
+      const suggestedPlan = findPlanByNeedHint(availablePlanProducts, 'growth');
+      return buildPlanSalesDecision(buildPlanComparisonReply(availablePlanProducts), suggestedPlan);
+    }
+
+    if (needHint) {
+      const suggestedPlan = findPlanByNeedHint(availablePlanProducts, needHint);
+      if (suggestedPlan) {
+        return buildPlanSalesDecision(buildPlanRecommendationReply(suggestedPlan), suggestedPlan);
+      }
+    }
+
+    if (isPlanRecommendationIntent(inboundText)) {
+      const suggestedPlan = referencedPlan || findPlanByNeedHint(availablePlanProducts, 'growth');
+      if (suggestedPlan) {
+        return buildPlanSalesDecision(buildPlanRecommendationReply(suggestedPlan), suggestedPlan);
+      }
+    }
+
+    if (isPlanPricingIntent(inboundText)) {
+      if (referencedPlan) {
+        return buildPlanSalesDecision(
+          buildPlanDetailReply(referencedPlan, {
+            includePrice: true,
+            includeFeatures: true
+          }),
+          referencedPlan
+        );
+      }
+
+      return buildPlanSalesDecision(buildPlanComparisonReply(availablePlanProducts));
     }
   }
 

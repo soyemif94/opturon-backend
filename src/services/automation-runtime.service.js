@@ -81,9 +81,12 @@ const SALES_PRODUCTS_MESSAGE = [
 ].join('\n');
 
 const SALES_PRICING_MESSAGE = [
-  'Decime qué producto te interesa y te paso el precio al instante 💬',
+  'Puedo ayudarte a comparar los planes de Opturon y recomendarte uno según lo que necesitás.',
   '',
-  'Si querés, también puedo recomendarte opciones 👍'
+  'Por ejemplo, podés decirme:',
+  '- "quiero algo simple"',
+  '- "quiero vender más"',
+  '- "somos empresa"'
 ].join('\n');
 
 const SALES_HUMAN_MESSAGE = [
@@ -206,6 +209,58 @@ function normalizeText(value) {
     .replace(/\s+/g, ' ')
     .replace(/[.,!?]+$/g, '')
     .trim();
+}
+
+function isPlanLikeProduct(product) {
+  if (!product) return false;
+  const name = normalizeText(product.name || '');
+  const sku = normalizeText(product.sku || '');
+  return name.includes('plan') || sku.startsWith('plan');
+}
+
+function isPlanCatalog(products) {
+  const safeProducts = Array.isArray(products)
+    ? products.filter((product) => String(product.status || '').toLowerCase() === 'active')
+    : [];
+  if (!safeProducts.length) return false;
+  const planCount = safeProducts.filter(isPlanLikeProduct).length;
+  return planCount >= Math.ceil(safeProducts.length * 0.6);
+}
+
+function isPlanSalesBypassIntent(normalizedInboundText) {
+  const text = normalizeText(normalizedInboundText);
+  if (!text) return false;
+
+  return [
+    'precio',
+    'precios',
+    'cuanto sale',
+    'cuánto sale',
+    'valor',
+    'costo',
+    'cual me conviene',
+    'cuál me conviene',
+    'cual recomendas',
+    'cuál recomendás',
+    'que cambia entre planes',
+    'qué cambia entre planes',
+    'que diferencia hay',
+    'qué diferencia hay',
+    'que plan me sirve',
+    'qué plan me sirve',
+    'quiero algo simple',
+    'recien empiezo',
+    'recién empiezo',
+    'quiero vender mas',
+    'quiero vender más',
+    'quiero automatizar mejor',
+    'quiero algo para empresa',
+    'somos empresa',
+    'necesito algo personalizado',
+    'quiero integraciones',
+    'que incluye',
+    'qué incluye'
+  ].some((pattern) => text.includes(normalizeText(pattern)));
 }
 
 function formatMoney(value, currency = 'ARS') {
@@ -646,6 +701,19 @@ async function evaluateConversationAutomation({ clinicId, conversation, contact,
       currentState: conversation && conversation.state ? conversation.state : null
     });
     return null;
+  }
+
+  if (isPlanSalesBypassIntent(normalizedInboundText)) {
+    const clinicProducts = await listProductsByClinicId(clinicId);
+    if (isPlanCatalog(clinicProducts)) {
+      logInfo('automation_runtime_skipped', {
+        clinicId,
+        conversationId: conversation && conversation.id ? conversation.id : null,
+        reason: 'plan_sales_pricing_bypass',
+        normalizedInboundText
+      });
+      return null;
+    }
   }
 
   const previewSelection = await maybeResolvePreviewSelection({ clinicId, flowState, normalizedInboundText });
