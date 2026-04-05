@@ -840,6 +840,19 @@ function isCommerceBackToCategoriesIntent(rawText) {
   );
 }
 
+function isRelistPlansCommand(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return [
+    'planes',
+    'ver planes',
+    'planes otra vez',
+    'productos',
+    'ver productos'
+  ].includes(text);
+}
+
 function parseCommerceCategorySelection(rawText, categories) {
   const safeCategories = Array.isArray(categories) ? categories : [];
   const text = normalizeCommandText(rawText);
@@ -2150,6 +2163,18 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (isCommerceEntryIntent(inboundText)) {
+    return buildCatalogEntryDecision();
+  }
+
+  if (
+    isRelistPlansCommand(inboundText) &&
+    (
+      currentState === 'WAITING_PRODUCT_SELECTION' ||
+      currentState === 'WAITING_QUANTITY' ||
+      catalogFromContext.length > 0 ||
+      cartItems.length > 0
+    )
+  ) {
     return buildCatalogEntryDecision();
   }
 
