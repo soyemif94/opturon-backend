@@ -25,6 +25,9 @@ const {
 } = require('../repositories/products.repository');
 const { getClinicBusinessProfileById } = require('../repositories/tenant.repository');
 const { findConversationById } = require('../repositories/conversation.repository');
+const { updateConversationStage } = require('../repositories/conversation.repository');
+const conversationStateRepo = require('../conversations/conversation.repo');
+const { sendPortalMessage } = require('./portal-inbox.service');
 const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
 
 const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
@@ -35,6 +38,11 @@ const ORDER_CUSTOMER_TYPES = new Set(['registered_contact', 'final_consumer']);
 
 function normalizeString(value) {
   return String(value || '').trim();
+}
+
+function normalizeActor(value) {
+  const safe = normalizeString(value);
+  return safe || null;
 }
 
 function normalizeCurrency(value, fallback = 'ARS') {
@@ -110,6 +118,90 @@ function derivePaymentMethodFromDestination(destination) {
   if (destination.type === 'cash_box') return 'cash';
   if (destination.type === 'bank' || destination.type === 'wallet') return 'bank_transfer';
   return 'other';
+}
+
+function getTransferPaymentContext(conversation, orderId = null) {
+  if (!conversation || typeof conversation !== 'object') return null;
+  const context = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
+  const transferPayment = context.transferPayment && typeof context.transferPayment === 'object'
+    ? context.transferPayment
+    : null;
+  if (!transferPayment) return null;
+
+  const transferOrderId = normalizeString(transferPayment.orderId) || null;
+  if (orderId && transferOrderId && transferOrderId !== normalizeString(orderId)) {
+    return null;
+  }
+
+  return transferPayment;
+}
+
+function summarizeTransferPayment(order, conversation) {
+  const transferPayment = getTransferPaymentContext(conversation, order && order.id ? order.id : null);
+  if (!transferPayment) return null;
+
+  const proofMetadata =
+    transferPayment.proofMetadata && typeof transferPayment.proofMetadata === 'object'
+      ? transferPayment.proofMetadata
+      : null;
+
+  return {
+    orderId: normalizeString(transferPayment.orderId) || null,
+    status: normalizeString(transferPayment.status) || null,
+    paymentMethod: normalizeString(transferPayment.paymentMethod) || null,
+    destinationId: normalizeString(transferPayment.destinationId) || null,
+    requestedAt: transferPayment.requestedAt || null,
+    proofSubmittedAt: transferPayment.proofSubmittedAt || null,
+    proofMessageId: normalizeString(transferPayment.proofMessageId) || null,
+    proofMetadata: proofMetadata
+      ? {
+          messageId: normalizeString(proofMetadata.messageId) || null,
+          providerMessageId: normalizeString(proofMetadata.providerMessageId) || null,
+          type: normalizeString(proofMetadata.type) || null,
+          mediaId: normalizeString(proofMetadata.mediaId) || null,
+          mimeType: normalizeString(proofMetadata.mimeType) || null,
+          caption: normalizeString(proofMetadata.caption) || null,
+          filename: normalizeString(proofMetadata.filename) || null,
+          sha256: normalizeString(proofMetadata.sha256) || null
+        }
+      : null,
+    validationMode: normalizeString(transferPayment.validationMode) || null,
+    validationDecision: normalizeString(transferPayment.validationDecision) || null,
+    validatedAt: transferPayment.validatedAt || null,
+    validatedBy: normalizeString(transferPayment.validatedBy) || null,
+    validatedByName: normalizeString(transferPayment.validatedByName) || null,
+    rejectionReason: normalizeString(transferPayment.rejectionReason) || null,
+    orderPaymentStatus: normalizeString(transferPayment.orderPaymentStatus) || order.paymentStatus || null,
+    conversationId: conversation && conversation.id ? conversation.id : null,
+    conversationState: conversation && conversation.state ? conversation.state : null,
+    conversationStage: conversation && conversation.stage ? conversation.stage : null
+  };
+}
+
+function buildOrderDetailPayload(order, conversation) {
+  return {
+    ...order,
+    transferPayment: summarizeTransferPayment(order, conversation)
+  };
+}
+
+function buildTransferValidationApprovalReply() {
+  return [
+    'Recibimos y validamos tu pago.',
+    '',
+    'Ya quedó acreditado correctamente.'
+  ].join('\n');
+}
+
+function buildTransferValidationRejectionReply(reason = null) {
+  const lines = ['Revisamos tu comprobante pero no pudimos validarlo.'];
+  if (reason) {
+    lines.push('');
+    lines.push(`Motivo: ${reason}`);
+  }
+  lines.push('');
+  lines.push('Si querés, mandame un comprobante nuevo o escribime para revisarlo.');
+  return lines.join('\n');
 }
 
 function normalizeTaxIdType(value) {
@@ -357,11 +449,16 @@ async function getPortalOrderDetail(tenantId, orderId) {
     };
   }
 
+  const conversation =
+    order.conversationId
+      ? await conversationStateRepo.getConversationById(order.conversationId)
+      : null;
+
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    order
+    order: buildOrderDetailPayload(order, conversation && conversation.clinicId === context.clinic.id ? conversation : null)
   };
 }
 
@@ -636,143 +733,144 @@ async function createOrderForClinic(clinicId, payload) {
   );
 }
 
-async function patchOrderStatusForContext(context, orderId, payload) {
+async function applyOrderStatusPatchForContext(context, orderId, payload, client) {
   const safeOrderId = normalizeString(orderId);
   if (!safeOrderId) {
-    return {
-      ok: false,
-      tenantId: context.tenantId,
-      reason: 'missing_order_id'
-    };
+    return buildError(context.tenantId, 'missing_order_id');
   }
 
   const requestedRawStatus = normalizeString(payload && (payload.status || payload.orderStatus)).toLowerCase();
   if (!ORDER_STATUSES.has(normalizeOrderStatus(requestedRawStatus)) && !LEGACY_ORDER_STATUSES.has(requestedRawStatus)) {
-    return {
-      ok: false,
-      tenantId: context.tenantId,
-      reason: 'invalid_order_status'
-    };
+    return buildError(context.tenantId, 'invalid_order_status');
   }
 
   const requestedOrderStatus = normalizeOrderStatus(requestedRawStatus);
   const requestedPaymentDestinationId = normalizeString(payload && payload.paymentDestinationId) || null;
-  let transactionResult;
-  try {
-    transactionResult = await withTransaction(async (client) => {
-      const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client);
-      if (!currentOrder) {
-        return buildError(context.tenantId, 'order_not_found');
+  const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client);
+  if (!currentOrder) {
+    return buildError(context.tenantId, 'order_not_found');
+  }
+
+  let paymentDestination = currentOrder.paymentDestination || null;
+  let nextPaymentDestinationId = currentOrder.paymentDestinationId || null;
+  let nextPaymentDestinationNameSnapshot = currentOrder.paymentDestinationNameSnapshot || null;
+  let nextPaymentDestinationTypeSnapshot = currentOrder.paymentDestinationTypeSnapshot || null;
+
+  if (requestedPaymentDestinationId || (payload && Object.prototype.hasOwnProperty.call(payload, 'paymentDestinationId'))) {
+    if (requestedPaymentDestinationId) {
+      paymentDestination = await findPaymentDestinationById(requestedPaymentDestinationId, context.clinic.id, client);
+      if (!paymentDestination) {
+        return buildError(context.tenantId, 'payment_destination_not_found');
       }
-
-      let paymentDestination = currentOrder.paymentDestination || null;
-      let nextPaymentDestinationId = currentOrder.paymentDestinationId || null;
-      let nextPaymentDestinationNameSnapshot = currentOrder.paymentDestinationNameSnapshot || null;
-      let nextPaymentDestinationTypeSnapshot = currentOrder.paymentDestinationTypeSnapshot || null;
-
-      if (requestedPaymentDestinationId || (payload && Object.prototype.hasOwnProperty.call(payload, 'paymentDestinationId'))) {
-        if (requestedPaymentDestinationId) {
-          paymentDestination = await findPaymentDestinationById(requestedPaymentDestinationId, context.clinic.id, client);
-          if (!paymentDestination) {
-            return buildError(context.tenantId, 'payment_destination_not_found');
-          }
-          if (!paymentDestination.isActive) {
-            return buildError(context.tenantId, 'payment_destination_inactive');
-          }
-          nextPaymentDestinationId = paymentDestination.id;
-          nextPaymentDestinationNameSnapshot = paymentDestination.name;
-          nextPaymentDestinationTypeSnapshot = paymentDestination.type;
-        } else {
-          paymentDestination = null;
-          nextPaymentDestinationId = null;
-          nextPaymentDestinationNameSnapshot = null;
-          nextPaymentDestinationTypeSnapshot = null;
-        }
+      if (!paymentDestination.isActive) {
+        return buildError(context.tenantId, 'payment_destination_inactive');
       }
+      nextPaymentDestinationId = paymentDestination.id;
+      nextPaymentDestinationNameSnapshot = paymentDestination.name;
+      nextPaymentDestinationTypeSnapshot = paymentDestination.type;
+    } else {
+      paymentDestination = null;
+      nextPaymentDestinationId = null;
+      nextPaymentDestinationNameSnapshot = null;
+      nextPaymentDestinationTypeSnapshot = null;
+    }
+  }
 
-      const nextPaymentStatus = derivePaymentStatus(
-        requestedOrderStatus,
-        payload && payload.paymentStatus,
-        currentOrder.paymentStatus,
-        requestedRawStatus
-      );
-      const needsOrderFieldUpdate =
-        nextPaymentDestinationId !== (currentOrder.paymentDestinationId || null) ||
-        nextPaymentDestinationNameSnapshot !== (currentOrder.paymentDestinationNameSnapshot || null) ||
-        nextPaymentDestinationTypeSnapshot !== (currentOrder.paymentDestinationTypeSnapshot || null);
+  const nextPaymentStatus = derivePaymentStatus(
+    requestedOrderStatus,
+    payload && payload.paymentStatus,
+    currentOrder.paymentStatus,
+    requestedRawStatus
+  );
+  const needsOrderFieldUpdate =
+    nextPaymentDestinationId !== (currentOrder.paymentDestinationId || null) ||
+    nextPaymentDestinationNameSnapshot !== (currentOrder.paymentDestinationNameSnapshot || null) ||
+    nextPaymentDestinationTypeSnapshot !== (currentOrder.paymentDestinationTypeSnapshot || null);
 
-      if (currentOrder.status === requestedOrderStatus && currentOrder.paymentStatus === nextPaymentStatus && !needsOrderFieldUpdate) {
-        return {
-          ok: true,
-          order: currentOrder
-        };
+  if (currentOrder.status === requestedOrderStatus && currentOrder.paymentStatus === nextPaymentStatus && !needsOrderFieldUpdate) {
+    return {
+      ok: true,
+      order: currentOrder
+    };
+  }
+
+  if (requestedOrderStatus === 'cancelled' && currentOrder.status !== 'cancelled') {
+    for (const item of currentOrder.items || []) {
+      if (!item.productId) continue;
+
+      const updatedProduct = await incrementProductStock(item.productId, context.clinic.id, item.quantity, client);
+      if (!updatedProduct) {
+        return buildError(
+          context.tenantId,
+          'order_item_product_not_found',
+          `Product ${item.productId} was not found while restoring stock.`
+        );
       }
+    }
+  }
 
-      if (requestedOrderStatus === 'cancelled' && currentOrder.status !== 'cancelled') {
-        for (const item of currentOrder.items || []) {
-          if (!item.productId) continue;
+  const order = await updateOrderStatus(
+    safeOrderId,
+    context.clinic.id,
+    {
+      status: requestedOrderStatus,
+      orderStatus: deriveLegacyOrderStatusFromRequested(requestedRawStatus, requestedOrderStatus),
+      paymentStatus: nextPaymentStatus
+    },
+    client
+  );
 
-          const updatedProduct = await incrementProductStock(item.productId, context.clinic.id, item.quantity, client);
-          if (!updatedProduct) {
-            return buildError(
-              context.tenantId,
-              'order_item_product_not_found',
-              `Product ${item.productId} was not found while restoring stock.`
-            );
-          }
-        }
-      }
+  if (!order) {
+    return buildError(context.tenantId, 'order_not_found');
+  }
 
-      const order = await updateOrderStatus(
+  const orderWithDestination = needsOrderFieldUpdate
+    ? await updateOrder(
         safeOrderId,
         context.clinic.id,
         {
-          status: requestedOrderStatus,
-          orderStatus: deriveLegacyOrderStatusFromRequested(requestedRawStatus, requestedOrderStatus),
-          paymentStatus: nextPaymentStatus
+          paymentDestinationId: nextPaymentDestinationId,
+          paymentDestinationNameSnapshot: nextPaymentDestinationNameSnapshot,
+          paymentDestinationTypeSnapshot: nextPaymentDestinationTypeSnapshot,
+          notes: order.notes
         },
         client
-      );
+      )
+    : order;
 
-      if (!order) {
-        return buildError(context.tenantId, 'order_not_found');
-      }
+  if (!orderWithDestination) {
+    return buildError(context.tenantId, 'order_not_found');
+  }
 
-      const orderWithDestination = needsOrderFieldUpdate
-        ? await updateOrder(
-            safeOrderId,
-            context.clinic.id,
-            {
-              paymentDestinationId: nextPaymentDestinationId,
-              paymentDestinationNameSnapshot: nextPaymentDestinationNameSnapshot,
-              paymentDestinationTypeSnapshot: nextPaymentDestinationTypeSnapshot,
-              notes: order.notes
-            },
-            client
-          )
-        : order;
-
-      if (!orderWithDestination) {
-        return buildError(context.tenantId, 'order_not_found');
-      }
-
-      if (nextPaymentStatus === 'paid' && currentOrder.paymentStatus !== 'paid') {
-        const paymentSyncResult = await syncOrderPaidArtifacts({
-          context,
-          order: orderWithDestination,
-          paymentDestination,
-          client
-        });
-        if (!paymentSyncResult.ok) {
-          return paymentSyncResult;
-        }
-      }
-
-      return {
-        ok: true,
-        order: orderWithDestination
-      };
+  if (nextPaymentStatus === 'paid' && currentOrder.paymentStatus !== 'paid') {
+    const paymentSyncResult = await syncOrderPaidArtifacts({
+      context,
+      order: orderWithDestination,
+      paymentDestination,
+      client
     });
+    if (!paymentSyncResult.ok) {
+      return paymentSyncResult;
+    }
+  }
+
+  return {
+    ok: true,
+    order: orderWithDestination
+  };
+}
+
+async function patchOrderStatusForContext(context, orderId, payload) {
+  const safeOrderId = normalizeString(orderId);
+  if (!safeOrderId) {
+    return buildError(context.tenantId, 'missing_order_id');
+  }
+
+  let transactionResult;
+  const requestedRawStatus = normalizeString(payload && (payload.status || payload.orderStatus)).toLowerCase();
+  const requestedOrderStatus = normalizeOrderStatus(requestedRawStatus);
+  try {
+    transactionResult = await withTransaction(async (client) => applyOrderStatusPatchForContext(context, safeOrderId, payload, client));
   } catch (error) {
     logError('portal_order_status_transaction_failed', {
       tenantId: context.tenantId,
@@ -905,6 +1003,147 @@ async function patchPortalOrder(tenantId, orderId, payload) {
   return patchOrderForContext(context, orderId, payload);
 }
 
+async function validatePortalOrderTransferPayment(tenantId, orderId, payload = {}, actor = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const safeOrderId = normalizeString(orderId);
+  if (!safeOrderId) {
+    return buildError(context.tenantId, 'missing_order_id');
+  }
+
+  const action = normalizeString(payload && payload.action).toLowerCase();
+  if (action !== 'approve' && action !== 'reject') {
+    return buildError(context.tenantId, 'invalid_payment_validation_action');
+  }
+
+  const rejectionReason = normalizeString(payload && payload.rejectionReason) || null;
+  const actorId = normalizeActor(actor && actor.actorId);
+  const actorName = normalizeActor(actor && actor.actorName);
+
+  const result = await withTransaction(async (client) => {
+    const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client);
+    if (!currentOrder) {
+      return buildError(context.tenantId, 'order_not_found');
+    }
+
+    if (!currentOrder.conversationId) {
+      return buildError(context.tenantId, 'order_without_conversation');
+    }
+
+    const conversation = await conversationStateRepo.getConversationById(currentOrder.conversationId, client);
+    if (!conversation || conversation.clinicId !== context.clinic.id) {
+      return buildError(context.tenantId, 'conversation_not_found');
+    }
+
+    const currentTransferPayment = getTransferPaymentContext(conversation, currentOrder.id);
+    if (!currentTransferPayment) {
+      return buildError(context.tenantId, 'transfer_payment_not_found');
+    }
+
+    const currentTransferStatus = normalizeString(currentTransferPayment.status).toLowerCase();
+    if (action === 'approve' && currentTransferStatus === 'payment_confirmed') {
+      return buildError(context.tenantId, 'transfer_payment_already_confirmed');
+    }
+
+    const now = new Date().toISOString();
+    let order = currentOrder;
+
+    if (action === 'approve') {
+      const approvalResult = await applyOrderStatusPatchForContext(
+        context,
+        currentOrder.id,
+        {
+          orderStatus: 'paid',
+          paymentStatus: 'paid',
+          paymentDestinationId: currentOrder.paymentDestinationId || normalizeString(currentTransferPayment.destinationId) || null
+        },
+        client
+      );
+      if (!approvalResult.ok) {
+        return approvalResult;
+      }
+      order = approvalResult.order;
+    } else if (currentOrder.paymentStatus !== 'pending') {
+      const rejectionOrder = await updateOrderStatus(
+        currentOrder.id,
+        context.clinic.id,
+        {
+          status: normalizeOrderStatus(currentOrder.status || currentOrder.orderStatus),
+          orderStatus: currentOrder.orderStatus || deriveLegacyOrderStatus(normalizeOrderStatus(currentOrder.status || currentOrder.orderStatus)),
+          paymentStatus: 'pending'
+        },
+        client
+      );
+      if (rejectionOrder) {
+        order = rejectionOrder;
+      }
+    }
+
+    const nextTransferPayment = {
+      ...currentTransferPayment,
+      status: action === 'approve' ? 'payment_confirmed' : 'payment_rejected',
+      validationMode: 'manual',
+      validationDecision: action === 'approve' ? 'approved' : 'rejected',
+      validatedAt: now,
+      validatedBy: actorId,
+      validatedByName: actorName,
+      rejectionReason: action === 'reject' ? rejectionReason : null,
+      orderPaymentStatus: action === 'approve' ? 'paid' : order.paymentStatus || 'pending'
+    };
+
+    await conversationStateRepo.updateConversationState(
+      {
+        conversationId: conversation.id,
+        state: action === 'approve' ? 'READY' : 'PAYMENT_TRANSFER',
+        contextPatch: {
+          commerceLastOrderId: currentOrder.id,
+          commerceLastOrderAt: now,
+          transferPayment: nextTransferPayment
+        }
+      },
+      client
+    );
+    await updateConversationStage(
+      conversation.id,
+      action === 'approve' ? 'payment_confirmed' : 'payment_rejected',
+      client
+    );
+
+    const updatedConversation = await conversationStateRepo.getConversationById(conversation.id, client);
+
+    return {
+      ok: true,
+      order: buildOrderDetailPayload(order, updatedConversation || conversation),
+      conversationId: conversation.id,
+      notificationText: action === 'approve'
+        ? buildTransferValidationApprovalReply()
+        : buildTransferValidationRejectionReply(rejectionReason)
+    };
+  });
+
+  if (!result.ok) {
+    return result;
+  }
+
+  const notification = await sendPortalMessage(tenantId, result.conversationId, result.notificationText);
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    order: result.order,
+    notification: notification.ok
+      ? notification.message
+      : {
+          ok: false,
+          reason: notification.reason || 'message_send_failed'
+        }
+  };
+}
+
 module.exports = {
   ORDER_STATUSES: Array.from(ORDER_STATUSES),
   listPortalOrders,
@@ -913,5 +1152,6 @@ module.exports = {
   createOrderForClinic,
   patchPortalOrder,
   patchPortalOrderStatus,
-  patchOrderStatusForClinic
+  patchOrderStatusForClinic,
+  validatePortalOrderTransferPayment
 };

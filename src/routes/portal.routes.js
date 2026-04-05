@@ -10,6 +10,7 @@ const {
   postPortalOrder,
   patchPortalOrderController,
   updatePortalOrderStatus,
+  postPortalOrderPaymentValidation,
   getPortalProducts,
   getPortalProductCategories,
   getPortalProduct,
@@ -109,6 +110,7 @@ router.post('/tenants/:tenantId/orders', postPortalOrder);
 router.get('/tenants/:tenantId/orders/:orderId', getPortalOrder);
 router.patch('/tenants/:tenantId/orders/:orderId', patchPortalOrderController);
 router.patch('/tenants/:tenantId/orders/:orderId/status', updatePortalOrderStatus);
+router.post('/tenants/:tenantId/orders/:orderId/payment-validation', postPortalOrderPaymentValidation);
 router.get('/tenants/:tenantId/products', getPortalProducts);
 router.get('/tenants/:tenantId/product-categories', getPortalProductCategories);
 router.post('/tenants/:tenantId/products', postPortalProduct);
