@@ -110,7 +110,9 @@ const {
 } = require('../services/portal-business.service');
 const {
   getPortalBotSettings,
-  updatePortalBotSettings
+  updatePortalBotSettings,
+  getPortalBotTransferConfig,
+  updatePortalBotTransferConfig
 } = require('../services/portal-bot-settings.service');
 const {
   createPortalWhatsAppSignupSession,
@@ -3300,6 +3302,63 @@ async function patchPortalBotSettingsController(req, res) {
   }
 }
 
+async function getPortalBotTransferConfigController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalBotTransferConfig(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_bot_transfer_config_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalBotTransferConfigController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await updatePortalBotTransferConfig(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'invalid_transfer_config'
+          ? 400
+          : result.reason === 'transfer_config_not_saved'
+            ? 500
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId,
+        details: result.detail || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_bot_transfer_config_update_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   getPortalTenantContext,
   getPortalConversations,
@@ -3389,6 +3448,8 @@ module.exports = {
   postPortalInstagramConnect,
   getPortalBotSettingsController,
   patchPortalBotSettingsController,
+  getPortalBotTransferConfigController,
+  postPortalBotTransferConfigController,
   getPortalWhatsAppDefaultChannel,
   patchPortalWhatsAppDefaultChannel,
   getPortalWhatsAppTemplateBlueprints,

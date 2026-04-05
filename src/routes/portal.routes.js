@@ -88,6 +88,8 @@ const {
   postPortalInstagramConnect,
   getPortalBotSettingsController,
   patchPortalBotSettingsController,
+  getPortalBotTransferConfigController,
+  postPortalBotTransferConfigController,
   getPortalWhatsAppDefaultChannel,
   patchPortalWhatsAppDefaultChannel,
   getPortalWhatsAppTemplateBlueprints,
@@ -178,6 +180,8 @@ router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBu
 router.patch('/tenants/:tenantId/business', requirePortalInternalAuth, patchPortalBusiness);
 router.get('/tenants/:tenantId/bot-settings', requirePortalInternalAuth, getPortalBotSettingsController);
 router.patch('/tenants/:tenantId/bot-settings', requirePortalInternalAuth, patchPortalBotSettingsController);
+router.get('/tenants/:tenantId/bot/transfer-config', requirePortalInternalAuth, getPortalBotTransferConfigController);
+router.post('/tenants/:tenantId/bot/transfer-config', requirePortalInternalAuth, postPortalBotTransferConfigController);
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupBootstrap);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/finalize', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupFinalize);
