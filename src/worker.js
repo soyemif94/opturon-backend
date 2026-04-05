@@ -1923,8 +1923,47 @@ function parseOnboardingCompleteOption(input) {
   return null;
 }
 
-function buildInitialBotFlowFromOnboarding(onboarding) {
+function parseGeneratedBotEditIntent(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return null;
+
+  if (
+    normalized.includes('adaptalo a mi negocio') ||
+    normalized.includes('adáptalo a mi negocio') ||
+    normalized.includes('adaptalo al negocio') ||
+    normalized.includes('lo adaptamos') ||
+    normalized.includes('adapt') ||
+    normalized.includes('mi negocio')
+  ) {
+    return 'business';
+  }
+
+  if (normalized.includes('mas formal') || normalized.includes('más formal') || normalized.includes('formal')) {
+    return 'formal';
+  }
+
+  if (normalized.includes('mas vendedor') || normalized.includes('más vendedor') || normalized.includes('vendedor')) {
+    return 'sales';
+  }
+
+  if (normalized.includes('mas simple') || normalized.includes('más simple') || normalized.includes('simple')) {
+    return 'simple';
+  }
+
+  if (normalized.includes('cambiar bienvenida') || normalized.includes('bienvenida')) {
+    return 'welcome';
+  }
+
+  return null;
+}
+
+function buildGeneratedBotPreviewHelpReply() {
+  return 'Si querés, puedo adaptarlo a tu negocio, hacerlo más formal, más vendedor, más simple o cambiar la bienvenida.';
+}
+
+function buildInitialBotFlowFromOnboarding(onboarding, options = {}) {
   const safeOnboarding = onboarding && typeof onboarding === 'object' ? onboarding : {};
+  const editMode = String(options && options.editMode ? options.editMode : 'default').trim().toLowerCase() || 'default';
   const type = detectOnboardingFlowType(safeOnboarding);
   const offer = String(safeOnboarding.mainOffer || 'tus productos o servicios').trim();
   const goal = String(safeOnboarding.goal || 'responder rápido y vender mejor').trim();
@@ -1953,14 +1992,49 @@ function buildInitialBotFlowFromOnboarding(onboarding) {
     summary = `Flujo base para servicios: detecta la consulta, recomienda una opción y propone avanzar.`;
   }
 
+  if (editMode === 'business') {
+    botWelcome = `${botWelcome}\n\nEstá pensado para ${businessType} y enfocado en ${offer}.`;
+    botRecommendation = `${botRecommendation}\n\nLa idea es que el cliente entienda rápido qué ofrecés y avance sin fricción.`;
+    summary = `${summary} Ajustado con más foco en ${businessType} y en ${offer}.`;
+  } else if (editMode === 'formal') {
+    botWelcome = type === 'generic'
+      ? 'Hola, gracias por escribirnos. Estoy para ayudarte.'
+      : `Hola, gracias por escribirnos.\n\nPuedo orientarte con ${offer} y ayudarte a encontrar la opción más conveniente.`;
+    botRecommendation = 'Puedo sugerirte una alternativa adecuada para empezar de forma conveniente.\n\nSi querés, te comparto algunas opciones.';
+    summary = `${summary} Ajustado con un tono más profesional.`;
+  } else if (editMode === 'sales') {
+    botRecommendation = 'Te puedo recomendar una opción de entrada que funciona muy bien y deja encaminada la compra.\n\nSi querés, te muestro las mejores alternativas ahora mismo.';
+    summary = `${summary} Ajustado con un enfoque más orientado a cierre.`;
+  } else if (editMode === 'simple') {
+    botWelcome = type === 'generic'
+      ? 'Hola 👋 Te ayudo.'
+      : `Hola 👋 Te ayudo con ${offer}.`;
+    botRecommendation = 'Te recomiendo una opción simple para empezar.\n\n¿Querés verla?';
+    summary = `${summary} Ajustado con un estilo más corto y directo.`;
+  } else if (editMode === 'welcome') {
+    botWelcome = `Hola 👋 Bienvenido. Estoy para ayudarte con ${offer}.`;
+    summary = `${summary} Ajustado con una bienvenida nueva.`;
+  }
+
+  const introByEditMode = editMode === 'business'
+    ? 'Perfecto 🙌\n\nLo adapté más a tu negocio.'
+    : editMode === 'formal'
+      ? 'Listo 🙌\n\nTe lo dejé con un tono más profesional.'
+      : editMode === 'sales'
+        ? 'Perfecto 🙌\n\nTe lo rehice con un enfoque más orientado a cierre.'
+        : editMode === 'simple'
+          ? 'Listo 🙌\n\nTe lo simplifiqué para que se sienta más directo.'
+          : editMode === 'welcome'
+            ? 'Perfecto 🙌\n\nTe cambié la bienvenida.'
+            : 'Listo 🙌\n\nTe armé una primera versión de tu bot.';
+
   return {
     type,
     summary,
     generatedAt: new Date().toISOString(),
+    lastEditMode: editMode === 'default' ? null : editMode,
     text: [
-      'Listo 🙌',
-      '',
-      'Te armé una primera versión de tu bot.',
+      introByEditMode,
       '',
       'Así respondería a un cliente:',
       '',
@@ -1987,10 +2061,18 @@ function buildInitialBotFlowFromOnboarding(onboarding) {
       '',
       'Ahora podemos seguir con:',
       '- "lo adaptamos"',
+      '- "más formal"',
+      '- "más vendedor"',
+      '- "más simple"',
+      '- "cambiar bienvenida"',
       '- "cargar productos"',
       '- "conectar WhatsApp"'
     ].join('\n')
   };
+}
+
+function buildEditedBotPreview(previousPreview, onboarding, editMode) {
+  return buildInitialBotFlowFromOnboarding(onboarding, { editMode });
 }
 
 function isRecentCommerceOrder(lastOrderAt) {
@@ -2697,6 +2779,34 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     if (onboardingStep === 5) {
       const completeOption = parseOnboardingCompleteOption(inboundText);
+      const editIntent = parseGeneratedBotEditIntent(inboundText);
+      const existingPreview = safeContext.generatedBotPreview && typeof safeContext.generatedBotPreview === 'object'
+        ? safeContext.generatedBotPreview
+        : null;
+
+      if (existingPreview && editIntent) {
+        const preview = buildEditedBotPreview(existingPreview, onboarding, editIntent);
+        return {
+          replyText: preview.text,
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding,
+            generatedBotPreview: {
+              type: preview.type,
+              summary: preview.summary,
+              generatedAt: preview.generatedAt,
+              lastEditMode: preview.lastEditMode,
+              previewText: preview.text
+            },
+            commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+            commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+            commerceActivationOfferState: 'onboarding_completed',
+            commerceActivationChoice: '1'
+          }
+        };
+      }
+
       if (completeOption === '1') {
         const preview = buildInitialBotFlowFromOnboarding(onboarding);
         return {
@@ -2708,7 +2818,9 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
             generatedBotPreview: {
               type: preview.type,
               summary: preview.summary,
-              generatedAt: preview.generatedAt
+              generatedAt: preview.generatedAt,
+              lastEditMode: preview.lastEditMode,
+              previewText: preview.text
             },
             commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
             commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
@@ -2741,12 +2853,43 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       }
 
       if (completeOption === 'adapt') {
+        if (existingPreview) {
+          const preview = buildEditedBotPreview(existingPreview, onboarding, 'business');
+          return {
+            replyText: preview.text,
+            newState: 'ONBOARDING',
+            newStage: getOnboardingStageKey(5),
+            contextPatch: {
+              onboarding,
+              generatedBotPreview: {
+                type: preview.type,
+                summary: preview.summary,
+                generatedAt: preview.generatedAt,
+                lastEditMode: preview.lastEditMode,
+                previewText: preview.text
+              }
+            }
+          };
+        }
+
         return {
-          replyText: 'Perfecto. Podemos adaptarlo al tono de tu negocio, a tus productos o a tu forma de vender. Si querés, contame qué te gustaría ajustar primero.',
+          replyText: 'Perfecto. Primero te genero el bot base y después lo adaptamos más a tu negocio.',
           newState: 'ONBOARDING',
           newStage: getOnboardingStageKey(5),
           contextPatch: {
             onboarding
+          }
+        };
+      }
+
+      if (existingPreview) {
+        return {
+          replyText: buildGeneratedBotPreviewHelpReply(),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding,
+            generatedBotPreview: existingPreview
           }
         };
       }
