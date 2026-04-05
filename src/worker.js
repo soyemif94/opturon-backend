@@ -1654,16 +1654,7 @@ function buildPostConfirmationFallbackReply() {
 }
 
 function buildPostConfirmationOptionReply(option) {
-  if (option === '1') {
-    return [
-      'Perfecto.',
-      '',
-      'Vamos paso a paso con la activación inicial de Opturon.',
-      '',
-      'Primero te voy guiando con lo básico para que empieces a usar tu plan sin fricción.',
-      'Si querés, contame con qué negocio lo vas a usar y seguimos desde ahí.'
-    ].join('\n');
-  }
+  if (option === '1') return null;
 
   if (option === '2') {
     return null;
@@ -1788,6 +1779,106 @@ function isDemoActivateIntent(input) {
 function isDemoBackIntent(input) {
   const normalized = normalizeCommandText(input);
   return normalized === 'volver' || normalized === 'volver atras';
+}
+
+function getOnboardingStageKey(step) {
+  const safeStep = Number.isInteger(step) && step > 0 ? step : 1;
+  if (safeStep <= 1) return 'onboarding_step_1';
+  if (safeStep === 2) return 'onboarding_step_2';
+  if (safeStep === 3) return 'onboarding_step_3';
+  if (safeStep === 4) return 'onboarding_step_4';
+  return 'onboarding_complete';
+}
+
+function buildOnboardingReply(step) {
+  const safeStep = Number.isInteger(step) && step > 0 ? step : 1;
+
+  if (safeStep === 1) {
+    return [
+      'Perfecto 🙌',
+      '',
+      'Vamos a configurar lo básico para que empieces a usar Opturon.',
+      '',
+      'Es rápido, en 1 minuto lo dejamos listo.',
+      '',
+      '¿A qué tipo de negocio lo vas a aplicar?',
+      '',
+      'Por ejemplo:',
+      '- tienda online',
+      '- restaurante',
+      '- servicios',
+      '- otro'
+    ].join('\n');
+  }
+
+  if (safeStep === 2) {
+    return [
+      '¿Qué vendés principalmente?',
+      '',
+      'Por ejemplo:',
+      '- ropa',
+      '- comida',
+      '- servicios profesionales',
+      '- otro'
+    ].join('\n');
+  }
+
+  if (safeStep === 3) {
+    return [
+      '¿Qué te gustaría lograr con el bot?',
+      '',
+      'Por ejemplo:',
+      '- vender más',
+      '- responder más rápido',
+      '- automatizar consultas',
+      '- otro'
+    ].join('\n');
+  }
+
+  if (safeStep === 4) {
+    return [
+      '¿Vas a usar principalmente WhatsApp para responder clientes?',
+      '',
+      'Podés responder:',
+      '- sí',
+      '- no'
+    ].join('\n');
+  }
+
+  return [
+    'Perfecto 🙌',
+    '',
+    'Con esto ya tenemos lo básico para empezar.',
+    '',
+    'En el siguiente paso podemos:',
+    '',
+    '1️⃣ Configurar tu bot inicial',
+    '2️⃣ Cargar tus productos o servicios',
+    '3️⃣ Conectar tu WhatsApp',
+    '',
+    'Decime cómo querés seguir y lo hacemos.'
+  ].join('\n');
+}
+
+function normalizeOnboardingChannel(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return null;
+  if (['si', 'sí', 's', 'yes'].includes(normalized)) return 'si';
+  if (['no', 'n'].includes(normalized)) return 'no';
+  return normalized;
+}
+
+function getOnboardingData(context) {
+  const onboarding = context && context.onboarding && typeof context.onboarding === 'object'
+    ? context.onboarding
+    : {};
+
+  return {
+    businessType: String(onboarding.businessType || '').trim() || null,
+    mainOffer: String(onboarding.mainOffer || '').trim() || null,
+    goal: String(onboarding.goal || '').trim() || null,
+    channel: String(onboarding.channel || '').trim() || null
+  };
 }
 
 function isRecentCommerceOrder(lastOrderAt) {
@@ -2290,6 +2381,27 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   if (currentState === 'POST_CONFIRMATION') {
     const activationOption = parsePostConfirmationOption(inboundText);
     if (activationOption) {
+      if (activationOption === '1') {
+        return {
+          replyText: buildOnboardingReply(1),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(1),
+          contextPatch: buildCommerceResetPatch({
+            commerceCartItems: null,
+            commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+            commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+            commerceActivationOfferState: 'onboarding',
+            commerceActivationChoice: activationOption,
+            onboarding: {
+              businessType: null,
+              mainOffer: null,
+              goal: null,
+              channel: null
+            }
+          })
+        };
+      }
+
       if (activationOption === '2') {
         return {
           replyText: buildDemoExperienceReply(1),
@@ -2338,6 +2450,153 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     };
   }
 
+  if (currentState === 'ONBOARDING') {
+    const onboarding = getOnboardingData(safeContext);
+    const currentStage = String(conversation.stage || '').trim().toLowerCase();
+    const onboardingStep = currentStage === 'onboarding_step_2'
+      ? 2
+      : currentStage === 'onboarding_step_3'
+        ? 3
+        : currentStage === 'onboarding_step_4'
+          ? 4
+          : currentStage === 'onboarding_complete'
+            ? 5
+            : 1;
+
+    if (onboardingStep === 1) {
+      const answer = String(inboundText || '').trim();
+      if (!answer) {
+        return {
+          replyText: buildOnboardingReply(1),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(1),
+          contextPatch: {
+            onboarding
+          }
+        };
+      }
+
+      return {
+        replyText: buildOnboardingReply(2),
+        newState: 'ONBOARDING',
+        newStage: getOnboardingStageKey(2),
+        contextPatch: {
+          onboarding: {
+            ...onboarding,
+            businessType: answer
+          },
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceActivationOfferState: 'onboarding',
+          commerceActivationChoice: '1'
+        }
+      };
+    }
+
+    if (onboardingStep === 2) {
+      const answer = String(inboundText || '').trim();
+      if (!answer) {
+        return {
+          replyText: buildOnboardingReply(2),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(2),
+          contextPatch: {
+            onboarding
+          }
+        };
+      }
+
+      return {
+        replyText: buildOnboardingReply(3),
+        newState: 'ONBOARDING',
+        newStage: getOnboardingStageKey(3),
+        contextPatch: {
+          onboarding: {
+            ...onboarding,
+            mainOffer: answer
+          },
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceActivationOfferState: 'onboarding',
+          commerceActivationChoice: '1'
+        }
+      };
+    }
+
+    if (onboardingStep === 3) {
+      const answer = String(inboundText || '').trim();
+      if (!answer) {
+        return {
+          replyText: buildOnboardingReply(3),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(3),
+          contextPatch: {
+            onboarding
+          }
+        };
+      }
+
+      return {
+        replyText: buildOnboardingReply(4),
+        newState: 'ONBOARDING',
+        newStage: getOnboardingStageKey(4),
+        contextPatch: {
+          onboarding: {
+            ...onboarding,
+            goal: answer
+          },
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceActivationOfferState: 'onboarding',
+          commerceActivationChoice: '1'
+        }
+      };
+    }
+
+    if (onboardingStep === 4) {
+      const answer = String(inboundText || '').trim();
+      if (!answer) {
+        return {
+          replyText: buildOnboardingReply(4),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(4),
+          contextPatch: {
+            onboarding
+          }
+        };
+      }
+
+      return {
+        replyText: buildOnboardingReply(5),
+        newState: 'ONBOARDING',
+        newStage: getOnboardingStageKey(5),
+        contextPatch: {
+          onboarding: {
+            ...onboarding,
+            channel: normalizeOnboardingChannel(answer) || answer
+          },
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceActivationOfferState: 'onboarding_completed',
+          commerceActivationChoice: '1'
+        }
+      };
+    }
+
+    return {
+      replyText: buildOnboardingReply(5),
+      newState: 'ONBOARDING',
+      newStage: getOnboardingStageKey(5),
+      contextPatch: {
+        onboarding,
+        commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+        commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+        commerceActivationOfferState: 'onboarding_completed',
+        commerceActivationChoice: '1'
+      }
+    };
+  }
+
   if (currentState === 'DEMO') {
     const demoStep = Number.isInteger(Number(safeContext.commerceDemoStep))
       ? Number(safeContext.commerceDemoStep)
@@ -2345,14 +2604,20 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     if (isDemoActivateIntent(inboundText)) {
       return {
-        replyText: buildPostConfirmationOptionReply('1'),
-        newState: 'IDLE',
-        newStage: 'activation_followup',
+        replyText: buildOnboardingReply(1),
+        newState: 'ONBOARDING',
+        newStage: getOnboardingStageKey(1),
         contextPatch: buildCommerceResetPatch({
           commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
           commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
-          commerceActivationOfferState: 'completed',
-          commerceActivationChoice: '1'
+          commerceActivationOfferState: 'onboarding',
+          commerceActivationChoice: '1',
+          onboarding: {
+            businessType: null,
+            mainOffer: null,
+            goal: null,
+            channel: null
+          }
         })
       };
     }
