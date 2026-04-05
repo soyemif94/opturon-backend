@@ -538,7 +538,7 @@ async function postPortalOrderPaymentValidation(req, res) {
         result.reason === 'missing_order_id' ||
         result.reason === 'invalid_payment_validation_action'
           ? 400
-          : result.reason === 'transfer_payment_already_confirmed'
+          : result.reason === 'transfer_payment_already_confirmed' || result.reason === 'transfer_payment_already_rejected'
             ? 409
             : 404;
 

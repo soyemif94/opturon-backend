@@ -1047,6 +1047,9 @@ async function validatePortalOrderTransferPayment(tenantId, orderId, payload = {
     if (action === 'approve' && currentTransferStatus === 'payment_confirmed') {
       return buildError(context.tenantId, 'transfer_payment_already_confirmed');
     }
+    if (action === 'reject' && currentTransferStatus === 'payment_rejected') {
+      return buildError(context.tenantId, 'transfer_payment_already_rejected');
+    }
 
     const now = new Date().toISOString();
     let order = currentOrder;
