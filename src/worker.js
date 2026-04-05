@@ -411,15 +411,26 @@ function resolveBotDomainRoute({
   inboundLooksLikeCommerceCancel
 }) {
   const botMode = resolveClinicBotMode(clinic);
+  const configuredBotActive = Boolean(getActiveGeneratedBotConfig(clinic));
   const botFlowLock = normalizeConversationBotFlowLock(safeContext);
   const overrideDomain = normalizeConversationBotDomainOverride(safeContext);
   const activeDomain = resolveConversationDomain({ currentState, safeContext });
   const agendaIntent = looksLikeAgendaIntent({ inboundText, intent, managementIntent });
+  const runtimeConfiguredCommerceIntent =
+    configuredBotActive &&
+    (
+      isGreeting(inboundText) ||
+      isConfiguredBotOfferIntent(inboundText) ||
+      isConfiguredBotRecommendationIntent(inboundText) ||
+      Boolean(parseActiveBotRuntimeEditIntent(inboundText)) ||
+      Boolean(parseTransferPaymentIntent(inboundText))
+    );
   const explicitCommerceIntent =
     inboundLooksLikeCommerce ||
     inboundLooksLikeCommerceCancel ||
     intent === 'pricing' ||
-    isExplicitCommerceTrigger(inboundText);
+    isExplicitCommerceTrigger(inboundText) ||
+    runtimeConfiguredCommerceIntent;
 
   if (botFlowLock === 'agenda') {
     return {
