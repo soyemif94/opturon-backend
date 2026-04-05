@@ -5,6 +5,7 @@ const env = require('./config/env');
 const { withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
 const { findChannelById } = require('./repositories/tenant.repository');
+const { updateClinicBotRuntimeConfigById } = require('./repositories/tenant.repository');
 const { findContactById, findContactByIdAndClinicId, updateContact } = require('./repositories/contact.repository');
 const {
   findConversationById,
@@ -260,6 +261,12 @@ function detectIntent(rawText) {
   if (appointmentWords.test(text)) return 'appointment';
   if (pricingWords.test(text)) return 'pricing';
   return 'unknown';
+}
+
+function isGreeting(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return ['hola', 'buenas', 'buen dia', 'buen día', 'hello', 'holi'].includes(text);
 }
 
 const BOT_ROUTER_APPOINTMENT_STATES = new Set([
@@ -1961,6 +1968,20 @@ function buildGeneratedBotPreviewHelpReply() {
   return 'Si querés, puedo adaptarlo a tu negocio, hacerlo más formal, más vendedor, más simple o cambiar la bienvenida.';
 }
 
+function isGeneratedBotActivationIntent(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return false;
+
+  return [
+    'usarlo',
+    'activarlo',
+    'dejarlo asi',
+    'dejarlo así',
+    'guardar este',
+    'quiero este'
+  ].includes(normalized);
+}
+
 function buildInitialBotFlowFromOnboarding(onboarding, options = {}) {
   const safeOnboarding = onboarding && typeof onboarding === 'object' ? onboarding : {};
   const editMode = String(options && options.editMode ? options.editMode : 'default').trim().toLowerCase() || 'default';
@@ -2073,6 +2094,166 @@ function buildInitialBotFlowFromOnboarding(onboarding, options = {}) {
 
 function buildEditedBotPreview(previousPreview, onboarding, editMode) {
   return buildInitialBotFlowFromOnboarding(onboarding, { editMode });
+}
+
+function getGeneratedBotTone(generatedPreview) {
+  const lastEditMode = String(generatedPreview && generatedPreview.lastEditMode ? generatedPreview.lastEditMode : '').trim().toLowerCase();
+  if (lastEditMode === 'formal' || lastEditMode === 'sales' || lastEditMode === 'simple') {
+    return lastEditMode;
+  }
+  return 'default';
+}
+
+function buildExecutableBotConfigFromPreview(onboardingData, generatedPreview) {
+  const onboarding = onboardingData && typeof onboardingData === 'object' ? onboardingData : {};
+  const preview = generatedPreview && typeof generatedPreview === 'object' ? generatedPreview : {};
+  const type = String(preview.type || detectOnboardingFlowType(onboarding)).trim() || 'generic';
+  const businessType = String(onboarding.businessType || 'tu negocio').trim();
+  const offer = String(onboarding.mainOffer || 'tus productos o servicios').trim();
+  const tone = getGeneratedBotTone(preview);
+
+  let welcomeMessage = 'Hola 👋 Te ayudo.';
+  let offerDescription = `Tenemos ${offer} disponible.`;
+  let recommendationMessage = 'Si querés algo para empezar, te puedo recomendar una opción simple y conveniente.';
+  let closingCta = 'Si querés, te muestro algunas opciones.';
+
+  if (type === 'store') {
+    welcomeMessage = tone === 'formal'
+      ? 'Hola, gracias por escribirnos. Estoy para ayudarte.'
+      : tone === 'welcome'
+        ? `Hola 👋 Bienvenido. Estoy para ayudarte con ${offer}.`
+        : tone === 'simple'
+          ? `Hola 👋 Te ayudo con ${offer}.`
+          : 'Hola 👋 Te ayudo.';
+    offerDescription = tone === 'business'
+      ? `Tenemos ${offer} disponible para ${businessType}. Decime qué tipo buscás y te oriento.`
+      : `Tenemos ${offer} disponible. Si buscás algo puntual, decime qué tipo necesitás y te recomiendo opciones.`;
+    recommendationMessage = tone === 'sales'
+      ? 'Te puedo recomendar una opción de entrada que funciona muy bien y deja encaminada la compra.'
+      : tone === 'formal'
+        ? 'Puedo sugerirte una alternativa adecuada para empezar de forma conveniente.'
+        : tone === 'simple'
+          ? 'Te recomiendo una opción simple para empezar.'
+          : 'Si querés algo para empezar, te puedo recomendar algunas opciones accesibles que están funcionando bien.';
+    closingCta = tone === 'sales'
+      ? 'Si querés, te muestro las mejores alternativas ahora mismo.'
+      : tone === 'formal'
+        ? 'Si querés, te comparto algunas opciones.'
+        : tone === 'simple'
+          ? '¿Querés verla?'
+          : '¿Querés que te muestre algunas?';
+  } else if (type === 'restaurant') {
+    welcomeMessage = tone === 'formal'
+      ? 'Hola, gracias por escribirnos. Estoy para ayudarte.'
+      : 'Hola 👋 Te ayudo.';
+    offerDescription = `Hoy podés consultar ${offer} y te recomiendo según lo que tengas ganas de pedir.`;
+    recommendationMessage = tone === 'sales'
+      ? 'Te puedo sugerir opciones accesibles que salen muy bien y ayudan a cerrar el pedido rápido.'
+      : tone === 'simple'
+        ? 'Te puedo sugerir una opción simple y accesible.'
+        : 'Si buscás algo económico, te puedo sugerir opciones accesibles que salen muy bien.';
+    closingCta = tone === 'simple' ? '¿Querés verla?' : '¿Querés que te muestre algunas?';
+  } else if (type === 'services') {
+    welcomeMessage = tone === 'formal'
+      ? 'Hola, gracias por escribirnos. Estoy para ayudarte.'
+      : 'Hola 👋 Te ayudo.';
+    offerDescription = `Ofrecemos ${offer}. Contame qué necesitás y te digo qué opción te conviene más.`;
+    recommendationMessage = tone === 'sales'
+      ? 'Te recomiendo una opción inicial para avanzar hoy mismo y dejar resuelta la consulta.'
+      : tone === 'simple'
+        ? 'Te recomiendo una opción simple para empezar.'
+        : 'Si querés empezar simple, te recomiendo una opción inicial para avanzar sin fricción.';
+    closingCta = tone === 'simple' ? '¿Querés verla?' : '¿Querés que te cuente cómo sería?';
+  } else {
+    welcomeMessage = tone === 'formal'
+      ? 'Hola, gracias por escribirnos. Estoy para ayudarte.'
+      : 'Hola 👋 Te ayudo.';
+    offerDescription = `Te puedo orientar con ${offer}.`;
+    recommendationMessage = tone === 'simple'
+      ? 'Te recomiendo una opción simple para empezar.'
+      : 'Si querés algo para empezar, te puedo recomendar una opción simple y conveniente.';
+    closingCta = tone === 'simple' ? '¿Querés verla?' : '¿Querés que te muestre algunas alternativas?';
+  }
+
+  return {
+    enabled: true,
+    type,
+    tone,
+    businessType,
+    welcomeMessage,
+    offerDescription,
+    recommendationMessage,
+    closingCta
+  };
+}
+
+function getActiveGeneratedBotConfig(clinic) {
+  const settings = parseClinicSettingsObject(clinic);
+  const config = settings && settings.bot && settings.bot.runtimeConfig && typeof settings.bot.runtimeConfig === 'object'
+    ? settings.bot.runtimeConfig
+    : null;
+  if (!config || config.enabled !== true) return null;
+  return config;
+}
+
+function isConfiguredBotOfferIntent(input) {
+  const text = normalizeCommandText(input);
+  return text.includes('que tenes') || text.includes('qué tenés') || text.includes('que opciones') || text.includes('qué opciones');
+}
+
+function isConfiguredBotRecommendationIntent(input) {
+  const text = normalizeCommandText(input);
+  return text.includes('econom') || text.includes('barato') || text.includes('accesible');
+}
+
+function buildBotWelcomeReply(config) {
+  return `${config.welcomeMessage}\n\n${config.offerDescription}\n\n${config.closingCta}`;
+}
+
+function buildBotOfferReply(config) {
+  return `${config.offerDescription}\n\n${config.closingCta}`;
+}
+
+function buildBotRecommendationReply(config) {
+  return `${config.recommendationMessage}\n\n${config.closingCta}`;
+}
+
+function resolveConfiguredSalesBotReply({ clinic, inboundText, currentState, safeContext }) {
+  const config = getActiveGeneratedBotConfig(clinic);
+  if (!config) return null;
+
+  const activeBotDomain = String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase();
+  if (activeBotDomain === 'agenda') return null;
+  if (!['READY', 'NEW', 'IDLE'].includes(String(currentState || '').toUpperCase())) return null;
+
+  if (isGreeting(inboundText)) {
+    return {
+      replyText: buildBotWelcomeReply(config),
+      newState: 'READY',
+      newStage: 'offering',
+      contextPatch: { activeBotDomain: 'commerce' }
+    };
+  }
+
+  if (isConfiguredBotOfferIntent(inboundText)) {
+    return {
+      replyText: buildBotOfferReply(config),
+      newState: 'READY',
+      newStage: 'offering',
+      contextPatch: { activeBotDomain: 'commerce' }
+    };
+  }
+
+  if (isConfiguredBotRecommendationIntent(inboundText)) {
+    return {
+      replyText: buildBotRecommendationReply(config),
+      newState: 'READY',
+      newStage: 'offering',
+      contextPatch: { activeBotDomain: 'commerce' }
+    };
+  }
+
+  return null;
 }
 
 function isRecentCommerceOrder(lastOrderAt) {
@@ -2826,6 +3007,29 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
             commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
             commerceActivationOfferState: 'onboarding_completed',
             commerceActivationChoice: '1'
+          }
+        };
+      }
+
+      if (existingPreview && isGeneratedBotActivationIntent(inboundText)) {
+        const runtimeConfig = buildExecutableBotConfigFromPreview(onboarding, existingPreview);
+        await updateClinicBotRuntimeConfigById(conversation.clinicId, runtimeConfig);
+        return {
+          replyText: [
+            'Perfecto 🙌',
+            '',
+            'Ya dejé esta versión como base de tu bot.',
+            '',
+            'A partir de ahora, podemos seguir ajustándolo o usarlo como punto de partida para tu configuración real.'
+          ].join('\n'),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding,
+            botRuntimeConfig: runtimeConfig,
+            generatedBotPreview: {
+              ...existingPreview
+            }
           }
         };
       }
@@ -5149,6 +5353,18 @@ async function processConversationReplyJob(job) {
       contextPatch: automationContextPatch
     };
     decisionSource = 'automation';
+  }
+  if (!decision && !qaAgendaBypassActive && !shouldPrioritizeAgendaFlow && botRoute.allowCommerce) {
+    const configuredBotDecision = resolveConfiguredSalesBotReply({
+      clinic,
+      inboundText,
+      currentState,
+      safeContext
+    });
+    if (configuredBotDecision) {
+      decision = configuredBotDecision;
+      decisionSource = 'configured_bot';
+    }
   }
   if (!decision && !qaAgendaBypassActive && !shouldPrioritizeAgendaFlow) {
     if (botRoute.allowCommerce) {
