@@ -707,6 +707,20 @@ function formatCommerceIndex(index) {
   return digits[index - 1] || `${index}.`;
 }
 
+function isPlanProduct(product) {
+  if (!product) return false;
+  const name = String(product.nameSnapshot || product.name || '').toLowerCase();
+  const sku = String(product.skuSnapshot || product.sku || '').toUpperCase();
+
+  return name.includes('plan') || sku.startsWith('PLAN');
+}
+
+function isPlanCatalog(products) {
+  if (!Array.isArray(products) || products.length === 0) return false;
+  const planCount = products.filter(isPlanProduct).length;
+  return planCount >= Math.ceil(products.length * 0.6);
+}
+
 function buildCommerceCategoriesReply(categories) {
   if (!categories.length) {
     return 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos categorias activas con productos disponibles.';
@@ -727,29 +741,48 @@ function buildCommerceCategoriesReply(categories) {
 
 function buildCommerceCatalogReply(page) {
   const products = page && Array.isArray(page.items) ? page.items : [];
+  const planCatalog = isPlanCatalog(products);
   if (!products.length) {
-    return 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos productos disponibles para pedir por WhatsApp.';
+    return planCatalog
+      ? 'Hola 👋\n\nTe ayudo a elegir el plan ideal de Opturon.\n\nEn este momento no tenemos planes disponibles para mostrarte por WhatsApp.'
+      : 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos productos disponibles para pedir por WhatsApp.';
   }
 
   const lines = [
     'Hola 👋',
     '',
-    '¡Bienvenido! Te ayudo a armar tu pedido por aca.',
+    planCatalog
+      ? 'Te ayudo a elegir el plan ideal de Opturon.'
+      : '¡Bienvenido! Te ayudo a armar tu pedido por aca.',
     '',
     page && page.categoryName
-      ? `Estos son algunos productos disponibles de ${page.categoryName}:`
-      : 'Estos son algunos de nuestros productos disponibles:',
+      ? planCatalog
+        ? `Estos son los planes disponibles de ${page.categoryName}:`
+        : `Estos son algunos productos disponibles de ${page.categoryName}:`
+      : planCatalog
+        ? 'Estos son nuestros planes disponibles:'
+        : 'Estos son algunos de nuestros productos disponibles:',
     '',
     ...products.map((product) => `${formatCommerceIndex(product.index)} ${product.name} — ${formatMoney(product.price, product.currency)}`),
     '',
     'Podes:',
-    '- escribir el numero del producto que queres agregar',
-    ...(page && page.hasMore ? ['- escribir "más" para seguir viendo productos'] : []),
+    planCatalog
+      ? '- escribir el numero del plan que queres elegir'
+      : '- escribir el numero del producto que queres agregar',
+    ...(page && page.hasMore ? [planCatalog ? '- escribir "más" para seguir viendo planes' : '- escribir "más" para seguir viendo productos'] : []),
     ...(page && page.categoryId ? ['- escribir "0" o "volver" para ver categorias'] : []),
-    '- escribir "confirmar" para cerrar tu pedido',
-    '- escribir "productos" para ver el catalogo otra vez',
-    '- escribir "deshacer" para quitar el ultimo producto agregado',
-    '- escribir "cancelar" para anular la compra'
+    planCatalog
+      ? '- escribir "confirmar" para avanzar con la contratacion'
+      : '- escribir "confirmar" para cerrar tu pedido',
+    planCatalog
+      ? '- escribir "productos" para ver los planes otra vez'
+      : '- escribir "productos" para ver el catalogo otra vez',
+    planCatalog
+      ? '- escribir "deshacer" para cambiar tu eleccion'
+      : '- escribir "deshacer" para quitar el ultimo producto agregado',
+    planCatalog
+      ? '- escribir "cancelar" para frenar la contratacion'
+      : '- escribir "cancelar" para anular la compra'
   ];
 
   return lines.join('\n');
@@ -1126,23 +1159,52 @@ function buildCommerceCartItemLines(cartItems, { numbered = false } = {}) {
 
 function buildCommerceCartReply(cartItems) {
   const safeItems = Array.isArray(cartItems) ? cartItems : [];
+  const planCatalog = isPlanCatalog(safeItems);
   const subtotal = safeItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
   const currency = safeItems[0] && safeItems[0].currency ? safeItems[0].currency : 'ARS';
 
   return [
-    'Agregado al carrito 👍',
+    planCatalog ? 'Plan agregado 👍' : 'Agregado al carrito 👍',
     '',
-    'Tu carrito ahora tiene:',
+    planCatalog ? 'Tu eleccion actual es:' : 'Tu carrito ahora tiene:',
     ...buildCommerceCartItemLines(safeItems),
-    `• Total parcial: ${formatMoney(subtotal, currency)}`,
+    `• ${planCatalog ? 'Valor del plan' : 'Total parcial'}: ${formatMoney(subtotal, currency)}`,
     '',
     'Podés:',
-    '- escribir otro número de producto para seguir agregando',
-    '- escribir "más" para seguir viendo productos',
-    '- escribir "confirmar" para cerrar el pedido',
-    '- escribir "productos" para ver el catálogo otra vez',
-    '- escribir "deshacer" para quitar el ultimo producto agregado',
-    '- escribir "cancelar" para anular la compra'
+    planCatalog ? '- escribir otro número si querés elegir un plan distinto' : '- escribir otro número de producto para seguir agregando',
+    planCatalog ? '- escribir "más" para seguir viendo planes' : '- escribir "más" para seguir viendo productos',
+    planCatalog ? '- escribir "confirmar" para avanzar con la contratación' : '- escribir "confirmar" para cerrar el pedido',
+    planCatalog ? '- escribir "productos" para ver los planes otra vez' : '- escribir "productos" para ver el catálogo otra vez',
+    planCatalog ? '- escribir "deshacer" para cambiar tu elección' : '- escribir "deshacer" para quitar el ultimo producto agregado',
+    planCatalog ? '- escribir "cancelar" para frenar la contratación' : '- escribir "cancelar" para anular la compra'
+  ].join('\n');
+}
+
+function buildPlanSelectionReply(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const rawDescription = String(safeProduct.description || '').trim();
+  const descriptionLines = rawDescription
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const headline = descriptionLines[0] || 'Es una gran opción para empezar a automatizar ventas con Opturon.';
+  const featureLines = descriptionLines.slice(1, 4);
+
+  return [
+    `Elegiste el ${safeProduct.name || 'plan'}.`,
+    '',
+    headline,
+    '',
+    ...(featureLines.length
+      ? [
+          'Incluye:',
+          ...featureLines.map((line) => `- ${line}`),
+          ''
+        ]
+      : []),
+    'Si querés avanzar, lo dejamos listo para activar ahora.',
+    '',
+    '¿Querés continuar con este plan? Escribí "confirmar" para seguir.'
   ].join('\n');
 }
 
@@ -1179,7 +1241,25 @@ function buildCommerceUndoReply(cartItems) {
 
 function buildCommerceOrderConfirmation(order, cartItems) {
   const safeItems = Array.isArray(cartItems) ? cartItems : [];
+  const planCatalog = isPlanCatalog(safeItems);
   const currency = order && order.currency ? order.currency : safeItems[0] && safeItems[0].currency ? safeItems[0].currency : 'ARS';
+
+  if (planCatalog) {
+    return [
+      'Perfecto 🙌',
+      '',
+      'Ya dejamos tu plan listo.',
+      '',
+      'Resumen:',
+      ...buildCommerceCartItemLines(safeItems),
+      '',
+      `Valor: ${formatMoney(Number(order && order.total ? order.total : 0), currency)}`,
+      '',
+      'Ahora seguimos con la activación para que empieces a usar Opturon.',
+      '',
+      'En breve te guiamos con los próximos pasos.'
+    ].join('\n');
+  }
 
   return [
     'Perfecto 🙌',
@@ -1277,8 +1357,8 @@ function buildCommerceHelpReply({ currentState, cartItems }) {
 function buildCommerceAlreadyConfirmedReply(lastOrderId) {
   const orderLabel = String(lastOrderId || '').trim();
   return orderLabel
-    ? `Tu pedido ya fue registrado con el comprobante ${orderLabel}. Si querés hacer otro, escribí "productos".`
-    : 'Tu pedido ya fue registrado. Si querés hacer otro, escribí "productos".';
+    ? `Tu plan ya quedó registrado con la referencia ${orderLabel}. Si querés revisar los planes otra vez, escribí "productos".`
+    : 'Tu plan ya quedó registrado. Si querés revisar los planes otra vez, escribí "productos".';
 }
 
 function isRecentCommerceOrder(lastOrderAt) {
@@ -1371,7 +1451,8 @@ async function resolveCommerceCartAddition({
   }
 
   const existingItem = cartItems.find((item) => String(item.productId || '') === String(latestProduct.id));
-  const requestedCartQuantity = Number(existingItem && existingItem.quantity ? existingItem.quantity : 0) + quantity;
+  const effectiveQuantity = isPlanProduct(latestProduct) ? 1 : quantity;
+  const requestedCartQuantity = Number(existingItem && existingItem.quantity ? existingItem.quantity : 0) + effectiveQuantity;
   if (Number(latestProduct.stock || 0) < requestedCartQuantity) {
     logInfo('commerce_order_create_failed_stock', {
       conversationId: conversation.id,
@@ -1406,27 +1487,36 @@ async function resolveCommerceCartAddition({
     };
   }
 
-  const updatedCartItems = mergeCommerceCartItem(
-    cartItems,
-    {
-      productId: latestProduct.id,
-      name: latestProduct.name,
-      price: Number(latestProduct.price || 0),
-      currency: String(latestProduct.currency || 'ARS').toUpperCase()
-    },
-    quantity
-  );
+  const baseItem = {
+    productId: latestProduct.id,
+    name: latestProduct.name,
+    price: Number(latestProduct.price || 0),
+    currency: String(latestProduct.currency || 'ARS').toUpperCase(),
+    sku: latestProduct.sku || null
+  };
+  const updatedCartItems = isPlanProduct(latestProduct)
+    ? [
+        {
+          ...baseItem,
+          quantity: 1
+        }
+      ]
+    : mergeCommerceCartItem(
+        cartItems,
+        baseItem,
+        effectiveQuantity
+      );
 
   logInfo('commerce_cart_item_added', {
-    conversationId: conversation.id,
-    clinicId: conversation.clinicId,
-    productId: latestProduct.id,
-    addedQuantity: quantity,
-    cartQuantity: requestedCartQuantity
-  });
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      productId: latestProduct.id,
+      addedQuantity: effectiveQuantity,
+      cartQuantity: requestedCartQuantity
+    });
 
   return {
-    replyText: buildCommerceCartReply(updatedCartItems),
+    replyText: isPlanProduct(latestProduct) ? buildPlanSelectionReply(latestProduct) : buildCommerceCartReply(updatedCartItems),
     newState: 'WAITING_PRODUCT_SELECTION',
     contextPatch: buildCommerceResetPatch({
       commerceCatalog: catalogFromContext.length
@@ -1435,7 +1525,7 @@ async function resolveCommerceCartAddition({
       commerceCartItems: updatedCartItems,
       commerceLastAddedItem: {
         productId: String(latestProduct.id || '').trim() || null,
-        quantity
+        quantity: effectiveQuantity
       }
     })
   };
@@ -1664,6 +1754,29 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const loadClinicProducts = () => listProductsByClinicId(conversation.clinicId);
   const buildCatalogEntryDecision = async () => {
     const products = await loadClinicProducts();
+    if (isPlanCatalog(buildCommerceEligibleProducts(products))) {
+      const page = buildCommerceCatalogPage(products);
+      traceCommerceFlow('catalog_plans', {
+        shownCount: page.items.length,
+        total: page.total,
+        hasMore: page.hasMore
+      });
+      return {
+        replyText: buildCommerceCatalogReply(page),
+        newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCatalog: page.items,
+          commerceCatalogOffset: page.offset,
+          commerceCatalogNextOffset: page.nextOffset,
+          commerceCatalogTotal: page.total,
+          commerceCartItems: cartItems.length ? cartItems : null,
+          commerceLastAddedItem: lastAddedItem,
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null
+        })
+      };
+    }
+
     const categories = buildCommerceCategories(products);
     if (categories.length > 0) {
       traceCommerceFlow('catalog_by_category', {
@@ -2044,7 +2157,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const products = catalogFromContext.length
       ? catalogFromContext
       : buildCommerceCatalogPage(await loadClinicProducts(), { categoryId: activeCategoryId }).items;
-    const multiSelection = parseCommerceMultiSelection(inboundText, products.length);
+    const multiSelection = isPlanCatalog(products) ? [] : parseCommerceMultiSelection(inboundText, products.length);
     if (multiSelection.length > 1) {
       return resolveCommerceMultiCartAddition({
         conversation,
@@ -2238,6 +2351,16 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           commerceCatalogTotal: catalogTotal
         })
       };
+    }
+
+    if (isPlanProduct(selectedProduct)) {
+      return resolveCommerceCartAddition({
+        conversation,
+        catalogFromContext: products,
+        cartItems,
+        quantity: 1,
+        productId: selectedProduct.productId || selectedProduct.id
+      });
     }
 
     return {
