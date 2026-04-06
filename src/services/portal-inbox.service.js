@@ -275,9 +275,16 @@ async function resolvePortalAssignee(clinicId, value) {
   };
 }
 
-async function listPortalConversations(tenantId) {
+async function listPortalConversations(tenantId, options = {}) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
+  const visibility = String(options && options.visibility ? options.visibility : 'active').trim().toLowerCase() === 'archived'
+    ? 'archived'
+    : 'active';
+  const visibilityClause =
+    visibility === 'archived'
+      ? `AND NULLIF(c.context->>'portalHiddenAt', '') IS NOT NULL`
+      : `AND NULLIF(c.context->>'portalHiddenAt', '') IS NULL`;
 
   const result = await query(
     `SELECT
@@ -321,7 +328,7 @@ async function listPortalConversations(tenantId) {
          )
       ) unread ON TRUE
       WHERE c."clinicId" = $1::uuid
-       AND NULLIF(c.context->>'portalHiddenAt', '') IS NULL
+       ${visibilityClause}
       ORDER BY COALESCE(latest."createdAt", c."updatedAt") DESC, c."updatedAt" DESC`,
     [context.clinic.id]
   );
@@ -332,6 +339,7 @@ async function listPortalConversations(tenantId) {
     clinic: context.clinic,
     channel: toPortalChannel(context.channel),
     conversations: result.rows.map(mapConversationRow),
+    visibility,
     reason: 'resolved'
   };
 }
@@ -488,6 +496,47 @@ async function archivePortalConversations(tenantId, payload = {}, actor = {}) {
     archivedConversationIds: result.rows.map((row) => row.id),
     archivedCount: result.rowCount || 0,
     reason: 'archived'
+  };
+}
+
+async function restorePortalConversations(tenantId, payload = {}) {
+  const context = await resolveRuntimeContext(tenantId);
+  if (!context.ok) return context;
+
+  const conversationIds = Array.isArray(payload.conversationIds)
+    ? payload.conversationIds.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+
+  if (!conversationIds.length) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'missing_conversation_ids'
+    };
+  }
+
+  const result = await query(
+    `UPDATE conversations
+     SET
+       context = (COALESCE(context, '{}'::jsonb) - 'portalHiddenAt' - 'portalHiddenByUserId' - 'portalHiddenByName'),
+       "updatedAt" = NOW()
+     WHERE "clinicId" = $1::uuid
+       AND id = ANY($2::uuid[])
+       AND NULLIF(context->>'portalHiddenAt', '') IS NOT NULL
+     RETURNING id`,
+    [context.clinic.id, conversationIds]
+  );
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    channel: toPortalChannel(context.channel),
+    restoredConversationIds: result.rows.map((row) => row.id),
+    restoredCount: result.rowCount || 0,
+    reason: 'restored'
   };
 }
 
@@ -838,5 +887,6 @@ module.exports = {
   getPortalConversationDetail,
   patchPortalConversation,
   sendPortalMessage,
-  archivePortalConversations
+  archivePortalConversations,
+  restorePortalConversations
 };

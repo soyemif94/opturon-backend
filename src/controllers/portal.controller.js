@@ -5,7 +5,8 @@ const {
   getPortalConversationDetail,
   patchPortalConversation,
   sendPortalMessage,
-  archivePortalConversations
+  archivePortalConversations,
+  restorePortalConversations
 } = require('../services/portal-inbox.service');
 const {
   listPortalOrders,
@@ -88,7 +89,8 @@ const {
   getPortalContactDetail,
   createPortalContact,
   updatePortalContact,
-  archivePortalContacts
+  archivePortalContacts,
+  restorePortalContacts
 } = require('../services/portal-contacts.service');
 const {
   getPortalLoyaltyProgram,
@@ -167,9 +169,10 @@ async function getPortalTenantContext(req, res) {
 
 async function getPortalConversations(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
+  const visibility = String(req.query.visibility || 'active').trim().toLowerCase() === 'archived' ? 'archived' : 'active';
 
   try {
-    const result = await listPortalConversations(tenantId);
+    const result = await listPortalConversations(tenantId, { visibility });
     if (!result.ok) {
       const status = result.reason === 'missing_tenant_id' ? 400 : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
@@ -549,6 +552,29 @@ async function patchPortalConversationsArchive(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_conversations_archive_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalConversationsRestore(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await restorePortalConversations(tenantId, req.body || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_conversation_ids' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_conversations_restore_failed',
       details: error.message
     });
   }
@@ -951,9 +977,10 @@ async function getPortalUsers(req, res) {
 
 async function getPortalContacts(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
+  const visibility = String(req.query.visibility || 'active').trim().toLowerCase() === 'archived' ? 'archived' : 'active';
 
   try {
-    const result = await listPortalContacts(tenantId);
+    const result = await listPortalContacts(tenantId, { visibility });
     if (!result.ok) {
       const status = result.reason === 'missing_tenant_id' ? 400 : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
@@ -1514,6 +1541,29 @@ async function patchPortalContactsArchive(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_contacts_archive_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalContactsRestore(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await restorePortalContacts(tenantId, req.body || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_contact_ids' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_contacts_restore_failed',
       details: error.message
     });
   }
@@ -3417,6 +3467,7 @@ module.exports = {
   getPortalConversation,
   updatePortalConversation,
   patchPortalConversationsArchive,
+  patchPortalConversationsRestore,
   postPortalMessage,
   getPortalOrders,
   getPortalOrdersPaymentMetrics,
@@ -3441,6 +3492,7 @@ module.exports = {
   postPortalContact,
   patchPortalContact,
   patchPortalContactsArchive,
+  patchPortalContactsRestore,
   getPortalInvoices,
   getPortalInvoice,
   getPortalInvoiceAllocations,

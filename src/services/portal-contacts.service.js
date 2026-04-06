@@ -4,7 +4,8 @@ const {
   findPortalContactById,
   createPortalContact,
   updatePortalContactById,
-  archivePortalContactsByIds
+  archivePortalContactsByIds,
+  restorePortalContactsByIds
 } = require('../repositories/contact.repository');
 const { listInvoicesByContactId } = require('../repositories/invoices.repository');
 const { listPaymentsByContactId } = require('../repositories/payments.repository');
@@ -95,18 +96,22 @@ function normalizeRelatedPayment(payment, allocatedAmount = 0) {
   };
 }
 
-async function listPortalContacts(tenantId) {
+async function listPortalContacts(tenantId, options = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
 
-  const contacts = await listContactsByClinicId(context.clinic.id);
+  const visibility = String(options && options.visibility ? options.visibility : 'active').trim().toLowerCase() === 'archived'
+    ? 'archived'
+    : 'active';
+  const contacts = await listContactsByClinicId(context.clinic.id, { visibility });
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    contacts: contacts.map(normalizeContact)
+    contacts: contacts.map(normalizeContact),
+    visibility
   };
 }
 
@@ -309,10 +314,41 @@ async function archivePortalContacts(tenantId, payload = {}) {
   };
 }
 
+async function restorePortalContacts(tenantId, payload = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const contactIds = Array.isArray(payload.contactIds)
+    ? payload.contactIds.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+
+  if (!contactIds.length) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'missing_contact_ids'
+    };
+  }
+
+  const restoredContacts = await restorePortalContactsByIds(context.clinic.id, contactIds);
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    restoredContactIds: restoredContacts.map((contact) => contact.id),
+    restoredCount: restoredContacts.length
+  };
+}
+
 module.exports = {
   listPortalContacts,
   createPortalContactRecord,
   getPortalContactDetail,
   updatePortalContact,
-  archivePortalContacts
+  archivePortalContacts,
+  restorePortalContacts
 };

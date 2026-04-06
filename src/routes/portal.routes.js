@@ -5,6 +5,7 @@ const {
   getPortalConversation,
   updatePortalConversation,
   patchPortalConversationsArchive,
+  patchPortalConversationsRestore,
   postPortalMessage,
   getPortalOrders,
   getPortalOrdersPaymentMetrics,
@@ -29,6 +30,7 @@ const {
   postPortalContact,
   patchPortalContact,
   patchPortalContactsArchive,
+  patchPortalContactsRestore,
   getPortalInvoices,
   getPortalInvoice,
   getPortalInvoiceAllocations,
@@ -108,6 +110,7 @@ const router = express.Router();
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
 router.get('/tenants/:tenantId/conversations', getPortalConversations);
 router.patch('/tenants/:tenantId/conversations/archive', patchPortalConversationsArchive);
+router.patch('/tenants/:tenantId/conversations/restore', patchPortalConversationsRestore);
 router.get('/tenants/:tenantId/conversations/:conversationId', getPortalConversation);
 router.patch('/tenants/:tenantId/conversations/:conversationId', updatePortalConversation);
 router.post('/tenants/:tenantId/messages', postPortalMessage);
@@ -131,6 +134,7 @@ router.patch('/tenants/:tenantId/products/:productId/status', updatePortalProduc
 router.delete('/tenants/:tenantId/products/:productId', destroyPortalProduct);
 router.get('/tenants/:tenantId/contacts', getPortalContacts);
 router.patch('/tenants/:tenantId/contacts/archive', patchPortalContactsArchive);
+router.patch('/tenants/:tenantId/contacts/restore', patchPortalContactsRestore);
 router.post('/tenants/:tenantId/contacts', postPortalContact);
 router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
 router.patch('/tenants/:tenantId/contacts/:contactId', patchPortalContact);

@@ -173,7 +173,13 @@ async function findPortalContactById(clinicId, contactId, client = null) {
   return result.rows[0] || null;
 }
 
-async function listContactsByClinicId(clinicId, client = null) {
+async function listContactsByClinicId(clinicId, options = {}, client = null) {
+  const visibility = String(options && options.visibility ? options.visibility : 'active').trim().toLowerCase();
+  const whereStatusClause =
+    visibility === 'archived'
+      ? `AND COALESCE(c.status, 'active') = 'archived'`
+      : `AND COALESCE(c.status, 'active') <> 'archived'`;
+
   const result = await dbQuery(
     client,
     `SELECT
@@ -199,7 +205,7 @@ async function listContactsByClinicId(clinicId, client = null) {
        ON conv."contactId" = c.id
       AND conv."clinicId" = c."clinicId"
      WHERE c."clinicId" = $1
-       AND COALESCE(c.status, 'active') <> 'archived'
+       ${whereStatusClause}
      GROUP BY
        c.id,
        c."clinicId",
@@ -236,6 +242,41 @@ async function archivePortalContactsByIds(clinicId, contactIds = [], client = nu
      WHERE "clinicId" = $1
        AND id = ANY($2::uuid[])
        AND COALESCE(status, 'active') <> 'archived'
+     RETURNING
+       id,
+       "clinicId",
+       "waId",
+       phone,
+       name,
+       email,
+       "whatsappPhone",
+       "taxId",
+       "taxCondition",
+       "companyName",
+       notes,
+       status,
+       "optedOut",
+       "createdAt",
+       "updatedAt"`,
+    [clinicId, ids]
+  );
+
+  return result.rows;
+}
+
+async function restorePortalContactsByIds(clinicId, contactIds = [], client = null) {
+  const ids = Array.isArray(contactIds) ? contactIds.filter(Boolean) : [];
+  if (!ids.length) return [];
+
+  const result = await dbQuery(
+    client,
+    `UPDATE contacts
+     SET
+       status = 'active',
+       "updatedAt" = NOW()
+     WHERE "clinicId" = $1
+       AND id = ANY($2::uuid[])
+       AND COALESCE(status, 'active') = 'archived'
      RETURNING
        id,
        "clinicId",
@@ -471,5 +512,6 @@ module.exports = {
   findPortalContactById,
   createPortalContact,
   updatePortalContactById,
-  archivePortalContactsByIds
+  archivePortalContactsByIds,
+  restorePortalContactsByIds
 };
