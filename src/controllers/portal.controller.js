@@ -11,6 +11,7 @@ const {
 const {
   listPortalOrders,
   getPortalOrderPaymentMetrics,
+  getPortalSellerMetrics,
   getPortalOrderDetail,
   createPortalOrder,
   patchPortalOrder,
@@ -599,6 +600,29 @@ async function getPortalOrdersPaymentMetrics(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_order_payment_metrics_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalSellerMetricsController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await getPortalSellerMetrics(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.metrics
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_seller_metrics_failed',
       details: error.message
     });
   }
@@ -3473,6 +3497,7 @@ module.exports = {
   postPortalMessage,
   getPortalOrders,
   getPortalOrdersPaymentMetrics,
+  getPortalSellerMetricsController,
   getPortalOrder,
   postPortalOrder,
   patchPortalOrderController,

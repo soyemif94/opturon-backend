@@ -529,6 +529,94 @@ async function getPortalOrderPaymentMetrics(tenantId, range) {
   };
 }
 
+async function getPortalSellerMetrics(tenantId) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const sellerMetricsResult = await query(
+    `WITH active_sellers AS (
+       SELECT
+         su.id,
+         su.name,
+         CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS role
+       FROM staff_users su
+       WHERE su."clinicId" = $1::uuid
+         AND su."accountType" = 'client_portal'
+         AND su.email IS NOT NULL
+         AND su.active = TRUE
+         AND su.role IN ('owner', 'manager', 'seller', 'editor')
+     ),
+     scoped_orders AS (
+       SELECT
+         o.id,
+         o."sellerUserId",
+         COALESCE(o."paymentStatus", '') AS "paymentStatus",
+         COALESCE(o.status, '') AS status,
+         COALESCE(o."totalAmount", o.total, 0)::numeric AS amount
+       FROM orders o
+       WHERE o."clinicId" = $1::uuid
+         AND COALESCE(o.status, '') <> 'cancelled'
+     )
+     SELECT
+       s.id AS "sellerUserId",
+       s.name AS "sellerName",
+       s.role AS "sellerRole",
+       COUNT(so.id)::int AS "totalOrders",
+       COALESCE(SUM(CASE WHEN so."paymentStatus" = 'paid' THEN 1 ELSE 0 END), 0)::int AS "totalPaidOrders",
+       COALESCE(SUM(CASE WHEN so."paymentStatus" = 'paid' THEN so.amount ELSE 0 END), 0)::numeric AS "totalRevenue"
+     FROM active_sellers s
+     LEFT JOIN scoped_orders so
+       ON so."sellerUserId" = s.id
+     GROUP BY s.id, s.name, s.role
+     ORDER BY
+       COALESCE(SUM(CASE WHEN so."paymentStatus" = 'paid' THEN so.amount ELSE 0 END), 0) DESC,
+       COALESCE(SUM(CASE WHEN so."paymentStatus" = 'paid' THEN 1 ELSE 0 END), 0) DESC,
+       s.name ASC`,
+    [context.clinic.id]
+  );
+
+  const withoutSellerResult = await query(
+    `SELECT COUNT(*)::int AS "ordersWithoutSeller"
+     FROM orders
+     WHERE "clinicId" = $1::uuid
+       AND "sellerUserId" IS NULL
+       AND COALESCE(status, '') <> 'cancelled'`,
+    [context.clinic.id]
+  );
+
+  const sellerMetrics = sellerMetricsResult.rows.map((row) => {
+    const totalPaidOrders = Number(row.totalPaidOrders || 0);
+    const totalRevenue = Number(row.totalRevenue || 0);
+
+    return {
+      sellerUserId: row.sellerUserId,
+      sellerName: row.sellerName || null,
+      sellerRole: row.sellerRole || null,
+      totalOrders: Number(row.totalOrders || 0),
+      totalPaidOrders,
+      totalRevenue,
+      averageTicket: totalPaidOrders > 0 ? Number((totalRevenue / totalPaidOrders).toFixed(2)) : 0
+    };
+  });
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    metrics: {
+      salesCriteria: {
+        countedOrderStatuses: 'status != cancelled',
+        paidOrderCriteria: 'paymentStatus = paid'
+      },
+      sellerMetrics,
+      ordersWithoutSeller: Number(withoutSellerResult.rows[0]?.ordersWithoutSeller || 0),
+      currency: 'ARS'
+    }
+  };
+}
+
 async function getPortalOrderDetail(tenantId, orderId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -1288,6 +1376,7 @@ module.exports = {
   ORDER_STATUSES: Array.from(ORDER_STATUSES),
   listPortalOrders,
   getPortalOrderPaymentMetrics,
+  getPortalSellerMetrics,
   getPortalOrderDetail,
   createPortalOrder,
   createOrderForClinic,

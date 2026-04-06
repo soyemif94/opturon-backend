@@ -9,6 +9,7 @@ const {
   postPortalMessage,
   getPortalOrders,
   getPortalOrdersPaymentMetrics,
+  getPortalSellerMetricsController,
   getPortalOrder,
   postPortalOrder,
   patchPortalOrderController,
@@ -116,6 +117,7 @@ router.patch('/tenants/:tenantId/conversations/:conversationId', updatePortalCon
 router.post('/tenants/:tenantId/messages', postPortalMessage);
 router.get('/tenants/:tenantId/orders', getPortalOrders);
 router.get('/tenants/:tenantId/orders/payment-metrics', getPortalOrdersPaymentMetrics);
+router.get('/tenants/:tenantId/seller-metrics', getPortalSellerMetricsController);
 router.post('/tenants/:tenantId/orders', postPortalOrder);
 router.get('/tenants/:tenantId/orders/:orderId', getPortalOrder);
 router.patch('/tenants/:tenantId/orders/:orderId', patchPortalOrderController);
