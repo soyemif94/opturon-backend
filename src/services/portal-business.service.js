@@ -8,6 +8,16 @@ function normalizeString(value) {
   return String(value || '').trim();
 }
 
+function isValidHttpUrl(value) {
+  if (!value) return true;
+  try {
+    const parsed = new URL(String(value).trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function buildReason(reason, detail = null, extra = null) {
   return {
     ok: false,
@@ -34,6 +44,7 @@ function emptyBusinessProfile(tenantId, clinic = null) {
     defaultSuggestedFiscalVoucherType: 'NONE',
     accountantEmail: '',
     accountantName: '',
+    profileImageUrl: '',
     openingHours: '',
     address: '',
     deliveryZones: '',
@@ -62,6 +73,7 @@ function normalizeBusinessProfile(tenantId, clinic, value) {
       : 'NONE',
     accountantEmail: normalizeString(profile.accountantEmail),
     accountantName: normalizeString(profile.accountantName),
+    profileImageUrl: normalizeString(profile.profileImageUrl),
     openingHours: normalizeString(profile.openingHours),
     address: normalizeString(profile.address),
     deliveryZones: normalizeString(profile.deliveryZones),
@@ -108,6 +120,11 @@ async function updatePortalBusinessSettings(tenantId, payload) {
   }
 
   const nextProfile = normalizeBusinessProfile(safeTenantId, context.clinic, payload || {});
+  if (!isValidHttpUrl(nextProfile.profileImageUrl)) {
+    return buildReason('invalid_business_profile_image_url', 'La imagen del negocio debe ser una URL http o https valida.', {
+      tenantId: safeTenantId
+    });
+  }
   const clinic = await updateClinicBusinessProfileById(context.clinic.id, {
     legalName: nextProfile.legalName,
     taxId: nextProfile.taxId,
@@ -121,6 +138,7 @@ async function updatePortalBusinessSettings(tenantId, payload) {
     defaultSuggestedFiscalVoucherType: nextProfile.defaultSuggestedFiscalVoucherType,
     accountantEmail: nextProfile.accountantEmail,
     accountantName: nextProfile.accountantName,
+    profileImageUrl: nextProfile.profileImageUrl,
     openingHours: nextProfile.openingHours,
     address: nextProfile.address,
     deliveryZones: nextProfile.deliveryZones,

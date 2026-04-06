@@ -22,9 +22,24 @@ function normalizeNullableText(value) {
   return safeValue ? safeValue : null;
 }
 
+function normalizeNullableImageUrl(value) {
+  const safeValue = String(value || '').trim();
+  return safeValue ? safeValue : null;
+}
+
 function isValidEmail(email) {
   if (!email) return true;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
+}
+
+function isValidHttpUrl(value) {
+  if (!value) return true;
+  try {
+    const parsed = new URL(String(value).trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function normalizeContact(row) {
@@ -37,6 +52,7 @@ function normalizeContact(row) {
     phone: row.phone || null,
     name: safeName || row.companyName || row.waId || 'Contacto',
     email: row.email || null,
+    profileImageUrl: row.profileImageUrl || null,
     whatsappPhone: row.whatsappPhone || null,
     taxId: row.taxId || null,
     taxCondition: row.taxCondition || null,
@@ -142,10 +158,21 @@ async function createPortalContactRecord(tenantId, payload) {
     };
   }
 
+  const profileImageUrl = normalizeNullableImageUrl(payload && payload.profileImageUrl);
+  if (!isValidHttpUrl(profileImageUrl)) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'invalid_contact_profile_image_url'
+    };
+  }
+
   const contact = await createPortalContact(context.clinic.id, {
     name,
     email,
     phone: normalizeNullableText(payload && payload.phone),
+    profileImageUrl,
     whatsappPhone: normalizeNullableText(payload && payload.whatsappPhone),
     taxId: normalizeNullableText(payload && payload.taxId),
     taxCondition: normalizeNullableText(payload && payload.taxCondition),
@@ -256,6 +283,16 @@ async function updatePortalContact(tenantId, contactId, payload) {
     };
   }
 
+  const profileImageUrl = normalizeNullableImageUrl(payload && payload.profileImageUrl);
+  if (!isValidHttpUrl(profileImageUrl)) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'invalid_contact_profile_image_url'
+    };
+  }
+
   const existingContact = await findPortalContactById(context.clinic.id, safeContactId);
   if (!existingContact) {
     return {
@@ -270,6 +307,7 @@ async function updatePortalContact(tenantId, contactId, payload) {
     name,
     email,
     phone: normalizeNullableText(payload && payload.phone),
+    profileImageUrl,
     whatsappPhone: normalizeNullableText(payload && payload.whatsappPhone),
     taxId: normalizeNullableText(payload && payload.taxId),
     taxCondition: normalizeNullableText(payload && payload.taxCondition),

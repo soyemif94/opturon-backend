@@ -25,6 +25,7 @@ async function findFirstContactByPhone(clinicId, phone, client = null) {
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -63,7 +64,7 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
          "updatedAt" = NOW()
        WHERE id = $1
          AND "clinicId" = $2
-       RETURNING id, "clinicId", "waId", phone, name, "optedOut"`,
+       RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", "optedOut"`,
       [reusableContact.id, clinicId, waId || null, phone || null, name || null]
     );
 
@@ -79,7 +80,7 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
        phone = EXCLUDED.phone,
        name = COALESCE(EXCLUDED.name, contacts.name),
        "updatedAt" = NOW()
-     RETURNING id, "clinicId", "waId", phone, name, "optedOut"`,
+     RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", "optedOut"`,
     [clinicId, waId, phone || null, name || null]
   );
 
@@ -98,6 +99,7 @@ async function findContactById(contactId, client = null) {
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -126,6 +128,7 @@ async function findContactByIdAndClinicId(contactId, clinicId, client = null) {
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -157,6 +160,7 @@ async function findPortalContactById(clinicId, contactId, client = null) {
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -193,6 +197,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
        c.phone,
        c.name,
        c.email,
+       c."profileImageUrl",
        c."whatsappPhone",
        c."taxId",
        c."taxCondition",
@@ -218,6 +223,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
        c.phone,
        c.name,
        c.email,
+       c."profileImageUrl",
        c."whatsappPhone",
        c."taxId",
        c."taxCondition",
@@ -256,6 +262,7 @@ async function archivePortalContactsByIds(clinicId, contactIds = [], client = nu
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -293,6 +300,7 @@ async function restorePortalContactsByIds(clinicId, contactIds = [], client = nu
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -321,11 +329,12 @@ async function createPortalContact(clinicId, input, client = null) {
          name = COALESCE($3, name),
          email = COALESCE($4, email),
          phone = COALESCE($5, phone),
-         "whatsappPhone" = COALESCE($6, "whatsappPhone"),
-         "taxId" = COALESCE($7, "taxId"),
-         "taxCondition" = COALESCE($8, "taxCondition"),
-         "companyName" = COALESCE($9, "companyName"),
-         notes = COALESCE($10, notes),
+         "profileImageUrl" = COALESCE($6, "profileImageUrl"),
+         "whatsappPhone" = COALESCE($7, "whatsappPhone"),
+         "taxId" = COALESCE($8, "taxId"),
+         "taxCondition" = COALESCE($9, "taxCondition"),
+         "companyName" = COALESCE($10, "companyName"),
+         notes = COALESCE($11, notes),
          "updatedAt" = NOW()
        WHERE "clinicId" = $1
          AND id = $2
@@ -336,6 +345,7 @@ async function createPortalContact(clinicId, input, client = null) {
          phone,
          name,
          email,
+         "profileImageUrl",
          "whatsappPhone",
          "taxId",
          "taxCondition",
@@ -352,6 +362,7 @@ async function createPortalContact(clinicId, input, client = null) {
         input.name,
         input.email,
         input.phone,
+        input.profileImageUrl,
         input.whatsappPhone,
         input.taxId,
         input.taxCondition,
@@ -370,6 +381,7 @@ async function createPortalContact(clinicId, input, client = null) {
        name,
        email,
        phone,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -378,7 +390,7 @@ async function createPortalContact(clinicId, input, client = null) {
        status,
        "updatedAt"
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', NOW())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', NOW())
      RETURNING
        id,
        "clinicId",
@@ -386,6 +398,7 @@ async function createPortalContact(clinicId, input, client = null) {
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -401,6 +414,7 @@ async function createPortalContact(clinicId, input, client = null) {
       input.name,
       input.email,
       input.phone,
+      input.profileImageUrl,
       input.whatsappPhone,
       input.taxId,
       input.taxCondition,
@@ -421,11 +435,12 @@ async function updateContact(contactId, clinicId, input, client = null) {
        name = $3,
        email = $4,
        phone = $5,
-       "whatsappPhone" = $6,
-       "taxId" = $7,
-       "taxCondition" = $8,
-       "companyName" = $9,
-       notes = $10,
+       "profileImageUrl" = $6,
+       "whatsappPhone" = $7,
+       "taxId" = $8,
+       "taxCondition" = $9,
+       "companyName" = $10,
+       notes = $11,
        "updatedAt" = NOW()
      WHERE id = $1
        AND "clinicId" = $2
@@ -436,6 +451,7 @@ async function updateContact(contactId, clinicId, input, client = null) {
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -452,6 +468,7 @@ async function updateContact(contactId, clinicId, input, client = null) {
       input.name,
       input.email,
       input.phone,
+      input.profileImageUrl,
       input.whatsappPhone,
       input.taxId,
       input.taxCondition,
@@ -472,11 +489,12 @@ async function updatePortalContactById(clinicId, contactId, input, client = null
        name = $3,
        email = $4,
        phone = $5,
-       "whatsappPhone" = $6,
-       "taxId" = $7,
-       "taxCondition" = $8,
-       "companyName" = $9,
-       notes = $10,
+       "profileImageUrl" = $6,
+       "whatsappPhone" = $7,
+       "taxId" = $8,
+       "taxCondition" = $9,
+       "companyName" = $10,
+       notes = $11,
        "updatedAt" = NOW()
      WHERE "clinicId" = $1
        AND id = $2
@@ -487,6 +505,7 @@ async function updatePortalContactById(clinicId, contactId, input, client = null
        phone,
        name,
        email,
+       "profileImageUrl",
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -503,6 +522,7 @@ async function updatePortalContactById(clinicId, contactId, input, client = null
       input.name,
       input.email,
       input.phone,
+      input.profileImageUrl,
       input.whatsappPhone,
       input.taxId,
       input.taxCondition,

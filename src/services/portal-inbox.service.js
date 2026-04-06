@@ -114,6 +114,7 @@ function mapConversationRow(row) {
       id: row.contactId,
       name: row.contactName || row.waFrom || 'Contacto',
       phone: row.contactPhone || row.waFrom || undefined,
+      profileImageUrl: row.contactProfileImageUrl || undefined,
       tags: []
     },
     deal: mapDeal(context, row.contactId),
@@ -299,6 +300,7 @@ async function listPortalConversations(tenantId, options = {}) {
        ct.name AS "contactName",
        ct.phone AS "contactPhone",
        ct."waId" AS "waFrom",
+       ct."profileImageUrl" AS "contactProfileImageUrl",
        latest.text AS "lastMessagePreview",
        latest."createdAt" AS "lastMessageAt",
        COALESCE(unread.total, 0)::int AS "unreadCount"
@@ -412,13 +414,14 @@ async function getPortalConversationDetail(tenantId, conversationId) {
       conversation: detailRow,
       contact: contact
         ? {
-            id: contact.id,
-            name: contact.name || contact.waId,
-            phone: contact.phone || contact.waId || undefined,
-            email: undefined,
-            industry: undefined,
-            tags: []
-          }
+          id: contact.id,
+          name: contact.name || contact.waId,
+          phone: contact.phone || contact.waId || undefined,
+          email: undefined,
+          profileImageUrl: contact.profileImageUrl || undefined,
+          industry: undefined,
+          tags: []
+        }
         : undefined,
       deal: mapDeal(contextData, conversation.contactId),
       messages: messages.map((message) => ({
