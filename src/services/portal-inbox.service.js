@@ -102,6 +102,12 @@ function leadStatusLabel(value) {
   return 'Nuevo';
 }
 
+function normalizeNextActionNote(value) {
+  if (value === null || value === undefined) return null;
+  const safeValue = String(value).trim();
+  return safeValue ? safeValue : null;
+}
+
 function buildRelatedOrderSummary(order) {
   if (!order || !order.id) return null;
   return {
@@ -150,6 +156,8 @@ function mapConversationRow(row) {
     botDomainOverride: normalizeBotDomainOverride(context.botDomainOverride),
     unreadCount: Number(row.unreadCount || 0),
     slaMinutes: computeSlaMinutes(row),
+    nextActionAt: row.nextActionAt || null,
+    nextActionNote: normalizeNextActionNote(row.nextActionNote),
     contact: {
       id: row.contactId,
       name: row.contactName || row.waFrom || 'Contacto',
@@ -333,6 +341,8 @@ async function listPortalConversations(tenantId, options = {}) {
        c."channelId" AS "channelId",
        c.status,
        c."leadStatus" AS "leadStatus",
+       c."nextActionAt" AS "nextActionAt",
+       c."nextActionNote" AS "nextActionNote",
        c.context,
        c."lastInboundAt",
        c."lastOutboundAt",
@@ -920,6 +930,84 @@ async function patchPortalConversationLeadStatus(tenantId, conversationId, paylo
   };
 }
 
+async function patchPortalConversationNextAction(tenantId, conversationId, payload = {}) {
+  const context = await resolveRuntimeContext(tenantId);
+  if (!context.ok) return context;
+
+  const conversation = await conversationRepo.getConversationByIdAndClinicId(conversationId, context.clinic.id);
+  if (!conversation) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'conversation_not_found'
+    };
+  }
+
+  const hasNextActionAt = Object.prototype.hasOwnProperty.call(payload || {}, 'nextActionAt');
+  const hasNextActionNote = Object.prototype.hasOwnProperty.call(payload || {}, 'nextActionNote');
+  if (!hasNextActionAt && !hasNextActionNote) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'missing_next_action_patch'
+    };
+  }
+
+  let parsedNextActionAt = null;
+  if (hasNextActionAt) {
+    if (payload.nextActionAt !== null && String(payload.nextActionAt || '').trim()) {
+      const date = new Date(String(payload.nextActionAt));
+      if (Number.isNaN(date.getTime())) {
+        return {
+          ok: false,
+          tenantId: context.tenantId,
+          clinic: context.clinic,
+          channel: toPortalChannel(context.channel),
+          reason: 'invalid_next_action_at'
+        };
+      }
+      parsedNextActionAt = date.toISOString();
+    }
+  }
+
+  const updatedConversation = await conversationRepo.updateConversationFollowUpForClinic({
+    conversationId: conversation.id,
+    clinicId: context.clinic.id,
+    patch: {
+      ...(hasNextActionAt ? { nextActionAt: parsedNextActionAt } : {}),
+      ...(hasNextActionNote ? { nextActionNote: normalizeNextActionNote(payload.nextActionNote) } : {})
+    }
+  });
+
+  if (!updatedConversation) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'conversation_not_found'
+    };
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    channel: toPortalChannel(context.channel),
+    conversation: {
+      id: updatedConversation.id,
+      nextActionAt: updatedConversation.nextActionAt || null,
+      nextActionNote: normalizeNextActionNote(updatedConversation.nextActionNote),
+      updatedAt: updatedConversation.updatedAt
+    },
+    reason: 'next_action_updated'
+  };
+}
+
 async function sendPortalMessage(tenantId, conversationId, text) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
@@ -1092,6 +1180,7 @@ module.exports = {
   getPortalConversationDetail,
   patchPortalConversation,
   patchPortalConversationLeadStatus,
+  patchPortalConversationNextAction,
   assignPortalConversationSeller,
   sendPortalMessage,
   archivePortalConversations,
