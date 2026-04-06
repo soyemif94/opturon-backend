@@ -31,6 +31,7 @@ async function findFirstContactByPhone(clinicId, phone, client = null) {
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"
@@ -103,6 +104,7 @@ async function findContactById(contactId, client = null) {
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"
@@ -130,6 +132,7 @@ async function findContactByIdAndClinicId(contactId, clinicId, client = null) {
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"
@@ -160,6 +163,7 @@ async function findPortalContactById(clinicId, contactId, client = null) {
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"
@@ -195,6 +199,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
        c."companyName",
        c.notes,
        c.status,
+       c."archivedAt",
        c."optedOut",
        c."createdAt",
        c."updatedAt",
@@ -219,6 +224,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
        c."companyName",
        c.notes,
        c.status,
+       c."archivedAt",
        c."optedOut",
        c."createdAt",
        c."updatedAt"
@@ -238,6 +244,7 @@ async function archivePortalContactsByIds(clinicId, contactIds = [], client = nu
     `UPDATE contacts
      SET
        status = 'archived',
+       "archivedAt" = NOW(),
        "updatedAt" = NOW()
      WHERE "clinicId" = $1
        AND id = ANY($2::uuid[])
@@ -255,6 +262,7 @@ async function archivePortalContactsByIds(clinicId, contactIds = [], client = nu
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -273,6 +281,7 @@ async function restorePortalContactsByIds(clinicId, contactIds = [], client = nu
     `UPDATE contacts
      SET
        status = 'active',
+       "archivedAt" = NULL,
        "updatedAt" = NOW()
      WHERE "clinicId" = $1
        AND id = ANY($2::uuid[])
@@ -290,6 +299,7 @@ async function restorePortalContactsByIds(clinicId, contactIds = [], client = nu
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -329,12 +339,13 @@ async function createPortalContact(clinicId, input, client = null) {
          "whatsappPhone",
          "taxId",
          "taxCondition",
-         "companyName",
-         notes,
-         status,
-         "optedOut",
-         "createdAt",
-         "updatedAt"`,
+        "companyName",
+        notes,
+        status,
+        "archivedAt",
+        "optedOut",
+        "createdAt",
+        "updatedAt"`,
       [
         clinicId,
         reusableContact.id,
@@ -381,6 +392,7 @@ async function createPortalContact(clinicId, input, client = null) {
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -430,6 +442,7 @@ async function updateContact(contactId, clinicId, input, client = null) {
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -480,6 +493,7 @@ async function updatePortalContactById(clinicId, contactId, input, client = null
        "companyName",
        notes,
        status,
+       "archivedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -500,6 +514,82 @@ async function updatePortalContactById(clinicId, contactId, input, client = null
   return result.rows[0] || null;
 }
 
+async function listArchivedContactCleanupCandidates(retentionDays = 15, limit = 100, client = null) {
+  const safeRetentionDays = Number.isInteger(Number(retentionDays)) && Number(retentionDays) > 0 ? Number(retentionDays) : 15;
+  const safeLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : 100;
+
+  const result = await dbQuery(
+    client,
+    `WITH stale AS (
+       SELECT
+         c.id,
+         c."clinicId",
+         c.name,
+         c.phone,
+         c.email,
+         c.status,
+         c."archivedAt",
+         c."updatedAt"
+       FROM contacts c
+       WHERE COALESCE(c.status, 'active') = 'archived'
+         AND c."archivedAt" IS NOT NULL
+         AND c."archivedAt" <= NOW() - ($1::int * INTERVAL '1 day')
+       ORDER BY c."archivedAt" ASC
+       LIMIT $2
+     )
+     SELECT
+       s.*,
+       EXISTS(SELECT 1 FROM conversations conv WHERE conv."contactId" = s.id) AS "hasConversations",
+       EXISTS(SELECT 1 FROM orders o WHERE o."contactId" = s.id AND o."clinicId" = s."clinicId") AS "hasOrders",
+       EXISTS(SELECT 1 FROM invoices i WHERE i."contactId" = s.id AND i."clinicId" = s."clinicId") AS "hasInvoices",
+       EXISTS(SELECT 1 FROM payments p WHERE p."contactId" = s.id AND p."clinicId" = s."clinicId") AS "hasPayments",
+       EXISTS(SELECT 1 FROM loyalty_points_ledger l WHERE l."contactId" = s.id AND l."clinicId" = s."clinicId") AS "hasLoyalty",
+       EXISTS(SELECT 1 FROM leads ld WHERE ld."contactId" = s.id AND ld."clinicId" = s."clinicId") AS "hasLeads",
+       EXISTS(SELECT 1 FROM appointments a WHERE a."contactId" = s.id AND a."clinicId" = s."clinicId") AS "hasAppointments",
+       EXISTS(SELECT 1 FROM handoff_requests hr WHERE hr."contactId" = s.id AND hr."clinicId" = s."clinicId") AS "hasHandoffs",
+       EXISTS(SELECT 1 FROM agenda_items ai WHERE ai."contactId" = s.id AND ai."clinicId" = s."clinicId") AS "hasAgendaItems"
+     FROM stale s`,
+    [safeRetentionDays, safeLimit]
+  );
+
+  return result.rows;
+}
+
+async function deleteArchivedContactsByIds(contactIds = [], retentionDays = 15, client = null) {
+  const ids = Array.isArray(contactIds) ? contactIds.filter(Boolean) : [];
+  if (!ids.length) return [];
+
+  const safeRetentionDays = Number.isInteger(Number(retentionDays)) && Number(retentionDays) > 0 ? Number(retentionDays) : 15;
+  const result = await dbQuery(
+    client,
+    `DELETE FROM contacts c
+     WHERE c.id = ANY($1::uuid[])
+       AND COALESCE(c.status, 'active') = 'archived'
+       AND c."archivedAt" IS NOT NULL
+       AND c."archivedAt" <= NOW() - ($2::int * INTERVAL '1 day')
+       AND NOT EXISTS (SELECT 1 FROM conversations conv WHERE conv."contactId" = c.id)
+       AND NOT EXISTS (SELECT 1 FROM orders o WHERE o."contactId" = c.id AND o."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i."contactId" = c.id AND i."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM payments p WHERE p."contactId" = c.id AND p."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM loyalty_points_ledger l WHERE l."contactId" = c.id AND l."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM leads ld WHERE ld."contactId" = c.id AND ld."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM appointments a WHERE a."contactId" = c.id AND a."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM handoff_requests hr WHERE hr."contactId" = c.id AND hr."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM agenda_items ai WHERE ai."contactId" = c.id AND ai."clinicId" = c."clinicId")
+     RETURNING
+       c.id,
+       c."clinicId",
+       c.name,
+       c.phone,
+       c.email,
+       c.status,
+       c."archivedAt"`,
+    [ids, safeRetentionDays]
+  );
+
+  return result.rows;
+}
+
 module.exports = {
   // Generic/internal helpers.
   upsertContact,
@@ -513,5 +603,7 @@ module.exports = {
   createPortalContact,
   updatePortalContactById,
   archivePortalContactsByIds,
-  restorePortalContactsByIds
+  restorePortalContactsByIds,
+  listArchivedContactCleanupCandidates,
+  deleteArchivedContactsByIds
 };

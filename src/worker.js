@@ -57,6 +57,7 @@ const {
   hasConfiguredTransferData,
   normalizeTransferConfig
 } = require('./utils/transfer-config');
+const { maybeRunArchivedContactCleanup } = require('./services/contact-archive-cleanup.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -6916,6 +6917,7 @@ async function pollOnce() {
     });
 
     await releaseExpiredHolds();
+    await maybeRunArchivedContactCleanup({ workerId: WORKER_ID });
     const jobs = await claimJobs({ workerId: WORKER_ID, limit: BATCH_SIZE });
 
     logInfo('worker_poll_result', {

@@ -43,6 +43,7 @@ function normalizeContact(row) {
     companyName: row.companyName || null,
     notes: row.notes || null,
     status: row.status || 'active',
+    archivedAt: row.archivedAt || null,
     optedOut: row.optedOut === true,
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null,
