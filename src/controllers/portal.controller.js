@@ -4,7 +4,8 @@ const {
   listPortalConversations,
   getPortalConversationDetail,
   patchPortalConversation,
-  sendPortalMessage
+  sendPortalMessage,
+  archivePortalConversations
 } = require('../services/portal-inbox.service');
 const {
   listPortalOrders,
@@ -86,7 +87,8 @@ const {
   listPortalContacts,
   getPortalContactDetail,
   createPortalContact,
-  updatePortalContact
+  updatePortalContact,
+  archivePortalContacts
 } = require('../services/portal-contacts.service');
 const {
   getPortalLoyaltyProgram,
@@ -522,6 +524,31 @@ async function getPortalProductCategories(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_product_categories_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalConversationsArchive(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const actorId = req.user && req.user.id ? String(req.user.id) : null;
+  const actorName = req.user && req.user.name ? String(req.user.name) : null;
+
+  try {
+    const result = await archivePortalConversations(tenantId, req.body || {}, { actorId, actorName });
+    if (!result.ok) {
+      const status = result.reason === 'missing_conversation_ids' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_conversations_archive_failed',
       details: error.message
     });
   }
@@ -1464,6 +1491,29 @@ async function getPortalPayments(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_payments_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalContactsArchive(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await archivePortalContacts(tenantId, req.body || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_contact_ids' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_contacts_archive_failed',
       details: error.message
     });
   }
@@ -3366,6 +3416,7 @@ module.exports = {
   getPortalConversations,
   getPortalConversation,
   updatePortalConversation,
+  patchPortalConversationsArchive,
   postPortalMessage,
   getPortalOrders,
   getPortalOrdersPaymentMetrics,
@@ -3389,6 +3440,7 @@ module.exports = {
   getPortalContact,
   postPortalContact,
   patchPortalContact,
+  patchPortalContactsArchive,
   getPortalInvoices,
   getPortalInvoice,
   getPortalInvoiceAllocations,

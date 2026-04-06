@@ -319,9 +319,10 @@ async function listPortalConversations(tenantId) {
            c."lastOutboundAt",
            to_timestamp(0)
          )
-     ) unread ON TRUE
-     WHERE c."clinicId" = $1::uuid
-     ORDER BY COALESCE(latest."createdAt", c."updatedAt") DESC, c."updatedAt" DESC`,
+      ) unread ON TRUE
+      WHERE c."clinicId" = $1::uuid
+       AND NULLIF(c.context->>'portalHiddenAt', '') IS NULL
+      ORDER BY COALESCE(latest."createdAt", c."updatedAt") DESC, c."updatedAt" DESC`,
     [context.clinic.id]
   );
 
@@ -436,6 +437,57 @@ async function getPortalConversationDetail(tenantId, conversationId) {
       channelBinding,
       relatedOrder: buildRelatedOrderSummary(relatedOrder)
     }
+  };
+}
+
+async function archivePortalConversations(tenantId, payload = {}, actor = {}) {
+  const context = await resolveRuntimeContext(tenantId);
+  if (!context.ok) return context;
+
+  const conversationIds = Array.isArray(payload.conversationIds)
+    ? payload.conversationIds.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+
+  if (!conversationIds.length) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'missing_conversation_ids'
+    };
+  }
+
+  const hiddenAt = new Date().toISOString();
+  const hiddenByUserId = String(actor.actorId || actor.userId || '').trim() || null;
+  const hiddenByName = String(actor.actorName || '').trim() || null;
+
+  const result = await query(
+    `UPDATE conversations
+     SET
+       context = COALESCE(context, '{}'::jsonb) || jsonb_strip_nulls(
+         jsonb_build_object(
+           'portalHiddenAt', $3::text,
+           'portalHiddenByUserId', $4::text,
+           'portalHiddenByName', $5::text
+         )
+       ),
+       "updatedAt" = NOW()
+     WHERE "clinicId" = $1::uuid
+       AND id = ANY($2::uuid[])
+       AND NULLIF(context->>'portalHiddenAt', '') IS NULL
+     RETURNING id`,
+    [context.clinic.id, conversationIds, hiddenAt, hiddenByUserId, hiddenByName]
+  );
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    channel: toPortalChannel(context.channel),
+    archivedConversationIds: result.rows.map((row) => row.id),
+    archivedCount: result.rowCount || 0,
+    reason: 'archived'
   };
 }
 
@@ -785,5 +837,6 @@ module.exports = {
   listPortalConversations,
   getPortalConversationDetail,
   patchPortalConversation,
-  sendPortalMessage
+  sendPortalMessage,
+  archivePortalConversations
 };

@@ -199,6 +199,7 @@ async function listContactsByClinicId(clinicId, client = null) {
        ON conv."contactId" = c.id
       AND conv."clinicId" = c."clinicId"
      WHERE c."clinicId" = $1
+       AND COALESCE(c.status, 'active') <> 'archived'
      GROUP BY
        c.id,
        c."clinicId",
@@ -217,6 +218,41 @@ async function listContactsByClinicId(clinicId, client = null) {
        c."updatedAt"
      ORDER BY COALESCE(MAX(conv."updatedAt"), c."updatedAt") DESC, c."createdAt" DESC`,
     [clinicId]
+  );
+
+  return result.rows;
+}
+
+async function archivePortalContactsByIds(clinicId, contactIds = [], client = null) {
+  const ids = Array.isArray(contactIds) ? contactIds.filter(Boolean) : [];
+  if (!ids.length) return [];
+
+  const result = await dbQuery(
+    client,
+    `UPDATE contacts
+     SET
+       status = 'archived',
+       "updatedAt" = NOW()
+     WHERE "clinicId" = $1
+       AND id = ANY($2::uuid[])
+       AND COALESCE(status, 'active') <> 'archived'
+     RETURNING
+       id,
+       "clinicId",
+       "waId",
+       phone,
+       name,
+       email,
+       "whatsappPhone",
+       "taxId",
+       "taxCondition",
+       "companyName",
+       notes,
+       status,
+       "optedOut",
+       "createdAt",
+       "updatedAt"`,
+    [clinicId, ids]
   );
 
   return result.rows;
@@ -434,5 +470,6 @@ module.exports = {
   // Portal/client-facing scoped helpers.
   findPortalContactById,
   createPortalContact,
-  updatePortalContactById
+  updatePortalContactById,
+  archivePortalContactsByIds
 };
