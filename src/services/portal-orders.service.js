@@ -1014,7 +1014,12 @@ async function patchOrderForContext(context, orderId, payload) {
     return buildError(context.tenantId, 'missing_order_id');
   }
 
-  const requestedPaymentDestinationId = normalizeString(payload && payload.paymentDestinationId) || null;
+  const shouldUpdatePaymentDestination = Boolean(payload && Object.prototype.hasOwnProperty.call(payload, 'paymentDestinationId'));
+  const requestedPaymentDestinationId = shouldUpdatePaymentDestination
+    ? normalizeString(payload && payload.paymentDestinationId) || null
+    : null;
+  const shouldUpdateSeller = Boolean(payload && Object.prototype.hasOwnProperty.call(payload, 'sellerUserId'));
+  const requestedSellerUserId = shouldUpdateSeller ? normalizeString(payload && payload.sellerUserId) || null : null;
   try {
     const result = await withTransaction(async (client) => {
       const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client);
@@ -1023,7 +1028,7 @@ async function patchOrderForContext(context, orderId, payload) {
       }
 
       let paymentDestination = null;
-      if (requestedPaymentDestinationId) {
+      if (shouldUpdatePaymentDestination && requestedPaymentDestinationId) {
         paymentDestination = await findPaymentDestinationById(requestedPaymentDestinationId, context.clinic.id, client);
         if (!paymentDestination) {
           return buildError(context.tenantId, 'payment_destination_not_found');
@@ -1033,13 +1038,35 @@ async function patchOrderForContext(context, orderId, payload) {
         }
       }
 
+      let seller = null;
+      if (shouldUpdateSeller) {
+        if (!requestedSellerUserId) {
+          return buildError(context.tenantId, 'missing_seller_user_id');
+        }
+
+        seller = await findPortalUserByIdAndClinicId(requestedSellerUserId, context.clinic.id, client);
+        if (!seller || seller.role === 'viewer') {
+          return buildError(context.tenantId, 'seller_user_not_found');
+        }
+      }
+
       const order = await updateOrder(
         safeOrderId,
         context.clinic.id,
         {
-          paymentDestinationId: paymentDestination ? paymentDestination.id : null,
-          paymentDestinationNameSnapshot: paymentDestination ? paymentDestination.name : null,
-          paymentDestinationTypeSnapshot: paymentDestination ? paymentDestination.type : null,
+          ...(shouldUpdatePaymentDestination
+            ? {
+                paymentDestinationId: paymentDestination ? paymentDestination.id : null,
+                paymentDestinationNameSnapshot: paymentDestination ? paymentDestination.name : null,
+                paymentDestinationTypeSnapshot: paymentDestination ? paymentDestination.type : null
+              }
+            : {}),
+          ...(shouldUpdateSeller
+            ? {
+                sellerUserId: seller.id,
+                sellerNameSnapshot: seller.name
+              }
+            : {}),
           notes: currentOrder.notes
         },
         client

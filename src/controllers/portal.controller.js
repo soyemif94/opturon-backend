@@ -656,6 +656,8 @@ async function patchPortalOrderController(req, res) {
       const status =
         result.reason === 'missing_tenant_id' ||
         result.reason === 'missing_order_id' ||
+        result.reason === 'missing_seller_user_id' ||
+        result.reason === 'seller_user_not_found' ||
         result.reason === 'payment_destination_not_found' ||
         result.reason === 'payment_destination_inactive'
           ? 400

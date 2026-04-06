@@ -508,14 +508,18 @@ async function updateOrderStatus(orderId, clinicId, payload, client = null) {
 }
 
 async function updateOrder(orderId, clinicId, payload = {}, client = null) {
+  const shouldUpdatePaymentDestination = Object.prototype.hasOwnProperty.call(payload, 'paymentDestinationId');
+  const shouldUpdateSeller = Object.prototype.hasOwnProperty.call(payload, 'sellerUserId');
   const result = await dbQuery(
     client,
     `UPDATE orders
      SET
-       "paymentDestinationId" = $3::uuid,
-       "paymentDestinationNameSnapshot" = $4,
-       "paymentDestinationTypeSnapshot" = $5,
-       notes = $6,
+       "paymentDestinationId" = CASE WHEN $3::boolean THEN $4::uuid ELSE "paymentDestinationId" END,
+       "paymentDestinationNameSnapshot" = CASE WHEN $3::boolean THEN $5 ELSE "paymentDestinationNameSnapshot" END,
+       "paymentDestinationTypeSnapshot" = CASE WHEN $3::boolean THEN $6 ELSE "paymentDestinationTypeSnapshot" END,
+       "sellerUserId" = CASE WHEN $7::boolean THEN $8::uuid ELSE "sellerUserId" END,
+       "sellerNameSnapshot" = CASE WHEN $7::boolean THEN $9 ELSE "sellerNameSnapshot" END,
+       notes = $10,
        "updatedAt" = NOW()
      WHERE id = $1::uuid
        AND "clinicId" = $2::uuid
@@ -523,9 +527,13 @@ async function updateOrder(orderId, clinicId, payload = {}, client = null) {
     [
       orderId,
       clinicId,
-      payload.paymentDestinationId || null,
-      payload.paymentDestinationNameSnapshot || null,
-      payload.paymentDestinationTypeSnapshot || null,
+      shouldUpdatePaymentDestination,
+      shouldUpdatePaymentDestination ? payload.paymentDestinationId || null : null,
+      shouldUpdatePaymentDestination ? payload.paymentDestinationNameSnapshot || null : null,
+      shouldUpdatePaymentDestination ? payload.paymentDestinationTypeSnapshot || null : null,
+      shouldUpdateSeller,
+      shouldUpdateSeller ? payload.sellerUserId || null : null,
+      shouldUpdateSeller ? payload.sellerNameSnapshot || null : null,
       payload.notes || null
     ]
   );
