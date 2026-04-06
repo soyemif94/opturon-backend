@@ -5,6 +5,7 @@ const {
   getPortalConversation,
   updatePortalConversation,
   patchPortalConversationAssignSeller,
+  patchPortalConversationLeadStatusController,
   patchPortalConversationsArchive,
   patchPortalConversationsRestore,
   postPortalMessage,
@@ -115,6 +116,7 @@ router.patch('/tenants/:tenantId/conversations/archive', patchPortalConversation
 router.patch('/tenants/:tenantId/conversations/restore', patchPortalConversationsRestore);
 router.get('/tenants/:tenantId/conversations/:conversationId', getPortalConversation);
 router.patch('/tenants/:tenantId/conversations/:conversationId/assign-seller', patchPortalConversationAssignSeller);
+router.patch('/tenants/:tenantId/conversations/:conversationId/lead-status', patchPortalConversationLeadStatusController);
 router.patch('/tenants/:tenantId/conversations/:conversationId', updatePortalConversation);
 router.post('/tenants/:tenantId/messages', postPortalMessage);
 router.get('/tenants/:tenantId/orders', getPortalOrders);

@@ -88,6 +88,20 @@ function buildAssignedSeller(row, context) {
   };
 }
 
+const LEAD_STATUS_VALUES = new Set(['NEW', 'IN_CONVERSATION', 'FOLLOW_UP', 'CLOSED']);
+
+function normalizeLeadStatus(value) {
+  const safeValue = String(value || '').trim().toUpperCase();
+  return LEAD_STATUS_VALUES.has(safeValue) ? safeValue : 'NEW';
+}
+
+function leadStatusLabel(value) {
+  if (value === 'IN_CONVERSATION') return 'En conversacion';
+  if (value === 'FOLLOW_UP') return 'Seguimiento';
+  if (value === 'CLOSED') return 'Cerrado';
+  return 'Nuevo';
+}
+
 function buildRelatedOrderSummary(order) {
   if (!order || !order.id) return null;
   return {
@@ -117,10 +131,13 @@ function mapConversationRow(row) {
   const context = parseContext(row.context);
   const transferPayment = getTransferPaymentContext(context);
   const assignedSeller = buildAssignedSeller(row, context);
+  const leadStatus = normalizeLeadStatus(row.leadStatus);
   return {
     id: row.id,
     channelId: row.channelId || null,
     status: normalizePortalStatus(row.status, row),
+    leadStatus,
+    leadStatusLabel: leadStatusLabel(leadStatus),
     assignedTo: assignedSeller && assignedSeller.name ? assignedSeller.name : undefined,
     assignedSellerUserId: assignedSeller && assignedSeller.id ? assignedSeller.id : null,
     assignedSellerName: assignedSeller && assignedSeller.name ? assignedSeller.name : null,
@@ -315,6 +332,7 @@ async function listPortalConversations(tenantId, options = {}) {
        c.id,
        c."channelId" AS "channelId",
        c.status,
+       c."leadStatus" AS "leadStatus",
        c.context,
        c."lastInboundAt",
        c."lastOutboundAt",
@@ -600,6 +618,10 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
       conversationId: conversation.id,
       clinicId: context.clinic.id,
       sellerUserId: resolvedAssignee.userId || null,
+      leadStatus:
+        resolvedAssignee.userId && normalizeLeadStatus(conversation.leadStatus) === 'NEW'
+          ? 'IN_CONVERSATION'
+          : null,
       contextPatch: {
         portalAssignedTo: resolvedAssignee.label,
         portalAssignedToUserId: resolvedAssignee.userId
@@ -804,6 +826,7 @@ async function assignPortalConversationSeller(tenantId, conversationId, payload 
     conversationId: conversation.id,
     clinicId: context.clinic.id,
     sellerUserId: seller.id,
+    leadStatus: normalizeLeadStatus(conversation.leadStatus) === 'NEW' ? 'IN_CONVERSATION' : null,
     contextPatch: {
       portalAssignedTo: seller.name || null,
       portalAssignedToUserId: seller.id
@@ -837,6 +860,63 @@ async function assignPortalConversationSeller(tenantId, conversationId, payload 
       unreadCount: 0
     }),
     reason: 'assigned'
+  };
+}
+
+async function patchPortalConversationLeadStatus(tenantId, conversationId, payload = {}) {
+  const context = await resolveRuntimeContext(tenantId);
+  if (!context.ok) return context;
+
+  const conversation = await conversationRepo.getConversationByIdAndClinicId(conversationId, context.clinic.id);
+  if (!conversation) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'conversation_not_found'
+    };
+  }
+
+  const leadStatus = String(payload && payload.leadStatus ? payload.leadStatus : '').trim().toUpperCase();
+  if (!LEAD_STATUS_VALUES.has(leadStatus)) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'invalid_lead_status'
+    };
+  }
+
+  const updatedConversation = await conversationRepo.updateConversationLeadStatusForClinic({
+    conversationId: conversation.id,
+    clinicId: context.clinic.id,
+    leadStatus
+  });
+
+  if (!updatedConversation) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'conversation_not_found'
+    };
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    channel: toPortalChannel(context.channel),
+    conversation: {
+      id: updatedConversation.id,
+      leadStatus,
+      leadStatusLabel: leadStatusLabel(leadStatus),
+      updatedAt: updatedConversation.updatedAt
+    },
+    reason: 'lead_status_updated'
   };
 }
 
@@ -1011,6 +1091,7 @@ module.exports = {
   listPortalConversations,
   getPortalConversationDetail,
   patchPortalConversation,
+  patchPortalConversationLeadStatus,
   assignPortalConversationSeller,
   sendPortalMessage,
   archivePortalConversations,

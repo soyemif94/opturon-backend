@@ -4,6 +4,7 @@ const {
   listPortalConversations,
   getPortalConversationDetail,
   patchPortalConversation,
+  patchPortalConversationLeadStatus,
   assignPortalConversationSeller,
   sendPortalMessage,
   archivePortalConversations,
@@ -629,6 +630,33 @@ async function patchPortalConversationAssignSeller(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_conversation_assign_seller_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalConversationLeadStatusController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const conversationId = String(req.params.conversationId || '').trim();
+
+  try {
+    const result = await patchPortalConversationLeadStatus(tenantId, conversationId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'invalid_lead_status' ? 400
+          : result.reason === 'mapped_clinic_without_whatsapp_channel' ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_conversation_lead_status_failed',
       details: error.message
     });
   }
@@ -3522,6 +3550,7 @@ module.exports = {
   getPortalConversation,
   updatePortalConversation,
   patchPortalConversationAssignSeller,
+  patchPortalConversationLeadStatusController,
   patchPortalConversationsArchive,
   patchPortalConversationsRestore,
   postPortalMessage,

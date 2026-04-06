@@ -12,7 +12,7 @@ function dbQuery(client, text, params) {
 async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId }, client = null) {
   const byOwner = await dbQuery(
     client,
-    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
+    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE "clinicId" = $1 AND "channelId" = $2 AND "contactId" = $3
@@ -27,9 +27,13 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
        SET "waFrom" = $2,
            "waTo" = $3,
            "lastInboundAt" = NOW(),
+           "leadStatus" = CASE
+             WHEN COALESCE("leadStatus", 'NEW') = 'NEW' THEN 'IN_CONVERSATION'
+             ELSE "leadStatus"
+           END,
            "updatedAt" = NOW()
        WHERE id = $1
-       RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+       RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
                  "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
       [byOwner.rows[0].id, waFrom, waTo]
     );
@@ -41,15 +45,19 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
       client,
       `INSERT INTO conversations (
         "clinicId", "channelId", "contactId", "waFrom", "waTo",
-        status, stage, state, context, "lastInboundAt", "updatedAt"
-      ) VALUES ($1, $2, $3, $4, $5, 'open', 'new', 'NEW', '{}'::jsonb, NOW(), NOW())
+        status, stage, state, "leadStatus", context, "lastInboundAt", "updatedAt"
+      ) VALUES ($1, $2, $3, $4, $5, 'open', 'new', 'NEW', 'NEW', '{}'::jsonb, NOW(), NOW())
       ON CONFLICT ("clinicId", "channelId", "contactId")
       DO UPDATE SET
         "waFrom" = EXCLUDED."waFrom",
         "waTo" = EXCLUDED."waTo",
         "lastInboundAt" = NOW(),
+        "leadStatus" = CASE
+          WHEN COALESCE(conversations."leadStatus", 'NEW') = 'NEW' THEN 'IN_CONVERSATION'
+          ELSE conversations."leadStatus"
+        END,
         "updatedAt" = NOW()
-      RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+      RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
                 "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
       [clinicId, channelId, contactId, waFrom, waTo]
     );
@@ -59,7 +67,7 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
     if (error && error.code === '23505') {
       const byPair = await dbQuery(
         client,
-        `SELECT c.id, c."clinicId", c."channelId", c."contactId", c."waFrom", c."waTo", c.status, c.stage, c.state, c.context,
+        `SELECT c.id, c."clinicId", c."channelId", c."contactId", c."assignedSellerUserId", c."leadStatus", c."waFrom", c."waTo", c.status, c.stage, c.state, c.context,
                 c."lastInboundAt", c."lastOutboundAt", c."createdAt", c."updatedAt",
                 cl."externalTenantId" AS "clinicExternalTenantId",
                 ct."waId" AS "contactWaId"
@@ -101,9 +109,13 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
                "waFrom" = $5,
                "waTo" = $6,
                "lastInboundAt" = NOW(),
+               "leadStatus" = CASE
+                 WHEN COALESCE("leadStatus", 'NEW') = 'NEW' THEN 'IN_CONVERSATION'
+                 ELSE "leadStatus"
+               END,
                "updatedAt" = NOW()
            WHERE id = $1
-           RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+           RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
                      "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
           [existing.id, clinicId, channelId, contactId, waFrom, waTo]
         );
@@ -231,7 +243,7 @@ async function insertOutboundMessage(record, client = null) {
 async function getConversationById(id, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
+    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE id = $1
@@ -244,7 +256,7 @@ async function getConversationById(id, client = null) {
 async function getConversationByIdAndClinicId(id, clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
+    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE id = $1
@@ -261,7 +273,7 @@ async function listConversationsByIds(conversationIds = [], client = null) {
 
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE id = ANY($1::uuid[])`,
@@ -370,6 +382,21 @@ async function updateConversationStatusForClinic({ conversationId, clinicId, sta
   return result.rows[0] || null;
 }
 
+async function updateConversationLeadStatusForClinic({ conversationId, clinicId, leadStatus }, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE conversations
+     SET
+       "leadStatus" = $3,
+       "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+     RETURNING id, "leadStatus", "updatedAt"`,
+    [conversationId, clinicId, leadStatus]
+  );
+  return result.rows[0] || null;
+}
+
 async function reassignConversationChannelForClinic({ conversationId, clinicId, channelId, waTo = null }, client = null) {
   const result = await dbQuery(
     client,
@@ -380,29 +407,30 @@ async function reassignConversationChannelForClinic({ conversationId, clinicId, 
        "updatedAt" = NOW()
      WHERE id = $1
        AND "clinicId" = $2
-     RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
+     RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
                "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
     [conversationId, clinicId, channelId, waTo]
   );
   return result.rows[0] || null;
 }
 
-async function assignConversationSellerForClinic({ conversationId, clinicId, sellerUserId = null, contextPatch = null }, client = null) {
+async function assignConversationSellerForClinic({ conversationId, clinicId, sellerUserId = null, contextPatch = null, leadStatus = null }, client = null) {
   const result = await dbQuery(
     client,
     `UPDATE conversations
      SET
        "assignedSellerUserId" = $3,
+       "leadStatus" = COALESCE($4, "leadStatus"),
        context = CASE
-         WHEN $4::jsonb IS NULL THEN context
-         ELSE COALESCE(context, '{}'::jsonb) || $4::jsonb
+         WHEN $5::jsonb IS NULL THEN context
+         ELSE COALESCE(context, '{}'::jsonb) || $5::jsonb
        END,
        "updatedAt" = NOW()
      WHERE id = $1
        AND "clinicId" = $2
-     RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
+     RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "waFrom", "waTo", status, stage, state, context,
                "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
-    [conversationId, clinicId, sellerUserId, contextPatch ? JSON.stringify(contextPatch) : null]
+    [conversationId, clinicId, sellerUserId, leadStatus, contextPatch ? JSON.stringify(contextPatch) : null]
   );
   return result.rows[0] || null;
 }
@@ -1405,6 +1433,7 @@ module.exports = {
   updateConversationState,
   updateConversationStateForClinic,
   updateConversationStatusForClinic,
+  updateConversationLeadStatusForClinic,
   reassignConversationChannelForClinic,
   assignConversationSellerForClinic,
   listAppointmentRequests,
