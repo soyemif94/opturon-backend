@@ -4,6 +4,7 @@ const {
   listPortalConversations,
   getPortalConversationDetail,
   patchPortalConversation,
+  assignPortalConversationSeller,
   sendPortalMessage,
   archivePortalConversations,
   restorePortalConversations
@@ -600,6 +601,34 @@ async function getPortalOrdersPaymentMetrics(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_order_payment_metrics_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalConversationAssignSeller(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const conversationId = String(req.params.conversationId || '').trim();
+
+  try {
+    const result = await assignPortalConversationSeller(tenantId, conversationId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_seller_user_id' ? 400
+          : result.reason === 'seller_user_not_found' ? 422
+            : result.reason === 'mapped_clinic_without_whatsapp_channel' ? 409
+              : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_conversation_assign_seller_failed',
       details: error.message
     });
   }
@@ -3492,6 +3521,7 @@ module.exports = {
   getPortalConversations,
   getPortalConversation,
   updatePortalConversation,
+  patchPortalConversationAssignSeller,
   patchPortalConversationsArchive,
   patchPortalConversationsRestore,
   postPortalMessage,

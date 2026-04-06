@@ -12,7 +12,7 @@ function dbQuery(client, text, params) {
 async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId }, client = null) {
   const byOwner = await dbQuery(
     client,
-    `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE "clinicId" = $1 AND "channelId" = $2 AND "contactId" = $3
@@ -231,7 +231,7 @@ async function insertOutboundMessage(record, client = null) {
 async function getConversationById(id, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE id = $1
@@ -244,7 +244,7 @@ async function getConversationById(id, client = null) {
 async function getConversationByIdAndClinicId(id, clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE id = $1
@@ -380,9 +380,29 @@ async function reassignConversationChannelForClinic({ conversationId, clinicId, 
        "updatedAt" = NOW()
      WHERE id = $1
        AND "clinicId" = $2
-     RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+     RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
                "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
     [conversationId, clinicId, channelId, waTo]
+  );
+  return result.rows[0] || null;
+}
+
+async function assignConversationSellerForClinic({ conversationId, clinicId, sellerUserId = null, contextPatch = null }, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE conversations
+     SET
+       "assignedSellerUserId" = $3,
+       context = CASE
+         WHEN $4::jsonb IS NULL THEN context
+         ELSE COALESCE(context, '{}'::jsonb) || $4::jsonb
+       END,
+       "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+     RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "waFrom", "waTo", status, stage, state, context,
+               "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
+    [conversationId, clinicId, sellerUserId, contextPatch ? JSON.stringify(contextPatch) : null]
   );
   return result.rows[0] || null;
 }
@@ -1386,6 +1406,7 @@ module.exports = {
   updateConversationStateForClinic,
   updateConversationStatusForClinic,
   reassignConversationChannelForClinic,
+  assignConversationSellerForClinic,
   listAppointmentRequests,
   getLastInboundTextByConversationIds,
   listInboxAppointments,

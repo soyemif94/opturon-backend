@@ -69,6 +69,25 @@ function getTransferPaymentContext(context) {
     : null;
 }
 
+function buildAssignedSeller(row, context) {
+  const safeContext = parseContext(context);
+  const sellerId = row && row.assignedSellerUserId ? String(row.assignedSellerUserId).trim() : '';
+  const sellerName =
+    (row && row.assignedSellerName ? String(row.assignedSellerName).trim() : '') ||
+    String(safeContext.portalAssignedTo || '').trim();
+  const sellerRole = row && row.assignedSellerRole ? String(row.assignedSellerRole).trim() : null;
+
+  if (!sellerId && !sellerName) {
+    return null;
+  }
+
+  return {
+    id: sellerId || String(safeContext.portalAssignedToUserId || '').trim() || null,
+    name: sellerName || null,
+    role: sellerRole || null
+  };
+}
+
 function buildRelatedOrderSummary(order) {
   if (!order || !order.id) return null;
   return {
@@ -97,11 +116,15 @@ function normalizeBotFlowLock(value) {
 function mapConversationRow(row) {
   const context = parseContext(row.context);
   const transferPayment = getTransferPaymentContext(context);
+  const assignedSeller = buildAssignedSeller(row, context);
   return {
     id: row.id,
     channelId: row.channelId || null,
     status: normalizePortalStatus(row.status, row),
-    assignedTo: context.portalAssignedTo || undefined,
+    assignedTo: assignedSeller && assignedSeller.name ? assignedSeller.name : undefined,
+    assignedSellerUserId: assignedSeller && assignedSeller.id ? assignedSeller.id : null,
+    assignedSellerName: assignedSeller && assignedSeller.name ? assignedSeller.name : null,
+    assignedSellerRole: assignedSeller && assignedSeller.role ? assignedSeller.role : null,
     lastMessageAt: row.lastMessageAt || row.updatedAt,
     lastMessagePreview: row.lastMessagePreview || undefined,
     priority: String(context.portalPriority || 'normal') === 'hot' ? 'hot' : 'normal',
@@ -297,15 +320,19 @@ async function listPortalConversations(tenantId, options = {}) {
        c."lastOutboundAt",
        c."updatedAt",
        c."contactId" AS "contactId",
+       c."assignedSellerUserId" AS "assignedSellerUserId",
        ct.name AS "contactName",
        ct.phone AS "contactPhone",
        ct."waId" AS "waFrom",
        ct."profileImageUrl" AS "contactProfileImageUrl",
+       su.name AS "assignedSellerName",
+       CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS "assignedSellerRole",
        latest.text AS "lastMessagePreview",
        latest."createdAt" AS "lastMessageAt",
        COALESCE(unread.total, 0)::int AS "unreadCount"
      FROM conversations c
      INNER JOIN contacts ct ON ct.id = c."contactId"
+     LEFT JOIN staff_users su ON su.id = c."assignedSellerUserId"
      LEFT JOIN LATERAL (
        SELECT m.text, m."createdAt"
        FROM conversation_messages m
@@ -369,6 +396,7 @@ async function getPortalConversationDetail(tenantId, conversationId) {
   ]);
 
   const contextData = parseContext(conversation.context);
+  const assignedSeller = buildAssignedSeller(conversation, contextData);
   const transferPayment = getTransferPaymentContext(contextData);
   const transferOrderId = transferPayment && String(transferPayment.orderId || '').trim()
     ? String(transferPayment.orderId || '').trim()
@@ -433,12 +461,13 @@ async function getPortalConversationDetail(tenantId, conversationId) {
       })),
       notes: Array.isArray(contextData.portalNotes) ? contextData.portalNotes : [],
       tasks: Array.isArray(contextData.portalTasks) ? contextData.portalTasks : [],
-      assignee: contextData.portalAssignedTo
+      assignee: assignedSeller && assignedSeller.name
         ? {
-            id: contextData.portalAssignedToUserId || contextData.portalAssignedTo,
-            name: contextData.portalAssignedTo
+            id: assignedSeller.id || assignedSeller.name,
+            name: assignedSeller.name
           }
         : undefined,
+      assignedSeller: assignedSeller || undefined,
       quickReplies: defaultQuickReplies(),
       aiEvents: events.slice(0, 10).map((event) => ({
         id: event.id,
@@ -567,6 +596,22 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     const resolvedAssignee = await resolvePortalAssignee(context.clinic.id, safePayload.assignedTo);
     nextContext.portalAssignedTo = resolvedAssignee.label;
     nextContext.portalAssignedToUserId = resolvedAssignee.userId;
+    await conversationRepo.assignConversationSellerForClinic({
+      conversationId: conversation.id,
+      clinicId: context.clinic.id,
+      sellerUserId: resolvedAssignee.userId || null,
+      contextPatch: {
+        portalAssignedTo: resolvedAssignee.label,
+        portalAssignedToUserId: resolvedAssignee.userId
+      }
+    });
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'updated'
+    };
   } else if (action === 'set_bot_flow_lock') {
     const nextLock = normalizeBotFlowLock(safePayload.botFlowLock);
     if (nextLock === 'automatic') {
@@ -715,6 +760,83 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     clinic: context.clinic,
     channel: toPortalChannel(context.channel),
     reason: 'updated'
+  };
+}
+
+async function assignPortalConversationSeller(tenantId, conversationId, payload = {}) {
+  const context = await resolveRuntimeContext(tenantId);
+  if (!context.ok) return context;
+
+  const conversation = await conversationRepo.getConversationByIdAndClinicId(conversationId, context.clinic.id);
+  if (!conversation) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'conversation_not_found'
+    };
+  }
+
+  const sellerUserId = String(payload && payload.sellerUserId ? payload.sellerUserId : '').trim();
+  if (!sellerUserId) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'missing_seller_user_id'
+    };
+  }
+
+  const seller = await findPortalUserByIdAndClinicId(sellerUserId, context.clinic.id);
+  if (!seller || seller.role === 'viewer') {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'seller_user_not_found'
+    };
+  }
+
+  const updatedConversation = await conversationRepo.assignConversationSellerForClinic({
+    conversationId: conversation.id,
+    clinicId: context.clinic.id,
+    sellerUserId: seller.id,
+    contextPatch: {
+      portalAssignedTo: seller.name || null,
+      portalAssignedToUserId: seller.id
+    }
+  });
+
+  if (!updatedConversation) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'conversation_not_found'
+    };
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    channel: toPortalChannel(context.channel),
+    conversation: mapConversationRow({
+      ...updatedConversation,
+      contactName: null,
+      contactPhone: null,
+      contactProfileImageUrl: null,
+      assignedSellerName: seller.name || null,
+      assignedSellerRole: seller.role || null,
+      lastMessagePreview: null,
+      lastMessageAt: updatedConversation.updatedAt,
+      unreadCount: 0
+    }),
+    reason: 'assigned'
   };
 }
 
@@ -889,6 +1011,7 @@ module.exports = {
   listPortalConversations,
   getPortalConversationDetail,
   patchPortalConversation,
+  assignPortalConversationSeller,
   sendPortalMessage,
   archivePortalConversations,
   restorePortalConversations
