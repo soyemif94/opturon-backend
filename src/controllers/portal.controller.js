@@ -2903,9 +2903,11 @@ async function destroyPortalUser(req, res) {
         result.reason === 'missing_tenant_id' ||
         result.reason === 'cannot_delete_current_user'
           ? 400
-          : result.reason === 'cannot_delete_last_owner'
+          : result.reason === 'cannot_delete_primary_account'
             ? 409
-            : 404;
+          : result.reason === 'cannot_delete_last_owner'
+              ? 409
+              : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
     }
 

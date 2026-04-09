@@ -1,7 +1,10 @@
 const { hashSync, compareSync } = require('bcryptjs');
 const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
-const { getClinicPortalSubaccountLimitById } = require('../repositories/tenant.repository');
+const {
+  getClinicPortalAccountConfigById,
+  updateClinicPortalPrimaryUserIdById
+} = require('../repositories/tenant.repository');
 const {
   countOwnersByClinicId,
   listPortalUsersByClinicId,
@@ -29,14 +32,14 @@ function normalizeRole(value) {
 }
 
 function countSubaccounts(users) {
-  return (Array.isArray(users) ? users : []).filter((user) => String(user && user.role ? user.role : '').toLowerCase() !== 'owner').length;
+  return (Array.isArray(users) ? users : []).filter((user) => String(user && user.accountKind ? user.accountKind : '') !== 'primary').length;
 }
 
 function countPrimaryAccounts(users) {
-  return (Array.isArray(users) ? users : []).filter((user) => String(user && user.role ? user.role : '').toLowerCase() === 'owner').length;
+  return (Array.isArray(users) ? users : []).filter((user) => String(user && user.accountKind ? user.accountKind : '') === 'primary').length;
 }
 
-function buildPortalUsersMeta(users, limitConfig) {
+function buildPortalUsersMeta(users, limitConfig, primaryPortalUserId = null) {
   const subaccountCount = countSubaccounts(users);
   const primaryAccountCount = countPrimaryAccounts(users);
   const subaccountLimit = Number(limitConfig && limitConfig.subaccountLimit) || 0;
@@ -44,11 +47,53 @@ function buildPortalUsersMeta(users, limitConfig) {
   return {
     subaccountCount,
     primaryAccountCount,
+    primaryPortalUserId: primaryPortalUserId || null,
     subaccountLimit,
     remainingSubaccounts: Math.max(0, subaccountLimit - subaccountCount),
     futureLimitKey: PORTAL_USERS_LIMIT_KEY,
     limitScope: 'subaccounts',
     limitSource: limitConfig && limitConfig.source ? limitConfig.source : 'default_env'
+  };
+}
+
+function normalizePortalUserRecord(user, primaryPortalUserId) {
+  const safePrimaryId = String(primaryPortalUserId || '').trim();
+  return {
+    ...user,
+    accountKind: safePrimaryId && String(user.id) === safePrimaryId ? 'primary' : 'subaccount'
+  };
+}
+
+async function resolvePrimaryPortalUserId(clinicId, users, client = null) {
+  const config = await getClinicPortalAccountConfigById(clinicId, client);
+  const currentUsers = Array.isArray(users) ? users : [];
+  const explicitPrimaryId = String(config.primaryPortalUserId || '').trim() || null;
+  const explicitPrimaryExists = explicitPrimaryId
+    ? currentUsers.some((user) => String(user.id) === explicitPrimaryId)
+    : false;
+
+  if (explicitPrimaryExists) {
+    return {
+      primaryPortalUserId: explicitPrimaryId,
+      subaccountLimit: config.subaccountLimit,
+      limitSource: config.limitSource,
+      source: 'clinic_settings'
+    };
+  }
+
+  const ownerUser = currentUsers.find((user) => String(user.role || '').toLowerCase() === 'owner') || null;
+  const firstPortalUser = ownerUser || currentUsers[0] || null;
+  const inferredPrimaryId = firstPortalUser ? String(firstPortalUser.id) : null;
+
+  if (inferredPrimaryId) {
+    await updateClinicPortalPrimaryUserIdById(clinicId, inferredPrimaryId, client);
+  }
+
+  return {
+    primaryPortalUserId: inferredPrimaryId,
+    subaccountLimit: config.subaccountLimit,
+    limitSource: config.limitSource,
+    source: inferredPrimaryId ? (ownerUser ? 'backfilled_owner' : 'backfilled_first_portal_user') : 'none'
   };
 }
 
@@ -58,16 +103,19 @@ async function listPortalUsers(tenantId) {
     return context;
   }
 
-  const [users, limitConfig] = await Promise.all([
-    listPortalUsersByClinicId(context.clinic.id),
-    getClinicPortalSubaccountLimitById(context.clinic.id)
-  ]);
+  const currentUsers = await listPortalUsersByClinicId(context.clinic.id);
+  const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers);
+  const users = currentUsers.map((user) => normalizePortalUserRecord(user, accountConfig.primaryPortalUserId));
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
     users,
-    meta: buildPortalUsersMeta(users, limitConfig)
+    meta: buildPortalUsersMeta(
+      users,
+      { subaccountLimit: accountConfig.subaccountLimit, source: accountConfig.limitSource },
+      accountConfig.primaryPortalUserId
+    )
   };
 }
 
@@ -89,20 +137,26 @@ async function invitePortalUser(tenantId, payload) {
 
   try {
     const created = await withTransaction(async (client) => {
-      const [currentUsers, limitConfig] = await Promise.all([
-        listPortalUsersByClinicId(context.clinic.id, client),
-        getClinicPortalSubaccountLimitById(context.clinic.id, client)
-      ]);
-      const currentMeta = buildPortalUsersMeta(currentUsers, limitConfig);
+      const currentUsers = await listPortalUsersByClinicId(context.clinic.id, client);
+      const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers, client);
+      const normalizedCurrentUsers = currentUsers.map((user) =>
+        normalizePortalUserRecord(user, accountConfig.primaryPortalUserId)
+      );
+      const currentMeta = buildPortalUsersMeta(
+        normalizedCurrentUsers,
+        { subaccountLimit: accountConfig.subaccountLimit, source: accountConfig.limitSource },
+        accountConfig.primaryPortalUserId
+      );
 
-      if (role !== 'owner' && currentMeta.subaccountCount >= currentMeta.subaccountLimit) {
+      const isPrimarySlotTaken = Boolean(accountConfig.primaryPortalUserId);
+      if (isPrimarySlotTaken && currentMeta.subaccountCount >= currentMeta.subaccountLimit) {
         return {
           error: 'tenant_subaccount_limit_reached',
           meta: currentMeta
         };
       }
 
-      const user = await createPortalUser(
+      const createdUser = await createPortalUser(
         {
           clinicId: context.clinic.id,
           name,
@@ -113,9 +167,22 @@ async function invitePortalUser(tenantId, payload) {
         client
       );
 
+      const primaryPortalUserId = isPrimarySlotTaken ? accountConfig.primaryPortalUserId : createdUser.id;
+      if (!isPrimarySlotTaken && primaryPortalUserId) {
+        await updateClinicPortalPrimaryUserIdById(context.clinic.id, primaryPortalUserId, client);
+      }
+
+      const normalizedNextUsers = [...currentUsers, createdUser].map((user) =>
+        normalizePortalUserRecord(user, primaryPortalUserId)
+      );
+
       return {
-        user,
-        meta: buildPortalUsersMeta([...currentUsers, user], limitConfig)
+        user: normalizePortalUserRecord(createdUser, primaryPortalUserId),
+        meta: buildPortalUsersMeta(
+          normalizedNextUsers,
+          { subaccountLimit: accountConfig.subaccountLimit, source: accountConfig.limitSource },
+          primaryPortalUserId
+        )
       };
     });
 
@@ -204,8 +271,15 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
 
   const removed = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
+    const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
     const target = current.find((item) => String(item.id) === String(userId));
     if (!target) return null;
+
+    if (accountConfig.primaryPortalUserId && String(target.id) === String(accountConfig.primaryPortalUserId)) {
+      const error = new Error('cannot_delete_primary_account');
+      error.code = 'PRIMARY_ACCOUNT_DELETE';
+      throw error;
+    }
 
     if (target.role === 'owner') {
       const ownerCount = await countOwnersByClinicId(context.clinic.id, client);
@@ -226,6 +300,9 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
   }).catch((error) => {
     if (error && error.code === 'LAST_OWNER_DELETE') {
       return { error: 'cannot_delete_last_owner' };
+    }
+    if (error && error.code === 'PRIMARY_ACCOUNT_DELETE') {
+      return { error: 'cannot_delete_primary_account' };
     }
     throw error;
   });

@@ -105,6 +105,64 @@ async function getClinicPortalSubaccountLimitById(clinicId, client = null) {
   };
 }
 
+async function getClinicPortalAccountConfigById(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT settings
+     FROM clinics
+     WHERE id = $1
+     LIMIT 1`,
+    [clinicId]
+  );
+
+  const settings = parseClinicSettings(result.rows[0]?.settings);
+  const primaryPortalUserId = String(settings?.portal?.primaryPortalUserId || '').trim() || null;
+  const explicitLimit =
+    parsePositiveLimit(settings?.portal?.limits?.subaccounts) ??
+    parsePositiveLimit(settings?.portal?.userLimits?.subaccounts) ??
+    parsePositiveLimit(settings?.portal?.subaccountLimit);
+
+  return {
+    primaryPortalUserId,
+    subaccountLimit: explicitLimit || DEFAULT_PORTAL_SUBACCOUNT_LIMIT,
+    limitSource: explicitLimit ? 'clinic_settings' : 'default_env'
+  };
+}
+
+async function updateClinicPortalPrimaryUserIdById(clinicId, primaryPortalUserId, client = null) {
+  const safePrimaryPortalUserId = String(primaryPortalUserId || '').trim() || null;
+  const result = await dbQuery(
+    client,
+    `UPDATE clinics
+     SET settings = jsonb_set(
+       jsonb_set(
+         COALESCE(settings, '{}'::jsonb),
+         '{portal}',
+         COALESCE(
+           CASE
+             WHEN jsonb_typeof(settings -> 'portal') = 'object' THEN settings -> 'portal'
+             ELSE '{}'::jsonb
+           END,
+           '{}'::jsonb
+         ),
+         true
+       ),
+       '{portal,primaryPortalUserId}',
+       to_jsonb($2::text),
+       true
+     ),
+     "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING settings`,
+    [clinicId, safePrimaryPortalUserId]
+  );
+
+  const settings = parseClinicSettings(result.rows[0]?.settings);
+  return {
+    primaryPortalUserId: String(settings?.portal?.primaryPortalUserId || '').trim() || null
+  };
+}
+
 async function findPreferredWhatsAppChannelByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -548,7 +606,9 @@ module.exports = {
   findChannelById,
   findChannelByIdAndClinicId,
   findClinicByExternalTenantId,
+  getClinicPortalAccountConfigById,
   getClinicPortalSubaccountLimitById,
+  updateClinicPortalPrimaryUserIdById,
   findPreferredWhatsAppChannelByClinicId,
   listWhatsAppChannelsByClinicId,
   findInstagramChannelByExternalId,
