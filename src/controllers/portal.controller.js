@@ -1080,6 +1080,7 @@ async function getPortalUsers(req, res) {
       data: {
         tenantId: result.tenantId,
         users: result.users,
+        activity: result.activity || [],
         meta: result.meta || null
       }
     });
@@ -2681,9 +2682,10 @@ async function getPortalAutomations(req, res) {
 
 async function postPortalUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
 
   try {
-    const result = await invitePortalUser(tenantId, req.body || {});
+    const result = await invitePortalUser(tenantId, req.body || {}, { actorUserId });
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ||
@@ -2725,9 +2727,10 @@ async function postPortalUser(req, res) {
 async function patchPortalPrimaryUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const userId = String((req.body && req.body.userId) || '').trim();
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
 
   try {
-    const result = await assignPrimaryPortalUser(tenantId, userId);
+    const result = await assignPrimaryPortalUser(tenantId, userId, { actorUserId });
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' || result.reason === 'missing_user_id'
@@ -2901,9 +2904,13 @@ async function destroyPortalAutomation(req, res) {
 async function patchPortalUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const userId = String(req.params.userId || '').trim();
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
 
   try {
-    const result = await updatePortalUser(tenantId, userId, req.body || {});
+    const result = await updatePortalUser(tenantId, userId, {
+      ...(req.body || {}),
+      actorUserId
+    });
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ||

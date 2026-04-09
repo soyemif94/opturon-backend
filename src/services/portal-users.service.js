@@ -13,6 +13,10 @@ const {
   deletePortalUserById,
   findPortalUserByEmail
 } = require('../repositories/portal-users.repository');
+const {
+  createPortalUserAuditEvent,
+  listPortalUserAuditEventsByClinicId
+} = require('../repositories/portal-user-audit.repository');
 
 const ALLOWED_ROLES = new Set(['owner', 'manager', 'seller', 'viewer']);
 const PORTAL_USERS_LIMIT_KEY = 'tenant_portal_users';
@@ -29,6 +33,11 @@ function normalizeRole(value) {
   const normalized = normalizeString(value).toLowerCase();
   if (normalized === 'editor') return 'seller';
   return ALLOWED_ROLES.has(normalized) ? normalized : null;
+}
+
+function normalizeAuditActorId(value) {
+  const safeValue = normalizeString(value);
+  return safeValue || null;
 }
 
 function countSubaccounts(users) {
@@ -111,6 +120,7 @@ async function listPortalUsers(tenantId) {
     tenantId: context.tenantId,
     clinic: context.clinic,
     users,
+    activity: await listPortalUserAuditEventsByClinicId(context.clinic.id, 10),
     meta: buildPortalUsersMeta(
       users,
       { subaccountLimit: accountConfig.subaccountLimit, source: accountConfig.limitSource },
@@ -119,7 +129,7 @@ async function listPortalUsers(tenantId) {
   };
 }
 
-async function invitePortalUser(tenantId, payload) {
+async function invitePortalUser(tenantId, payload, options = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
@@ -134,6 +144,8 @@ async function invitePortalUser(tenantId, payload) {
   if (!email || !email.includes('@')) return { ok: false, tenantId: context.tenantId, reason: 'invalid_email' };
   if (!role) return { ok: false, tenantId: context.tenantId, reason: 'invalid_role' };
   if (!password || password.length < 6) return { ok: false, tenantId: context.tenantId, reason: 'invalid_password' };
+
+  const actorUserId = normalizeAuditActorId(options.actorUserId);
 
   try {
     const created = await withTransaction(async (client) => {
@@ -175,9 +187,28 @@ async function invitePortalUser(tenantId, payload) {
       const normalizedNextUsers = [...currentUsers, createdUser].map((user) =>
         normalizePortalUserRecord(user, primaryPortalUserId)
       );
+      const normalizedCreatedUser = normalizePortalUserRecord(createdUser, primaryPortalUserId);
+
+      await createPortalUserAuditEvent(
+        {
+          tenantId: context.tenantId,
+          clinicId: context.clinic.id,
+          actorUserId,
+          targetUserId: createdUser.id,
+          action: 'tenant_portal_user_created',
+          payload: {
+            targetUserId: createdUser.id,
+            name: createdUser.name,
+            email: createdUser.email,
+            role: createdUser.role,
+            accountKind: normalizedCreatedUser.accountKind
+          }
+        },
+        client
+      );
 
       return {
-        user: normalizePortalUserRecord(createdUser, primaryPortalUserId),
+        user: normalizedCreatedUser,
         meta: buildPortalUsersMeta(
           normalizedNextUsers,
           { subaccountLimit: accountConfig.subaccountLimit, source: accountConfig.limitSource },
@@ -217,12 +248,14 @@ async function updatePortalUser(tenantId, userId, payload) {
   }
 
   const role = normalizeRole(payload && payload.role);
+  const actorUserId = normalizeAuditActorId(payload && payload.actorUserId);
   if (!role) return { ok: false, tenantId: context.tenantId, reason: 'invalid_role' };
 
   const user = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
     const target = current.find((item) => String(item.id) === String(userId));
     if (!target) return null;
+    const previousRole = target.role;
 
     if (target.role === 'owner' && role !== 'owner') {
       const ownerCount = await countOwnersByClinicId(context.clinic.id, client);
@@ -233,7 +266,7 @@ async function updatePortalUser(tenantId, userId, payload) {
       }
     }
 
-    return updatePortalUserRole(
+    const updatedUser = await updatePortalUserRole(
       {
         userId,
         clinicId: context.clinic.id,
@@ -241,6 +274,25 @@ async function updatePortalUser(tenantId, userId, payload) {
       },
       client
     );
+    if (updatedUser) {
+      await createPortalUserAuditEvent(
+        {
+          tenantId: context.tenantId,
+          clinicId: context.clinic.id,
+          actorUserId,
+          targetUserId: updatedUser.id,
+          action: 'tenant_portal_user_role_updated',
+          payload: {
+            targetUserId: updatedUser.id,
+            name: updatedUser.name,
+            previousRole,
+            nextRole: updatedUser.role
+          }
+        },
+        client
+      );
+    }
+    return updatedUser;
   }).catch((error) => {
     if (error && error.code === 'LAST_OWNER_ROLE_CHANGE') {
       return { error: 'cannot_delete_last_owner' };
@@ -259,13 +311,14 @@ async function updatePortalUser(tenantId, userId, payload) {
   };
 }
 
-async function assignPrimaryPortalUser(tenantId, userId) {
+async function assignPrimaryPortalUser(tenantId, userId, options = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
 
   const safeUserId = normalizeString(userId);
+  const actorUserId = normalizeAuditActorId(options.actorUserId);
   if (!safeUserId) {
     return { ok: false, tenantId: context.tenantId, reason: 'missing_user_id' };
   }
@@ -275,9 +328,26 @@ async function assignPrimaryPortalUser(tenantId, userId) {
     const target = currentUsers.find((item) => String(item.id) === safeUserId);
     if (!target) return null;
     const accountConfig = await getClinicPortalAccountConfigById(context.clinic.id, client);
+    const previousPrimaryUserId = accountConfig.primaryPortalUserId || null;
 
     await updateClinicPortalPrimaryUserIdById(context.clinic.id, safeUserId, client);
     const normalizedUsers = currentUsers.map((user) => normalizePortalUserRecord(user, safeUserId));
+    await createPortalUserAuditEvent(
+      {
+        tenantId: context.tenantId,
+        clinicId: context.clinic.id,
+        actorUserId,
+        targetUserId: safeUserId,
+        action: 'tenant_primary_portal_user_changed',
+        payload: {
+          targetUserId: safeUserId,
+          name: target.name,
+          previousPrimaryUserId,
+          nextPrimaryUserId: safeUserId
+        }
+      },
+      client
+    );
 
     return {
       user: normalizePortalUserRecord(target, safeUserId),
@@ -315,6 +385,8 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
     return { ok: false, tenantId: context.tenantId, reason: 'cannot_delete_current_user' };
   }
 
+  const actorUserId = normalizeAuditActorId(currentUserId);
+
   const removed = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
     const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
@@ -336,13 +408,35 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
       }
     }
 
-    return deletePortalUserById(
+    await createPortalUserAuditEvent(
+      {
+        tenantId: context.tenantId,
+        clinicId: context.clinic.id,
+        actorUserId,
+        targetUserId: target.id,
+        action: 'tenant_portal_user_deleted',
+        payload: {
+          targetUserId: target.id,
+          name: target.name,
+          email: target.email,
+          role: target.role,
+          accountKind:
+            accountConfig.primaryPortalUserId && String(target.id) === String(accountConfig.primaryPortalUserId)
+              ? 'primary'
+              : 'subaccount'
+        }
+      },
+      client
+    );
+
+    const deleted = await deletePortalUserById(
       {
         userId,
         clinicId: context.clinic.id
       },
       client
     );
+    return deleted;
   }).catch((error) => {
     if (error && error.code === 'LAST_OWNER_DELETE') {
       return { error: 'cannot_delete_last_owner' };
