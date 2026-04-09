@@ -79,6 +79,7 @@ const {
   getPortalBusiness,
   getPortalUsers,
   postPortalUser,
+  patchPortalPrimaryUser,
   postPortalAutomation,
   patchPortalAutomation,
   destroyPortalAutomation,
@@ -213,6 +214,7 @@ router.post('/tenants/:tenantId/whatsapp/templates/create-from-blueprint', requi
 router.post('/tenants/:tenantId/whatsapp/templates/sync', requirePortalInternalAuth, postPortalWhatsAppTemplatesSync);
 router.get('/tenants/:tenantId/users', requirePortalInternalAuth, getPortalUsers);
 router.post('/tenants/:tenantId/users', requirePortalInternalAuth, postPortalUser);
+router.patch('/tenants/:tenantId/users/primary', requirePortalInternalAuth, patchPortalPrimaryUser);
 router.patch('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, patchPortalUser);
 router.delete('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, destroyPortalUser);
 router.post('/auth/login', postPortalAuthLogin);

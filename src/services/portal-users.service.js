@@ -259,6 +259,52 @@ async function updatePortalUser(tenantId, userId, payload) {
   };
 }
 
+async function assignPrimaryPortalUser(tenantId, userId) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const safeUserId = normalizeString(userId);
+  if (!safeUserId) {
+    return { ok: false, tenantId: context.tenantId, reason: 'missing_user_id' };
+  }
+
+  const result = await withTransaction(async (client) => {
+    const currentUsers = await listPortalUsersByClinicId(context.clinic.id, client);
+    const target = currentUsers.find((item) => String(item.id) === safeUserId);
+    if (!target) return null;
+    const accountConfig = await getClinicPortalAccountConfigById(context.clinic.id, client);
+
+    await updateClinicPortalPrimaryUserIdById(context.clinic.id, safeUserId, client);
+    const normalizedUsers = currentUsers.map((user) => normalizePortalUserRecord(user, safeUserId));
+
+    return {
+      user: normalizePortalUserRecord(target, safeUserId),
+      meta: buildPortalUsersMeta(
+        normalizedUsers,
+        {
+          subaccountLimit: accountConfig.subaccountLimit,
+          source: accountConfig.limitSource
+        },
+        safeUserId
+      )
+    };
+  });
+
+  if (!result) {
+    return { ok: false, tenantId: context.tenantId, reason: 'user_not_found' };
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    user: result.user,
+    meta: result.meta
+  };
+}
+
 async function deletePortalUser(tenantId, userId, currentUserId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -380,6 +426,7 @@ async function getPortalAuthUserByEmail(email) {
 module.exports = {
   listPortalUsers,
   invitePortalUser,
+  assignPrimaryPortalUser,
   updatePortalUser,
   deletePortalUser,
   authenticatePortalUser,

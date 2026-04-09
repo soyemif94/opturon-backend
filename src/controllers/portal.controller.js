@@ -52,6 +52,7 @@ const {
 const {
   listPortalUsers,
   invitePortalUser,
+  assignPrimaryPortalUser,
   updatePortalUser,
   deletePortalUser,
   authenticatePortalUser,
@@ -2721,6 +2722,45 @@ async function postPortalUser(req, res) {
   }
 }
 
+async function patchPortalPrimaryUser(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const userId = String((req.body && req.body.userId) || '').trim();
+
+  try {
+    const result = await assignPrimaryPortalUser(tenantId, userId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_user_id'
+          ? 400
+          : result.reason === 'user_not_found'
+            ? 404
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        meta: result.meta || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        user: result.user,
+        meta: result.meta || null
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_primary_user_update_failed',
+      details: error.message
+    });
+  }
+}
+
 async function patchPortalBusiness(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -3671,6 +3711,7 @@ module.exports = {
   patchPortalAutomation,
   destroyPortalAutomation,
   postPortalUser,
+  patchPortalPrimaryUser,
   patchPortalUser,
   destroyPortalUser,
   postPortalAuthLogin,
