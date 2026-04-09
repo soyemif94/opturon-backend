@@ -35,6 +35,7 @@ const {
   patchPortalContact,
   patchPortalContactsArchive,
   patchPortalContactsRestore,
+  deletePortalArchivedContactsController,
   getPortalInvoices,
   getPortalInvoice,
   getPortalInvoiceAllocations,
@@ -144,6 +145,7 @@ router.delete('/tenants/:tenantId/products/:productId', destroyPortalProduct);
 router.get('/tenants/:tenantId/contacts', getPortalContacts);
 router.patch('/tenants/:tenantId/contacts/archive', patchPortalContactsArchive);
 router.patch('/tenants/:tenantId/contacts/restore', patchPortalContactsRestore);
+router.delete('/tenants/:tenantId/contacts/archived', deletePortalArchivedContactsController);
 router.post('/tenants/:tenantId/contacts', postPortalContact);
 router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
 router.patch('/tenants/:tenantId/contacts/:contactId', patchPortalContact);

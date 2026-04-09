@@ -5,7 +5,8 @@ const {
   createPortalContact,
   updatePortalContactById,
   archivePortalContactsByIds,
-  restorePortalContactsByIds
+  restorePortalContactsByIds,
+  deletePortalArchivedContactsByIds
 } = require('../repositories/contact.repository');
 const { listInvoicesByContactId } = require('../repositories/invoices.repository');
 const { listPaymentsByContactId } = require('../repositories/payments.repository');
@@ -383,11 +384,46 @@ async function restorePortalContacts(tenantId, payload = {}) {
   };
 }
 
+async function deletePortalArchivedContacts(tenantId, payload = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const contactIds = Array.isArray(payload.contactIds)
+    ? payload.contactIds.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+
+  if (!contactIds.length) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'missing_contact_ids'
+    };
+  }
+
+  const deletedContacts = await deletePortalArchivedContactsByIds(context.clinic.id, contactIds);
+  const deletedContactIds = deletedContacts.map((contact) => contact.id);
+  const blockedContactIds = contactIds.filter((contactId) => !deletedContactIds.includes(contactId));
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    deletedContactIds,
+    deletedCount: deletedContactIds.length,
+    blockedContactIds,
+    blockedCount: blockedContactIds.length
+  };
+}
+
 module.exports = {
   listPortalContacts,
   createPortalContactRecord,
   getPortalContactDetail,
   updatePortalContact,
   archivePortalContacts,
-  restorePortalContacts
+  restorePortalContacts,
+  deletePortalArchivedContacts
 };

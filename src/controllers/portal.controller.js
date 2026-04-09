@@ -95,7 +95,8 @@ const {
   createPortalContact,
   updatePortalContact,
   archivePortalContacts,
-  restorePortalContacts
+  restorePortalContacts,
+  deletePortalArchivedContacts
 } = require('../services/portal-contacts.service');
 const {
   getPortalLoyaltyProgram,
@@ -2764,6 +2765,29 @@ async function patchPortalPrimaryUser(req, res) {
   }
 }
 
+async function deletePortalArchivedContactsController(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await deletePortalArchivedContacts(tenantId, req.body || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_contact_ids' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_contacts_delete_failed',
+      details: error.message
+    });
+  }
+}
+
 async function patchPortalBusiness(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
 
@@ -3670,6 +3694,7 @@ module.exports = {
   patchPortalContact,
   patchPortalContactsArchive,
   patchPortalContactsRestore,
+  deletePortalArchivedContactsController,
   getPortalInvoices,
   getPortalInvoice,
   getPortalInvoiceAllocations,

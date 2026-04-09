@@ -317,6 +317,39 @@ async function restorePortalContactsByIds(clinicId, contactIds = [], client = nu
   return result.rows;
 }
 
+async function deletePortalArchivedContactsByIds(clinicId, contactIds = [], client = null) {
+  const ids = Array.isArray(contactIds) ? contactIds.filter(Boolean) : [];
+  if (!ids.length) return [];
+
+  const result = await dbQuery(
+    client,
+    `DELETE FROM contacts c
+     WHERE c."clinicId" = $1
+       AND c.id = ANY($2::uuid[])
+       AND COALESCE(c.status, 'active') = 'archived'
+       AND NOT EXISTS (SELECT 1 FROM conversations conv WHERE conv."contactId" = c.id)
+       AND NOT EXISTS (SELECT 1 FROM orders o WHERE o."contactId" = c.id AND o."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i."contactId" = c.id AND i."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM payments p WHERE p."contactId" = c.id AND p."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM loyalty_points_ledger l WHERE l."contactId" = c.id AND l."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM leads ld WHERE ld."contactId" = c.id AND ld."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM appointments a WHERE a."contactId" = c.id AND a."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM handoff_requests hr WHERE hr."contactId" = c.id AND hr."clinicId" = c."clinicId")
+       AND NOT EXISTS (SELECT 1 FROM agenda_items ai WHERE ai."contactId" = c.id AND ai."clinicId" = c."clinicId")
+     RETURNING
+       c.id,
+       c."clinicId",
+       c.name,
+       c.phone,
+       c.email,
+       c.status,
+       c."archivedAt"`,
+    [clinicId, ids]
+  );
+
+  return result.rows;
+}
+
 // Portal/client-facing create. The caller must resolve clinic scope from route/context,
 // never from client-controlled tenant/body values.
 async function createPortalContact(clinicId, input, client = null) {
@@ -624,6 +657,7 @@ module.exports = {
   updatePortalContactById,
   archivePortalContactsByIds,
   restorePortalContactsByIds,
+  deletePortalArchivedContactsByIds,
   listArchivedContactCleanupCandidates,
   deleteArchivedContactsByIds
 };
