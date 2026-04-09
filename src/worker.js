@@ -2039,7 +2039,48 @@ function parseGeneratedBotEditIntent(input) {
 }
 
 function buildGeneratedBotPreviewHelpReply() {
-  return 'Si querés, puedo adaptarlo a tu negocio, hacerlo más formal, más vendedor, más simple, cambiar la bienvenida o ajustar el mensaje final.';
+  return [
+    'Podemos seguir de estas formas:',
+    '',
+    '1️⃣ Configurar tu bot inicial',
+    '2️⃣ Cargar tus productos o servicios',
+    '3️⃣ Conectar tu WhatsApp',
+    '',
+    'Si queres ajustar el bot que te mostre, tambien podes escribir:',
+    '- "mas vendedor"',
+    '- "mas formal"',
+    '- "mas simple"',
+    '- "cambiar bienvenida"',
+    '- "cambia el mensaje final"'
+  ].join('\n');
+}
+
+function isOnboardingProductsIntent(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return false;
+
+  return (
+    normalized.includes('cargar productos') ||
+    normalized.includes('cargar servicios') ||
+    normalized.includes('agregar productos') ||
+    normalized.includes('agregar servicios') ||
+    normalized.includes('catalogo') ||
+    normalized.includes('catálogo')
+  );
+}
+
+function isOnboardingNextStepIntent(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return false;
+
+  return (
+    normalized.includes('como seguimos') ||
+    normalized.includes('cómo seguimos') ||
+    normalized.includes('que sigue') ||
+    normalized.includes('qué sigue') ||
+    normalized.includes('siguiente paso') ||
+    normalized === 'seguir'
+  );
 }
 
 function parseActiveBotRuntimeEditIntent(input) {
@@ -3525,6 +3566,10 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         ? safeContext.generatedBotPreview
         : null;
 
+      if (isPublicDemoExperienceIntent(inboundText)) {
+        return buildDemoEntryDecision();
+      }
+
       if (existingPreview && editIntent) {
         const preview = buildEditedBotPreview(existingPreview, onboarding, editIntent);
         const persistedRuntimeConfig = activeRuntimeConfig
@@ -3614,6 +3659,18 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         };
       }
 
+      if (isOnboardingProductsIntent(inboundText)) {
+        return {
+          replyText: 'Perfecto. El siguiente paso es cargar tus productos o servicios para que el bot pueda recomendarlos mejor. Cuando quieras, seguimos por ahi.',
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding,
+            generatedBotPreview: existingPreview
+          }
+        };
+      }
+
       if (completeOption === '3') {
         return {
           replyText: 'Perfecto. El siguiente paso es conectar tu WhatsApp para que este flujo pueda empezar a atender conversaciones reales.',
@@ -3621,6 +3678,18 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           newStage: getOnboardingStageKey(5),
           contextPatch: {
             onboarding
+          }
+        };
+      }
+
+      if (isOnboardingNextStepIntent(inboundText)) {
+        return {
+          replyText: buildOnboardingReply(5),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding,
+            generatedBotPreview: existingPreview
           }
         };
       }
