@@ -1709,20 +1709,20 @@ function buildDemoExperienceReply(step) {
     return [
       'Perfecto 🙌',
       '',
-      'Arranquemos con una mini demo guiada de Opturon por WhatsApp.',
+      'Hagamos una mini demo guiada de Opturon por WhatsApp.',
       '',
-      'El problema tipico es este: entran consultas, nadie sabe quien responde y las oportunidades se enfrían.',
+      'Problema real: entran consultas, nadie sabe quien responde y las oportunidades se enfrían.',
       '',
       'Cliente:',
       '"Hola, quiero info y precios"',
       '',
-      'Escribi "seguir" y te muestro la primera respuesta.'
+      'Escribi solo "seguir" y te muestro la primera respuesta.'
     ].join('\n');
   }
 
   if (safeStep === 2) {
     return [
-      'Opturon responde al instante y ordena la conversación 👇',
+      'Opturon responde al instante y ordena la conversacion 👇',
       '',
       'Bot:',
       '"Hola 👋 Te ayudo rapido.',
@@ -1731,9 +1731,9 @@ function buildDemoExperienceReply(step) {
       '2️⃣ Quiero que me contacten',
       '3️⃣ Quiero ver opciones"',
       '',
-      'Mientras tanto, el lead entra al inbox con owner, estado comercial y contexto.',
+      'Al mismo tiempo, el lead entra al inbox con owner, estado comercial y contexto.',
       '',
-      'Escribi "seguir" y avanzamos.'
+      'Escribi solo "seguir" y avanzamos.'
     ].join('\n');
   }
 
@@ -1742,9 +1742,9 @@ function buildDemoExperienceReply(step) {
       'Cliente:',
       '"Quiero precios y que me contacten mañana"',
       '',
-      'Opturon no solo responde: tambien deja proxima accion para que el lead no se pierda.',
+      'Opturon no solo responde: tambien deja una proxima accion para que el lead no se pierda.',
       '',
-      'Escribi "seguir" y te muestro que ve tu equipo.'
+      'Escribi solo "seguir" y te muestro que ve tu equipo.'
     ].join('\n');
   }
 
@@ -1759,7 +1759,7 @@ function buildDemoExperienceReply(step) {
       '',
       'Asi el vendedor sabe que hacer y supervision detecta atrasos sin depender de memoria ni planillas.',
       '',
-      'Escribi "seguir" para ver el cierre.'
+      'Escribi solo "seguir" para ver el cierre.'
     ].join('\n');
   }
 
@@ -1770,11 +1770,11 @@ function buildDemoExperienceReply(step) {
     '- evitar leads frios',
     '- supervisar la operacion con mas control',
     '',
-    'Si queres avanzar ahora, podes escribir:',
+    'Si queres avanzar ahora, escribi una de estas opciones:',
     '',
-    '- "activar" para seguir con el setup',
-    '- "humano" para hablar con el equipo',
-    '- "ver planes" para revisar opciones'
+    '- "activar" y seguimos con el setup guiado',
+    '- "ver planes" y te muestro las opciones',
+    '- "humano" y te derivamos con el equipo'
   ].join('\n');
 }
 
@@ -1789,9 +1789,12 @@ function isDemoAdvanceIntent(input) {
     'continuar',
     'siguiente',
     'si',
-    'bueno',
-    'genial'
-  ].includes(normalized) || normalized.length <= 20;
+    'genial',
+    'mostrame',
+    'mostrame mas',
+    'vamos',
+    'avanza'
+  ].includes(normalized);
 }
 
 function isDemoActivateIntent(input) {
