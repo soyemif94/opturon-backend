@@ -1709,66 +1709,72 @@ function buildDemoExperienceReply(step) {
     return [
       'Perfecto 🙌',
       '',
-      'Te muestro cómo funciona Opturon en la práctica.',
+      'Arranquemos con una mini demo guiada de Opturon por WhatsApp.',
       '',
-      'Imaginá que un cliente te escribe por WhatsApp preguntando por tus productos 👇',
+      'El problema tipico es este: entran consultas, nadie sabe quien responde y las oportunidades se enfrían.',
       '',
       'Cliente:',
-      '"Hola, qué opciones tenés?"',
+      '"Hola, quiero info y precios"',
       '',
-      'Escribí "seguir" y te muestro cómo respondería Opturon.'
+      'Escribi "seguir" y te muestro la primera respuesta.'
     ].join('\n');
   }
 
   if (safeStep === 2) {
     return [
+      'Opturon responde al instante y ordena la conversación 👇',
+      '',
       'Bot:',
-      '"Hola 👋 Te ayudo a elegir.',
+      '"Hola 👋 Te ayudo rapido.',
       '',
-      'Estos son algunos productos disponibles:',
-      '1️⃣ Producto A',
-      '2️⃣ Producto B',
-      '3️⃣ Producto C"',
+      '1️⃣ Quiero precios',
+      '2️⃣ Quiero que me contacten',
+      '3️⃣ Quiero ver opciones"',
       '',
-      'Escribí "seguir" y avanzamos.'
+      'Mientras tanto, el lead entra al inbox con owner, estado comercial y contexto.',
+      '',
+      'Escribi "seguir" y avanzamos.'
     ].join('\n');
   }
 
   if (safeStep === 3) {
     return [
       'Cliente:',
-      '"Busco algo económico"',
+      '"Quiero precios y que me contacten mañana"',
       '',
-      'Escribí "seguir" y te muestro cómo sigue la conversación.'
+      'Opturon no solo responde: tambien deja proxima accion para que el lead no se pierda.',
+      '',
+      'Escribi "seguir" y te muestro que ve tu equipo.'
     ].join('\n');
   }
 
   if (safeStep === 4) {
     return [
-      'Bot:',
-      '"Si querés algo simple para empezar, te recomiendo Producto A.',
+      'Esto ve tu equipo adentro de Opturon:',
       '',
-      'Es una buena opción para arrancar sin complicarte y ya te queda lista para avanzar hoy.',
+      '- lead asignado a un vendedor',
+      '- estado comercial visible',
+      '- seguimiento con fecha y nota',
+      '- alertas si se vence o queda sin atender',
       '',
-      'Si querés, te lo dejo reservado ahora mismo."',
+      'Asi el vendedor sabe que hacer y supervision detecta atrasos sin depender de memoria ni planillas.',
       '',
-      'Escribí "seguir" para ver el cierre.'
+      'Escribi "seguir" para ver el cierre.'
     ].join('\n');
   }
 
   return [
-    'Esto es lo que hace Opturon automáticamente por vos:',
-    '- responde',
-    '- recomienda',
-    '- guía la conversación',
-    '- ayuda a cerrar ventas',
+    'En resumen, Opturon te ayuda a:',
+    '- responder mas rapido',
+    '- ordenar vendedores y seguimientos',
+    '- evitar leads frios',
+    '- supervisar la operacion con mas control',
     '',
-    '¿Querés que lo activemos en tu negocio?',
+    'Si queres avanzar ahora, podes escribir:',
     '',
-    'Podés escribir:',
-    '- "activar"',
-    '- "volver"',
-    '- "ver planes"'
+    '- "activar" para seguir con el setup',
+    '- "humano" para hablar con el equipo',
+    '- "ver planes" para revisar opciones'
   ].join('\n');
 }
 
@@ -1803,6 +1809,34 @@ function isDemoActivateIntent(input) {
 function isDemoBackIntent(input) {
   const normalized = normalizeCommandText(input);
   return normalized === 'volver' || normalized === 'volver atras';
+}
+
+function isDemoHumanIntent(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return false;
+
+  return [
+    'humano',
+    'persona',
+    'asesor',
+    'equipo',
+    'hablar con humano',
+    'hablar con una persona',
+    'quiero hablar con alguien'
+  ].includes(normalized);
+}
+
+function isPublicDemoExperienceIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return [
+    'quiero una demo guiada por whatsapp',
+    'vengo desde la demo web',
+    'quiero una demo guiada',
+    'demo guiada por whatsapp',
+    'vengo desde la demo'
+  ].some((pattern) => text.includes(pattern));
 }
 
 function getOnboardingStageKey(step) {
@@ -3080,6 +3114,21 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     };
   };
 
+  const buildDemoEntryDecision = () => ({
+    replyText: buildDemoExperienceReply(1),
+    newState: 'DEMO',
+    newStage: getDemoStageKey(1),
+    contextPatch: buildCommerceResetPatch({
+      commerceCartItems: null,
+      commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+      commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+      commerceActivationOfferState: 'demo',
+      commerceActivationChoice: '2',
+      commerceDemoStep: 1,
+      demoEntrySource: 'public_demo_whatsapp'
+    })
+  });
+
   const cancelDecision = await resolveCommerceCancellation({
     conversation,
     inboundText,
@@ -3088,6 +3137,13 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   });
   if (cancelDecision) {
     return cancelDecision;
+  }
+
+  if (
+    isPublicDemoExperienceIntent(inboundText) &&
+    ['READY', 'NEW', 'IDLE', 'POST_CONFIRMATION'].includes(currentState)
+  ) {
+    return buildDemoEntryDecision();
   }
 
   const activeRuntimeConfig = getActiveGeneratedBotConfig(clinic);
@@ -3627,6 +3683,10 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const demoStep = Number.isInteger(Number(safeContext.commerceDemoStep))
       ? Number(safeContext.commerceDemoStep)
       : 1;
+
+    if (isDemoHumanIntent(inboundText)) {
+      return null;
+    }
 
     if (isDemoActivateIntent(inboundText)) {
       return {
