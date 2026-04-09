@@ -795,6 +795,74 @@ function extractPlanDescription(product) {
   };
 }
 
+function resolvePlanProfile(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const normalizedName = normalizeCommandText(safeProduct.name || '');
+  const { headline, featureLines } = extractPlanDescription(safeProduct);
+
+  if (normalizedName.includes('inicial') || normalizedName.includes('starter') || normalizedName.includes('start')) {
+    return {
+      shortDescription: 'Para empezar a ordenar WhatsApp y no perder consultas.',
+      problemSolved: 'respondes de forma improvisada y todavia no tienes un sistema comercial claro',
+      result: 'centralizar conversaciones, responder mejor y empezar a seguir oportunidades sin depender de memoria ni planillas',
+      featureLines: [
+        '1 canal de WhatsApp',
+        'inbox basico con contexto',
+        'catalogo simple',
+        'bot de atencion inicial y respuestas automaticas'
+      ],
+      usersLabel: '1 cuenta principal + subcuentas operativas segun el cupo activo de tu plan',
+      controlLevel: 'Control operativo inicial'
+    };
+  }
+
+  if (normalizedName.includes('crecimiento') || normalizedName.includes('growth') || normalizedName.includes('grow')) {
+    return {
+      shortDescription: 'Para vender con seguimiento real y operacion diaria mas ordenada.',
+      problemSolved: 'ya tienes consultas y ventas por WhatsApp, pero falta seguimiento comercial serio',
+      result: 'trabajar con pipeline, seguimiento visible y una operacion comercial mucho mas clara',
+      featureLines: [
+        'bot de ventas mas completo',
+        'categorias y catalogo mas armado',
+        'toma de pedidos',
+        'seguimiento de conversaciones desde el panel'
+      ],
+      usersLabel: '1 cuenta principal + subcuentas operativas para trabajar en equipo segun el cupo contratado',
+      controlLevel: 'Control comercial diario'
+    };
+  }
+
+  if (normalizedName.includes('empresa') || normalizedName.includes('pro') || normalizedName.includes('enterprise')) {
+    return {
+      shortDescription: 'Para equipos con mas volumen, supervision y necesidad de personalizacion.',
+      problemSolved: 'ya necesitas mas control, mas soporte y una operacion mejor acompañada',
+      result: 'escalar con mas trazabilidad, supervision y una base mas fuerte para el equipo',
+      featureLines: [
+        'mayor personalizacion',
+        'soporte prioritario',
+        'integraciones avanzadas a medida',
+        'setup mas acompañado'
+      ],
+      usersLabel: '1 cuenta principal + equipo ampliado con subcuentas segun el cupo definido para tu operacion',
+      controlLevel: 'Control operativo alto'
+    };
+  }
+
+  return {
+    shortDescription: headline,
+    problemSolved: 'quieres ordenar ventas y seguimiento por WhatsApp',
+    result: 'trabajar con una operacion mas clara y un proceso comercial mejor guiado',
+    featureLines,
+    usersLabel: '1 cuenta principal + subcuentas operativas segun el cupo del plan',
+    controlLevel: 'Control operativo segun configuracion'
+  };
+}
+
+function buildPlanCatalogLine(product) {
+  const profile = resolvePlanProfile(product);
+  return `${formatCommerceIndex(product.index)} ${product.name} — ${formatMoney(product.price, product.currency)}\n   ${profile.shortDescription}`;
+}
+
 function buildPlanSalesCta(text = 'Si querés, te recomiendo uno según lo que buscás o te muestro el que más te convenga.') {
   return text;
 }
@@ -954,17 +1022,17 @@ function buildPlanComparisonReply(products) {
 
 function buildPlanRecommendationReply(product) {
   const safeProduct = product && typeof product === 'object' ? product : {};
-  const { headline, featureLines } = extractPlanDescription(safeProduct);
+  const profile = resolvePlanProfile(safeProduct);
 
   return [
     `Te recomiendo ${safeProduct.name || 'este plan'}.`,
     '',
-    headline,
+    profile.shortDescription,
     '',
-    ...(featureLines.length
+    ...(profile.featureLines.length
       ? [
           'Incluye:',
-          ...featureLines.map((line) => `- ${line}`),
+          ...profile.featureLines.map((line) => `- ${line}`),
           ''
         ]
       : []),
@@ -974,21 +1042,26 @@ function buildPlanRecommendationReply(product) {
 
 function buildPlanDetailReply(product, { includePrice = true, includeFeatures = true } = {}) {
   const safeProduct = product && typeof product === 'object' ? product : {};
-  const { headline, featureLines } = extractPlanDescription(safeProduct);
+  const profile = resolvePlanProfile(safeProduct);
 
   return [
     `${safeProduct.name || 'Este plan'}${includePrice ? ` cuesta ${formatMoney(safeProduct.price, safeProduct.currency)}` : ''}.`,
     '',
-    headline,
+    `Te conviene si hoy ${profile.problemSolved}.`,
     '',
-    ...(includeFeatures && featureLines.length
+    `Con este plan podes ${profile.result}.`,
+    '',
+    ...(includeFeatures && profile.featureLines.length
       ? [
           'Incluye:',
-          ...featureLines.map((line) => `- ${line}`),
+          ...profile.featureLines.map((line) => `- ${line}`),
+          `- Usuarios: ${profile.usersLabel}`,
+          `- Nivel de control: ${profile.controlLevel}`,
           ''
         ]
       : []),
-    buildPlanSalesCta('Si querés, te muestro este plan o lo dejamos listo para avanzar.')
+    'Si queres avanzar, escribi "confirmar" y seguimos con la contratacion.',
+    'Si quieres comparar, escribi otro numero y te muestro otro plan.'
   ].join('\n');
 }
 
@@ -1034,7 +1107,9 @@ function buildCommerceCatalogReply(page) {
         ? 'Estos son nuestros planes disponibles:'
         : 'Estos son algunos de nuestros productos disponibles:',
     '',
-    ...products.map((product) => `${formatCommerceIndex(product.index)} ${product.name} — ${formatMoney(product.price, product.currency)}`),
+    ...products.map((product) => planCatalog
+      ? buildPlanCatalogLine(product)
+      : `${formatCommerceIndex(product.index)} ${product.name} — ${formatMoney(product.price, product.currency)}`),
     '',
     'Podes:',
     planCatalog
@@ -1470,31 +1545,7 @@ function buildCommerceCartReply(cartItems) {
 }
 
 function buildPlanSelectionReply(product) {
-  const safeProduct = product && typeof product === 'object' ? product : {};
-  const rawDescription = String(safeProduct.description || '').trim();
-  const descriptionLines = rawDescription
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const headline = descriptionLines[0] || 'Es una gran opción para empezar a automatizar ventas con Opturon.';
-  const featureLines = descriptionLines.slice(1, 4);
-
-  return [
-    `Elegiste el ${safeProduct.name || 'plan'}.`,
-    '',
-    headline,
-    '',
-    ...(featureLines.length
-      ? [
-          'Incluye:',
-          ...featureLines.map((line) => `- ${line}`),
-          ''
-        ]
-      : []),
-    'Si querés avanzar, lo dejamos listo para activar ahora.',
-    '',
-    '¿Querés continuar con este plan? Escribí "confirmar" para seguir.'
-  ].join('\n');
+  return buildPlanDetailReply(product);
 }
 
 function buildCommerceUndoReply(cartItems) {
