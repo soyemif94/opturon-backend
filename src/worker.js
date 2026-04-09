@@ -1000,6 +1000,57 @@ function findReferencedPlan(products, rawText) {
   return namedTokens.find((entry) => entry.remainder && text.includes(entry.remainder))?.product || null;
 }
 
+function isContextualPlanReferenceIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return [
+    'ese',
+    'ese plan',
+    'mostrame ese',
+    'mostrame ese plan',
+    'quiero ver ese',
+    'quiero ver ese plan',
+    'ver ese plan',
+    'a ver ese plan'
+  ].includes(text);
+}
+
+function isPlanDirectDetailIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('mostrame') ||
+    text.includes('mostrar') ||
+    text.includes('quiero ver') ||
+    text.includes('ver el plan') ||
+    text.includes('ver plan') ||
+    text.includes('a ver') ||
+    text.includes('detalle') ||
+    text.includes('ese plan')
+  );
+}
+
+function findPlanByContext(products, safeContext) {
+  const suggestedId = String(safeContext && safeContext.commerceSuggestedProductId ? safeContext.commerceSuggestedProductId : '').trim();
+  const suggestedName = String(safeContext && safeContext.commerceSuggestedProductName ? safeContext.commerceSuggestedProductName : '').trim();
+  const orderedPlans = getOrderedPlanProducts(products);
+
+  if (suggestedId) {
+    const byId = orderedPlans.find((product) => String(product.id || product.productId || '').trim() === suggestedId);
+    if (byId) return byId;
+  }
+
+  if (suggestedName) {
+    const normalizedSuggestedName = normalizeCommandText(suggestedName);
+    const byName = orderedPlans.find((product) => normalizeCommandText(product.name || '') === normalizedSuggestedName);
+    if (byName) return byName;
+  }
+
+  return null;
+}
+
 function buildPlanComparisonReply(products) {
   const orderedPlans = getOrderedPlanProducts(products);
   if (!orderedPlans.length) {
@@ -1010,13 +1061,13 @@ function buildPlanComparisonReply(products) {
     'Te comparo los planes de Opturon 👇',
     '',
     ...orderedPlans.slice(0, 3).map((product) => {
-      const { headline } = extractPlanDescription(product);
-      return `• ${product.name} — ${formatMoney(product.price, product.currency)}: ${headline}`;
+      const profile = resolvePlanProfile(product);
+      return `• ${product.name} — ${formatMoney(product.price, product.currency)}: ${profile.shortDescription}`;
     }),
     '',
     'Si querés una recomendación rápida, Plan Crecimiento suele ser el más conveniente para negocios que quieren vender más por WhatsApp.',
     '',
-    buildPlanSalesCta()
+    'Si queres ver uno en detalle, escribi: Plan Inicial, Plan Crecimiento o Plan Empresa.'
   ].join('\n');
 }
 
@@ -1036,7 +1087,8 @@ function buildPlanRecommendationReply(product) {
           ''
         ]
       : []),
-    buildPlanSalesCta('Si querés, te muestro ese plan o lo dejamos listo para avanzar.')
+    'Si queres ver el detalle completo, escribi "mostrame ese plan".',
+    'Si queres avanzar, tambien podes escribir "confirmar".'
   ].join('\n');
 }
 
@@ -1061,7 +1113,7 @@ function buildPlanDetailReply(product, { includePrice = true, includeFeatures = 
         ]
       : []),
     'Si queres avanzar, escribi "confirmar" y seguimos con la contratacion.',
-    'Si quieres comparar, escribi otro numero y te muestro otro plan.'
+    'Si quieres comparar, escribi Plan Inicial, Plan Crecimiento o Plan Empresa.'
   ].join('\n');
 }
 
@@ -4277,12 +4329,26 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const planSalesActive = isPlanCatalog(availablePlanProducts);
 
   if (planSalesActive) {
-    const referencedPlan = findReferencedPlan(availablePlanProducts, inboundText);
+    const directlyReferencedPlan = findReferencedPlan(availablePlanProducts, inboundText);
+    const contextualPlan = isContextualPlanReferenceIntent(inboundText)
+      ? findPlanByContext(availablePlanProducts, safeContext)
+      : null;
+    const referencedPlan = directlyReferencedPlan || contextualPlan;
     const needHint = resolvePlanNeedHint(inboundText);
 
     if (isPlanComparisonIntent(inboundText)) {
       const suggestedPlan = findPlanByNeedHint(availablePlanProducts, 'growth');
       return buildPlanSalesDecision(buildPlanComparisonReply(availablePlanProducts), suggestedPlan);
+    }
+
+    if (referencedPlan && (directlyReferencedPlan || contextualPlan || isPlanDirectDetailIntent(inboundText) || isPlanPricingIntent(inboundText))) {
+      return buildPlanSalesDecision(
+        buildPlanDetailReply(referencedPlan, {
+          includePrice: true,
+          includeFeatures: true
+        }),
+        referencedPlan
+      );
     }
 
     if (needHint) {
@@ -4300,16 +4366,6 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     }
 
     if (isPlanPricingIntent(inboundText)) {
-      if (referencedPlan) {
-        return buildPlanSalesDecision(
-          buildPlanDetailReply(referencedPlan, {
-            includePrice: true,
-            includeFeatures: true
-          }),
-          referencedPlan
-        );
-      }
-
       return buildPlanSalesDecision(buildPlanComparisonReply(availablePlanProducts));
     }
   }
