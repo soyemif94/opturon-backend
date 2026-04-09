@@ -7,6 +7,27 @@ function dbQuery(client, text, params) {
   return query(text, params);
 }
 
+const DEFAULT_PORTAL_SUBACCOUNT_LIMIT = (() => {
+  const parsed = Number.parseInt(String(process.env.PORTAL_SUBACCOUNT_LIMIT_DEFAULT || '5'), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 5;
+})();
+
+function parseClinicSettings(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  try {
+    const parsed = JSON.parse(String(raw));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function parsePositiveLimit(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
@@ -60,6 +81,28 @@ async function findClinicByExternalTenantId(externalTenantId, client = null) {
   );
 
   return result.rows[0] || null;
+}
+
+async function getClinicPortalSubaccountLimitById(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT settings
+     FROM clinics
+     WHERE id = $1
+     LIMIT 1`,
+    [clinicId]
+  );
+
+  const settings = parseClinicSettings(result.rows[0]?.settings);
+  const explicitLimit =
+    parsePositiveLimit(settings?.portal?.limits?.subaccounts) ??
+    parsePositiveLimit(settings?.portal?.userLimits?.subaccounts) ??
+    parsePositiveLimit(settings?.portal?.subaccountLimit);
+
+  return {
+    subaccountLimit: explicitLimit || DEFAULT_PORTAL_SUBACCOUNT_LIMIT,
+    source: explicitLimit ? 'clinic_settings' : 'default_env'
+  };
 }
 
 async function findPreferredWhatsAppChannelByClinicId(clinicId, client = null) {
@@ -505,6 +548,7 @@ module.exports = {
   findChannelById,
   findChannelByIdAndClinicId,
   findClinicByExternalTenantId,
+  getClinicPortalSubaccountLimitById,
   findPreferredWhatsAppChannelByClinicId,
   listWhatsAppChannelsByClinicId,
   findInstagramChannelByExternalId,

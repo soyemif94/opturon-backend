@@ -1,6 +1,7 @@
 const { hashSync, compareSync } = require('bcryptjs');
 const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
+const { getClinicPortalSubaccountLimitById } = require('../repositories/tenant.repository');
 const {
   countOwnersByClinicId,
   listPortalUsersByClinicId,
@@ -11,6 +12,7 @@ const {
 } = require('../repositories/portal-users.repository');
 
 const ALLOWED_ROLES = new Set(['owner', 'manager', 'seller', 'viewer']);
+const PORTAL_USERS_LIMIT_KEY = 'tenant_portal_users';
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -26,18 +28,46 @@ function normalizeRole(value) {
   return ALLOWED_ROLES.has(normalized) ? normalized : null;
 }
 
+function countSubaccounts(users) {
+  return (Array.isArray(users) ? users : []).filter((user) => String(user && user.role ? user.role : '').toLowerCase() !== 'owner').length;
+}
+
+function countPrimaryAccounts(users) {
+  return (Array.isArray(users) ? users : []).filter((user) => String(user && user.role ? user.role : '').toLowerCase() === 'owner').length;
+}
+
+function buildPortalUsersMeta(users, limitConfig) {
+  const subaccountCount = countSubaccounts(users);
+  const primaryAccountCount = countPrimaryAccounts(users);
+  const subaccountLimit = Number(limitConfig && limitConfig.subaccountLimit) || 0;
+
+  return {
+    subaccountCount,
+    primaryAccountCount,
+    subaccountLimit,
+    remainingSubaccounts: Math.max(0, subaccountLimit - subaccountCount),
+    futureLimitKey: PORTAL_USERS_LIMIT_KEY,
+    limitScope: 'subaccounts',
+    limitSource: limitConfig && limitConfig.source ? limitConfig.source : 'default_env'
+  };
+}
+
 async function listPortalUsers(tenantId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
 
-  const users = await listPortalUsersByClinicId(context.clinic.id);
+  const [users, limitConfig] = await Promise.all([
+    listPortalUsersByClinicId(context.clinic.id),
+    getClinicPortalSubaccountLimitById(context.clinic.id)
+  ]);
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    users
+    users,
+    meta: buildPortalUsersMeta(users, limitConfig)
   };
 }
 
@@ -58,8 +88,21 @@ async function invitePortalUser(tenantId, payload) {
   if (!password || password.length < 6) return { ok: false, tenantId: context.tenantId, reason: 'invalid_password' };
 
   try {
-    const user = await withTransaction((client) =>
-      createPortalUser(
+    const created = await withTransaction(async (client) => {
+      const [currentUsers, limitConfig] = await Promise.all([
+        listPortalUsersByClinicId(context.clinic.id, client),
+        getClinicPortalSubaccountLimitById(context.clinic.id, client)
+      ]);
+      const currentMeta = buildPortalUsersMeta(currentUsers, limitConfig);
+
+      if (role !== 'owner' && currentMeta.subaccountCount >= currentMeta.subaccountLimit) {
+        return {
+          error: 'tenant_subaccount_limit_reached',
+          meta: currentMeta
+        };
+      }
+
+      const user = await createPortalUser(
         {
           clinicId: context.clinic.id,
           name,
@@ -68,14 +111,29 @@ async function invitePortalUser(tenantId, payload) {
           role
         },
         client
-      )
-    );
+      );
+
+      return {
+        user,
+        meta: buildPortalUsersMeta([...currentUsers, user], limitConfig)
+      };
+    });
+
+    if (created && created.error) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        reason: created.error,
+        meta: created.meta || null
+      };
+    }
 
     return {
       ok: true,
       tenantId: context.tenantId,
       clinic: context.clinic,
-      user
+      user: created.user,
+      meta: created.meta
     };
   } catch (error) {
     if (error && typeof error === 'object' && error.code === '23505') {

@@ -1078,7 +1078,8 @@ async function getPortalUsers(req, res) {
       success: true,
       data: {
         tenantId: result.tenantId,
-        users: result.users
+        users: result.users,
+        meta: result.meta || null
       }
     });
   } catch (error) {
@@ -2690,19 +2691,27 @@ async function postPortalUser(req, res) {
         result.reason === 'invalid_role' ||
         result.reason === 'invalid_password'
           ? 400
-          : result.reason === 'duplicate_user_email'
+          : result.reason === 'tenant_subaccount_limit_reached'
             ? 409
-            : 404;
-      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: {
-        tenantId: result.tenantId,
-        user: result.user
+          : result.reason === 'duplicate_user_email'
+              ? 409
+              : 404;
+        return res.status(status).json({
+          success: false,
+          error: result.reason,
+          tenantId: result.tenantId,
+          meta: result.meta || null
+        });
       }
-    });
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          tenantId: result.tenantId,
+          user: result.user,
+          meta: result.meta || null
+        }
+      });
   } catch (error) {
     return res.status(500).json({
       success: false,
