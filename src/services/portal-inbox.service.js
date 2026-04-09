@@ -383,8 +383,9 @@ async function listPortalConversations(tenantId, options = {}) {
            c."lastOutboundAt",
            to_timestamp(0)
          )
-      ) unread ON TRUE
+     ) unread ON TRUE
       WHERE c."clinicId" = $1::uuid
+       AND COALESCE(ct.status, 'active') <> 'deleted'
        ${visibilityClause}
       ORDER BY COALESCE(latest."createdAt", c."updatedAt") DESC, c."updatedAt" DESC`,
     [context.clinic.id]

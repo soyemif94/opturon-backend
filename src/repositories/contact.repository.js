@@ -33,6 +33,7 @@ async function findFirstContactByPhone(clinicId, phone, client = null) {
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"
@@ -61,10 +62,13 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
          "waId" = COALESCE($3, "waId"),
          phone = COALESCE($4, phone),
          name = COALESCE($5, name),
+         status = 'active',
+         "archivedAt" = NULL,
+         "deletedAt" = NULL,
          "updatedAt" = NOW()
        WHERE id = $1
          AND "clinicId" = $2
-       RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", "optedOut"`,
+       RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", status, "archivedAt", "deletedAt", "optedOut"`,
       [reusableContact.id, clinicId, waId || null, phone || null, name || null]
     );
 
@@ -79,8 +83,11 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
      DO UPDATE SET
        phone = EXCLUDED.phone,
        name = COALESCE(EXCLUDED.name, contacts.name),
+       status = 'active',
+       "archivedAt" = NULL,
+       "deletedAt" = NULL,
        "updatedAt" = NOW()
-     RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", "optedOut"`,
+     RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", status, "archivedAt", "deletedAt", "optedOut"`,
     [clinicId, waId, phone || null, name || null]
   );
 
@@ -107,6 +114,7 @@ async function findContactById(contactId, client = null) {
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"
@@ -136,6 +144,7 @@ async function findContactByIdAndClinicId(contactId, clinicId, client = null) {
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"
@@ -168,12 +177,14 @@ async function findPortalContactById(clinicId, contactId, client = null) {
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"
      FROM contacts
      WHERE "clinicId" = $1
        AND id = $2
+       AND COALESCE(status, 'active') <> 'deleted'
      LIMIT 1`,
     [clinicId, contactId]
   );
@@ -186,7 +197,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
   const whereStatusClause =
     visibility === 'archived'
       ? `AND COALESCE(c.status, 'active') = 'archived'`
-      : `AND COALESCE(c.status, 'active') <> 'archived'`;
+      : `AND COALESCE(c.status, 'active') = 'active'`;
 
   const result = await dbQuery(
     client,
@@ -205,6 +216,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
        c.notes,
        c.status,
        c."archivedAt",
+       c."deletedAt",
        c."optedOut",
        c."createdAt",
        c."updatedAt",
@@ -231,6 +243,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
        c.notes,
        c.status,
        c."archivedAt",
+       c."deletedAt",
        c."optedOut",
        c."createdAt",
        c."updatedAt"
@@ -254,7 +267,7 @@ async function archivePortalContactsByIds(clinicId, contactIds = [], client = nu
        "updatedAt" = NOW()
      WHERE "clinicId" = $1
        AND id = ANY($2::uuid[])
-       AND COALESCE(status, 'active') <> 'archived'
+       AND COALESCE(status, 'active') = 'active'
      RETURNING
        id,
        "clinicId",
@@ -270,6 +283,7 @@ async function archivePortalContactsByIds(clinicId, contactIds = [], client = nu
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -308,6 +322,7 @@ async function restorePortalContactsByIds(clinicId, contactIds = [], client = nu
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -323,19 +338,42 @@ async function deletePortalArchivedContactsByIds(clinicId, contactIds = [], clie
 
   const result = await dbQuery(
     client,
-    `DELETE FROM contacts c
-     WHERE c."clinicId" = $1
-       AND c.id = ANY($2::uuid[])
-       AND COALESCE(c.status, 'active') = 'archived'
-       AND NOT EXISTS (SELECT 1 FROM conversations conv WHERE conv."contactId" = c.id)
-       AND NOT EXISTS (SELECT 1 FROM orders o WHERE o."contactId" = c.id AND o."clinicId" = c."clinicId")
-       AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i."contactId" = c.id AND i."clinicId" = c."clinicId")
-       AND NOT EXISTS (SELECT 1 FROM payments p WHERE p."contactId" = c.id AND p."clinicId" = c."clinicId")
-       AND NOT EXISTS (SELECT 1 FROM loyalty_points_ledger l WHERE l."contactId" = c.id AND l."clinicId" = c."clinicId")
-       AND NOT EXISTS (SELECT 1 FROM leads ld WHERE ld."contactId" = c.id AND ld."clinicId" = c."clinicId")
-       AND NOT EXISTS (SELECT 1 FROM appointments a WHERE a."contactId" = c.id AND a."clinicId" = c."clinicId")
-       AND NOT EXISTS (SELECT 1 FROM handoff_requests hr WHERE hr."contactId" = c.id AND hr."clinicId" = c."clinicId")
-       AND NOT EXISTS (SELECT 1 FROM agenda_items ai WHERE ai."contactId" = c.id AND ai."clinicId" = c."clinicId")
+    `WITH target_contacts AS (
+       SELECT
+         c.id,
+         c."clinicId",
+         c.name,
+         c.phone,
+         c.email
+       FROM contacts c
+       WHERE c."clinicId" = $1
+         AND c.id = ANY($2::uuid[])
+         AND COALESCE(c.status, 'active') = 'archived'
+     ),
+     detached_conversations AS (
+       UPDATE conversations conv
+       SET
+         context = COALESCE(conv.context, '{}'::jsonb) || jsonb_strip_nulls(
+           jsonb_build_object(
+             'portalHiddenAt', to_jsonb(NOW()),
+             'portalDeletedReason', 'archived_contact_deleted',
+             'portalDeletedContactId', to_jsonb(target.id),
+             'portalDeletedContactName', to_jsonb(target.name)
+           )
+         ),
+         "updatedAt" = NOW()
+       FROM target_contacts target
+       WHERE conv."clinicId" = target."clinicId"
+         AND conv."contactId" = target.id
+     )
+     UPDATE contacts c
+     SET
+       status = 'deleted',
+       "deletedAt" = NOW(),
+       "updatedAt" = NOW()
+     FROM target_contacts target
+     WHERE c.id = target.id
+       AND c."clinicId" = target."clinicId"
      RETURNING
        c.id,
        c."clinicId",
@@ -343,7 +381,8 @@ async function deletePortalArchivedContactsByIds(clinicId, contactIds = [], clie
        c.phone,
        c.email,
        c.status,
-       c."archivedAt"`,
+       c."archivedAt",
+       c."deletedAt"`,
     [clinicId, ids]
   );
 
@@ -368,6 +407,9 @@ async function createPortalContact(clinicId, input, client = null) {
          "taxCondition" = COALESCE($9, "taxCondition"),
          "companyName" = COALESCE($10, "companyName"),
          notes = COALESCE($11, notes),
+         status = 'active',
+         "archivedAt" = NULL,
+         "deletedAt" = NULL,
          "updatedAt" = NOW()
        WHERE "clinicId" = $1
          AND id = $2
@@ -386,6 +428,7 @@ async function createPortalContact(clinicId, input, client = null) {
         notes,
         status,
         "archivedAt",
+        "deletedAt",
         "optedOut",
         "createdAt",
         "updatedAt"`,
@@ -439,6 +482,7 @@ async function createPortalContact(clinicId, input, client = null) {
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -492,6 +536,7 @@ async function updateContact(contactId, clinicId, input, client = null) {
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
@@ -546,6 +591,7 @@ async function updatePortalContactById(clinicId, contactId, input, client = null
        notes,
        status,
        "archivedAt",
+       "deletedAt",
        "optedOut",
        "createdAt",
        "updatedAt"`,
