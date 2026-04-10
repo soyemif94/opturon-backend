@@ -23,7 +23,12 @@ function normalizeCashSession(row) {
     closedByUserId: row.closedByUserId || null,
     closedByNameSnapshot: row.closedByNameSnapshot || null,
     closedAt: row.closedAt || null,
+    cashCountedAmount:
+      row.cashCountedAmount === null || row.cashCountedAmount === undefined ? null : quantizeDecimal(row.cashCountedAmount, 2, 0),
+    transferCountedAmount:
+      row.transferCountedAmount === null || row.transferCountedAmount === undefined ? null : quantizeDecimal(row.transferCountedAmount, 2, 0),
     countedAmount: row.countedAmount === null || row.countedAmount === undefined ? null : quantizeDecimal(row.countedAmount, 2, 0),
+    totalCountedAmount: row.countedAmount === null || row.countedAmount === undefined ? null : quantizeDecimal(row.countedAmount, 2, 0),
     expectedAmount: row.expectedAmount === null || row.expectedAmount === undefined ? null : quantizeDecimal(row.expectedAmount, 2, 0),
     differenceAmount: row.differenceAmount === null || row.differenceAmount === undefined ? null : quantizeDecimal(row.differenceAmount, 2, 0),
     notes: row.notes || null,
@@ -45,6 +50,8 @@ function baseSelect() {
       "closedByUserId",
       "closedByNameSnapshot",
       "closedAt",
+      "cashCountedAmount",
+      "transferCountedAmount",
       "countedAmount",
       "expectedAmount",
       "differenceAmount",
@@ -132,10 +139,12 @@ async function closeCashSession(sessionId, clinicId, input, client = null) {
        "closedByUserId" = $3::uuid,
        "closedByNameSnapshot" = $4,
        "closedAt" = $5,
-       "countedAmount" = $6,
-       "expectedAmount" = $7,
-       "differenceAmount" = $8,
-       notes = COALESCE($9, notes),
+       "cashCountedAmount" = $6,
+       "transferCountedAmount" = $7,
+       "countedAmount" = $8,
+       "expectedAmount" = $9,
+       "differenceAmount" = $10,
+       notes = COALESCE($11, notes),
        "updatedAt" = NOW()
      WHERE id = $1::uuid
        AND "clinicId" = $2::uuid
@@ -147,6 +156,8 @@ async function closeCashSession(sessionId, clinicId, input, client = null) {
       input.closedByUserId,
       input.closedByNameSnapshot,
       input.closedAt,
+      input.cashCountedAmount === null || input.cashCountedAmount === undefined ? null : quantizeDecimal(input.cashCountedAmount, 2, 0),
+      input.transferCountedAmount === null || input.transferCountedAmount === undefined ? null : quantizeDecimal(input.transferCountedAmount, 2, 0),
       quantizeDecimal(input.countedAmount || 0, 2, 0),
       quantizeDecimal(input.expectedAmount || 0, 2, 0),
       quantizeDecimal(input.differenceAmount || 0, 2, 0),

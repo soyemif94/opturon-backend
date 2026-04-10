@@ -19,6 +19,11 @@ function normalizeString(value) {
   return String(value || '').trim();
 }
 
+function normalizeOptionalAmount(value) {
+  const normalized = quantizeDecimal(value, 2, NaN);
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
 function buildError(tenantId, reason, details) {
   return {
     ok: false,
@@ -213,7 +218,13 @@ async function closePortalCashSession(tenantId, sessionId, payload = {}) {
 
   const safeSessionId = normalizeString(sessionId);
   const closedByUserId = normalizeString(payload.closedByUserId);
-  const countedAmount = quantizeDecimal(payload.countedAmount, 2, NaN);
+  const rawCashCountedAmount = normalizeOptionalAmount(payload.cashCountedAmount);
+  const rawTransferCountedAmount = normalizeOptionalAmount(payload.transferCountedAmount);
+  const rawTotalCountedAmount =
+    normalizeOptionalAmount(payload.totalCountedAmount) ?? normalizeOptionalAmount(payload.countedAmount);
+  const cashCountedAmount = rawCashCountedAmount ?? rawTotalCountedAmount ?? 0;
+  const transferCountedAmount = rawTransferCountedAmount ?? 0;
+  const totalCountedAmount = rawTotalCountedAmount ?? sumQuantized([cashCountedAmount, transferCountedAmount], 2);
   const notes = normalizeString(payload.notes) || null;
 
   if (!safeSessionId) {
@@ -222,8 +233,12 @@ async function closePortalCashSession(tenantId, sessionId, payload = {}) {
   if (!closedByUserId) {
     return buildError(context.tenantId, 'missing_closed_by_user_id');
   }
-  if (!Number.isFinite(countedAmount) || countedAmount < 0) {
-    return buildError(context.tenantId, 'invalid_cash_counted_amount');
+  if (
+    cashCountedAmount < 0 ||
+    transferCountedAmount < 0 ||
+    totalCountedAmount < 0
+  ) {
+    return buildError(context.tenantId, 'invalid_cash_counted_amount', 'cash_counted_amount_or_transfer_counted_amount_invalid');
   }
 
   const closedBy = await findPortalUserByIdAndClinicId(closedByUserId, context.clinic.id);
@@ -255,7 +270,7 @@ async function closePortalCashSession(tenantId, sessionId, payload = {}) {
       client
     );
     const expectedAmount = metrics.expectedAmountCurrent;
-    const differenceAmount = quantizeDecimal(countedAmount - expectedAmount, 2, 0);
+    const differenceAmount = quantizeDecimal(totalCountedAmount - expectedAmount, 2, 0);
 
     const closedSession = await closeCashSession(
       safeSessionId,
@@ -264,7 +279,9 @@ async function closePortalCashSession(tenantId, sessionId, payload = {}) {
         closedByUserId,
         closedByNameSnapshot: closedBy.name,
         closedAt,
-        countedAmount,
+        cashCountedAmount,
+        transferCountedAmount,
+        countedAmount: totalCountedAmount,
         expectedAmount,
         differenceAmount,
         notes
