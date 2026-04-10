@@ -6,10 +6,20 @@ ai.date,
 ai."startAt",
 ai."endAt",
 ai."contactId",
+ai."conversationId",
+ai."assignedUserId",
+ai."assignedUserName",
 ai.type,
 ai.title,
 ai.description,
 ai.status,
+ai."commercialActionType",
+ai."commercialOutcome",
+ai.origin,
+ai.location,
+ai."resultNote",
+ai."nextStepNote",
+ai."nextActionAt",
 ai."createdAt",
 ai."updatedAt",
 c.id AS "linkedContactId",
@@ -63,10 +73,20 @@ function normalizeAgendaItem(row) {
     startAt: normalizeTimestamp(row.startAt),
     endAt: normalizeTimestamp(row.endAt),
     contactId: row.contactId || null,
+    conversationId: row.conversationId || null,
+    assignedUserId: row.assignedUserId || null,
+    assignedUserName: row.assignedUserName || null,
     type: row.type,
     title: row.title,
     description: row.description || null,
     status: row.status,
+    commercialActionType: row.commercialActionType || null,
+    commercialOutcome: row.commercialOutcome || null,
+    origin: row.origin || null,
+    location: row.location || null,
+    resultNote: row.resultNote || null,
+    nextStepNote: row.nextStepNote || null,
+    nextActionAt: normalizeTimestamp(row.nextActionAt),
     createdAt: normalizeTimestamp(row.createdAt),
     updatedAt: normalizeTimestamp(row.updatedAt),
     contact: row.linkedContactId
@@ -167,13 +187,25 @@ async function createAgendaItem(input, client = null) {
        "startAt",
        "endAt",
        "contactId",
+       "conversationId",
+       "assignedUserId",
+       "assignedUserName",
        type,
        title,
        description,
        status,
+       "commercialActionType",
+       "commercialOutcome",
+       origin,
+       location,
+       "resultNote",
+       "nextStepNote",
+       "nextActionAt",
        "updatedAt"
      )
-     VALUES ($1::uuid, $2::date, $3::timestamptz, $4::timestamptz, $5::uuid, $6, $7, $8, $9, NOW())
+     VALUES (
+       $1::uuid, $2::date, $3::timestamptz, $4::timestamptz, $5::uuid, $6::uuid, $7::uuid, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::timestamptz, NOW()
+     )
      RETURNING id`,
     [
       input.clinicId,
@@ -181,10 +213,20 @@ async function createAgendaItem(input, client = null) {
       input.startAt || null,
       input.endAt || null,
       input.contactId || null,
+      input.conversationId || null,
+      input.assignedUserId || null,
+      input.assignedUserName || null,
       input.type,
       input.title,
       input.description || null,
-      input.status
+      input.status,
+      input.commercialActionType || null,
+      input.commercialOutcome || null,
+      input.origin || null,
+      input.location || null,
+      input.resultNote || null,
+      input.nextStepNote || null,
+      input.nextActionAt || null
     ]
   );
 
@@ -204,10 +246,20 @@ async function updateAgendaItemById(clinicId, itemId, patch, client = null) {
   if (Object.prototype.hasOwnProperty.call(patch, 'startAt')) add('"startAt"', patch.startAt, '::timestamptz');
   if (Object.prototype.hasOwnProperty.call(patch, 'endAt')) add('"endAt"', patch.endAt, '::timestamptz');
   if (Object.prototype.hasOwnProperty.call(patch, 'contactId')) add('"contactId"', patch.contactId, '::uuid');
+  if (Object.prototype.hasOwnProperty.call(patch, 'conversationId')) add('"conversationId"', patch.conversationId, '::uuid');
+  if (Object.prototype.hasOwnProperty.call(patch, 'assignedUserId')) add('"assignedUserId"', patch.assignedUserId, '::uuid');
+  if (Object.prototype.hasOwnProperty.call(patch, 'assignedUserName')) add('"assignedUserName"', patch.assignedUserName);
   if (Object.prototype.hasOwnProperty.call(patch, 'type')) add('type', patch.type);
   if (Object.prototype.hasOwnProperty.call(patch, 'title')) add('title', patch.title);
   if (Object.prototype.hasOwnProperty.call(patch, 'description')) add('description', patch.description);
   if (Object.prototype.hasOwnProperty.call(patch, 'status')) add('status', patch.status);
+  if (Object.prototype.hasOwnProperty.call(patch, 'commercialActionType')) add('"commercialActionType"', patch.commercialActionType);
+  if (Object.prototype.hasOwnProperty.call(patch, 'commercialOutcome')) add('"commercialOutcome"', patch.commercialOutcome);
+  if (Object.prototype.hasOwnProperty.call(patch, 'origin')) add('origin', patch.origin);
+  if (Object.prototype.hasOwnProperty.call(patch, 'location')) add('location', patch.location);
+  if (Object.prototype.hasOwnProperty.call(patch, 'resultNote')) add('"resultNote"', patch.resultNote);
+  if (Object.prototype.hasOwnProperty.call(patch, 'nextStepNote')) add('"nextStepNote"', patch.nextStepNote);
+  if (Object.prototype.hasOwnProperty.call(patch, 'nextActionAt')) add('"nextActionAt"', patch.nextActionAt, '::timestamptz');
 
   if (!updates.length) {
     return findAgendaItemById(clinicId, itemId, client);

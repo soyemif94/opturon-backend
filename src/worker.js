@@ -4876,7 +4876,10 @@ function detectTurnManagementIntent(rawText) {
 }
 
 function formatSlotForHuman(utcIso, timezone) {
-  return DateTime.fromISO(String(utcIso), { zone: 'utc' }).setZone(timezone).toFormat('ccc dd/LL HH:mm');
+  const safeTimezone =
+    timezone && DateTime.now().setZone(String(timezone)).isValid ? String(timezone) : 'America/Argentina/Buenos_Aires';
+  const local = DateTime.fromISO(String(utcIso), { zone: 'utc' }).setZone(safeTimezone);
+  return local.isValid ? local.setLocale('es').toFormat('ccc dd/LL HH:mm') : String(utcIso || '');
 }
 
 async function suggestAppointmentOptions({ clinic, timing, count = 3 }) {

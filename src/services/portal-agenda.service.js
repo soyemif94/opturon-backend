@@ -12,8 +12,17 @@ const {
 } = require('../repositories/agenda-items.repository');
 
 const ALLOWED_TYPES = new Set(['note', 'follow_up', 'task', 'appointment', 'blocked', 'availability']);
-const ALLOWED_STATUSES = new Set(['pending', 'done', 'cancelled']);
+const ALLOWED_STATUSES = new Set(['pending', 'confirmed', 'done', 'reschedule', 'cancelled']);
 const TIMED_TYPES = new Set(['appointment', 'blocked', 'availability']);
+const ALLOWED_COMMERCIAL_ACTION_TYPES = new Set(['visit', 'demo', 'follow_up']);
+const ALLOWED_COMMERCIAL_OUTCOMES = new Set([
+  'interested',
+  'not_interested',
+  'proposal_requested',
+  'follow_up_later',
+  'future_demo',
+  'won'
+]);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -22,6 +31,36 @@ function normalizeString(value) {
 function normalizeNullableId(value) {
   const safeValue = normalizeString(value);
   return safeValue || null;
+}
+
+function resolveTimezone(timezone) {
+  const safe = normalizeString(timezone) || 'America/Argentina/Buenos_Aires';
+  return DateTime.now().setZone(safe).isValid ? safe : 'America/Argentina/Buenos_Aires';
+}
+
+function normalizeCommercialActionType(value) {
+  const safe = normalizeString(value).toLowerCase();
+  return ALLOWED_COMMERCIAL_ACTION_TYPES.has(safe) ? safe : null;
+}
+
+function normalizeCommercialOutcome(value) {
+  const safe = normalizeString(value).toLowerCase();
+  return ALLOWED_COMMERCIAL_OUTCOMES.has(safe) ? safe : null;
+}
+
+function normalizeAgendaMeta(payload = {}) {
+  return {
+    conversationId: normalizeNullableId(payload.conversationId),
+    assignedUserId: normalizeNullableId(payload.assignedUserId),
+    assignedUserName: normalizeString(payload.assignedUserName) || null,
+    commercialActionType: normalizeCommercialActionType(payload.commercialActionType),
+    commercialOutcome: normalizeCommercialOutcome(payload.commercialOutcome),
+    origin: normalizeString(payload.origin) || null,
+    location: normalizeString(payload.location) || null,
+    resultNote: normalizeString(payload.resultNote) || null,
+    nextStepNote: normalizeString(payload.nextStepNote) || null,
+    nextActionAt: payload.nextActionAt ? String(payload.nextActionAt).trim() : null
+  };
 }
 
 function buildReason(reason, detail = null, extra = null) {
@@ -41,7 +80,7 @@ function normalizeDateInput(value) {
 }
 
 function normalizeRange(from, to, timezone) {
-  const zone = timezone || 'America/Argentina/Buenos_Aires';
+  const zone = resolveTimezone(timezone);
   const fromDate = normalizeDateInput(from);
   const toDate = normalizeDateInput(to);
 
@@ -80,26 +119,37 @@ function toUtcDateTime(date, time, timezone) {
   const safeTime = normalizeString(time);
   if (!safeDate || !safeTime) return null;
 
-  const parsed = DateTime.fromISO(`${safeDate}T${safeTime}`, { zone: timezone || 'America/Argentina/Buenos_Aires' });
+  const parsed = DateTime.fromISO(`${safeDate}T${safeTime}`, { zone: resolveTimezone(timezone) });
   if (!parsed.isValid) return null;
   return parsed.toUTC().toISO();
 }
 
 function formatAgendaItem(item, timezone) {
-  const startAt = item.startAt ? DateTime.fromISO(String(item.startAt), { zone: 'utc' }).setZone(timezone) : null;
-  const endAt = item.endAt ? DateTime.fromISO(String(item.endAt), { zone: 'utc' }).setZone(timezone) : null;
+  const safeTimezone = resolveTimezone(timezone);
+  const startAt = item.startAt ? DateTime.fromISO(String(item.startAt), { zone: 'utc' }).setZone(safeTimezone) : null;
+  const endAt = item.endAt ? DateTime.fromISO(String(item.endAt), { zone: 'utc' }).setZone(safeTimezone) : null;
 
   return {
     ...item,
     startTime: startAt ? startAt.toFormat('HH:mm') : null,
     endTime: endAt ? endAt.toFormat('HH:mm') : null,
     contactId: item.contactId || null,
-    contact: item.contact || null
+    contact: item.contact || null,
+    conversationId: item.conversationId || null,
+    assignedUserId: item.assignedUserId || null,
+    assignedUserName: item.assignedUserName || null,
+    commercialActionType: item.commercialActionType || null,
+    commercialOutcome: item.commercialOutcome || null,
+    origin: item.origin || null,
+    location: item.location || null,
+    resultNote: item.resultNote || null,
+    nextStepNote: item.nextStepNote || null,
+    nextActionAt: item.nextActionAt || null
   };
 }
 
 function iterateDateRange(fromDate, toDate, timezone) {
-  const zone = timezone || 'America/Argentina/Buenos_Aires';
+  const zone = resolveTimezone(timezone);
   const start = DateTime.fromISO(fromDate, { zone }).startOf('day');
   const end = DateTime.fromISO(toDate, { zone }).startOf('day');
   const dates = [];
@@ -287,7 +337,8 @@ function validateCreatePayload(payload, timezone) {
       type,
       title,
       description,
-      status
+      status,
+      ...normalizeAgendaMeta(payload)
     }
   };
 }
@@ -320,6 +371,36 @@ function validatePatchPayload(payload, timezone) {
     const status = normalizeString(payload.status).toLowerCase();
     if (!ALLOWED_STATUSES.has(status)) return buildReason('invalid_agenda_status');
     patch.status = status;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'conversationId')) {
+    patch.conversationId = normalizeNullableId(payload.conversationId);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'assignedUserId')) {
+    patch.assignedUserId = normalizeNullableId(payload.assignedUserId);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'assignedUserName')) {
+    patch.assignedUserName = normalizeString(payload.assignedUserName) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'commercialActionType')) {
+    patch.commercialActionType = normalizeCommercialActionType(payload.commercialActionType);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'commercialOutcome')) {
+    patch.commercialOutcome = normalizeCommercialOutcome(payload.commercialOutcome);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'origin')) {
+    patch.origin = normalizeString(payload.origin) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'location')) {
+    patch.location = normalizeString(payload.location) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'resultNote')) {
+    patch.resultNote = normalizeString(payload.resultNote) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'nextStepNote')) {
+    patch.nextStepNote = normalizeString(payload.nextStepNote) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'nextActionAt')) {
+    patch.nextActionAt = payload.nextActionAt ? String(payload.nextActionAt).trim() : null;
   }
 
   const baseDate = patch.date || normalizeDateInput(payload && payload.date) || null;
@@ -432,7 +513,7 @@ async function resolveClinicAgendaContext(clinicId, clinic = null) {
       ok: true,
       clinic: {
         ...clinic,
-        timezone: clinic.timezone || 'America/Argentina/Buenos_Aires'
+        timezone: resolveTimezone(clinic.timezone)
       }
     };
   }
@@ -446,7 +527,7 @@ async function resolveClinicAgendaContext(clinicId, clinic = null) {
     ok: true,
     clinic: {
       ...resolvedClinic,
-      timezone: resolvedClinic.timezone || 'America/Argentina/Buenos_Aires'
+      timezone: resolveTimezone(resolvedClinic.timezone)
     }
   };
 }
@@ -481,7 +562,7 @@ async function getClinicAgendaAvailability(clinicId, query = {}, options = {}) {
 }
 
 function formatBotSuggestionDisplay(startAtIso, timezone) {
-  const local = DateTime.fromISO(String(startAtIso), { zone: 'utc' }).setZone(timezone);
+  const local = DateTime.fromISO(String(startAtIso), { zone: 'utc' }).setZone(resolveTimezone(timezone));
   return local.isValid ? local.setLocale('es').toFormat('ccc dd/LL HH:mm') : String(startAtIso || '');
 }
 
@@ -489,7 +570,7 @@ function buildSuggestionsFromBookableDay(day, options = {}) {
   const safeDay = day && typeof day === 'object' ? day : null;
   if (!safeDay) return [];
 
-  const timezone = options.timezone || 'America/Argentina/Buenos_Aires';
+  const timezone = resolveTimezone(options.timezone);
   const stepMinutes = Math.max(5, Math.min(240, Number(options.stepMinutes) || 30));
   const durationMinutes = Math.max(5, Math.min(240, Number(options.durationMinutes) || 30));
   const timeWindowBounds = getTimeWindowBounds(options.timeWindow);
@@ -551,7 +632,7 @@ async function suggestClinicAgendaSlots(input = {}, options = {}) {
   let range;
 
   if (exactStartAt) {
-    const exactLocal = DateTime.fromISO(exactStartAt, { zone: 'utc' }).setZone(timezone);
+    const exactLocal = DateTime.fromISO(exactStartAt, { zone: 'utc' }).setZone(resolveTimezone(timezone));
     if (!exactLocal.isValid) {
       return buildReason('invalid_agenda_time');
     }
