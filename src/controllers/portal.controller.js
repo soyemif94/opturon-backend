@@ -1818,9 +1818,14 @@ async function getPortalCashOverview(req, res) {
 
 async function postPortalCashSession(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
+  const payload = {
+    ...(req.body || {}),
+    openedByUserId: actorUserId || String(req.body?.openedByUserId || '').trim() || undefined
+  };
 
   try {
-    const result = await openPortalCashSession(tenantId, req.body || {});
+    const result = await openPortalCashSession(tenantId, payload);
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ||
@@ -1857,9 +1862,14 @@ async function postPortalCashSession(req, res) {
 async function postPortalCashSessionClose(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const sessionId = String(req.params.sessionId || '').trim();
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
+  const payload = {
+    ...(req.body || {}),
+    closedByUserId: actorUserId || String(req.body?.closedByUserId || '').trim() || undefined
+  };
 
   try {
-    const result = await closePortalCashSession(tenantId, sessionId, req.body || {});
+    const result = await closePortalCashSession(tenantId, sessionId, payload);
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ||
