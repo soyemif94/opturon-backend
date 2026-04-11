@@ -20,6 +20,9 @@ ai.location,
 ai."resultNote",
 ai."nextStepNote",
 ai."nextActionAt",
+ai."reminderClaimedAt",
+ai."reminderSentAt",
+ai."reminderLastError",
 ai."createdAt",
 ai."updatedAt",
 c.id AS "linkedContactId",
@@ -87,13 +90,17 @@ function normalizeAgendaItem(row) {
     resultNote: row.resultNote || null,
     nextStepNote: row.nextStepNote || null,
     nextActionAt: normalizeTimestamp(row.nextActionAt),
+    reminderClaimedAt: normalizeTimestamp(row.reminderClaimedAt),
+    reminderSentAt: normalizeTimestamp(row.reminderSentAt),
+    reminderLastError: row.reminderLastError || null,
     createdAt: normalizeTimestamp(row.createdAt),
     updatedAt: normalizeTimestamp(row.updatedAt),
     contact: row.linkedContactId
       ? {
           id: row.linkedContactId,
           name: String(row.linkedContactName || '').trim() || row.linkedContactPhone || row.linkedContactWaId || 'Contacto',
-          phone: row.linkedContactPhone || row.linkedContactWaId || null
+          phone: row.linkedContactPhone || row.linkedContactWaId || null,
+          waId: row.linkedContactWaId || null
         }
       : null
   };
@@ -260,6 +267,9 @@ async function updateAgendaItemById(clinicId, itemId, patch, client = null) {
   if (Object.prototype.hasOwnProperty.call(patch, 'resultNote')) add('"resultNote"', patch.resultNote);
   if (Object.prototype.hasOwnProperty.call(patch, 'nextStepNote')) add('"nextStepNote"', patch.nextStepNote);
   if (Object.prototype.hasOwnProperty.call(patch, 'nextActionAt')) add('"nextActionAt"', patch.nextActionAt, '::timestamptz');
+  if (Object.prototype.hasOwnProperty.call(patch, 'reminderClaimedAt')) add('"reminderClaimedAt"', patch.reminderClaimedAt, '::timestamptz');
+  if (Object.prototype.hasOwnProperty.call(patch, 'reminderSentAt')) add('"reminderSentAt"', patch.reminderSentAt, '::timestamptz');
+  if (Object.prototype.hasOwnProperty.call(patch, 'reminderLastError')) add('"reminderLastError"', patch.reminderLastError);
 
   if (!updates.length) {
     return findAgendaItemById(clinicId, itemId, client);
@@ -277,6 +287,86 @@ async function updateAgendaItemById(clinicId, itemId, patch, client = null) {
   );
 
   return findAgendaItemById(clinicId, result.rows[0] && result.rows[0].id, client);
+}
+
+async function listDueAgendaReminderCandidates({ fromStartAt, toStartAt, limit = 25 } = {}, client = null) {
+  const safeLimit = Math.max(1, Math.min(100, Number(limit) || 25));
+  const result = await dbQuery(
+    client,
+    `SELECT ${AGENDA_ITEM_SELECT}
+     FROM agenda_items ai
+     LEFT JOIN contacts c
+       ON c.id = ai."contactId"
+      AND c."clinicId" = ai."clinicId"
+     WHERE ai.type = 'appointment'
+       AND ai.status IN ('pending', 'confirmed')
+       AND ai."startAt" IS NOT NULL
+       AND ai."startAt" > $1::timestamptz
+       AND ai."startAt" <= $2::timestamptz
+       AND ai."reminderSentAt" IS NULL
+     ORDER BY ai."startAt" ASC
+     LIMIT $3`,
+    [fromStartAt, toStartAt, safeLimit]
+  );
+
+  return result.rows.map(normalizeAgendaItem);
+}
+
+async function claimAgendaItemReminder(clinicId, itemId, staleBefore, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE agenda_items
+     SET "reminderClaimedAt" = NOW(),
+         "reminderLastError" = NULL,
+         "updatedAt" = NOW()
+     WHERE "clinicId" = $1::uuid
+       AND id = $2::uuid
+       AND type = 'appointment'
+       AND status IN ('pending', 'confirmed')
+       AND "reminderSentAt" IS NULL
+       AND ("reminderClaimedAt" IS NULL OR "reminderClaimedAt" < $3::timestamptz)
+     RETURNING id`,
+    [clinicId, itemId, staleBefore]
+  );
+
+  if (!result.rows[0] || !result.rows[0].id) {
+    return null;
+  }
+
+  return findAgendaItemById(clinicId, itemId, client);
+}
+
+async function markAgendaItemReminderSent(clinicId, itemId, sentAt, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE agenda_items
+     SET "reminderSentAt" = $3::timestamptz,
+         "reminderClaimedAt" = NULL,
+         "reminderLastError" = NULL,
+         "updatedAt" = NOW()
+     WHERE "clinicId" = $1::uuid
+       AND id = $2::uuid
+     RETURNING id`,
+    [clinicId, itemId, sentAt]
+  );
+
+  return result.rows[0] && result.rows[0].id ? findAgendaItemById(clinicId, itemId, client) : null;
+}
+
+async function releaseAgendaItemReminderClaim(clinicId, itemId, reason = null, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE agenda_items
+     SET "reminderClaimedAt" = NULL,
+         "reminderLastError" = $3,
+         "updatedAt" = NOW()
+     WHERE "clinicId" = $1::uuid
+       AND id = $2::uuid
+     RETURNING id`,
+    [clinicId, itemId, reason || null]
+  );
+
+  return result.rows[0] && result.rows[0].id ? findAgendaItemById(clinicId, itemId, client) : null;
 }
 
 async function deleteAgendaItemById(clinicId, itemId, client = null) {
@@ -303,5 +393,9 @@ module.exports = {
   listTimedAgendaConflicts,
   createAgendaItem,
   updateAgendaItemById,
-  deleteAgendaItemById
+  deleteAgendaItemById,
+  listDueAgendaReminderCandidates,
+  claimAgendaItemReminder,
+  markAgendaItemReminderSent,
+  releaseAgendaItemReminderClaim
 };

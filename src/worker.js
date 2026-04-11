@@ -4,7 +4,7 @@ const { DateTime } = require('luxon');
 const env = require('./config/env');
 const { withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
-const { findChannelById } = require('./repositories/tenant.repository');
+const { findChannelById, findPreferredWhatsAppChannelByClinicId } = require('./repositories/tenant.repository');
 const { updateClinicBotRuntimeConfigById } = require('./repositories/tenant.repository');
 const { findContactById, findContactByIdAndClinicId, updateContact } = require('./repositories/contact.repository');
 const {
@@ -51,6 +51,12 @@ const {
   createClinicAgendaBotReservation
 } = require('./services/portal-agenda.service');
 const {
+  listDueAgendaReminderCandidates,
+  claimAgendaItemReminder,
+  markAgendaItemReminderSent,
+  releaseAgendaItemReminderClaim
+} = require('./repositories/agenda-items.repository');
+const {
   buildTransferInstructionsText,
   hasConfiguredTransferData,
   normalizeTransferConfig
@@ -80,7 +86,11 @@ let polling = false;
 let processingCount = 0;
 let timer = null;
 let started = false;
+let lastReminderSweepAt = 0;
 const aiBudget = new Map();
+const APPOINTMENT_REMINDER_LEAD_MINUTES = Number(env.appointmentReminderLeadMinutes || 30);
+const APPOINTMENT_REMINDER_SWEEP_MS = Number(env.appointmentReminderSweepMs || 60000);
+const APPOINTMENT_REMINDER_CLAIM_TTL_MINUTES = Number(env.appointmentReminderClaimTtlMinutes || 10);
 
 function sanitizeDatabaseUrl(databaseUrl) {
   const raw = String(databaseUrl || '').trim();
@@ -4742,6 +4752,18 @@ function formatSlotForHuman(utcIso, timezone) {
   return local.isValid ? local.setLocale('es').toFormat('cccc dd/LL') + ' a las ' + local.setLocale('es').toFormat('HH:mm') : String(utcIso || '');
 }
 
+function buildAppointmentReminderText({ startAt, timezone, nowUtc = DateTime.utc() }) {
+  const safeTimezone = resolveBotTimezone(timezone);
+  const local = DateTime.fromISO(String(startAt || ''), { zone: 'utc' }).setZone(safeTimezone);
+  if (!local.isValid) {
+    return 'Te recordamos tu turno. Si necesitás reprogramarlo, escribinos por acá.';
+  }
+
+  const nowLocal = nowUtc.setZone(safeTimezone);
+  const dayLabel = local.hasSame(nowLocal, 'day') ? 'de hoy' : `del ${local.setLocale('es').toFormat('cccc dd/LL')}`;
+  return `Te recordamos tu turno ${dayLabel} a las ${local.setLocale('es').toFormat('HH:mm')}. Si necesitás reprogramarlo, escribinos por acá.`;
+}
+
 function formatAppointmentOptionLabel(slot, timezone, referenceDateISO = null) {
   if (!slot) return '';
   if (slot.startAt) {
@@ -5172,6 +5194,161 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
   });
 
   return sendResult;
+}
+
+async function sendAgendaReminderMessage({ clinicId, channel, conversationId, contact, text, requestId, agendaItemId }) {
+  const channelCredentials = normalizeChannelSendContext(channel, {
+    conversationId: conversationId || null,
+    requestId,
+    agendaItemId
+  });
+  const targetWaId = normalizeWhatsAppTo(contact.waId || contact.whatsappPhone || contact.phone || '');
+  if (!targetWaId) {
+    const error = new Error('Missing WhatsApp destination for reminder');
+    error.code = 'REMINDER_CONTACT_WA_MISSING';
+    throw error;
+  }
+
+  const sendResult = await sendChannelScopedMessage(
+    { to: targetWaId, text },
+    {
+      requestId,
+      credentials: {
+        channelId: channelCredentials.channelId,
+        accessToken: channelCredentials.accessToken,
+        phoneNumberId: channelCredentials.phoneNumberId,
+        clinicId: channelCredentials.clinicId,
+        provider: channelCredentials.provider,
+        status: channelCredentials.status,
+        wabaId: channelCredentials.wabaId
+      }
+    }
+  );
+
+  await insertOutboundMessage({
+    clinicId,
+    channelId: channel.id,
+    conversationId: conversationId || null,
+    providerMessageId: sendResult.messageId,
+    from: channelCredentials.phoneNumberId,
+    to: targetWaId,
+    type: 'text',
+    body: text,
+    raw: sendResult.raw || {}
+  });
+
+  if (conversationId) {
+    await markLastOutbound(conversationId);
+  }
+
+  return { sendResult, targetWaId };
+}
+
+async function processDueAppointmentReminders() {
+  const nowMs = Date.now();
+  if (lastReminderSweepAt && nowMs - lastReminderSweepAt < APPOINTMENT_REMINDER_SWEEP_MS) {
+    return { throttled: true, candidates: 0, sent: 0, skipped: 0, duplicatesBlocked: 0 };
+  }
+  lastReminderSweepAt = nowMs;
+
+  const nowUtc = DateTime.utc();
+  const candidates = await listDueAgendaReminderCandidates({
+    fromStartAt: nowUtc.toISO(),
+    toStartAt: nowUtc.plus({ minutes: APPOINTMENT_REMINDER_LEAD_MINUTES }).toISO(),
+    limit: 25
+  });
+  const staleBefore = nowUtc.minus({ minutes: APPOINTMENT_REMINDER_CLAIM_TTL_MINUTES }).toISO();
+  const stats = { candidates: candidates.length, sent: 0, skipped: 0, duplicatesBlocked: 0 };
+
+  for (const item of candidates) {
+    const claimed = await claimAgendaItemReminder(item.clinicId, item.id, staleBefore);
+    if (!claimed) {
+      stats.duplicatesBlocked += 1;
+      continue;
+    }
+
+    try {
+      const clinic = await getClinic(claimed.clinicId);
+      const contact = claimed.contactId ? await findContactByIdAndClinicId(claimed.contactId, claimed.clinicId) : null;
+      const channel = await findPreferredWhatsAppChannelByClinicId(claimed.clinicId);
+
+      if (!contact) {
+        await releaseAgendaItemReminderClaim(claimed.clinicId, claimed.id, 'contact_not_found');
+        logInfo('appointment_reminder_skipped', { agendaItemId: claimed.id, clinicId: claimed.clinicId, reason: 'contact_not_found' });
+        stats.skipped += 1;
+        continue;
+      }
+
+      if (!normalizeWhatsAppTo(contact.waId || contact.whatsappPhone || contact.phone || '')) {
+        await releaseAgendaItemReminderClaim(claimed.clinicId, claimed.id, 'contact_wa_missing');
+        logInfo('appointment_reminder_skipped', { agendaItemId: claimed.id, clinicId: claimed.clinicId, contactId: contact.id, reason: 'contact_wa_missing' });
+        stats.skipped += 1;
+        continue;
+      }
+
+      if (!channel) {
+        await releaseAgendaItemReminderClaim(claimed.clinicId, claimed.id, 'channel_not_found');
+        logInfo('appointment_reminder_skipped', { agendaItemId: claimed.id, clinicId: claimed.clinicId, contactId: contact.id, reason: 'channel_not_found' });
+        stats.skipped += 1;
+        continue;
+      }
+
+      const text = buildAppointmentReminderText({
+        startAt: claimed.startAt,
+        timezone: (clinic && clinic.timezone) || 'America/Argentina/Buenos_Aires',
+        nowUtc
+      });
+
+      const { sendResult, targetWaId } = await sendAgendaReminderMessage({
+        clinicId: claimed.clinicId,
+        channel,
+        conversationId: claimed.conversationId || null,
+        contact,
+        text,
+        requestId: `reminder:${claimed.id}`,
+        agendaItemId: claimed.id
+      });
+
+      await markAgendaItemReminderSent(claimed.clinicId, claimed.id, nowUtc.toISO());
+      if (claimed.conversationId) {
+        await addEvent({
+          clinicId: claimed.clinicId,
+          conversationId: claimed.conversationId,
+          type: 'APPOINTMENT_REMINDER_SENT',
+          data: {
+            agendaItemId: claimed.id,
+            startAt: claimed.startAt,
+            contactId: claimed.contactId || null,
+            channelId: channel.id || null,
+            providerMessageId: sendResult.messageId || null
+          }
+        });
+      }
+
+      logInfo('appointment_reminder_sent', {
+        agendaItemId: claimed.id,
+        clinicId: claimed.clinicId,
+        conversationId: claimed.conversationId || null,
+        contactId: claimed.contactId || null,
+        channelId: channel.id || null,
+        to: targetWaId,
+        startAt: claimed.startAt
+      });
+      stats.sent += 1;
+    } catch (error) {
+      await releaseAgendaItemReminderClaim(claimed.clinicId, claimed.id, error.message || 'send_failed');
+      logWarn('appointment_reminder_failed', {
+        agendaItemId: claimed.id,
+        clinicId: claimed.clinicId,
+        conversationId: claimed.conversationId || null,
+        contactId: claimed.contactId || null,
+        error: error.message
+      });
+      stats.skipped += 1;
+    }
+  }
+
+  return stats;
 }
 
 async function openHandoffFlow({ clinicId, conversationId, contact, lead, reason, clinicSettings, channel, requestId, messageId }) {
@@ -7136,6 +7313,14 @@ async function pollOnce() {
       workerId: WORKER_ID,
       now: new Date().toISOString()
     });
+
+    const reminderStats = await processDueAppointmentReminders();
+    if (reminderStats.candidates || reminderStats.sent || reminderStats.skipped || reminderStats.duplicatesBlocked) {
+      logInfo('appointment_reminder_sweep_result', {
+        workerId: WORKER_ID,
+        ...reminderStats
+      });
+    }
 
     await releaseExpiredHolds();
     await maybeRunArchivedContactCleanup({ workerId: WORKER_ID });

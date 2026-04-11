@@ -109,6 +109,9 @@ const env = {
   workerBatchSize: parsePositiveInt(process.env.WORKER_BATCH_SIZE, 10),
   defaultAppointmentDaysAhead: parsePositiveInt(process.env.DEFAULT_APPOINTMENT_DAYS_AHEAD, 7),
   defaultHoldMinutes: parsePositiveInt(process.env.DEFAULT_HOLD_MINUTES, 10),
+  appointmentReminderLeadMinutes: parsePositiveInt(process.env.APPOINTMENT_REMINDER_LEAD_MINUTES, 30),
+  appointmentReminderSweepMs: parsePositiveInt(process.env.APPOINTMENT_REMINDER_SWEEP_MS, 60000),
+  appointmentReminderClaimTtlMinutes: parsePositiveInt(process.env.APPOINTMENT_REMINDER_CLAIM_TTL_MINUTES, 10),
 
   googleSpreadsheetId: String(process.env.GOOGLE_SPREADSHEET_ID || '').trim(),
   googleSheetName: String(process.env.GOOGLE_SHEET_NAME || 'Leads').trim(),
