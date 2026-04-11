@@ -29,6 +29,17 @@ function normalizeNumber(value) {
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
+function normalizeNullablePercentage(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const normalized = normalizeString(value);
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return NaN;
+  if (parsed <= 0) return null;
+  return parsed;
+}
+
 function normalizeMetadata(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -48,6 +59,7 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
   const unitPrice = normalizeNumber(payload && (payload.unitPrice ?? payload.price));
   const vatRate = normalizeNumber(payload && (payload.vatRate ?? payload.taxRate ?? 0));
   const expirationDate = normalizeDateOnly(payload && payload.expirationDate);
+  const discountPercentage = normalizeNullablePercentage(payload && payload.discountPercentage);
 
   return {
     name: normalizeString(payload && payload.name),
@@ -62,6 +74,7 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
     sku: normalizeString(payload && payload.sku) || null,
     categoryId: normalizeString(payload && payload.categoryId) || null,
     expirationDate,
+    discountPercentage,
     metadata: normalizeMetadata(payload && payload.metadata)
   };
 }
@@ -73,6 +86,11 @@ function validateProductPayload(product) {
   if (!Number.isInteger(product.stock) || product.stock < 0) return 'invalid_product_stock';
   if (!PRODUCT_STATUSES.has(product.status)) return 'invalid_product_status';
   if (product.expirationDate === '__invalid__') return 'invalid_product_expiration_date';
+  if (product.discountPercentage !== null && product.discountPercentage !== undefined) {
+    if (!Number.isFinite(product.discountPercentage) || product.discountPercentage <= 0 || product.discountPercentage > 100) {
+      return 'invalid_product_discount_percentage';
+    }
+  }
   return null;
 }
 

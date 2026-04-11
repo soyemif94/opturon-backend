@@ -24,6 +24,7 @@ function normalizeDateOnly(value) {
 function normalizeProduct(row) {
   const unitPrice = quantizeDecimal(row.unitPrice ?? row.price ?? 0, 2, 0);
   const vatRate = quantizeDecimal(row.vatRate ?? 0, 2, 0);
+  const discountPercentage = row.discountPercentage == null ? null : quantizeDecimal(row.discountPercentage, 2, 0);
   const status = row.status || 'active';
 
   return {
@@ -43,6 +44,7 @@ function normalizeProduct(row) {
     categoryId: row.categoryId || null,
     categoryName: row.categoryName || null,
     expirationDate: normalizeDateOnly(row.expirationDate),
+    discountPercentage,
     metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {},
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
@@ -66,6 +68,7 @@ async function listProductsByClinicId(clinicId, client = null) {
        p.sku,
        p."categoryId",
        p."expirationDate",
+       p."discountPercentage",
        c.name AS "categoryName",
        p.metadata,
        p."createdAt",
@@ -98,6 +101,7 @@ async function findProductById(productId, clinicId, client = null) {
        p.sku,
        p."categoryId",
        p."expirationDate",
+       p."discountPercentage",
        c.name AS "categoryName",
        p.metadata,
        p."createdAt",
@@ -133,10 +137,11 @@ async function createProduct(input, client = null) {
        sku,
        "categoryId",
        "expirationDate",
+       "discountPercentage",
        metadata,
        "updatedAt"
      )
-     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid, $12::date, $13::jsonb, NOW())
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid, $12::date, $13, $14::jsonb, NOW())
       RETURNING id`,
     [
       input.clinicId,
@@ -151,6 +156,7 @@ async function createProduct(input, client = null) {
       input.sku || null,
       input.categoryId || null,
       input.expirationDate || null,
+      input.discountPercentage == null ? null : quantizeDecimal(input.discountPercentage, 2, 0),
       JSON.stringify(input.metadata || {})
     ]
   );
@@ -180,7 +186,8 @@ async function updateProduct(productId, clinicId, payload, client = null) {
        sku = $11,
        "categoryId" = $12::uuid,
        "expirationDate" = $13::date,
-       metadata = $14::jsonb,
+       "discountPercentage" = $14,
+       metadata = $15::jsonb,
        "updatedAt" = NOW()
      WHERE id = $1::uuid
        AND "clinicId" = $2::uuid`,
@@ -198,6 +205,7 @@ async function updateProduct(productId, clinicId, payload, client = null) {
       payload.sku || null,
       payload.categoryId || null,
       payload.expirationDate || null,
+      payload.discountPercentage == null ? null : quantizeDecimal(payload.discountPercentage, 2, 0),
       JSON.stringify(payload.metadata || {})
     ]
   );

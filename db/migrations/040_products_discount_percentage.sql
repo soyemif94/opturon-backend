@@ -1,0 +1,2 @@
+ALTER TABLE products
+ADD COLUMN IF NOT EXISTS "discountPercentage" NUMERIC(5,2) NULL;
