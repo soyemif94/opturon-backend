@@ -112,6 +112,7 @@ const {
   listPortalAutomations,
   createPortalAutomation,
   updatePortalAutomation,
+  updatePortalAutomationTemplate,
   deletePortalAutomation
 } = require('../services/portal-automations.service');
 const {
@@ -2679,13 +2680,58 @@ async function getPortalAutomations(req, res) {
       success: true,
       data: {
         tenantId: result.tenantId,
-        automations: result.automations
+        automations: result.automations,
+        businessProfile: result.businessProfile,
+        catalog: result.catalog
       }
     });
   } catch (error) {
     return res.status(500).json({
       success: false,
       error: 'portal_automations_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalAutomationTemplate(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const templateKey = String(req.params.templateKey || '').trim();
+
+  try {
+    const result = await updatePortalAutomationTemplate(tenantId, templateKey, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_automation_template_key' ||
+        result.reason === 'invalid_automation_template_enabled'
+          ? 400
+          : result.reason === 'automation_template_incompatible'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId,
+        meta: {
+          missingCapabilities: result.missingCapabilities || [],
+          businessType: result.businessType || null
+        }
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        template: result.template
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_automation_template_update_failed',
       details: error.message
     });
   }
@@ -3751,6 +3797,7 @@ module.exports = {
   patchPortalBusiness,
   postPortalAutomation,
   patchPortalAutomation,
+  patchPortalAutomationTemplate,
   destroyPortalAutomation,
   postPortalUser,
   patchPortalPrimaryUser,

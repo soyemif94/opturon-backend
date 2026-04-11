@@ -82,6 +82,7 @@ const {
   postPortalUser,
   patchPortalPrimaryUser,
   postPortalAutomation,
+  patchPortalAutomationTemplate,
   patchPortalAutomation,
   destroyPortalAutomation,
   patchPortalBusiness,
@@ -193,6 +194,7 @@ router.get('/tenants/:tenantId/loyalty/overview', requirePortalInternalAuth, get
 router.post('/tenants/:tenantId/loyalty/redemptions', requirePortalInternalAuth, postPortalLoyaltyRedeemController);
 router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
 router.post('/tenants/:tenantId/automations', requirePortalInternalAuth, postPortalAutomation);
+router.patch('/tenants/:tenantId/automations/catalog/:templateKey', requirePortalInternalAuth, patchPortalAutomationTemplate);
 router.patch('/tenants/:tenantId/automations/:automationId', requirePortalInternalAuth, patchPortalAutomation);
 router.delete('/tenants/:tenantId/automations/:automationId', requirePortalInternalAuth, destroyPortalAutomation);
 router.get('/tenants/:tenantId/business', requirePortalInternalAuth, getPortalBusiness);

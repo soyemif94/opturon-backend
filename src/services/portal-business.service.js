@@ -8,6 +8,22 @@ function normalizeString(value) {
   return String(value || '').trim();
 }
 
+const BUSINESS_TYPES = new Set([
+  'dental_clinic',
+  'medical_clinic',
+  'retail_products',
+  'services_general',
+  'beauty_salon'
+]);
+
+const BUSINESS_CAPABILITIES = new Set([
+  'whatsapp',
+  'contacts',
+  'agenda',
+  'catalog',
+  'payments'
+]);
+
 function isValidHttpUrl(value) {
   if (!value) return true;
   try {
@@ -49,12 +65,20 @@ function emptyBusinessProfile(tenantId, clinic = null) {
     address: '',
     deliveryZones: '',
     paymentMethods: '',
-    policies: ''
+    policies: '',
+    businessType: 'services_general',
+    capabilities: []
   };
 }
 
 function normalizeBusinessProfile(tenantId, clinic, value) {
   const profile = value && typeof value === 'object' ? value : {};
+  const requestedBusinessType = normalizeString(profile.businessType).toLowerCase();
+  const capabilities = Array.isArray(profile.capabilities)
+    ? profile.capabilities
+        .map((item) => normalizeString(item).toLowerCase())
+        .filter((item) => BUSINESS_CAPABILITIES.has(item))
+    : [];
   return {
     tenantId,
     clinicId: clinic.id,
@@ -78,7 +102,9 @@ function normalizeBusinessProfile(tenantId, clinic, value) {
     address: normalizeString(profile.address),
     deliveryZones: normalizeString(profile.deliveryZones),
     paymentMethods: normalizeString(profile.paymentMethods),
-    policies: normalizeString(profile.policies)
+    policies: normalizeString(profile.policies),
+    businessType: BUSINESS_TYPES.has(requestedBusinessType) ? requestedBusinessType : 'services_general',
+    capabilities: Array.from(new Set(capabilities))
   };
 }
 
@@ -119,31 +145,43 @@ async function updatePortalBusinessSettings(tenantId, payload) {
     return context;
   }
 
-  const nextProfile = normalizeBusinessProfile(safeTenantId, context.clinic, payload || {});
-  if (!isValidHttpUrl(nextProfile.profileImageUrl)) {
+  const currentClinic = await getClinicBusinessProfileById(context.clinic.id);
+  if (!currentClinic) {
+    return buildReason('tenant_mapping_not_found', 'No encontramos la clinica asociada a este workspace.', {
+      tenantId: safeTenantId
+    });
+  }
+
+  const mergedProfile = normalizeBusinessProfile(safeTenantId, currentClinic, {
+    ...(currentClinic.businessProfile && typeof currentClinic.businessProfile === 'object' ? currentClinic.businessProfile : {}),
+    ...(payload && typeof payload === 'object' ? payload : {})
+  });
+  if (!isValidHttpUrl(mergedProfile.profileImageUrl)) {
     return buildReason('invalid_business_profile_image_url', 'La imagen del negocio debe ser una URL http o https valida.', {
       tenantId: safeTenantId
     });
   }
   const clinic = await updateClinicBusinessProfileById(context.clinic.id, {
-    legalName: nextProfile.legalName,
-    taxId: nextProfile.taxId,
-    taxIdType: nextProfile.taxIdType,
-    vatCondition: nextProfile.vatCondition,
-    grossIncomeNumber: nextProfile.grossIncomeNumber,
-    fiscalAddress: nextProfile.fiscalAddress,
-    city: nextProfile.city,
-    province: nextProfile.province,
-    pointOfSaleSuggested: nextProfile.pointOfSaleSuggested,
-    defaultSuggestedFiscalVoucherType: nextProfile.defaultSuggestedFiscalVoucherType,
-    accountantEmail: nextProfile.accountantEmail,
-    accountantName: nextProfile.accountantName,
-    profileImageUrl: nextProfile.profileImageUrl,
-    openingHours: nextProfile.openingHours,
-    address: nextProfile.address,
-    deliveryZones: nextProfile.deliveryZones,
-    paymentMethods: nextProfile.paymentMethods,
-    policies: nextProfile.policies
+    legalName: mergedProfile.legalName,
+    taxId: mergedProfile.taxId,
+    taxIdType: mergedProfile.taxIdType,
+    vatCondition: mergedProfile.vatCondition,
+    grossIncomeNumber: mergedProfile.grossIncomeNumber,
+    fiscalAddress: mergedProfile.fiscalAddress,
+    city: mergedProfile.city,
+    province: mergedProfile.province,
+    pointOfSaleSuggested: mergedProfile.pointOfSaleSuggested,
+    defaultSuggestedFiscalVoucherType: mergedProfile.defaultSuggestedFiscalVoucherType,
+    accountantEmail: mergedProfile.accountantEmail,
+    accountantName: mergedProfile.accountantName,
+    profileImageUrl: mergedProfile.profileImageUrl,
+    openingHours: mergedProfile.openingHours,
+    address: mergedProfile.address,
+    deliveryZones: mergedProfile.deliveryZones,
+    paymentMethods: mergedProfile.paymentMethods,
+    policies: mergedProfile.policies,
+    businessType: mergedProfile.businessType,
+    capabilities: mergedProfile.capabilities
   });
 
   if (!clinic) {
