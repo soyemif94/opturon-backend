@@ -18,6 +18,7 @@ const { sendChannelScopedMessage } = require('./whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('./whatsapp/normalize-phone');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
+const { parseAppointmentText } = require('./conversations/appointment.parser');
 const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
 const { createOrderForClinic, patchOrderStatusForClinic } = require('./services/portal-orders.service');
 const { generateReply } = require('./ai/openai.client');
@@ -54,7 +55,9 @@ const {
   listDueAgendaReminderCandidates,
   claimAgendaItemReminder,
   markAgendaItemReminderSent,
-  releaseAgendaItemReminderClaim
+  releaseAgendaItemReminderClaim,
+  findLatestActiveAgendaAppointmentByConversation,
+  updateAgendaItemById
 } = require('./repositories/agenda-items.repository');
 const {
   buildTransferInstructionsText,
@@ -333,8 +336,8 @@ function hasAgendaContext(safeContext) {
   const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
   return Boolean(
     context.appointmentCandidate ||
-      context.appointmentStatus ||
-      context.appointmentLastCancelledStartAt ||
+      context.appointmentFlowPhase ||
+      context.appointmentSelectedSlot ||
       context.appointmentSuggestionsForDate ||
       (Array.isArray(context.appointmentSuggestions) && context.appointmentSuggestions.length > 0)
   );
@@ -4998,6 +5001,126 @@ async function suggestAppointmentOptions({ clinic, timing, count = 3 }) {
   };
 }
 
+function buildAppointmentFlowResetPatch(extraPatch = null) {
+  return mergeContextPatches(
+    {
+      activeBotDomain: null,
+      appointmentCandidate: null,
+      appointmentFlowPhase: null,
+      appointmentSelectedSlot: null,
+      appointmentBookingName: null,
+      appointmentBookingNote: null,
+      appointmentSuggestions: null,
+      appointmentSuggestionsForDate: null,
+      appointmentSuggestionsTimeWindow: null,
+      appointmentSuggestionsCreatedAt: null
+    },
+    extraPatch || null
+  );
+}
+
+function resolveActiveAgendaGuardDecision({ currentState, safeContext, inboundText }) {
+  const appointmentFlowPhase = String(safeContext && safeContext.appointmentFlowPhase ? safeContext.appointmentFlowPhase : '').trim().toLowerCase();
+  const hasActiveAppointmentFlow =
+    BOT_ROUTER_APPOINTMENT_STATES.has(currentState) ||
+    Boolean(appointmentFlowPhase) ||
+    Boolean(safeContext && safeContext.appointmentSelectedSlot) ||
+    Boolean(safeContext && safeContext.appointmentCandidate) ||
+    (Array.isArray(safeContext && safeContext.appointmentSuggestions) && safeContext.appointmentSuggestions.length > 0);
+
+  if (!hasActiveAppointmentFlow) return null;
+
+  const normalizedInboundText = normalizeCommandText(inboundText);
+  if (isGreeting(inboundText)) {
+    return {
+      replyText: 'Gracias por escribirnos. Puedo ayudarte con turnos, urgencias o consultas de precios. Contame que necesitás.',
+      newState: 'READY',
+      contextPatch: buildAppointmentFlowResetPatch()
+    };
+  }
+
+  if (normalizedInboundText === 'cancelar' && currentState !== 'READY') {
+    return {
+      replyText: 'Listo, cancelé este flujo de turno. Si querés sacar otro, decime qué día te gustaría reservar.',
+      newState: 'READY',
+      contextPatch: buildAppointmentFlowResetPatch()
+    };
+  }
+
+  return null;
+}
+
+async function resolveAskedAppointmentDatetimeDecision({ inboundText, clinic }) {
+  const parsed = parseAppointmentText(inboundText);
+  if (!parsed.ok) {
+    return {
+      replyText: 'Decime qué día y horario te gustaría reservar, por ejemplo: jueves 10:30 o 12/04 10:30.',
+      newState: 'ASKED_APPOINTMENT_DATETIME',
+      contextPatch: null
+    };
+  }
+
+  const appointmentCandidate = {
+    rawText: inboundText,
+    displayText: parsed.displayText || inboundText,
+    parsed: parsed.parsed,
+    createdAt: new Date().toISOString()
+  };
+
+  if (!parsed.hasTime && !parsed.hasTimeWindow) {
+    return {
+      replyText: 'Perfecto. ¿Te va mejor a la mañana, tarde o noche?',
+      newState: 'ASKED_APPOINTMENT_TIMEWINDOW',
+      contextPatch: mergeContextPatches(buildAppointmentFlowResetPatch(), {
+        activeBotDomain: 'agenda',
+        appointmentCandidate
+      })
+    };
+  }
+
+  if (parsed.hasTimeWindow && !parsed.hasTime) {
+    const timing = conversationRepo.resolveCandidateTiming(appointmentCandidate);
+    const suggestionResult = await suggestAppointmentOptions({
+      clinic,
+      timing,
+      count: 3
+    });
+
+    if (suggestionResult.suggestions.length > 0) {
+      return {
+        replyText: buildSuggestionReply({
+          dateISO: suggestionResult.timing.dateISO || timing.dateISO,
+          timeWindow: suggestionResult.timing.timeWindow || timing.timeWindow,
+          suggestions: suggestionResult.suggestions,
+          timezone: clinic.timezone || 'America/Argentina/Buenos_Aires'
+        }),
+        newState: 'SELECT_APPOINTMENT_SLOT',
+        contextPatch: buildAppointmentSuggestionContextPatch({
+          appointmentCandidate,
+          suggestions: suggestionResult.suggestions,
+          dateISO: suggestionResult.timing.dateISO || timing.dateISO,
+          timeWindow: suggestionResult.timing.timeWindow || timing.timeWindow
+        })
+      };
+    }
+
+    return {
+      replyText: 'No encontré horarios para ese momento. Decime otro día o una franja distinta y te propongo opciones.',
+      newState: 'ASKED_APPOINTMENT_DATETIME',
+      contextPatch: buildAppointmentFlowResetPatch()
+    };
+  }
+
+  return {
+    replyText: `Genial. Te propongo: ${parsed.displayText}.\n¿Confirmás? (si/no)`,
+    newState: 'CONFIRM_APPOINTMENT',
+    contextPatch: mergeContextPatches(buildAppointmentFlowResetPatch(), {
+      activeBotDomain: 'agenda',
+      appointmentCandidate
+    })
+  };
+}
+
 async function createBotReservationFromSuggestion({ clinic, conversation, contact, channel, safeContext, suggestion }) {
   if (!suggestion || !suggestion.startAt) {
     return { ok: false, source: 'none', reason: 'missing_startAt' };
@@ -5783,6 +5906,7 @@ async function processInboundJob(job) {
 
   if (isCancellation(inboundText)) {
     const booked = await findBookedAppointmentByConversation(clinicId, conversation.id);
+    const agendaBooked = !booked ? await findLatestActiveAgendaAppointmentByConversation(clinicId, conversation.id) : null;
     if (booked) {
       await cancelAppointment(clinicId, booked.id, 'cancelled_by_patient');
       await updateLeadStatus(lead.id, 'qualifying', 'appointment_cancelled');
@@ -5799,6 +5923,30 @@ async function processInboundJob(job) {
         conversationId: conversation.id,
         contact,
         text: 'Tu turno fue cancelado. Si queres, te puedo ofrecer nuevas opciones.',
+        requestId,
+        correlationMessageId: messageId
+      });
+      return;
+    }
+    if (agendaBooked) {
+      await updateAgendaItemById(clinicId, agendaBooked.id, {
+        status: 'cancelled',
+        resultNote: 'Cancelado por paciente desde WhatsApp'
+      });
+      await updateLeadStatus(lead.id, 'qualifying', 'appointment_cancelled');
+      await addEvent({
+        clinicId,
+        conversationId: conversation.id,
+        type: 'APPOINTMENT_CANCELLED',
+        data: { agendaItemId: agendaBooked.id, startAt: agendaBooked.startAt }
+      });
+
+      await sendAndPersistReply({
+        clinicId,
+        channel,
+        conversationId: conversation.id,
+        contact,
+        text: 'Tu turno fue cancelado. Si querés, te puedo ofrecer nuevas opciones.',
         requestId,
         correlationMessageId: messageId
       });
@@ -6269,6 +6417,17 @@ async function processConversationReplyJob(job) {
 
   let decision = null;
   let decisionSource = null;
+
+  const activeAgendaGuardDecision = resolveActiveAgendaGuardDecision({
+    currentState,
+    safeContext,
+    inboundText
+  });
+  if (!decision && activeAgendaGuardDecision) {
+    decision = activeAgendaGuardDecision;
+    decisionSource = normalizeCommandText(inboundText) === 'cancelar' ? 'agenda_flow_cancel' : 'agenda_flow_greeting_reset';
+  }
+
   if (automationRuntime.replyText) {
     decision = {
       replyText: automationRuntime.replyText,
@@ -6353,8 +6512,11 @@ async function processConversationReplyJob(job) {
       waId: contact.waId || null,
       conversationId: conversation.id
     });
+    const latestAgendaAppointment = !latestAppointment
+      ? await findLatestActiveAgendaAppointmentByConversation(conversation.clinicId, conversation.id)
+      : null;
 
-    if (!latestAppointment) {
+    if (!latestAppointment && !latestAgendaAppointment) {
       decision = {
         replyText: 'No encuentro un turno confirmado. Decime qué día y horario te gustaría reservar.',
         newState: 'ASKED_APPOINTMENT_DATETIME',
@@ -6386,11 +6548,42 @@ async function processConversationReplyJob(job) {
           }
         };
       }
-    } else {
+    } else if (latestAppointment) {
       const cancelled = await conversationRepo.cancelAppointmentById({
         appointmentId: latestAppointment.id
       });
       const cancelledStartAt = (cancelled && cancelled.startAt) || latestAppointment.startAt || null;
+
+      if (managementIntent === 'cancel') {
+        decision = {
+          replyText: "Listo. Cancelé tu turno. Si querés sacar otro, decime qué día y horario te gustaría reservar.",
+          newState: 'READY',
+          contextPatch: {
+            appointmentStatus: 'cancelled',
+            appointmentCancelledAt: new Date().toISOString(),
+            appointmentLastCancelledStartAt: cancelledStartAt,
+            ...buildEmptyAppointmentSuggestionPatch()
+          }
+        };
+      } else {
+        decision = {
+          replyText: "Dale. ¿Para qué día y horario querés reprogramar? Por ejemplo: 'lunes 15:30' o 'martes a la tarde'.",
+          newState: 'ASKED_APPOINTMENT_DATETIME',
+          contextPatch: {
+            appointmentStatus: 'cancelled',
+            appointmentCancelledAt: new Date().toISOString(),
+            appointmentLastCancelledStartAt: cancelledStartAt,
+            appointmentCandidate: null,
+            ...buildEmptyAppointmentSuggestionPatch()
+          }
+        };
+      }
+    } else {
+      const cancelledAgenda = await updateAgendaItemById(conversation.clinicId, latestAgendaAppointment.id, {
+        status: 'cancelled',
+        resultNote: 'Cancelado por paciente desde WhatsApp'
+      });
+      const cancelledStartAt = (cancelledAgenda && cancelledAgenda.startAt) || latestAgendaAppointment.startAt || null;
 
       if (managementIntent === 'cancel') {
         decision = {
@@ -6474,21 +6667,30 @@ async function processConversationReplyJob(job) {
     }
   }
 
+  if (!decision && currentState === 'ASKED_APPOINTMENT_DATETIME') {
+    decision = await resolveAskedAppointmentDatetimeDecision({
+      inboundText,
+      clinic
+    });
+    decisionSource = 'agenda_datetime_worker';
+  }
+
   if (!decision && currentState === 'SELECT_APPOINTMENT_SLOT') {
     if (isGlobalMenuCommand(inboundText)) {
       decision = {
-        replyText: 'Listo. Volvemos al menu:\n1) Sacar turno\n2) Precios\n3) Direccion',
+        replyText: 'Listo, cancelé este flujo de turno. Si querés sacar otro, decime qué día te gustaría reservar.',
         newState: 'READY',
-        contextPatch: buildEmptyAppointmentSuggestionPatch()
+        contextPatch: buildAppointmentFlowResetPatch()
       };
     } else {
       const selection = extractSelection(inboundText);
       const suggestions = Array.isArray(safeContext.appointmentSuggestions) ? safeContext.appointmentSuggestions : [];
       const expired = isSuggestionExpired(safeContext.appointmentSuggestionsCreatedAt, 30);
+      const maxSelection = Math.max(1, Math.min(5, suggestions.length || 3));
 
-      if (!selection || selection < 1 || selection > 3) {
+      if (!selection || selection < 1 || selection > maxSelection) {
         decision = {
-          replyText: 'Respondé con 1, 2 o 3 para elegir un horario.',
+          replyText: `Respondé con una opción válida del 1 al ${maxSelection} para elegir un horario.`,
           newState: 'SELECT_APPOINTMENT_SLOT',
           contextPatch: null
         };
@@ -7473,7 +7675,16 @@ if (require.main === module) {
 }
 
 module.exports = {
-  startWorker
+  startWorker,
+  __private__: {
+    hasAgendaContext,
+    resolveActiveAgendaGuardDecision,
+    resolveAskedAppointmentDatetimeDecision,
+    createBotReservationFromSuggestion,
+    buildAppointmentFlowResetPatch,
+    buildConfirmedContextPatch,
+    formatSlotForHuman
+  }
 };
 
 

@@ -141,6 +141,26 @@ async function findAgendaItemById(clinicId, itemId, client = null) {
   return normalizeAgendaItem(result.rows[0] || null);
 }
 
+async function findLatestActiveAgendaAppointmentByConversation(clinicId, conversationId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT ${AGENDA_ITEM_SELECT}
+     FROM agenda_items ai
+     LEFT JOIN contacts c
+       ON c.id = ai."contactId"
+      AND c."clinicId" = ai."clinicId"
+     WHERE ai."clinicId" = $1::uuid
+       AND ai."conversationId" = $2::uuid
+       AND ai.type = 'appointment'
+       AND ai.status IN ('pending', 'confirmed')
+     ORDER BY COALESCE(ai."startAt", ai."createdAt") DESC, ai."createdAt" DESC
+     LIMIT 1`,
+    [clinicId, conversationId]
+  );
+
+  return normalizeAgendaItem(result.rows[0] || null);
+}
+
 async function listTimedAgendaConflicts(
   clinicId,
   {
@@ -390,6 +410,7 @@ async function deleteAgendaItemById(clinicId, itemId, client = null) {
 module.exports = {
   listAgendaItemsByClinicAndRange,
   findAgendaItemById,
+  findLatestActiveAgendaAppointmentByConversation,
   listTimedAgendaConflicts,
   createAgendaItem,
   updateAgendaItemById,
