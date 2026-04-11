@@ -8,6 +8,19 @@ function dbQuery(client, text, params) {
   return query(text, params);
 }
 
+function normalizeDateOnly(value) {
+  if (!value) return null;
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(normalized)) return normalized.slice(0, 10);
+  return normalized;
+}
+
 function normalizeProduct(row) {
   const unitPrice = quantizeDecimal(row.unitPrice ?? row.price ?? 0, 2, 0);
   const vatRate = quantizeDecimal(row.vatRate ?? 0, 2, 0);
@@ -29,6 +42,7 @@ function normalizeProduct(row) {
     sku: row.sku || null,
     categoryId: row.categoryId || null,
     categoryName: row.categoryName || null,
+    expirationDate: normalizeDateOnly(row.expirationDate),
     metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {},
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
@@ -51,6 +65,7 @@ async function listProductsByClinicId(clinicId, client = null) {
        p.status,
        p.sku,
        p."categoryId",
+       p."expirationDate",
        c.name AS "categoryName",
        p.metadata,
        p."createdAt",
@@ -82,6 +97,7 @@ async function findProductById(productId, clinicId, client = null) {
        p.status,
        p.sku,
        p."categoryId",
+       p."expirationDate",
        c.name AS "categoryName",
        p.metadata,
        p."createdAt",
@@ -116,10 +132,11 @@ async function createProduct(input, client = null) {
        status,
        sku,
        "categoryId",
+       "expirationDate",
        metadata,
        "updatedAt"
      )
-     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid, $12::jsonb, NOW())
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid, $12::date, $13::jsonb, NOW())
       RETURNING id`,
     [
       input.clinicId,
@@ -133,6 +150,7 @@ async function createProduct(input, client = null) {
       input.status,
       input.sku || null,
       input.categoryId || null,
+      input.expirationDate || null,
       JSON.stringify(input.metadata || {})
     ]
   );
@@ -161,7 +179,8 @@ async function updateProduct(productId, clinicId, payload, client = null) {
        status = $10,
        sku = $11,
        "categoryId" = $12::uuid,
-       metadata = $13::jsonb,
+       "expirationDate" = $13::date,
+       metadata = $14::jsonb,
        "updatedAt" = NOW()
      WHERE id = $1::uuid
        AND "clinicId" = $2::uuid`,
@@ -178,6 +197,7 @@ async function updateProduct(productId, clinicId, payload, client = null) {
       payload.status,
       payload.sku || null,
       payload.categoryId || null,
+      payload.expirationDate || null,
       JSON.stringify(payload.metadata || {})
     ]
   );

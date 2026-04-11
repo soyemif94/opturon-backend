@@ -36,10 +36,18 @@ function normalizeMetadata(value) {
   return value;
 }
 
+function normalizeDateOnly(value) {
+  const normalized = normalizeString(value);
+  if (!normalized) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return '__invalid__';
+  return normalized;
+}
+
 function buildProductPayload(payload, fallbackStatus = 'active') {
   const requestedStatus = normalizeString(payload && payload.status).toLowerCase();
   const unitPrice = normalizeNumber(payload && (payload.unitPrice ?? payload.price));
   const vatRate = normalizeNumber(payload && (payload.vatRate ?? payload.taxRate ?? 0));
+  const expirationDate = normalizeDateOnly(payload && payload.expirationDate);
 
   return {
     name: normalizeString(payload && payload.name),
@@ -53,6 +61,7 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
     status: PRODUCT_STATUSES.has(requestedStatus) ? requestedStatus : fallbackStatus,
     sku: normalizeString(payload && payload.sku) || null,
     categoryId: normalizeString(payload && payload.categoryId) || null,
+    expirationDate,
     metadata: normalizeMetadata(payload && payload.metadata)
   };
 }
@@ -63,6 +72,7 @@ function validateProductPayload(product) {
   if (!Number.isFinite(product.vatRate) || product.vatRate < 0) return 'invalid_product_tax_rate';
   if (!Number.isInteger(product.stock) || product.stock < 0) return 'invalid_product_stock';
   if (!PRODUCT_STATUSES.has(product.status)) return 'invalid_product_status';
+  if (product.expirationDate === '__invalid__') return 'invalid_product_expiration_date';
   return null;
 }
 
