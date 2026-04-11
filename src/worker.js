@@ -4711,13 +4711,60 @@ function formatDateIsoShort(dateISO) {
   return `${match[3]}/${match[2]}`;
 }
 
-function buildSuggestionReply({ dateISO, timeWindow, suggestions }) {
-  const windowLabel = timeWindow === 'morning' ? 'mañana' : timeWindow === 'afternoon' ? 'tarde' : 'noche';
-  const dateLabel = formatDateIsoShort(dateISO);
+function resolveBotTimezone(timezone) {
+  return timezone && DateTime.now().setZone(String(timezone)).isValid ? String(timezone) : 'America/Argentina/Buenos_Aires';
+}
+
+function formatAppointmentDateForHuman(value, timezone) {
+  const safeTimezone = resolveBotTimezone(timezone);
+  if (!value) return '';
+
+  let local = null;
+  const safeValue = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(safeValue)) {
+    local = DateTime.fromISO(safeValue, { zone: safeTimezone });
+  } else {
+    local = DateTime.fromISO(safeValue, { zone: 'utc' }).setZone(safeTimezone);
+  }
+
+  return local.isValid ? local.setLocale('es').toFormat('cccc dd/LL') : safeValue;
+}
+
+function formatAppointmentTimeForHuman(utcIso, timezone) {
+  const safeTimezone = resolveBotTimezone(timezone);
+  const local = DateTime.fromISO(String(utcIso), { zone: 'utc' }).setZone(safeTimezone);
+  return local.isValid ? local.setLocale('es').toFormat('HH:mm') : String(utcIso || '');
+}
+
+function formatSlotForHuman(utcIso, timezone) {
+  const safeTimezone = resolveBotTimezone(timezone);
+  const local = DateTime.fromISO(String(utcIso), { zone: 'utc' }).setZone(safeTimezone);
+  return local.isValid ? local.setLocale('es').toFormat('cccc dd/LL') + ' a las ' + local.setLocale('es').toFormat('HH:mm') : String(utcIso || '');
+}
+
+function formatAppointmentOptionLabel(slot, timezone, referenceDateISO = null) {
+  if (!slot) return '';
+  if (slot.startAt) {
+    const slotDate = DateTime.fromISO(String(slot.startAt), { zone: 'utc' }).setZone(resolveBotTimezone(timezone)).toISODate();
+    if (referenceDateISO && slotDate === referenceDateISO) {
+      return formatAppointmentTimeForHuman(slot.startAt, timezone);
+    }
+    return formatSlotForHuman(slot.startAt, timezone);
+  }
+  const fallback = String((slot.displayText || slot.label || '')).trim();
+  return fallback;
+}
+
+function buildSuggestionReply({ dateISO, timeWindow, suggestions, timezone }) {
+  const windowLabel = timeWindow === 'morning' ? 'a la mañana' : timeWindow === 'afternoon' ? 'a la tarde' : timeWindow === 'evening' ? 'a la noche' : null;
+  const dateLabel = dateISO ? formatAppointmentDateForHuman(dateISO, timezone) : 'ese día';
+  const intro = windowLabel
+    ? `Tengo estos horarios disponibles para ${dateLabel} ${windowLabel}:`
+    : `Tengo estos horarios disponibles para ${dateLabel}:`;
   const lines = [
-    `Tengo estos horarios disponibles para ${dateLabel} (${windowLabel}):`,
-    ...suggestions.map((slot, idx) => `${idx + 1}) ${slot.displayText}`),
-    'Responde con 1, 2 o 3.'
+    intro,
+    ...suggestions.map((slot, idx) => `${idx + 1}) ${formatAppointmentOptionLabel(slot, timezone, dateISO || null)}`),
+    'Elegí una opción respondiendo con 1, 2 o 3.'
   ];
   return lines.join('\n');
 }
@@ -4821,7 +4868,9 @@ function buildAppointmentReservationDescription({ contact, bookingName, bookingN
   const safeName = String(bookingName || (contact && contact.name) || '').trim();
   const safePhone = String((contact && (contact.phone || contact.waId)) || '').trim();
   const safeNote = String(bookingNote || '').trim();
-  const safeSlot = String((suggestion && (suggestion.displayText || suggestion.label)) || '').trim();
+  const safeSlot = suggestion && suggestion.startAt
+    ? formatSlotForHuman(suggestion.startAt, 'America/Argentina/Buenos_Aires')
+    : String((suggestion && (suggestion.displayText || suggestion.label)) || '').trim();
 
   if (safeName) lines.push(`Nombre: ${safeName}`);
   if (safePhone) lines.push(`Telefono: ${safePhone}`);
@@ -4837,7 +4886,7 @@ function buildAppointmentFinalConfirmation({ timezone, suggestion, bookingName, 
   const safeName = String(bookingName || '').trim();
   const safeNote = String(bookingNote || '').trim();
   const formattedTime = startAt ? formatSlotForHuman(startAt, timezone) : String((suggestion && suggestion.displayText) || '').trim();
-  const lines = [`Listo. Tu turno quedo confirmado para ${formattedTime}.`];
+  const lines = [`Listo, tu turno quedó reservado para ${formattedTime}.`];
 
   if (safeName) {
     lines.push(`Nombre: ${safeName}.`);
@@ -4871,13 +4920,6 @@ function detectTurnManagementIntent(rawText) {
   }
 
   return null;
-}
-
-function formatSlotForHuman(utcIso, timezone) {
-  const safeTimezone =
-    timezone && DateTime.now().setZone(String(timezone)).isValid ? String(timezone) : 'America/Argentina/Buenos_Aires';
-  const local = DateTime.fromISO(String(utcIso), { zone: 'utc' }).setZone(safeTimezone);
-  return local.isValid ? local.setLocale('es').toFormat('ccc dd/LL HH:mm') : String(utcIso || '');
 }
 
 async function suggestAppointmentOptions({ clinic, timing, count = 3 }) {
@@ -5254,11 +5296,11 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
 
       const reply = alternatives.suggestions.length
         ? [
-            'Ese turno ya no esta disponible. Te propongo estas opciones:',
+            'Ese horario ya no está disponible. Te propongo estas opciones:',
             ...alternatives.suggestions.slice(0, 5).map((item, index) => `${index + 1}) ${item.displayText}`),
-            'Responde con 1, 2, 3, 4 o 5.'
+            'Elegí una opción respondiendo con 1, 2, 3, 4 o 5.'
           ].join('\n')
-        : 'Ese turno ya no esta disponible. Decime otro dia u horario y te propongo nuevas opciones.';
+        : 'Ese horario ya no está disponible. Decime otro día u horario y te propongo nuevas opciones.';
 
       if (alternatives.suggestions.length) {
         await addEvent({
@@ -5293,7 +5335,7 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
     }
 
     const humanTime = formatSlotForHuman(booked.startAt, timezone);
-    const confirmation = `Listo, tu turno quedo confirmado para ${humanTime}. Queres agregar un motivo?`;
+    const confirmation = `Perfecto, reservo ${humanTime}. Si querés, decime el motivo o una nota para agregar al turno. Si no, respondé "sin motivo".`;
 
     await sendAndPersistReply({
       clinicId,
@@ -5356,7 +5398,7 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
   });
 
   if (!booked) {
-    const reply = 'Ese turno ya no esta disponible. Te muestro nuevas opciones en segundos.';
+    const reply = 'Ese horario ya no está disponible. Te muestro nuevas opciones en segundos.';
     await sendAndPersistReply({
       clinicId,
       channel,
@@ -5370,7 +5412,7 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
   }
 
   const humanTime = formatSlotForHuman(booked.slot.startsAt, timezone);
-  const confirmation = `Listo, tu turno quedo confirmado para ${humanTime}. Queres agregar un motivo?`;
+  const confirmation = `Perfecto, reservo ${humanTime}. Si querés, decime el motivo o una nota para agregar al turno. Si no, respondé "sin motivo".`;
 
   await sendAndPersistReply({
     clinicId,
@@ -5433,9 +5475,9 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
 
   const intro =
     (clinic.settings && clinic.settings.appointmentIntroMessage) ||
-    'Tengo estos turnos disponibles:';
+    'Tengo estos horarios disponibles:';
 
-  const lines = [intro, ...options.map((opt) => `${opt.index}) ${opt.label}`), 'Responde con 1, 2, 3, 4 o 5.'];
+  const lines = [intro, ...options.map((opt) => `${opt.index}) ${opt.label}`), 'Elegí una opción respondiendo con 1, 2, 3, 4 o 5.'];
   await sendAndPersistReply({
     clinicId,
     channel,
@@ -6137,7 +6179,7 @@ async function processConversationReplyJob(job) {
 
     if (!latestAppointment) {
       decision = {
-        replyText: 'No encuentro un turno confirmado. Decime dia y horario para sacar uno.',
+        replyText: 'No encuentro un turno confirmado. Decime qué día y horario te gustaría reservar.',
         newState: 'ASKED_APPOINTMENT_DATETIME',
         contextPatch: buildEmptyAppointmentSuggestionPatch()
       };
@@ -6147,7 +6189,7 @@ async function processConversationReplyJob(job) {
     ) {
       if (managementIntent === 'cancel') {
         decision = {
-          replyText: "Listo. Cancele tu turno. Si queres sacar otro, decime dia y horario.",
+          replyText: "Listo. Cancelé tu turno. Si querés sacar otro, decime qué día y horario te gustaría reservar.",
           newState: 'READY',
           contextPatch: {
             appointmentStatus: 'cancelled',
@@ -6157,7 +6199,7 @@ async function processConversationReplyJob(job) {
         };
       } else {
         decision = {
-          replyText: "Dale. Para que dia y horario queres reprogramar? (Ej: 'lunes 15:30' o 'martes a la tarde')",
+          replyText: "Dale. ¿Para qué día y horario querés reprogramar? Por ejemplo: 'lunes 15:30' o 'martes a la tarde'.",
           newState: 'ASKED_APPOINTMENT_DATETIME',
           contextPatch: {
             appointmentStatus: 'cancelled',
@@ -6175,7 +6217,7 @@ async function processConversationReplyJob(job) {
 
       if (managementIntent === 'cancel') {
         decision = {
-          replyText: "Listo. Cancele tu turno. Si queres sacar otro, decime dia y horario.",
+          replyText: "Listo. Cancelé tu turno. Si querés sacar otro, decime qué día y horario te gustaría reservar.",
           newState: 'READY',
           contextPatch: {
             appointmentStatus: 'cancelled',
@@ -6186,7 +6228,7 @@ async function processConversationReplyJob(job) {
         };
       } else {
         decision = {
-          replyText: "Dale. Para que dia y horario queres reprogramar? (Ej: 'lunes 15:30' o 'martes a la tarde')",
+          replyText: "Dale. ¿Para qué día y horario querés reprogramar? Por ejemplo: 'lunes 15:30' o 'martes a la tarde'.",
           newState: 'ASKED_APPOINTMENT_DATETIME',
           contextPatch: {
             appointmentStatus: 'cancelled',
@@ -6269,7 +6311,7 @@ async function processConversationReplyJob(job) {
 
       if (!selection || selection < 1 || selection > 3) {
         decision = {
-          replyText: 'Responde con 1, 2 o 3 para elegir un horario.',
+          replyText: 'Respondé con 1, 2 o 3 para elegir un horario.',
           newState: 'SELECT_APPOINTMENT_SLOT',
           contextPatch: null
         };
@@ -6277,7 +6319,7 @@ async function processConversationReplyJob(job) {
         const regen = await buildSuggestionsFromContext(3);
         if (!regen.suggestions.length) {
           decision = {
-            replyText: 'No pude encontrar horarios en este momento. Decime dia y hora nuevamente (ej: lunes 10:30).',
+            replyText: 'No pude encontrar horarios en este momento. Decime día y hora nuevamente, por ejemplo: lunes 10:30.',
             newState: 'ASKED_APPOINTMENT_DATETIME',
             contextPatch: buildEmptyAppointmentSuggestionPatch()
           };
@@ -6286,7 +6328,8 @@ async function processConversationReplyJob(job) {
             replyText: buildSuggestionReply({
               dateISO: regen.timing.dateISO,
               timeWindow: regen.timing.timeWindow || safeContext.appointmentSuggestionsTimeWindow || 'afternoon',
-              suggestions: regen.suggestions
+              suggestions: regen.suggestions,
+              timezone: clinic.timezone || 'America/Argentina/Buenos_Aires'
             }),
             newState: 'SELECT_APPOINTMENT_SLOT',
             contextPatch: buildAppointmentSuggestionContextPatch({
@@ -6300,13 +6343,13 @@ async function processConversationReplyJob(job) {
         const chosen = suggestions[selection - 1] || null;
         if (!chosen || !chosen.startAt) {
           decision = {
-            replyText: 'Esa opcion no es valida. Elegi 1, 2 o 3.',
+            replyText: 'Esa opción no es válida. Elegí 1, 2 o 3.',
             newState: 'SELECT_APPOINTMENT_SLOT',
             contextPatch: null
           };
         } else if (isReplaySafeConfirmation(safeContext, chosen.startAt)) {
           decision = {
-            replyText: `Listo. Te reserve el turno para ${formatSlotForHuman(chosen.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}. Si necesitas cambiarlo, responde 'menu'.`,
+            replyText: `Listo, tu turno ya estaba reservado para ${formatSlotForHuman(chosen.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}.`,
             newState: 'READY',
             contextPatch: buildConfirmedContextPatch(chosen.startAt)
           };
@@ -6320,7 +6363,7 @@ async function processConversationReplyJob(job) {
 
           if (!bookingName) {
             decision = {
-              replyText: `Elegiste ${selectedHumanTime}. Antes de confirmarlo, decime tu nombre.`,
+              replyText: `Perfecto, reservo ${selectedHumanTime}. Antes de confirmarlo, decime tu nombre.`,
               newState: 'ASKED_APPOINTMENT_NAME',
               contextPatch: buildAppointmentSelectedSlotPatch({
                 suggestion: chosen,
@@ -6329,7 +6372,7 @@ async function processConversationReplyJob(job) {
             };
           } else {
             decision = {
-              replyText: `Elegiste ${selectedHumanTime}. Si queres, decime un motivo o nota breve para el turno. Si no, responde "sin motivo".`,
+              replyText: `Perfecto, reservo ${selectedHumanTime}. Si querés, decime el motivo o una nota para agregar al turno. Si no, respondé "sin motivo".`,
               newState: 'ASKED_APPOINTMENT_NOTE',
               contextPatch: buildAppointmentSelectedSlotPatch({
                 suggestion: chosen,
@@ -6347,7 +6390,7 @@ async function processConversationReplyJob(job) {
     const providedName = String(inboundText || '').trim();
     if (providedName.length < 2) {
       decision = {
-        replyText: 'Necesito tu nombre para confirmar el turno. Responde con tu nombre y apellido.',
+        replyText: 'Necesito tu nombre para confirmar el turno. Respondé con tu nombre y apellido.',
         newState: 'ASKED_APPOINTMENT_NAME',
         contextPatch: null
       };
@@ -6363,7 +6406,7 @@ async function processConversationReplyJob(job) {
         notes: contact.notes || null
       });
       decision = {
-        replyText: 'Perfecto. Si queres, decime un motivo o nota breve para el turno. Si no, responde "sin motivo".',
+        replyText: 'Perfecto. Si querés, decime el motivo o una nota para agregar al turno. Si no, respondé "sin motivo".',
         newState: 'ASKED_APPOINTMENT_NOTE',
         contextPatch: buildAppointmentSelectedSlotPatch({
           suggestion: safeContext.appointmentSelectedSlot || null,
@@ -6385,7 +6428,7 @@ async function processConversationReplyJob(job) {
 
     if (!selectedSlot || !selectedSlot.startAt) {
       decision = {
-        replyText: 'Perdi el horario elegido. Decime dia y hora nuevamente y te propongo opciones.',
+        replyText: 'Perdí el horario elegido. Decime día y hora nuevamente y te propongo opciones.',
         newState: 'ASKED_APPOINTMENT_DATETIME',
         contextPatch: buildEmptyAppointmentSuggestionPatch()
       };
@@ -6445,9 +6488,10 @@ async function processConversationReplyJob(job) {
                   alternativeResult.timing.timeWindow ||
                   safeContext.appointmentSuggestionsTimeWindow ||
                   'afternoon',
-                suggestions: alternatives
+                suggestions: alternatives,
+                timezone: clinic.timezone || 'America/Argentina/Buenos_Aires'
               })}`
-            : 'Ese horario se ocupo recien. Decime dia y hora nuevamente (ej: lunes 10:30).',
+            : 'Ese horario se ocupó recién. Decime día y hora nuevamente, por ejemplo: lunes 10:30.',
           newState: alternatives.length ? 'SELECT_APPOINTMENT_SLOT' : 'ASKED_APPOINTMENT_DATETIME',
           contextPatch: alternatives.length
             ? mergeContextPatches(
@@ -6479,7 +6523,7 @@ async function processConversationReplyJob(job) {
     if (timing.startAt) {
       if (isReplaySafeConfirmation(safeContext, timing.startAt)) {
         decision = {
-          replyText: `Listo. Te reserve el turno para ${formatSlotForHuman(timing.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}. Si necesitas cambiarlo, responde 'menu'.`,
+          replyText: `Listo, tu turno ya estaba reservado para ${formatSlotForHuman(timing.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}.`,
           newState: 'READY',
           contextPatch: buildConfirmedContextPatch(timing.startAt)
         };
@@ -6504,7 +6548,7 @@ async function processConversationReplyJob(job) {
 
       if (created.ok) {
         decision = {
-          replyText: `Listo. Te reserve el turno para ${formatSlotForHuman(timing.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}. Si necesitas cambiarlo, responde 'menu'.`,
+          replyText: `Listo, tu turno quedó reservado para ${formatSlotForHuman(timing.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}.`,
           newState: 'READY',
           contextPatch: buildConfirmedContextPatch(timing.startAt)
         };
@@ -6530,7 +6574,8 @@ async function processConversationReplyJob(job) {
                 timing.timeWindow ||
                 safeContext.appointmentSuggestionsTimeWindow ||
                 'afternoon',
-              suggestions: alternatives
+              suggestions: alternatives,
+              timezone: clinic.timezone || 'America/Argentina/Buenos_Aires'
             })}`,
             newState: 'SELECT_APPOINTMENT_SLOT',
             contextPatch: buildAppointmentSuggestionContextPatch({
@@ -6558,7 +6603,8 @@ async function processConversationReplyJob(job) {
           replyText: buildSuggestionReply({
             dateISO: suggestionResult.timing.dateISO || timing.dateISO,
             timeWindow: suggestionResult.timing.timeWindow || timing.timeWindow,
-            suggestions: suggestionResult.suggestions
+            suggestions: suggestionResult.suggestions,
+            timezone: clinic.timezone || 'America/Argentina/Buenos_Aires'
           }),
           newState: 'SELECT_APPOINTMENT_SLOT',
           contextPatch: buildAppointmentSuggestionContextPatch({
