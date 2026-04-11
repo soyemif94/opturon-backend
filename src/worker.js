@@ -30,8 +30,6 @@ const {
 } = require('./repositories/lead.repository');
 const {
   getOrCreateCalendarRules,
-  ensureSlotsForDateRange,
-  listAvailableSlots,
   holdSlot,
   bookHeldSlot,
   releaseExpiredHolds,
@@ -4926,29 +4924,14 @@ async function suggestAppointmentOptions({ clinic, timing, count = 3 }) {
     });
   }
 
-  if (timing.startAt) {
-    const suggestions = await conversationRepo.suggestNextAvailableSlots({
-      clinicId: clinic.id,
-      startAt: timing.startAt,
-      count,
-      stepMinutes: 30,
-      maxLookaheadDays: 7
-    });
-    return { source: 'legacy', timing, suggestions };
-  }
-
-  if (timing.dateISO && timing.timeWindow) {
-    const suggestions = await conversationRepo.suggestSlotsForTimeWindow({
-      clinicId: clinic.id,
-      dateISO: timing.dateISO,
-      timeWindow: timing.timeWindow,
-      count,
-      stepMinutes: 30
-    });
-    return { source: 'legacy', timing, suggestions };
-  }
-
-  return { source: 'none', timing, suggestions: [] };
+  return {
+    source: 'agenda',
+    timing: {
+      ...timing,
+      dateISO: timing.dateISO || (tryAgenda && tryAgenda.suggestions[0] && tryAgenda.suggestions[0].dateISO) || null
+    },
+    suggestions: []
+  };
 }
 
 async function createBotReservationFromSuggestion({ clinic, conversation, contact, channel, safeContext, suggestion }) {
@@ -4967,6 +4950,7 @@ async function createBotReservationFromSuggestion({ clinic, conversation, contac
       {
         clinicId: clinic.id,
         contactId: contact.id,
+        conversationId: conversation.id || null,
         patientName: bookingName,
         title: bookingName ? `Turno - ${bookingName}` : 'Turno reservado',
         description: buildAppointmentReservationDescription({
@@ -4978,7 +4962,8 @@ async function createBotReservationFromSuggestion({ clinic, conversation, contac
         requestedText: suggestion.displayText || null,
         startAt: suggestion.startAt,
         endAt: suggestion.endAt || null,
-        status: 'pending'
+        status: 'confirmed',
+        origin: 'whatsapp_bot'
       },
       { clinic }
     );
@@ -5017,52 +5002,16 @@ async function createBotReservationFromSuggestion({ clinic, conversation, contac
     }
   }
 
-  const available = await conversationRepo.isSlotAvailable({
-    clinicId: clinic.id,
-    startAt: suggestion.startAt
-  });
-  if (!available) {
-    return { ok: false, source: 'legacy', reason: 'agenda_time_conflict' };
-  }
-
-  const created = await conversationRepo.createAppointmentFromSuggestion({
-    clinicId: clinic.id,
-    channelId: conversation.channelId || channel.id,
-    conversationId: conversation.id,
-    contactId: contact.id,
-    waId: contact.waId || null,
-    patientName: (safeContext && safeContext.name) || contact.name || null,
-    startAt: suggestion.startAt,
-    endAt: suggestion.endAt || null,
-    requestedText: suggestion.displayText || null,
-    source: 'bot'
-  });
-
-  if (created && created.created) {
-    logInfo('legacy_bot_reservation_created', {
-      clinicId: clinic.id,
-      conversationId: conversation.id || null,
-      contactId: contact.id || null,
-      startAt: suggestion.startAt,
-      appointmentId: created.row && created.row.id ? created.row.id : null
-    });
-    return {
-      ok: true,
-      source: 'legacy',
-      reservation: created.row || null,
-      startAt: suggestion.startAt
-    };
-  }
-
-  logWarn('legacy_bot_reservation_rejected', {
+  logWarn('legacy_bot_reservation_blocked', {
     clinicId: clinic.id,
     conversationId: conversation.id || null,
     contactId: contact.id || null,
-    reason: 'agenda_time_conflict',
+    reason: 'agenda_reservation_required',
+    suggestionSource: suggestion.source || 'unknown',
     startAt: suggestion.startAt,
     endAt: suggestion.endAt || null
   });
-  return { ok: false, source: 'legacy', reason: 'agenda_time_conflict' };
+  return { ok: false, source: 'legacy', reason: 'agenda_reservation_required' };
 }
 
 function normalizeChannelSendContext(channel, meta = {}) {
@@ -5467,22 +5416,6 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
     }));
   }
 
-  if (!options.length && !agendaConfigured) {
-    const toUtc = nowUtc.plus({ days: DAYS_AHEAD });
-    await ensureSlotsForDateRange(clinicId, fromUtc.toISO(), toUtc.toISO());
-    const slots = await listAvailableSlots(clinicId, fromUtc.toISO(), toUtc.toISO(), 5);
-    options = slots.slice(0, 5).map((slot, idx) => ({
-      index: idx + 1,
-      source: 'legacy',
-      slotId: slot.id,
-      startAt: slot.startsAt,
-      endAt: null,
-      dateISO: DateTime.fromISO(String(slot.startsAt), { zone: 'utc' }).setZone(timezone).toISODate(),
-      displayText: formatSlotForHuman(slot.startsAt, timezone),
-      label: formatSlotForHuman(slot.startsAt, timezone)
-    }));
-  }
-
   if (!options.length) {
     await openHandoffFlow({
       clinicId,
@@ -5518,7 +5451,7 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
     conversationId,
     type: 'SLOT_OFFERED',
     data: {
-      source: options[0] && options[0].source ? options[0].source : 'legacy',
+      source: options[0] && options[0].source ? options[0].source : 'agenda',
       options
     }
   });
