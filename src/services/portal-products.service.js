@@ -3,6 +3,7 @@ const { logInfo } = require('../utils/logger');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const { getAutomationEnablementState } = require('./automation-enablement.service');
 const { buildCatalogRiskDiscountSuggestion } = require('./catalog-risk-discount.service');
+const { insertAutomationActionEvent } = require('../repositories/automation-action-events.repository');
 const {
   listProductsByClinicId,
   findProductById,
@@ -41,6 +42,20 @@ function normalizeNullablePercentage(value) {
   if (!Number.isFinite(parsed)) return NaN;
   if (parsed <= 0) return null;
   return parsed;
+}
+
+function normalizeAutomationAttribution(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const templateKey = normalizeString(payload.templateKey);
+  const action = normalizeString(payload.action);
+  if (!templateKey || !action) return null;
+
+  return {
+    templateKey,
+    action,
+    suggestedDiscountPercentage: normalizeNullablePercentage(payload.suggestedDiscountPercentage),
+    source: normalizeString(payload.source) || null
+  };
 }
 
 function normalizeMetadata(value) {
@@ -343,7 +358,47 @@ async function patchPortalProduct(tenantId, productId, payload) {
     }
   }
 
+  const automationAttribution = normalizeAutomationAttribution(payload && payload.automationAttribution);
+  const previousDiscountPercentage = normalizeNullablePercentage(current.discountPercentage);
+  const riskDiscountAutomation = await resolveCatalogRiskDiscountAutomation(context);
+  const currentProductView = decorateProductWithCatalogRiskDiscount(current, riskDiscountAutomation);
+  const suggestion = currentProductView.riskDiscountSuggestion;
   const updated = await updateProduct(safeProductId, context.clinic.id, next);
+  const nextDiscountPercentage = normalizeNullablePercentage(updated.discountPercentage);
+
+  if (
+    automationAttribution &&
+    automationAttribution.templateKey === 'catalog_risk_discount' &&
+    automationAttribution.action === 'apply_suggestion' &&
+    riskDiscountAutomation.enabled &&
+    suggestion &&
+    suggestion.canApply &&
+    nextDiscountPercentage !== previousDiscountPercentage &&
+    nextDiscountPercentage === suggestion.suggestedDiscountPercentage &&
+    automationAttribution.suggestedDiscountPercentage === suggestion.suggestedDiscountPercentage
+  ) {
+    await insertAutomationActionEvent({
+      clinicId: context.clinic.id,
+      externalTenantId: context.tenantId,
+      templateKey: 'catalog_risk_discount',
+      action: 'suggestion_applied',
+      entityType: 'product',
+      entityId: updated.id,
+      suggestedValue: {
+        discountPercentage: suggestion.suggestedDiscountPercentage,
+        status: suggestion.status
+      },
+      appliedValue: {
+        previousDiscountPercentage,
+        discountPercentage: nextDiscountPercentage
+      },
+      metadata: {
+        source: automationAttribution.source || 'catalog_manager',
+        hasManualDiscount: suggestion.hasManualDiscount
+      }
+    });
+  }
+
   return {
     ok: true,
     tenantId: context.tenantId,

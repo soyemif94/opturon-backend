@@ -77,6 +77,7 @@ const {
   getPortalLoyaltyOverviewController,
   postPortalLoyaltyRedeemController,
   getPortalAutomations,
+  getPortalAutomationTemplateMetrics,
   getPortalBusiness,
   getPortalUsers,
   postPortalUser,
@@ -193,6 +194,7 @@ router.get('/tenants/:tenantId/loyalty/contacts/:contactId', requirePortalIntern
 router.get('/tenants/:tenantId/loyalty/overview', requirePortalInternalAuth, getPortalLoyaltyOverviewController);
 router.post('/tenants/:tenantId/loyalty/redemptions', requirePortalInternalAuth, postPortalLoyaltyRedeemController);
 router.get('/tenants/:tenantId/automations', requirePortalInternalAuth, getPortalAutomations);
+router.get('/tenants/:tenantId/automations/catalog/:templateKey/metrics', requirePortalInternalAuth, getPortalAutomationTemplateMetrics);
 router.post('/tenants/:tenantId/automations', requirePortalInternalAuth, postPortalAutomation);
 router.patch('/tenants/:tenantId/automations/catalog/:templateKey', requirePortalInternalAuth, patchPortalAutomationTemplate);
 router.patch('/tenants/:tenantId/automations/:automationId', requirePortalInternalAuth, patchPortalAutomation);

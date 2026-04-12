@@ -115,6 +115,7 @@ const {
   updatePortalAutomationTemplate,
   deletePortalAutomation
 } = require('../services/portal-automations.service');
+const { getPortalAutomationActionMetrics } = require('../services/portal-automation-events.service');
 const {
   getPortalBusinessSettings,
   updatePortalBusinessSettings
@@ -2737,6 +2738,44 @@ async function patchPortalAutomationTemplate(req, res) {
   }
 }
 
+async function getPortalAutomationTemplateMetrics(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const templateKey = String(req.params.templateKey || '').trim();
+  const limit = Number(req.query.limit || 20);
+
+  try {
+    const result = await getPortalAutomationActionMetrics(tenantId, templateKey, { limit });
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_automation_template_key'
+          ? 400
+          : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        template: result.template,
+        summary: result.summary,
+        events: result.events
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_automation_template_metrics_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalUser(req, res) {
   const tenantId = String(req.params.tenantId || '').trim();
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
@@ -3792,6 +3831,7 @@ module.exports = {
   getPortalLoyaltyOverviewController,
   postPortalLoyaltyRedeemController,
   getPortalAutomations,
+  getPortalAutomationTemplateMetrics,
   getPortalBusiness,
   getPortalUsers,
   patchPortalBusiness,
