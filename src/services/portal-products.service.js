@@ -2,6 +2,7 @@ const { withTransaction } = require('../db/client');
 const { logInfo } = require('../utils/logger');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const { getAutomationEnablementState } = require('./automation-enablement.service');
+const { buildCatalogRiskDiscountSuggestion } = require('./catalog-risk-discount.service');
 const {
   listProductsByClinicId,
   findProductById,
@@ -155,7 +156,7 @@ async function createProductForContext(context, payload) {
       ok: true,
       tenantId: context.tenantId,
       clinic: context.clinic,
-      product: created
+      product: await decorateProductWithAutomations(context, created)
     };
   } catch (error) {
     if (error && typeof error === 'object' && error.code === '23505') {
@@ -169,6 +170,55 @@ async function createProductForContext(context, payload) {
   }
 }
 
+async function resolveCatalogRiskDiscountAutomation(context) {
+  if (!context || !context.clinic || !context.clinic.id) {
+    return { enabled: false, reason: 'tenant_mapping_not_found' };
+  }
+
+  return getAutomationEnablementState({
+    clinicId: context.clinic.id,
+    tenantId: context.tenantId,
+    key: 'catalog_risk_discount',
+    capabilitiesHint: ['catalog']
+  });
+}
+
+function decorateProductWithCatalogRiskDiscount(product, automationState) {
+  if (!product || !automationState || !automationState.enabled) {
+    return {
+      ...product,
+      riskDiscountSuggestion: null
+    };
+  }
+
+  return {
+    ...product,
+    riskDiscountSuggestion: buildCatalogRiskDiscountSuggestion(product)
+  };
+}
+
+async function decorateProductsWithAutomations(context, products) {
+  const automationState = await resolveCatalogRiskDiscountAutomation(context);
+  const safeProducts = Array.isArray(products) ? products : [];
+
+  if (automationState.enabled) {
+    logInfo('catalog_risk_discount_hook_ready', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      key: 'catalog_risk_discount',
+      productCount: safeProducts.length
+    });
+  }
+
+  return safeProducts.map((product) => decorateProductWithCatalogRiskDiscount(product, automationState));
+}
+
+async function decorateProductWithAutomations(context, product) {
+  if (!product) return product;
+  const [decorated] = await decorateProductsWithAutomations(context, [product]);
+  return decorated || null;
+}
+
 async function listPortalProducts(tenantId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -176,25 +226,12 @@ async function listPortalProducts(tenantId) {
   }
 
   const products = await listProductsByClinicId(context.clinic.id);
-  const riskDiscountAutomation = await getAutomationEnablementState({
-    clinicId: context.clinic.id,
-    tenantId: context.tenantId,
-    key: 'catalog_risk_discount',
-    capabilitiesHint: ['catalog']
-  });
-  if (riskDiscountAutomation.enabled) {
-    logInfo('catalog_risk_discount_hook_ready', {
-      tenantId: context.tenantId,
-      clinicId: context.clinic.id,
-      key: 'catalog_risk_discount',
-      productCount: products.length
-    });
-  }
+  const decoratedProducts = await decorateProductsWithAutomations(context, products);
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    products
+    products: decoratedProducts
   };
 }
 
@@ -234,7 +271,7 @@ async function getPortalProductDetail(tenantId, productId) {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    product
+    product: await decorateProductWithAutomations(context, product)
   };
 }
 
@@ -311,7 +348,7 @@ async function patchPortalProduct(tenantId, productId, payload) {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    product: updated
+    product: await decorateProductWithAutomations(context, updated)
   };
 }
 
@@ -340,7 +377,7 @@ async function patchPortalProductStatus(tenantId, productId, payload) {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    product
+    product: await decorateProductWithAutomations(context, product)
   };
 }
 
