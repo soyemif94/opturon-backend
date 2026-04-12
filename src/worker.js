@@ -47,6 +47,7 @@ const {
 } = require('./repositories/conversation-events.repository');
 const { claimJobs, markJobDone, requeueOrFailJob } = require('./repositories/job.repository');
 const { resolveAutomationReplyForInbound } = require('./services/automation-runtime.service');
+const { getAutomationEnablementState } = require('./services/automation-enablement.service');
 const {
   suggestClinicAgendaSlots,
   createClinicAgendaBotReservation
@@ -4923,6 +4924,25 @@ function buildAppointmentFinalConfirmation({ timezone, suggestion, bookingName, 
   return lines.join('\n');
 }
 
+function buildAutomationDisabledReply(key) {
+  if (key === 'agenda_booking') {
+    return 'Puedo tomar tu pedido de turno, pero la reserva automatica no esta habilitada en este momento. Si queres, te ayudamos por este mismo canal.';
+  }
+
+  return 'Esa automatizacion no esta habilitada para esta cuenta en este momento.';
+}
+
+function logAutomationRuntimeBlocked({ tenantId = null, clinicId = null, key, action, reason = 'automation_disabled', extra = null }) {
+  logInfo('automation_runtime_blocked', {
+    tenantId: tenantId || null,
+    clinicId: clinicId || null,
+    key: String(key || '').trim() || null,
+    action: String(action || '').trim() || null,
+    reason,
+    ...(extra || {})
+  });
+}
+
 function isCancellation(rawText) {
   const text = normalizeText(rawText);
   return /(cancelar|cancelo|cancelaci[oó]n|anular turno)/i.test(text);
@@ -5127,6 +5147,33 @@ async function createBotReservationFromSuggestion({ clinic, conversation, contac
   }
 
   if (suggestion.source === 'agenda') {
+    const bookingAutomation = await getAutomationEnablementState({
+      clinicId: clinic.id,
+      tenantId: clinic.externalTenantId || null,
+      key: 'agenda_booking',
+      capabilitiesHint: ['agenda', 'whatsapp', 'contacts']
+    });
+    if (!bookingAutomation.enabled) {
+      logAutomationRuntimeBlocked({
+        tenantId: bookingAutomation.tenantId || clinic.externalTenantId || null,
+        clinicId: clinic.id,
+        key: 'agenda_booking',
+        action: 'create_agenda_booking',
+        reason: bookingAutomation.reason,
+        extra: {
+          conversationId: conversation.id || null,
+          contactId: contact.id || null,
+          startAt: suggestion.startAt
+        }
+      });
+      return {
+        ok: false,
+        source: 'agenda',
+        reason: 'automation_disabled',
+        detail: bookingAutomation.reason
+      };
+    }
+
     const bookingName = String(
       (safeContext && (safeContext.appointmentBookingName || safeContext.name)) ||
         contact.name ||
@@ -5391,6 +5438,29 @@ async function processDueAppointmentReminders() {
     }
 
     try {
+      const reminderAutomation = await getAutomationEnablementState({
+        clinicId: claimed.clinicId,
+        key: 'appointment_reminders',
+        capabilitiesHint: ['agenda', 'whatsapp', 'contacts']
+      });
+      if (!reminderAutomation.enabled) {
+        await releaseAgendaItemReminderClaim(claimed.clinicId, claimed.id, 'automation_disabled');
+        logAutomationRuntimeBlocked({
+          tenantId: reminderAutomation.tenantId || null,
+          clinicId: claimed.clinicId,
+          key: 'appointment_reminders',
+          action: 'send_appointment_reminder',
+          reason: reminderAutomation.reason,
+          extra: {
+            agendaItemId: claimed.id,
+            conversationId: claimed.conversationId || null,
+            contactId: claimed.contactId || null
+          }
+        });
+        stats.skipped += 1;
+        continue;
+      }
+
       const clinic = await getClinic(claimed.clinicId);
       const contact = claimed.contactId ? await findContactByIdAndClinicId(claimed.contactId, claimed.clinicId) : null;
       const channel = await findPreferredWhatsAppChannelByClinicId(claimed.clinicId);
@@ -6844,6 +6914,12 @@ async function processConversationReplyJob(job) {
             }
           )
         };
+      } else if (created.reason === 'automation_disabled') {
+        decision = {
+          replyText: buildAutomationDisabledReply('agenda_booking'),
+          newState: 'READY',
+          contextPatch: buildAppointmentFlowResetPatch()
+        };
       } else {
         const alternativeResult = await suggestAppointmentOptions({
           clinic,
@@ -6930,6 +7006,12 @@ async function processConversationReplyJob(job) {
           replyText: `Listo, tu turno quedó reservado para ${formatSlotForHuman(timing.startAt, clinic.timezone || 'America/Argentina/Buenos_Aires')}.`,
           newState: 'READY',
           contextPatch: buildConfirmedContextPatch(timing.startAt)
+        };
+      } else if (created.reason === 'automation_disabled') {
+        decision = {
+          replyText: buildAutomationDisabledReply('agenda_booking'),
+          newState: 'READY',
+          contextPatch: buildAppointmentFlowResetPatch()
         };
       }
 
@@ -7683,7 +7765,9 @@ module.exports = {
     createBotReservationFromSuggestion,
     buildAppointmentFlowResetPatch,
     buildConfirmedContextPatch,
-    formatSlotForHuman
+    formatSlotForHuman,
+    processDueAppointmentReminders,
+    buildAutomationDisabledReply
   }
 };
 

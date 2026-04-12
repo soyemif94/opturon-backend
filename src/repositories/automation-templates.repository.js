@@ -109,6 +109,29 @@ async function listTenantAutomationTemplatesByClinicId(clinicId, client = null) 
   return result.rows.map(normalizeTenantTemplate);
 }
 
+async function findTenantAutomationTemplateByClinicIdAndKey(clinicId, templateKey, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT
+       id,
+       "clinicId",
+       "externalTenantId",
+       "templateKey",
+       enabled,
+       config,
+       metadata,
+       "createdAt",
+       "updatedAt"
+     FROM tenant_automation_templates
+     WHERE "clinicId" = $1::uuid
+       AND "templateKey" = $2
+     LIMIT 1`,
+    [clinicId, templateKey]
+  );
+
+  return result.rows[0] ? normalizeTenantTemplate(result.rows[0]) : null;
+}
+
 async function upsertTenantAutomationTemplate(input, client = null) {
   const result = await dbQuery(
     client,
@@ -156,5 +179,6 @@ module.exports = {
   listAutomationTemplates,
   findAutomationTemplateByKey,
   listTenantAutomationTemplatesByClinicId,
+  findTenantAutomationTemplateByClinicIdAndKey,
   upsertTenantAutomationTemplate
 };

@@ -1,5 +1,7 @@
 const { withTransaction } = require('../db/client');
+const { logInfo } = require('../utils/logger');
 const { resolvePortalTenantContext } = require('./portal-context.service');
+const { getAutomationEnablementState } = require('./automation-enablement.service');
 const {
   listProductsByClinicId,
   findProductById,
@@ -174,6 +176,20 @@ async function listPortalProducts(tenantId) {
   }
 
   const products = await listProductsByClinicId(context.clinic.id);
+  const riskDiscountAutomation = await getAutomationEnablementState({
+    clinicId: context.clinic.id,
+    tenantId: context.tenantId,
+    key: 'catalog_risk_discount',
+    capabilitiesHint: ['catalog']
+  });
+  if (riskDiscountAutomation.enabled) {
+    logInfo('catalog_risk_discount_hook_ready', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      key: 'catalog_risk_discount',
+      productCount: products.length
+    });
+  }
   return {
     ok: true,
     tenantId: context.tenantId,

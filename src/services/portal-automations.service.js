@@ -12,11 +12,15 @@ const {
   listTenantAutomationTemplatesByClinicId,
   upsertTenantAutomationTemplate
 } = require('../repositories/automation-templates.repository');
+const {
+  normalizeBusinessType,
+  normalizeCapabilities,
+  buildResolvedCapabilities,
+  evaluateTemplateCompatibility
+} = require('./automation-enablement.service');
 
 const ALLOWED_TRIGGERS = new Set(['message_received', 'keyword', 'off_hours', 'new_contact']);
 const ALLOWED_ACTIONS = new Set(['send_message', 'assign_human', 'tag_contact']);
-const BUSINESS_TYPES = new Set(['dental_clinic', 'medical_clinic', 'retail_products', 'services_general', 'beauty_salon']);
-const BUSINESS_CAPABILITIES = new Set(['whatsapp', 'contacts', 'agenda', 'catalog', 'payments']);
 const RUNTIME_TEMPLATE_MAP = {
   conversation_welcome: ['Conversational Welcome Menu'],
   conversation_products_menu: ['Conversational Menu Products'],
@@ -46,41 +50,17 @@ function normalizeTrigger(payload) {
   };
 }
 
-function normalizeBusinessType(value) {
-  const safe = normalizeString(value).toLowerCase();
-  return BUSINESS_TYPES.has(safe) ? safe : 'services_general';
-}
-
-function normalizeCapabilities(value) {
-  if (!Array.isArray(value)) return [];
-  return Array.from(
-    new Set(
-      value
-        .map((item) => normalizeString(item).toLowerCase())
-        .filter((item) => BUSINESS_CAPABILITIES.has(item))
-    )
-  );
-}
-
-function normalizeBusinessProfileSnapshot(clinic, rawProfile, context) {
+async function normalizeBusinessProfileSnapshot(clinic, rawProfile, context) {
   const profile = rawProfile && typeof rawProfile === 'object' ? rawProfile : {};
   const explicitCapabilities = normalizeCapabilities(profile.capabilities);
-  const resolvedCapabilities = new Set(explicitCapabilities);
-
-  resolvedCapabilities.add('contacts');
-  if (context && context.channel && String(context.channel.status || '').trim().toLowerCase() === 'active') {
-    resolvedCapabilities.add('whatsapp');
-  }
-  if (context && context.onboarding && context.onboarding.hasProducts) {
-    resolvedCapabilities.add('catalog');
-  }
+  const resolvedCapabilities = await buildResolvedCapabilities({ clinic, capabilitiesHint: explicitCapabilities });
 
   return {
     clinicId: clinic && clinic.id ? clinic.id : null,
     clinicName: clinic && clinic.name ? clinic.name : null,
     businessType: normalizeBusinessType(profile.businessType),
     capabilities: explicitCapabilities,
-    resolvedCapabilities: Array.from(resolvedCapabilities)
+    resolvedCapabilities
   };
 }
 
@@ -92,17 +72,16 @@ function getRuntimeTemplateNames(template) {
 }
 
 function buildTemplateAvailability(template, tenantTemplate, businessProfile, automations) {
-  const businessTypes = Array.isArray(template.businessTypes) ? template.businessTypes : [];
-  const requiredCapabilities = Array.isArray(template.requiredCapabilities) ? template.requiredCapabilities : [];
-  const resolvedCapabilities = new Set(Array.isArray(businessProfile.resolvedCapabilities) ? businessProfile.resolvedCapabilities : []);
-  const businessTypeMatch = !businessTypes.length || businessTypes.includes(businessProfile.businessType);
-  const missingCapabilities = requiredCapabilities.filter((item) => !resolvedCapabilities.has(item));
+  const compatibility = evaluateTemplateCompatibility({
+    template,
+    businessType: businessProfile.businessType,
+    resolvedCapabilities: businessProfile.resolvedCapabilities
+  });
   const runtimeNames = getRuntimeTemplateNames(template);
   const linkedAutomations = Array.isArray(automations)
     ? automations.filter((automation) => runtimeNames.includes(normalizeString(automation.name)))
     : [];
   const runtimeEnabled = linkedAutomations.some((automation) => automation.enabled !== false);
-  const compatible = businessTypeMatch && missingCapabilities.length === 0;
   const tenantEnabled = tenantTemplate ? tenantTemplate.enabled === true : template.defaultEnabled === true;
   const managedBy = runtimeNames.length ? 'hybrid' : 'catalog';
 
@@ -111,12 +90,12 @@ function buildTemplateAvailability(template, tenantTemplate, businessProfile, au
     linkedAutomationIds: linkedAutomations.map((item) => item.id),
     linkedAutomationCount: linkedAutomations.length,
     managedBy,
-    compatible,
+    compatible: compatibility.compatible,
     tenantEnabled,
     runtimeEnabled,
     effectiveEnabled: runtimeEnabled || tenantEnabled,
-    businessTypeMatch,
-    missingCapabilities
+    businessTypeMatch: compatibility.businessTypeMatch,
+    missingCapabilities: compatibility.missingCapabilities
   };
 }
 
@@ -181,7 +160,7 @@ async function listPortalAutomations(tenantId) {
     listAutomationTemplates(),
     listTenantAutomationTemplatesByClinicId(context.clinic.id)
   ]);
-  const businessProfile = normalizeBusinessProfileSnapshot(clinic || context.clinic, clinic && clinic.businessProfile, context);
+  const businessProfile = await normalizeBusinessProfileSnapshot(clinic || context.clinic, clinic && clinic.businessProfile, context);
   const tenantTemplateMap = new Map(tenantTemplates.map((item) => [item.templateKey, item]));
   const catalog = templates.map((template) =>
     buildTemplateAvailability(template, tenantTemplateMap.get(template.key) || null, businessProfile, automations)
@@ -285,7 +264,7 @@ async function updatePortalAutomationTemplate(tenantId, templateKey, payload) {
     return buildReason('automation_template_not_found', null, { tenantId: context.tenantId });
   }
 
-  const businessProfile = normalizeBusinessProfileSnapshot(clinic || context.clinic, clinic && clinic.businessProfile, context);
+  const businessProfile = await normalizeBusinessProfileSnapshot(clinic || context.clinic, clinic && clinic.businessProfile, context);
   const currentTemplate = buildTemplateAvailability(template, null, businessProfile, automations);
   if (payload.enabled === true && !currentTemplate.compatible) {
     return buildReason('automation_template_incompatible', null, {
