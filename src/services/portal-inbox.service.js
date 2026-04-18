@@ -780,11 +780,11 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     });
   }
 
-  await conversationRepo.updateConversationStateForClinic({
+  await conversationRepo.replaceConversationStateForClinic({
     conversationId: conversation.id,
     clinicId: context.clinic.id,
     state: null,
-    contextPatch: nextContext
+    context: nextContext
   });
 
   return {

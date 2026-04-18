@@ -52,12 +52,15 @@ function resolveClinicBotMode(clinic) {
 
   for (const value of candidates) {
     const safe = String(value || '').trim().toLowerCase();
-    if (safe === 'sales' || safe === 'agenda' || safe === 'hybrid') {
+    if (safe === 'automatic' || safe === 'sales' || safe === 'agenda') {
       return safe;
+    }
+    if (safe === 'hybrid') {
+      return 'automatic';
     }
   }
 
-  return 'sales';
+  return 'automatic';
 }
 
 function extractExplicitPortalChannelId(clinic) {

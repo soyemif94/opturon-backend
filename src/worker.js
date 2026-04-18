@@ -325,19 +325,21 @@ function resolveClinicBotMode(clinic) {
 
   for (const value of candidates) {
     const safe = String(value || '').trim().toLowerCase();
-    if (safe === 'sales' || safe === 'agenda' || safe === 'hybrid') {
+    if (safe === 'automatic' || safe === 'sales' || safe === 'agenda') {
       return safe;
+    }
+    if (safe === 'hybrid') {
+      return 'automatic';
     }
   }
 
-  return 'sales';
+  return 'automatic';
 }
 
 function hasAgendaContext(safeContext) {
   const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
   return Boolean(
-    context.appointmentCandidate ||
-      context.appointmentFlowPhase ||
+    context.appointmentFlowPhase ||
       context.appointmentSelectedSlot ||
       context.appointmentSuggestionsForDate ||
       (Array.isArray(context.appointmentSuggestions) && context.appointmentSuggestions.length > 0)
@@ -405,15 +407,11 @@ function normalizeConversationBotFlowLock(safeContext) {
 }
 
 function resolveConversationDomain({ currentState, safeContext }) {
-  const explicitDomain = String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase();
   if (BOT_ROUTER_APPOINTMENT_STATES.has(currentState) || hasAgendaContext(safeContext)) {
     return 'agenda';
   }
   if (BOT_ROUTER_COMMERCE_STATES.has(currentState) || hasCommerceContext(safeContext)) {
     return 'commerce';
-  }
-  if (explicitDomain === 'agenda' || explicitDomain === 'commerce') {
-    return explicitDomain;
   }
   return null;
 }
@@ -1467,13 +1465,13 @@ function hasCommerceContext(context) {
     (Array.isArray(safeContext.commerceCategories) && safeContext.commerceCategories.length > 0) ||
     (Array.isArray(safeContext.commerceCartItems) && safeContext.commerceCartItems.length > 0) ||
     (safeContext.commerceSelectedProduct && typeof safeContext.commerceSelectedProduct === 'object') ||
-    safeContext.commerceCategorySelection === true ||
-    safeContext.commerceLastOrderId
+    safeContext.commerceCategorySelection === true
   );
 }
 
 function buildCommerceResetPatch(extra = {}) {
   return {
+    activeBotDomain: null,
     commerceCatalog: null,
     commerceCategories: null,
     commerceCategorySelection: null,
@@ -4805,6 +4803,7 @@ function isReplaySafeConfirmation(context, startAt) {
 
 function buildConfirmedContextPatch(startAt) {
   return {
+    activeBotDomain: null,
     appointmentStatus: 'confirmed',
     appointmentConfirmedAt: new Date().toISOString(),
     appointmentLastConfirmedStartAt: startAt || null,
@@ -4821,6 +4820,7 @@ function buildConfirmedContextPatch(startAt) {
 
 function buildEmptyAppointmentSuggestionPatch() {
   return {
+    activeBotDomain: null,
     appointmentFlowPhase: null,
     appointmentSelectedSlot: null,
     appointmentBookingName: null,

@@ -11,14 +11,16 @@ const {
   validateTransferConfig
 } = require('../utils/transfer-config');
 
-const ALLOWED_BOT_MODES = new Set(['sales', 'agenda', 'hybrid']);
+const ALLOWED_BOT_MODES = new Set(['automatic', 'sales', 'agenda']);
 
 function normalizeString(value) {
   return String(value || '').trim();
 }
 
-function normalizeBotMode(value, fallback = 'sales') {
+function normalizeBotMode(value, fallback = 'automatic') {
   const safe = normalizeString(value).toLowerCase();
+  if (safe === 'hybrid') return 'automatic';
+  if (safe === 'commerce') return 'sales';
   return ALLOWED_BOT_MODES.has(safe) ? safe : fallback;
 }
 
@@ -36,7 +38,7 @@ function mapBotSettings(tenantId, clinic, botMode) {
     tenantId,
     clinicId: clinic.id,
     clinicName: clinic.name || null,
-    mode: normalizeBotMode(botMode, 'sales')
+    mode: normalizeBotMode(botMode, 'automatic')
   };
 }
 
@@ -92,9 +94,10 @@ async function updatePortalBotSettings(tenantId, payload) {
     return context;
   }
 
-  const nextMode = normalizeString(payload && payload.mode).toLowerCase();
+  const rawNextMode = normalizeString(payload && payload.mode).toLowerCase();
+  const nextMode = normalizeBotMode(rawNextMode, '');
   if (!ALLOWED_BOT_MODES.has(nextMode)) {
-    return buildReason('invalid_bot_mode', 'El modo del bot debe ser sales, agenda o hybrid.', {
+    return buildReason('invalid_bot_mode', 'El modo del bot debe ser automatic, sales o agenda.', {
       tenantId: safeTenantId
     });
   }

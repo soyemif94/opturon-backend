@@ -367,6 +367,22 @@ async function updateConversationStateForClinic({ conversationId, clinicId, stat
   return result.rows[0] || null;
 }
 
+async function replaceConversationStateForClinic({ conversationId, clinicId, state, context = null }, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE conversations
+     SET
+       state = COALESCE($3, state),
+       context = COALESCE($4::jsonb, '{}'::jsonb),
+       "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+     RETURNING id, state, context`,
+    [conversationId, clinicId, state || null, context ? JSON.stringify(context) : null]
+  );
+  return result.rows[0] || null;
+}
+
 async function updateConversationStatusForClinic({ conversationId, clinicId, status }, client = null) {
   const result = await dbQuery(
     client,
@@ -1474,6 +1490,7 @@ module.exports = {
   findAutomationOutboundByInboundMessageId,
   updateConversationState,
   updateConversationStateForClinic,
+  replaceConversationStateForClinic,
   updateConversationStatusForClinic,
   updateConversationLeadStatusForClinic,
   updateConversationFollowUpForClinic,
