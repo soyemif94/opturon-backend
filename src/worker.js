@@ -5070,22 +5070,95 @@ function resolveActiveAgendaGuardDecision({ currentState, safeContext, inboundTe
   return null;
 }
 
-async function resolveAskedAppointmentDatetimeDecision({ inboundText, clinic }) {
+async function resolveAgendaTimingDecision({ inboundText, clinic, conversation, contact, channel, safeContext }) {
   const parsed = parseAppointmentText(inboundText);
   if (!parsed.ok) {
-    return {
-      replyText: 'Decime qué día y horario te gustaría reservar, por ejemplo: jueves 10:30 o 12/04 10:30.',
-      newState: 'ASKED_APPOINTMENT_DATETIME',
-      contextPatch: null
-    };
+    return null;
   }
 
   const appointmentCandidate = {
-    rawText: inboundText,
+    rawText: String(inboundText || '').trim(),
     displayText: parsed.displayText || inboundText,
     parsed: parsed.parsed,
     createdAt: new Date().toISOString()
   };
+  const timing = conversationRepo.resolveCandidateTiming(appointmentCandidate);
+  const timezone = clinic.timezone || 'America/Argentina/Buenos_Aires';
+
+  if (timing.startAt) {
+    const requestedStart = DateTime.fromISO(String(timing.startAt), { zone: 'utc' });
+    if (!requestedStart.isValid || requestedStart <= DateTime.utc()) {
+      return {
+        replyText: 'Ese horario ya paso. Decime un dia y horario futuro para reservar.',
+        newState: 'ASKED_APPOINTMENT_DATETIME',
+        contextPatch: mergeContextPatches(buildAppointmentFlowResetPatch(), {
+          activeBotDomain: 'agenda',
+          appointmentCandidate
+        })
+      };
+    }
+
+    if (isReplaySafeConfirmation(safeContext, timing.startAt)) {
+      return {
+        replyText: `Listo. Tu turno ya estaba confirmado para ${formatSlotForHuman(timing.startAt, timezone)}.`,
+        newState: 'READY',
+        contextPatch: buildConfirmedContextPatch(timing.startAt)
+      };
+    }
+
+    const created = await createBotReservationFromSuggestion({
+      clinic,
+      conversation,
+      contact,
+      channel,
+      safeContext,
+      suggestion: {
+        source: 'agenda',
+        startAt: timing.startAt,
+        endAt: timing.endAt || null,
+        dateISO: timing.dateISO || null,
+        displayText: timing.requestedText || formatSlotForHuman(timing.startAt, timezone)
+      }
+    });
+
+    if (created.ok) {
+      const confirmedStartAt = created.startAt || timing.startAt;
+      return {
+        replyText: `Listo. Tu turno quedo confirmado para ${formatSlotForHuman(confirmedStartAt, timezone)}.`,
+        newState: 'READY',
+        contextPatch: buildConfirmedContextPatch(confirmedStartAt)
+      };
+    }
+
+    const alternativeResult = await suggestAppointmentOptions({
+      clinic,
+      timing,
+      count: 3
+    });
+    const alternatives = alternativeResult.suggestions;
+    return {
+      replyText: alternatives.length
+        ? `No pude reservar ese horario.\n${buildSuggestionReply({
+            dateISO: alternativeResult.timing.dateISO || timing.dateISO || null,
+            timeWindow: alternativeResult.timing.timeWindow || timing.timeWindow || 'afternoon',
+            suggestions: alternatives,
+            timezone
+          })}`
+        : 'No pude reservar ese horario. Decime otro dia y horario para intentar de nuevo.',
+      newState: alternatives.length ? 'SELECT_APPOINTMENT_SLOT' : 'ASKED_APPOINTMENT_DATETIME',
+      contextPatch: alternatives.length
+        ? buildAppointmentSuggestionContextPatch({
+            appointmentCandidate,
+            suggestions: alternatives,
+            dateISO: alternativeResult.timing.dateISO || timing.dateISO || null,
+            timeWindow: alternativeResult.timing.timeWindow || timing.timeWindow || null
+          })
+        : mergeContextPatches(buildAppointmentFlowResetPatch(), {
+            activeBotDomain: 'agenda',
+            appointmentCandidate
+          })
+    };
+  }
 
   if (!parsed.hasTime && !parsed.hasTimeWindow) {
     return {
@@ -5099,7 +5172,6 @@ async function resolveAskedAppointmentDatetimeDecision({ inboundText, clinic }) 
   }
 
   if (parsed.hasTimeWindow && !parsed.hasTime) {
-    const timing = conversationRepo.resolveCandidateTiming(appointmentCandidate);
     const suggestionResult = await suggestAppointmentOptions({
       clinic,
       timing,
@@ -5132,8 +5204,8 @@ async function resolveAskedAppointmentDatetimeDecision({ inboundText, clinic }) 
   }
 
   return {
-    replyText: `Genial. Te propongo: ${parsed.displayText}.\n¿Confirmás? (si/no)`,
-    newState: 'CONFIRM_APPOINTMENT',
+    replyText: 'Decime dia y horario para reservar. Por ejemplo: martes 15:30.',
+    newState: 'ASKED_APPOINTMENT_DATETIME',
     contextPatch: mergeContextPatches(buildAppointmentFlowResetPatch(), {
       activeBotDomain: 'agenda',
       appointmentCandidate
@@ -5146,106 +5218,73 @@ async function createBotReservationFromSuggestion({ clinic, conversation, contac
     return { ok: false, source: 'none', reason: 'missing_startAt' };
   }
 
-  if (suggestion.source === 'agenda') {
-    const bookingAutomation = await getAutomationEnablementState({
-      clinicId: clinic.id,
-      tenantId: clinic.externalTenantId || null,
-      key: 'agenda_booking',
-      capabilitiesHint: ['agenda', 'whatsapp', 'contacts']
-    });
-    if (!bookingAutomation.enabled) {
-      logAutomationRuntimeBlocked({
-        tenantId: bookingAutomation.tenantId || clinic.externalTenantId || null,
-        clinicId: clinic.id,
-        key: 'agenda_booking',
-        action: 'create_agenda_booking',
-        reason: bookingAutomation.reason,
-        extra: {
-          conversationId: conversation.id || null,
-          contactId: contact.id || null,
-          startAt: suggestion.startAt
-        }
-      });
-      return {
-        ok: false,
-        source: 'agenda',
-        reason: 'automation_disabled',
-        detail: bookingAutomation.reason
-      };
-    }
-
-    const bookingName = String(
-      (safeContext && (safeContext.appointmentBookingName || safeContext.name)) ||
-        contact.name ||
-        ''
-    ).trim() || null;
-    const bookingNote = String((safeContext && safeContext.appointmentBookingNote) || '').trim() || null;
-    const agendaResult = await createClinicAgendaBotReservation(
-      {
-        clinicId: clinic.id,
-        contactId: contact.id,
-        conversationId: conversation.id || null,
-        patientName: bookingName,
-        title: bookingName ? `Turno - ${bookingName}` : 'Turno reservado',
-        description: buildAppointmentReservationDescription({
-          contact,
-          bookingName,
-          bookingNote,
-          suggestion
-        }),
-        requestedText: suggestion.displayText || null,
-        startAt: suggestion.startAt,
-        endAt: suggestion.endAt || null,
-        status: 'confirmed',
-        origin: 'whatsapp_bot'
-      },
-      { clinic }
-    );
-
-    if (agendaResult.ok) {
-      logInfo('agenda_bot_reservation_created', {
-        clinicId: clinic.id,
-        conversationId: conversation.id || null,
-        contactId: contact.id || null,
-        startAt: agendaResult.reservation.startAt || null,
-        itemId: agendaResult.reservation.id || null
-      });
-      return {
-        ok: true,
-        source: 'agenda',
-        reservation: agendaResult.reservation,
-        startAt: agendaResult.reservation.startAt
-      };
-    }
-
-    if (agendaResult.reason !== 'agenda_bot_availability_not_configured') {
-      logWarn('agenda_bot_reservation_rejected', {
-        clinicId: clinic.id,
-        conversationId: conversation.id || null,
-        contactId: contact.id || null,
-        reason: agendaResult.reason,
-        startAt: suggestion.startAt,
-        endAt: suggestion.endAt || null
-      });
-      return {
-        ok: false,
-        source: 'agenda',
-        reason: agendaResult.reason,
-        detail: agendaResult.detail || null
-      };
-    }
+  const legacyAvailable = await conversationRepo.isSlotAvailable({
+    clinicId: clinic.id,
+    startAt: suggestion.startAt
+  });
+  if (!legacyAvailable) {
+    return { ok: false, source: 'agenda', reason: 'agenda_time_conflict' };
   }
 
-  logWarn('legacy_bot_reservation_blocked', {
+  const bookingName = String(
+    (safeContext && (safeContext.appointmentBookingName || safeContext.name)) ||
+      contact.name ||
+      ''
+  ).trim() || null;
+  const bookingNote = String((safeContext && safeContext.appointmentBookingNote) || '').trim() || null;
+  const agendaResult = await createClinicAgendaBotReservation(
+    {
+      clinicId: clinic.id,
+      contactId: contact.id,
+      conversationId: conversation.id || null,
+      patientName: bookingName,
+      title: bookingName ? `Turno - ${bookingName}` : 'Turno reservado',
+      description: buildAppointmentReservationDescription({
+        contact,
+        bookingName,
+        bookingNote,
+        suggestion
+      }),
+      requestedText: suggestion.displayText || null,
+      startAt: suggestion.startAt,
+      endAt: suggestion.endAt || null,
+      status: 'confirmed',
+      origin: 'whatsapp_bot'
+    },
+    { clinic }
+  );
+
+  if (agendaResult.ok) {
+    logInfo('agenda_bot_reservation_created', {
+      clinicId: clinic.id,
+      conversationId: conversation.id || null,
+      contactId: contact.id || null,
+      startAt: agendaResult.reservation.startAt || null,
+      itemId: agendaResult.reservation.id || null,
+      suggestionSource: suggestion.source || null
+    });
+    return {
+      ok: true,
+      source: 'agenda',
+      reservation: agendaResult.reservation,
+      startAt: agendaResult.reservation.startAt
+    };
+  }
+
+  logWarn('agenda_bot_reservation_rejected', {
     clinicId: clinic.id,
     conversationId: conversation.id || null,
     contactId: contact.id || null,
-    reason: 'agenda_reservation_required',
-    suggestionSource: suggestion.source || 'unknown',
+    reason: agendaResult.reason,
     startAt: suggestion.startAt,
     endAt: suggestion.endAt || null
   });
-  return { ok: false, source: 'legacy', reason: 'agenda_reservation_required' };
+  return {
+    ok: false,
+    source: 'agenda',
+    reason: agendaResult.reason,
+    detail: agendaResult.detail || null
+  };
 }
 
 function normalizeChannelSendContext(channel, meta = {}) {
@@ -6377,6 +6416,37 @@ async function processConversationReplyJob(job) {
       chosenPath: 'agenda'
     });
 
+    const timingDecision = await resolveAgendaTimingDecision({
+      inboundText,
+      clinic,
+      conversation,
+      contact,
+      channel,
+      safeContext: {
+        ...safeContext,
+        activeBotDomain: 'agenda'
+      }
+    });
+
+    if (timingDecision) {
+      await conversationRepo.updateConversationState({
+        conversationId: conversation.id,
+        state: timingDecision.newState || conversation.state || 'READY',
+        contextPatch: mergeContextPatches(timingDecision.contextPatch || null, { activeBotDomain: 'agenda' })
+      });
+
+      await sendAndPersistReply({
+        clinicId: conversation.clinicId,
+        channel,
+        conversationId: conversation.id,
+        contact,
+        text: timingDecision.replyText,
+        requestId,
+        correlationMessageId: waMessageId || inboundMessage.id
+      });
+      return;
+    }
+
     await processAppointmentIntent({
       clinicId: conversation.clinicId,
       conversationId: conversation.id,
@@ -6738,11 +6808,17 @@ async function processConversationReplyJob(job) {
   }
 
   if (!decision && currentState === 'ASKED_APPOINTMENT_DATETIME') {
-    decision = await resolveAskedAppointmentDatetimeDecision({
+    decision = await resolveAgendaTimingDecision({
       inboundText,
-      clinic
+      clinic,
+      conversation,
+      contact,
+      channel,
+      safeContext
     });
-    decisionSource = 'agenda_datetime_worker';
+    if (decision) {
+      decisionSource = 'agenda_datetime_worker';
+    }
   }
 
   if (!decision && currentState === 'SELECT_APPOINTMENT_SLOT') {
@@ -7761,7 +7837,7 @@ module.exports = {
   __private__: {
     hasAgendaContext,
     resolveActiveAgendaGuardDecision,
-    resolveAskedAppointmentDatetimeDecision,
+    resolveAgendaTimingDecision,
     createBotReservationFromSuggestion,
     buildAppointmentFlowResetPatch,
     buildConfirmedContextPatch,

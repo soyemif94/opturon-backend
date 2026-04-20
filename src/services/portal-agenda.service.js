@@ -722,13 +722,6 @@ async function createClinicAgendaBotReservation(payload = {}, options = {}) {
     return dayAvailability;
   }
 
-  if (!hasExplicitAvailability(dayAvailability.days)) {
-    return buildReason('agenda_bot_availability_not_configured', null, {
-      clinicId: context.clinic.id,
-      date: baseDate || null
-    });
-  }
-
   const validation = validateCreatePayload(
     {
       ...payload,

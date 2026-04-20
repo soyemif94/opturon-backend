@@ -63,6 +63,9 @@ function parseWeekday(text) {
 
 function parseDateISO(text) {
   const normalized = normalizeText(text);
+  const relativeDate = parseRelativeDateISO(normalized);
+  if (relativeDate) return relativeDate;
+
   const match = normalized.match(/(?:^|\s)(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?(?=\s|$)/);
   if (!match) return null;
 
@@ -85,11 +88,28 @@ function parseDateISO(text) {
   return `${year}-${pad2(month)}-${pad2(day)}`;
 }
 
+function parseRelativeDateISO(normalizedText) {
+  let daysToAdd = null;
+  if (/(^|\s)pasado manana(\s|$)/.test(normalizedText)) {
+    daysToAdd = 2;
+  } else if (/(^|\s)manana(\s|$)/.test(normalizedText)) {
+    daysToAdd = 1;
+  } else if (/(^|\s)hoy(\s|$)/.test(normalizedText)) {
+    daysToAdd = 0;
+  }
+
+  if (daysToAdd === null) return null;
+
+  const localNow = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const target = new Date(localNow.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+  return `${target.getUTCFullYear()}-${pad2(target.getUTCMonth() + 1)}-${pad2(target.getUTCDate())}`;
+}
+
 function parseTimeWindow(text) {
   const normalized = normalizeText(text);
-  if (/(manana|temprano)/.test(normalized)) return { key: 'morning', label: 'mañana' };
   if (/\btarde\b/.test(normalized)) return { key: 'afternoon', label: 'tarde' };
   if (/\bnoche\b/.test(normalized)) return { key: 'evening', label: 'noche' };
+  if (/(manana|temprano)/.test(normalized)) return { key: 'morning', label: 'mañana' };
   return null;
 }
 
@@ -110,7 +130,7 @@ function parseAppointmentText(text) {
   const time = parseTime(raw);
   const weekday = parseWeekday(raw);
   const dateISO = parseDateISO(raw);
-  const timeWindow = parseTimeWindow(raw);
+  const timeWindow = time ? null : parseTimeWindow(raw);
 
   const hasDayOrDate = !!(weekday || dateISO);
   const hasTime = !!time;
