@@ -51,16 +51,21 @@ function countPrimaryAccounts(users) {
 function buildPortalUsersMeta(users, limitConfig, primaryPortalUserId = null) {
   const subaccountCount = countSubaccounts(users);
   const primaryAccountCount = countPrimaryAccounts(users);
-  const subaccountLimit = Number(limitConfig && limitConfig.subaccountLimit) || 0;
+  const unlimitedSubaccounts = Boolean(limitConfig && limitConfig.unlimitedSubaccounts);
+  const subaccountLimit = unlimitedSubaccounts ? null : Number(limitConfig && limitConfig.subaccountLimit) || 0;
+  const remainingSubaccounts = unlimitedSubaccounts ? null : Math.max(0, subaccountLimit - subaccountCount);
 
   return {
     subaccountCount,
     primaryAccountCount,
     primaryPortalUserId: primaryPortalUserId || null,
     subaccountLimit,
-    remainingSubaccounts: Math.max(0, subaccountLimit - subaccountCount),
+    remainingSubaccounts,
     futureLimitKey: PORTAL_USERS_LIMIT_KEY,
-    limitScope: 'subaccounts',
+    limitScope: unlimitedSubaccounts ? 'opturon_admin' : 'subaccounts',
+    limitApplies: !unlimitedSubaccounts,
+    accountScope: limitConfig && limitConfig.accountScope ? limitConfig.accountScope : 'client',
+    unlimitedSubaccounts,
     limitSource: limitConfig && limitConfig.source ? limitConfig.source : 'default_env'
   };
 }
@@ -85,6 +90,8 @@ async function resolvePrimaryPortalUserId(clinicId, users, client = null) {
     return {
       primaryPortalUserId: explicitPrimaryId,
       subaccountLimit: config.subaccountLimit,
+      unlimitedSubaccounts: config.unlimitedSubaccounts,
+      accountScope: config.accountScope,
       limitSource: config.limitSource,
       source: 'clinic_settings'
     };
@@ -101,6 +108,8 @@ async function resolvePrimaryPortalUserId(clinicId, users, client = null) {
   return {
     primaryPortalUserId: inferredPrimaryId,
     subaccountLimit: config.subaccountLimit,
+    unlimitedSubaccounts: config.unlimitedSubaccounts,
+    accountScope: config.accountScope,
     limitSource: config.limitSource,
     source: inferredPrimaryId ? (ownerUser ? 'backfilled_owner' : 'backfilled_first_portal_user') : 'none'
   };
@@ -123,7 +132,12 @@ async function listPortalUsers(tenantId) {
     activity: await listPortalUserAuditEventsByClinicId(context.clinic.id, 10),
     meta: buildPortalUsersMeta(
       users,
-      { subaccountLimit: accountConfig.subaccountLimit, source: accountConfig.limitSource },
+      {
+        subaccountLimit: accountConfig.subaccountLimit,
+        unlimitedSubaccounts: accountConfig.unlimitedSubaccounts,
+        accountScope: accountConfig.accountScope,
+        source: accountConfig.limitSource
+      },
       accountConfig.primaryPortalUserId
     )
   };
@@ -156,12 +170,17 @@ async function invitePortalUser(tenantId, payload, options = {}) {
       );
       const currentMeta = buildPortalUsersMeta(
         normalizedCurrentUsers,
-        { subaccountLimit: accountConfig.subaccountLimit, source: accountConfig.limitSource },
+        {
+          subaccountLimit: accountConfig.subaccountLimit,
+          unlimitedSubaccounts: accountConfig.unlimitedSubaccounts,
+          accountScope: accountConfig.accountScope,
+          source: accountConfig.limitSource
+        },
         accountConfig.primaryPortalUserId
       );
 
       const isPrimarySlotTaken = Boolean(accountConfig.primaryPortalUserId);
-      if (isPrimarySlotTaken && currentMeta.subaccountCount >= currentMeta.subaccountLimit) {
+      if (currentMeta.limitApplies && isPrimarySlotTaken && currentMeta.subaccountCount >= currentMeta.subaccountLimit) {
         return {
           error: 'tenant_subaccount_limit_reached',
           meta: currentMeta
@@ -211,7 +230,12 @@ async function invitePortalUser(tenantId, payload, options = {}) {
         user: normalizedCreatedUser,
         meta: buildPortalUsersMeta(
           normalizedNextUsers,
-          { subaccountLimit: accountConfig.subaccountLimit, source: accountConfig.limitSource },
+          {
+            subaccountLimit: accountConfig.subaccountLimit,
+            unlimitedSubaccounts: accountConfig.unlimitedSubaccounts,
+            accountScope: accountConfig.accountScope,
+            source: accountConfig.limitSource
+          },
           primaryPortalUserId
         )
       };
@@ -355,6 +379,8 @@ async function assignPrimaryPortalUser(tenantId, userId, options = {}) {
         normalizedUsers,
         {
           subaccountLimit: accountConfig.subaccountLimit,
+          unlimitedSubaccounts: accountConfig.unlimitedSubaccounts,
+          accountScope: accountConfig.accountScope,
           source: accountConfig.limitSource
         },
         safeUserId

@@ -28,6 +28,53 @@ function parsePositiveLimit(value) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function normalizeString(value) {
+  return String(value || '').trim();
+}
+
+function normalizePortalAccountScope(settings) {
+  const candidates = [
+    settings?.portal?.accountScope,
+    settings?.portal?.scope,
+    settings?.accountScope,
+    settings?.tenantScope
+  ];
+
+  for (const value of candidates) {
+    const normalized = normalizeString(value).toLowerCase();
+    if (normalized === 'opturon_admin' || normalized === 'global_admin' || normalized === 'superadmin') {
+      return 'opturon_admin';
+    }
+    if (normalized === 'client' || normalized === 'customer') {
+      return 'client';
+    }
+  }
+
+  if (settings?.portal?.isOpturonAdmin === true || settings?.portal?.isGlobalAdmin === true) {
+    return 'opturon_admin';
+  }
+
+  return 'client';
+}
+
+function buildPortalAccountConfig(settings) {
+  const accountScope = normalizePortalAccountScope(settings);
+  const primaryPortalUserId = normalizeString(settings?.portal?.primaryPortalUserId) || null;
+  const explicitLimit =
+    parsePositiveLimit(settings?.portal?.limits?.subaccounts) ??
+    parsePositiveLimit(settings?.portal?.userLimits?.subaccounts) ??
+    parsePositiveLimit(settings?.portal?.subaccountLimit);
+  const unlimitedSubaccounts = accountScope === 'opturon_admin';
+
+  return {
+    accountScope,
+    primaryPortalUserId,
+    subaccountLimit: unlimitedSubaccounts ? null : explicitLimit || DEFAULT_PORTAL_SUBACCOUNT_LIMIT,
+    unlimitedSubaccounts,
+    limitSource: unlimitedSubaccounts ? 'opturon_admin_scope' : explicitLimit ? 'clinic_settings' : 'default_env'
+  };
+}
+
 async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
@@ -94,14 +141,13 @@ async function getClinicPortalSubaccountLimitById(clinicId, client = null) {
   );
 
   const settings = parseClinicSettings(result.rows[0]?.settings);
-  const explicitLimit =
-    parsePositiveLimit(settings?.portal?.limits?.subaccounts) ??
-    parsePositiveLimit(settings?.portal?.userLimits?.subaccounts) ??
-    parsePositiveLimit(settings?.portal?.subaccountLimit);
+  const config = buildPortalAccountConfig(settings);
 
   return {
-    subaccountLimit: explicitLimit || DEFAULT_PORTAL_SUBACCOUNT_LIMIT,
-    source: explicitLimit ? 'clinic_settings' : 'default_env'
+    subaccountLimit: config.subaccountLimit,
+    unlimitedSubaccounts: config.unlimitedSubaccounts,
+    accountScope: config.accountScope,
+    source: config.limitSource
   };
 }
 
@@ -116,17 +162,7 @@ async function getClinicPortalAccountConfigById(clinicId, client = null) {
   );
 
   const settings = parseClinicSettings(result.rows[0]?.settings);
-  const primaryPortalUserId = String(settings?.portal?.primaryPortalUserId || '').trim() || null;
-  const explicitLimit =
-    parsePositiveLimit(settings?.portal?.limits?.subaccounts) ??
-    parsePositiveLimit(settings?.portal?.userLimits?.subaccounts) ??
-    parsePositiveLimit(settings?.portal?.subaccountLimit);
-
-  return {
-    primaryPortalUserId,
-    subaccountLimit: explicitLimit || DEFAULT_PORTAL_SUBACCOUNT_LIMIT,
-    limitSource: explicitLimit ? 'clinic_settings' : 'default_env'
-  };
+  return buildPortalAccountConfig(settings);
 }
 
 async function updateClinicPortalPrimaryUserIdById(clinicId, primaryPortalUserId, client = null) {
