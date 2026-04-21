@@ -5,7 +5,11 @@ const {
   updateAutomationById,
   deleteAutomationById
 } = require('../repositories/automations.repository');
-const { getClinicBusinessProfileById } = require('../repositories/tenant.repository');
+const {
+  getClinicBusinessProfileById,
+  getClinicBotSettingsById,
+  updateClinicBotRuntimeConfigById
+} = require('../repositories/tenant.repository');
 const {
   listAutomationTemplates,
   findAutomationTemplateByKey,
@@ -28,6 +32,7 @@ const RUNTIME_TEMPLATE_MAP = {
   conversation_human_handoff: ['Conversational Menu Human'],
   conversation_fallback: ['Conversational Menu Fallback']
 };
+const GENERATED_SALES_BOT_TEMPLATE_KEY = 'generated_sales_bot';
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -99,6 +104,29 @@ function buildTemplateAvailability(template, tenantTemplate, businessProfile, au
   };
 }
 
+function getRegisteredGeneratedBotRuntime(clinic) {
+  const botSettings = clinic && clinic.botSettings && typeof clinic.botSettings === 'object' ? clinic.botSettings : {};
+  const runtimeConfig = botSettings.runtimeConfig && typeof botSettings.runtimeConfig === 'object' ? botSettings.runtimeConfig : null;
+  if (!runtimeConfig || runtimeConfig.templateKey !== GENERATED_SALES_BOT_TEMPLATE_KEY) return null;
+  return runtimeConfig;
+}
+
+function withGeneratedRuntimeAvailability(template, availability, clinic) {
+  if (!template || template.key !== GENERATED_SALES_BOT_TEMPLATE_KEY) return availability;
+  const runtimeConfig = getRegisteredGeneratedBotRuntime(clinic);
+  const runtimeEnabled = Boolean(runtimeConfig && runtimeConfig.enabled === true);
+
+  return {
+    ...availability,
+    linkedAutomationIds: [],
+    linkedAutomationCount: runtimeConfig ? 1 : 0,
+    managedBy: 'runtime_config',
+    runtimeEnabled,
+    tenantEnabled: runtimeEnabled,
+    effectiveEnabled: runtimeEnabled
+  };
+}
+
 function normalizeConditions(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return {};
@@ -154,16 +182,21 @@ async function listPortalAutomations(tenantId) {
     return context;
   }
 
-  const [automations, clinic, templates, tenantTemplates] = await Promise.all([
+  const [automations, clinic, botClinic, templates, tenantTemplates] = await Promise.all([
     listAutomationsByClinicId(context.clinic.id),
     getClinicBusinessProfileById(context.clinic.id),
+    getClinicBotSettingsById(context.clinic.id),
     listAutomationTemplates(),
     listTenantAutomationTemplatesByClinicId(context.clinic.id)
   ]);
   const businessProfile = await normalizeBusinessProfileSnapshot(clinic || context.clinic, clinic && clinic.businessProfile, context);
   const tenantTemplateMap = new Map(tenantTemplates.map((item) => [item.templateKey, item]));
   const catalog = templates.map((template) =>
-    buildTemplateAvailability(template, tenantTemplateMap.get(template.key) || null, businessProfile, automations)
+    withGeneratedRuntimeAvailability(
+      template,
+      buildTemplateAvailability(template, tenantTemplateMap.get(template.key) || null, businessProfile, automations),
+      botClinic
+    )
   );
 
   return {
@@ -254,9 +287,10 @@ async function updatePortalAutomationTemplate(tenantId, templateKey, payload) {
     return buildReason('invalid_automation_template_enabled', null, { tenantId: context.tenantId });
   }
 
-  const [template, clinic, automations] = await Promise.all([
+  const [template, clinic, botClinic, automations] = await Promise.all([
     findAutomationTemplateByKey(normalizedTemplateKey),
     getClinicBusinessProfileById(context.clinic.id),
+    getClinicBotSettingsById(context.clinic.id),
     listAutomationsByClinicId(context.clinic.id)
   ]);
 
@@ -265,7 +299,11 @@ async function updatePortalAutomationTemplate(tenantId, templateKey, payload) {
   }
 
   const businessProfile = await normalizeBusinessProfileSnapshot(clinic || context.clinic, clinic && clinic.businessProfile, context);
-  const currentTemplate = buildTemplateAvailability(template, null, businessProfile, automations);
+  const currentTemplate = withGeneratedRuntimeAvailability(
+    template,
+    buildTemplateAvailability(template, null, businessProfile, automations),
+    botClinic
+  );
   if (payload.enabled === true && !currentTemplate.compatible) {
     return buildReason('automation_template_incompatible', null, {
       tenantId: context.tenantId,
@@ -294,11 +332,30 @@ async function updatePortalAutomationTemplate(tenantId, templateKey, payload) {
     }
   });
 
+  let updatedBotClinic = botClinic;
+  if (normalizedTemplateKey === GENERATED_SALES_BOT_TEMPLATE_KEY) {
+    const runtimeConfig = getRegisteredGeneratedBotRuntime(botClinic);
+    if (!runtimeConfig && payload.enabled === true) {
+      return buildReason('generated_runtime_config_not_found', null, { tenantId: context.tenantId });
+    }
+    if (runtimeConfig) {
+      updatedBotClinic = await updateClinicBotRuntimeConfigById(context.clinic.id, {
+        ...runtimeConfig,
+        enabled: payload.enabled === true,
+        templateKey: GENERATED_SALES_BOT_TEMPLATE_KEY
+      });
+    }
+  }
+
   const nextAutomations = automations.map((automation) => {
     const updated = updatedAutomations.find((item) => item.id === automation.id);
     return updated || automation;
   });
-  const nextTemplate = buildTemplateAvailability(template, tenantTemplate, businessProfile, nextAutomations);
+  const nextTemplate = withGeneratedRuntimeAvailability(
+    template,
+    buildTemplateAvailability(template, tenantTemplate, businessProfile, nextAutomations),
+    updatedBotClinic
+  );
 
   return {
     ok: true,

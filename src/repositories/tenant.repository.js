@@ -130,6 +130,74 @@ async function findClinicByExternalTenantId(externalTenantId, client = null) {
   return result.rows[0] || null;
 }
 
+async function provisionCleanClinicForExternalTenant(input, client = null) {
+  const safeExternalTenantId = normalizeString(input && input.externalTenantId);
+  const safeName = normalizeString(input && input.name) || safeExternalTenantId;
+  const safeTimezone = normalizeString(input && input.timezone) || 'America/Argentina/Buenos_Aires';
+
+  if (!safeExternalTenantId) {
+    throw new Error('missing_external_tenant_id');
+  }
+
+  const existing = await findClinicByExternalTenantId(safeExternalTenantId, client);
+  if (existing) {
+    const result = await dbQuery(
+      client,
+      `UPDATE clinics
+       SET name = COALESCE(NULLIF($2, ''), name),
+           timezone = COALESCE(NULLIF($3, ''), timezone),
+           settings = COALESCE(settings, '{}'::jsonb),
+           "updatedAt" = NOW()
+       WHERE id = $1::uuid
+       RETURNING id, name, timezone, "externalTenantId", settings`,
+      [existing.id, safeName, safeTimezone]
+    );
+
+    return result.rows[0] || null;
+  }
+
+  const result = await dbQuery(
+    client,
+    `INSERT INTO clinics (name, timezone, "externalTenantId", settings, "updatedAt")
+     VALUES (
+       $1,
+       $2,
+       $3,
+       jsonb_build_object(
+         'portal', jsonb_build_object('accountScope', 'client'),
+         'businessProfile', jsonb_build_object(
+           'legalName', '',
+           'taxId', '',
+           'taxIdType', 'NONE',
+           'vatCondition', '',
+           'grossIncomeNumber', '',
+           'fiscalAddress', '',
+           'city', '',
+           'province', '',
+           'pointOfSaleSuggested', '',
+           'defaultSuggestedFiscalVoucherType', 'NONE',
+           'accountantEmail', '',
+           'accountantName', '',
+           'profileImageUrl', '',
+           'openingHours', '',
+           'address', '',
+           'deliveryZones', '',
+           'paymentMethods', '',
+           'policies', '',
+           'businessType', 'services_general',
+           'capabilities', '[]'::jsonb
+         ),
+         'bot', jsonb_build_object('mode', 'automatic')
+       ),
+       NOW()
+     )
+     RETURNING id, name, timezone, "externalTenantId", settings`,
+    [safeName, safeTimezone, safeExternalTenantId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function getClinicPortalSubaccountLimitById(clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -642,6 +710,7 @@ module.exports = {
   findChannelById,
   findChannelByIdAndClinicId,
   findClinicByExternalTenantId,
+  provisionCleanClinicForExternalTenant,
   getClinicPortalAccountConfigById,
   getClinicPortalSubaccountLimitById,
   updateClinicPortalPrimaryUserIdById,

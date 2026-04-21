@@ -95,6 +95,7 @@ const aiBudget = new Map();
 const APPOINTMENT_REMINDER_LEAD_MINUTES = Number(env.appointmentReminderLeadMinutes || 30);
 const APPOINTMENT_REMINDER_SWEEP_MS = Number(env.appointmentReminderSweepMs || 60000);
 const APPOINTMENT_REMINDER_CLAIM_TTL_MINUTES = Number(env.appointmentReminderClaimTtlMinutes || 10);
+const GENERATED_SALES_BOT_TEMPLATE_KEY = 'generated_sales_bot';
 
 function sanitizeDatabaseUrl(databaseUrl) {
   const raw = String(databaseUrl || '').trim();
@@ -2492,6 +2493,7 @@ function buildExecutableBotConfigFromPreview(onboardingData, generatedPreview) {
   }
 
   return {
+    templateKey: GENERATED_SALES_BOT_TEMPLATE_KEY,
     enabled: true,
     type,
     tone,
@@ -2607,6 +2609,7 @@ function getActiveGeneratedBotConfig(clinic) {
     ? settings.bot.runtimeConfig
     : null;
   if (!config || config.enabled !== true) return null;
+  if (String(config.templateKey || '').trim() !== GENERATED_SALES_BOT_TEMPLATE_KEY) return null;
   return config;
 }
 

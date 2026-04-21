@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   getPortalTenantContext,
+  postPortalTenantProvision,
   getPortalConversations,
   getPortalConversation,
   updatePortalConversation,
@@ -116,6 +117,7 @@ const { requirePortalInternalAuth } = require('../middlewares/portal-internal-au
 const router = express.Router();
 
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
+router.post('/tenants/:tenantId/provision', requirePortalInternalAuth, postPortalTenantProvision);
 router.get('/tenants/:tenantId/conversations', getPortalConversations);
 router.patch('/tenants/:tenantId/conversations/archive', patchPortalConversationsArchive);
 router.patch('/tenants/:tenantId/conversations/restore', patchPortalConversationsRestore);

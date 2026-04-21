@@ -126,6 +126,7 @@ const {
   getPortalBotTransferConfig,
   updatePortalBotTransferConfig
 } = require('../services/portal-bot-settings.service');
+const { provisionPortalTenant } = require('../services/portal-provisioning.service');
 const {
   createPortalWhatsAppSignupSession,
   getPortalWhatsAppSignupStatus,
@@ -170,6 +171,29 @@ async function getPortalTenantContext(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_tenant_context_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalTenantProvision(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await provisionPortalTenant(tenantId, req.body || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 500;
+      return res.status(status).json({ success: false, error: result.reason, details: result.detail || null });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_tenant_provision_failed',
       details: error.message
     });
   }
@@ -3755,6 +3779,7 @@ async function postPortalBotTransferConfigController(req, res) {
 
 module.exports = {
   getPortalTenantContext,
+  postPortalTenantProvision,
   getPortalConversations,
   getPortalConversation,
   updatePortalConversation,
