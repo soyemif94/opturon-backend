@@ -3351,7 +3351,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
   if (
     isPublicDemoExperienceIntent(inboundText) &&
-    ['READY', 'NEW', 'IDLE', 'POST_CONFIRMATION'].includes(currentState)
+    currentState !== 'PAYMENT_TRANSFER'
   ) {
     return buildDemoEntryDecision();
   }
@@ -7896,6 +7896,7 @@ module.exports = {
     resolveBotDomainRoute,
     buildActiveBotDomainPatch,
     buildDemoExperienceReply,
+    resolveCommerceDecision,
     resolveActiveAgendaGuardDecision,
     resolveAgendaTimingDecision,
     createBotReservationFromSuggestion,
