@@ -37,6 +37,18 @@ async function listAutomationsByClinicId(clinicId, client = null) {
   return result.rows.map(normalizeAutomation);
 }
 
+async function countAutomationsByClinicId(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT COUNT(*)::int AS count
+     FROM automations
+     WHERE "clinicId" = $1::uuid`,
+    [clinicId]
+  );
+
+  return Number(result.rows[0] && result.rows[0].count ? result.rows[0].count : 0);
+}
+
 async function findAutomationByClinicIdAndName(clinicId, name, client = null) {
   const result = await dbQuery(
     client,
@@ -150,6 +162,7 @@ async function deleteAutomationById(clinicId, automationId, client = null) {
 
 module.exports = {
   listAutomationsByClinicId,
+  countAutomationsByClinicId,
   findAutomationByClinicIdAndName,
   createAutomation,
   updateAutomation,

@@ -254,6 +254,20 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
   return result.rows;
 }
 
+async function countActiveContactsByClinicId(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT COUNT(*)::int AS count
+     FROM contacts
+     WHERE "clinicId" = $1
+       AND COALESCE(status, 'active') = 'active'
+       AND "deletedAt" IS NULL`,
+    [clinicId]
+  );
+
+  return Number(result.rows[0] && result.rows[0].count ? result.rows[0].count : 0);
+}
+
 async function archivePortalContactsByIds(clinicId, contactIds = [], client = null) {
   const ids = Array.isArray(contactIds) ? contactIds.filter(Boolean) : [];
   if (!ids.length) return [];
@@ -696,6 +710,7 @@ module.exports = {
   findContactById,
   findContactByIdAndClinicId,
   listContactsByClinicId,
+  countActiveContactsByClinicId,
   updateContact,
   // Portal/client-facing scoped helpers.
   findPortalContactById,

@@ -171,7 +171,27 @@ async function provisionCleanClinicForExternalTenant(input, client = null) {
        $2,
        $3,
        jsonb_build_object(
-         'portal', jsonb_build_object('accountScope', 'client'),
+         'portal', jsonb_build_object(
+           'accountScope', 'client',
+           'policy', jsonb_build_object(
+             'planCode', 'basic',
+             'limits', jsonb_build_object(
+               'maxPortalUsers', ${DEFAULT_PORTAL_SUBACCOUNT_LIMIT},
+               'maxAutomations', 20,
+               'maxContacts', 1000
+             ),
+             'capabilities', '[]'::jsonb,
+             'enabledModules', jsonb_build_object(
+               'inbox', true,
+               'agenda', true,
+               'catalog', true,
+               'automations', true,
+               'sales', true,
+               'loyalty', true,
+               'payments', true
+             )
+           )
+         ),
          'businessProfile', jsonb_build_object(
            'legalName', '',
            'taxId', '',

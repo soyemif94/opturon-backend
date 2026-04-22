@@ -1,6 +1,7 @@
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   listContactsByClinicId,
+  countActiveContactsByClinicId,
   findPortalContactById,
   createPortalContact,
   updatePortalContactById,
@@ -166,6 +167,19 @@ async function createPortalContactRecord(tenantId, payload) {
       tenantId: context.tenantId,
       clinic: context.clinic,
       reason: 'invalid_contact_profile_image_url'
+    };
+  }
+
+  const currentCount = await countActiveContactsByClinicId(context.clinic.id);
+  const maxContacts = Number(context.policy && context.policy.limits ? context.policy.limits.maxContacts : 0);
+  if (Number.isInteger(maxContacts) && currentCount >= maxContacts) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      reason: 'tenant_contact_limit_reached',
+      limit: maxContacts,
+      currentCount
     };
   }
 

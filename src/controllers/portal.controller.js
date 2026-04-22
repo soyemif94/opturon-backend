@@ -1186,6 +1186,8 @@ async function postPortalContact(req, res) {
         result.reason === 'missing_contact_name' ||
         result.reason === 'invalid_contact_email'
           ? 400
+          : result.reason === 'tenant_contact_limit_reached'
+            ? 409
           : result.reason === 'duplicate_contact_identity'
             ? 409
             : 404;
@@ -2951,6 +2953,8 @@ async function postPortalAutomation(req, res) {
         result.reason === 'missing_automation_message' ||
         result.reason === 'missing_automation_tag'
           ? 400
+          : result.reason === 'tenant_automation_limit_reached'
+            ? 409
           : 404;
 
       return res.status(status).json({

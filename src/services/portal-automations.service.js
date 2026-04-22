@@ -1,6 +1,7 @@
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   createAutomation,
+  countAutomationsByClinicId,
   listAutomationsByClinicId,
   updateAutomationById,
   deleteAutomationById
@@ -229,6 +230,16 @@ async function createPortalAutomation(tenantId, payload) {
   const reason = validateAutomationPayload(input);
   if (reason) {
     return buildReason(reason, null, { tenantId: context.tenantId });
+  }
+
+  const currentCount = await countAutomationsByClinicId(context.clinic.id);
+  const maxAutomations = Number(context.policy && context.policy.limits ? context.policy.limits.maxAutomations : 0);
+  if (Number.isInteger(maxAutomations) && currentCount >= maxAutomations) {
+    return buildReason('tenant_automation_limit_reached', null, {
+      tenantId: context.tenantId,
+      limit: maxAutomations,
+      currentCount
+    });
   }
 
   const automation = await createAutomation({

@@ -21,6 +21,11 @@ const DEFAULT_LIMITS = {
   maxAutomations: 20,
   maxContacts: 1000
 };
+const MAX_LIMITS = {
+  maxPortalUsers: 10000,
+  maxAutomations: 10000,
+  maxContacts: 1000000
+};
 
 const DEFAULT_MODULES = Object.freeze({
   inbox: true,
@@ -57,22 +62,31 @@ function normalizeCapabilities(value) {
   return Array.from(new Set(items.map((item) => normalizeString(item).toLowerCase()).filter((item) => CAPABILITIES.has(item))));
 }
 
-function parsePositiveInt(value, fallback) {
+function parsePositiveInt(value, fallback, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+  if (!Number.isInteger(parsed) || parsed < 0) return fallback;
+  return Math.min(parsed, max);
 }
 
 function normalizeLimits(value) {
   const limits = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   return {
-    maxPortalUsers: parsePositiveInt(limits.maxPortalUsers ?? limits.portalUsers ?? limits.subaccounts, DEFAULT_LIMITS.maxPortalUsers),
-    maxAutomations: parsePositiveInt(limits.maxAutomations, DEFAULT_LIMITS.maxAutomations),
-    maxContacts: parsePositiveInt(limits.maxContacts, DEFAULT_LIMITS.maxContacts)
+    maxPortalUsers: parsePositiveInt(limits.maxPortalUsers ?? limits.portalUsers ?? limits.subaccounts, DEFAULT_LIMITS.maxPortalUsers, MAX_LIMITS.maxPortalUsers),
+    maxAutomations: parsePositiveInt(limits.maxAutomations, DEFAULT_LIMITS.maxAutomations, MAX_LIMITS.maxAutomations),
+    maxContacts: parsePositiveInt(limits.maxContacts, DEFAULT_LIMITS.maxContacts, MAX_LIMITS.maxContacts)
   };
 }
 
-function normalizeEnabledModules(value) {
+function pickBooleanModules(value) {
   const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return MODULES.reduce((acc, key) => {
+    if (typeof input[key] === 'boolean') acc[key] = input[key];
+    return acc;
+  }, {});
+}
+
+function normalizeEnabledModules(value) {
+  const input = pickBooleanModules(value);
   return MODULES.reduce((acc, key) => {
     acc[key] = input[key] === undefined ? DEFAULT_MODULES[key] : input[key] === true;
     return acc;
@@ -95,6 +109,8 @@ function buildTenantPolicyFromSettings(settings) {
       ...(policy.limits || {}),
       maxPortalUsers:
         policy.limits?.maxPortalUsers ??
+        policy.limits?.portalUsers ??
+        policy.limits?.subaccounts ??
         portal.maxPortalUsers ??
         legacyLimit.maxPortalUsers ??
         legacyLimit.subaccounts ??
@@ -161,7 +177,7 @@ async function updateTenantPolicyByExternalTenantId(externalTenantId, payload) {
     capabilities: input.capabilities === undefined ? current.policy.capabilities : input.capabilities,
     enabledModules: {
       ...current.policy.enabledModules,
-      ...(input.enabledModules && typeof input.enabledModules === 'object' && !Array.isArray(input.enabledModules) ? input.enabledModules : {})
+      ...pickBooleanModules(input.enabledModules)
     }
   });
   const result = await query(
