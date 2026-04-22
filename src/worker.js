@@ -302,6 +302,10 @@ const BOT_ROUTER_COMMERCE_STATES = new Set([
   'WAITING_QUANTITY'
 ]);
 
+const BOT_ROUTER_DEMO_STATES = new Set([
+  'DEMO'
+]);
+
 function parseClinicSettingsObject(clinic) {
   if (!clinic || typeof clinic !== 'object') return {};
   const raw = clinic.settings;
@@ -344,6 +348,17 @@ function hasAgendaContext(safeContext) {
       context.appointmentSelectedSlot ||
       context.appointmentSuggestionsForDate ||
       (Array.isArray(context.appointmentSuggestions) && context.appointmentSuggestions.length > 0)
+  );
+}
+
+function hasDemoContext(safeContext) {
+  const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
+  const demoStep = Number(context.commerceDemoStep || 0);
+  const activationState = String(context.commerceActivationOfferState || '').trim().toLowerCase();
+  return (
+    activationState === 'demo' ||
+    String(context.demoEntrySource || '').trim().length > 0 ||
+    (Number.isInteger(demoStep) && demoStep > 0)
   );
 }
 
@@ -408,6 +423,9 @@ function normalizeConversationBotFlowLock(safeContext) {
 }
 
 function resolveConversationDomain({ currentState, safeContext }) {
+  if (BOT_ROUTER_DEMO_STATES.has(currentState) || hasDemoContext(safeContext)) {
+    return 'demo';
+  }
   if (BOT_ROUTER_APPOINTMENT_STATES.has(currentState) || hasAgendaContext(safeContext)) {
     return 'agenda';
   }
@@ -432,6 +450,8 @@ function resolveBotDomainRoute({
   const botFlowLock = normalizeConversationBotFlowLock(safeContext);
   const overrideDomain = normalizeConversationBotDomainOverride(safeContext);
   const activeDomain = resolveConversationDomain({ currentState, safeContext });
+  const demoIntent = isPublicDemoExperienceIntent(inboundText);
+  const demoContextActive = activeDomain === 'demo';
   const agendaIntent = looksLikeAgendaIntent({ inboundText, intent, managementIntent });
   const runtimeConfiguredCommerceIntent =
     configuredBotActive &&
@@ -448,6 +468,26 @@ function resolveBotDomainRoute({
     intent === 'pricing' ||
     isExplicitCommerceTrigger(inboundText) ||
     runtimeConfiguredCommerceIntent;
+
+  if (
+    (demoContextActive || demoIntent) &&
+    botFlowLock !== 'agenda' &&
+    overrideDomain !== 'agenda' &&
+    !BOT_ROUTER_APPOINTMENT_STATES.has(currentState) &&
+    !hasAgendaContext(safeContext)
+  ) {
+    return {
+      botMode,
+      domain: 'demo',
+      allowCommerce: true,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      botFlowLock,
+      reason: demoContextActive ? 'demo_context' : 'public_demo_intent'
+    };
+  }
 
   if (botFlowLock === 'agenda') {
     return {
@@ -605,6 +645,16 @@ function resolveBotDomainRoute({
 function buildActiveBotDomainPatch({ decisionSource, botRoute, currentState, nextState, safeContext }) {
   const safeDecisionSource = String(decisionSource || '').trim().toLowerCase();
   const safeNextState = String(nextState || '').trim().toUpperCase();
+
+  if (
+    safeDecisionSource.startsWith('demo') ||
+    botRoute.domain === 'demo' ||
+    BOT_ROUTER_DEMO_STATES.has(currentState) ||
+    BOT_ROUTER_DEMO_STATES.has(safeNextState) ||
+    hasDemoContext(safeContext)
+  ) {
+    return { activeBotDomain: 'demo' };
+  }
 
   if (safeDecisionSource.startsWith('commerce') || BOT_ROUTER_COMMERCE_STATES.has(safeNextState)) {
     return { activeBotDomain: 'commerce' };
@@ -6334,6 +6384,8 @@ async function processConversationReplyJob(job) {
       ? 'agenda'
       : botRoute.domain === 'agenda'
         ? 'agenda'
+        : botRoute.domain === 'demo'
+          ? 'demo'
         : botRoute.domain === 'commerce'
           ? 'commerce'
           : 'fallback';
@@ -6466,7 +6518,7 @@ async function processConversationReplyJob(job) {
   const workerOwnsCommerceFlow =
     !qaAgendaBypassActive &&
     !shouldPrioritizeAgendaFlow &&
-    botRoute.domain === 'commerce';
+    (botRoute.domain === 'commerce' || botRoute.domain === 'demo');
   const automationRuntime = qaAgendaBypassActive
     ? {
       replyText: null,
@@ -6515,14 +6567,14 @@ async function processConversationReplyJob(job) {
   });
 
   if (workerOwnsCommerceFlow) {
-    logInfo('automation_runtime_skipped_for_commerce_source_of_truth', {
+    logInfo(botRoute.domain === 'demo' ? 'automation_runtime_skipped_for_demo_source_of_truth' : 'automation_runtime_skipped_for_commerce_source_of_truth', {
       requestId,
       jobId: job.id,
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
       currentState,
       inboundText: normalizedInboundText,
-      sourcePath: 'worker.commerce'
+      sourcePath: botRoute.domain === 'demo' ? 'worker.demo' : 'worker.commerce'
     });
   }
 
@@ -6579,7 +6631,7 @@ async function processConversationReplyJob(job) {
     };
     decisionSource = 'automation';
   }
-  if (!decision && !qaAgendaBypassActive && !shouldPrioritizeAgendaFlow && botRoute.allowCommerce) {
+  if (!decision && !qaAgendaBypassActive && !shouldPrioritizeAgendaFlow && botRoute.allowCommerce && botRoute.domain !== 'demo') {
     const configuredBotDecision = resolveConfiguredSalesBotReply({
       clinic,
       inboundText,
@@ -6609,8 +6661,8 @@ async function processConversationReplyJob(job) {
         inboundMessage
       });
       if (decision) {
-        decisionSource = 'commerce';
-        logInfo('commerce_flow_entered', {
+        decisionSource = botRoute.domain === 'demo' ? 'demo' : 'commerce';
+        logInfo(botRoute.domain === 'demo' ? 'demo_flow_entered' : 'commerce_flow_entered', {
           requestId,
           jobId: job.id,
           conversationId: conversation.id,
@@ -7839,6 +7891,11 @@ module.exports = {
   startWorker,
   __private__: {
     hasAgendaContext,
+    hasDemoContext,
+    isPublicDemoExperienceIntent,
+    resolveBotDomainRoute,
+    buildActiveBotDomainPatch,
+    buildDemoExperienceReply,
     resolveActiveAgendaGuardDecision,
     resolveAgendaTimingDecision,
     createBotReservationFromSuggestion,
