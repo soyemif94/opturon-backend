@@ -1,7 +1,7 @@
 const { setActiveTenantForAdmin } = require('../services/portal-active-tenant.service');
 
 async function postSetActiveTenant(req, res) {
-  const actorUserId = String(req.get('x-portal-actor-id') || (req.body && req.body.actorUserId) || '').trim();
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
   const tenantId = String((req.body && req.body.tenantId) || '').trim();
 
   try {

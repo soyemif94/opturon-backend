@@ -1,3 +1,4 @@
+const env = require('../config/env');
 const { query } = require('../db/client');
 const { findClinicByExternalTenantId } = require('../repositories/tenant.repository');
 
@@ -9,6 +10,16 @@ function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     normalizeString(value)
   );
+}
+
+function hasPortalInternalAuth(req) {
+  const configuredKey = normalizeString(env.portalInternalKey);
+  if (!configuredKey && String(env.nodeEnv || '').toLowerCase() !== 'production') {
+    return true;
+  }
+
+  const providedKey = normalizeString(req.get('x-portal-key'));
+  return Boolean(configuredKey && providedKey && providedKey === configuredKey);
 }
 
 async function findPortalActorContext(actorUserId) {
@@ -60,6 +71,16 @@ async function resolveActiveTenantForRequest(req, requestedTenantId) {
   const defaultTenantId = normalizeString(requestedTenantId);
   const activeTenantId = normalizeString(req.get('x-active-tenant-id'));
   if (!activeTenantId || activeTenantId === defaultTenantId) {
+    return {
+      ok: true,
+      tenantId: defaultTenantId,
+      activeTenantId: null,
+      actor: null,
+      source: 'requested_tenant'
+    };
+  }
+
+  if (!hasPortalInternalAuth(req)) {
     return {
       ok: true,
       tenantId: defaultTenantId,
