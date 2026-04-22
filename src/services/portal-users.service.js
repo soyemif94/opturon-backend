@@ -6,9 +6,9 @@ const {
   updateClinicPortalPrimaryUserIdById
 } = require('../repositories/tenant.repository');
 const {
-  countOwnersByClinicId,
   listPortalUsersByClinicId,
   createPortalUser,
+  updatePortalUserAccountRootById,
   updatePortalUserRole,
   deletePortalUserById,
   findPortalUserByEmail
@@ -85,20 +85,25 @@ function filterClientScopedPortalUsers(users, accountConfig) {
   }
 
   const primaryUser = currentUsers.find((user) => String(user.id) === String(accountConfig.primaryPortalUserId));
-  if (!primaryUser || !primaryUser.createdAt) {
+  if (!primaryUser) {
     return currentUsers;
   }
 
+  const rootId = String(accountConfig.primaryPortalUserId);
   const primaryCreatedAt = new Date(primaryUser.createdAt).getTime();
-  if (!Number.isFinite(primaryCreatedAt)) {
-    return currentUsers;
-  }
 
   return currentUsers.filter((user) => {
-    if (String(user.id) === String(accountConfig.primaryPortalUserId)) return true;
+    if (String(user.id) === rootId) return true;
+    const accountRootUserId = normalizeString(user.accountRootUserId);
+    if (accountRootUserId) return accountRootUserId === rootId;
+    if (!Number.isFinite(primaryCreatedAt)) return false;
     const userCreatedAt = new Date(user.createdAt).getTime();
     return Number.isFinite(userCreatedAt) && userCreatedAt >= primaryCreatedAt;
   });
+}
+
+function countOwners(users) {
+  return (Array.isArray(users) ? users : []).filter((user) => String(user && user.role ? user.role : '').toLowerCase() === 'owner').length;
 }
 
 async function resolvePrimaryPortalUserId(clinicId, users, client = null) {
@@ -212,13 +217,14 @@ async function invitePortalUser(tenantId, payload, options = {}) {
         };
       }
 
-      const createdUser = await createPortalUser(
+      let createdUser = await createPortalUser(
         {
           clinicId: context.clinic.id,
           name,
           email,
           passwordHash: hashSync(password, 10),
-          role
+          role,
+          accountRootUserId: isPrimarySlotTaken ? accountConfig.primaryPortalUserId : null
         },
         client
       );
@@ -226,6 +232,14 @@ async function invitePortalUser(tenantId, payload, options = {}) {
       const primaryPortalUserId = isPrimarySlotTaken ? accountConfig.primaryPortalUserId : createdUser.id;
       if (!isPrimarySlotTaken && primaryPortalUserId) {
         await updateClinicPortalPrimaryUserIdById(context.clinic.id, primaryPortalUserId, client);
+        createdUser = await updatePortalUserAccountRootById(
+          {
+            userId: createdUser.id,
+            clinicId: context.clinic.id,
+            accountRootUserId: primaryPortalUserId
+          },
+          client
+        ) || createdUser;
       }
 
       const normalizedNextUsers = [...scopedCurrentUsers, createdUser].map((user) =>
@@ -302,13 +316,14 @@ async function updatePortalUser(tenantId, userId, payload) {
 
   const user = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
-    const target = current.find((item) => String(item.id) === String(userId));
+    const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
+    const scopedCurrent = filterClientScopedPortalUsers(current, accountConfig);
+    const target = scopedCurrent.find((item) => String(item.id) === String(userId));
     if (!target) return null;
     const previousRole = target.role;
 
     if (target.role === 'owner' && role !== 'owner') {
-      const ownerCount = await countOwnersByClinicId(context.clinic.id, client);
-      if (ownerCount <= 1) {
+      if (countOwners(scopedCurrent) <= 1) {
         const error = new Error('cannot_delete_last_owner');
         error.code = 'LAST_OWNER_ROLE_CHANGE';
         throw error;
@@ -374,13 +389,27 @@ async function assignPrimaryPortalUser(tenantId, userId, options = {}) {
 
   const result = await withTransaction(async (client) => {
     const currentUsers = await listPortalUsersByClinicId(context.clinic.id, client);
-    const target = currentUsers.find((item) => String(item.id) === safeUserId);
-    if (!target) return null;
     const accountConfig = await getClinicPortalAccountConfigById(context.clinic.id, client);
+    const scopedCurrentUsers = filterClientScopedPortalUsers(currentUsers, accountConfig);
+    const target = scopedCurrentUsers.find((item) => String(item.id) === safeUserId);
+    if (!target) return null;
     const previousPrimaryUserId = accountConfig.primaryPortalUserId || null;
 
     await updateClinicPortalPrimaryUserIdById(context.clinic.id, safeUserId, client);
-    const normalizedUsers = currentUsers.map((user) => normalizePortalUserRecord(user, safeUserId));
+    for (const user of scopedCurrentUsers) {
+      await updatePortalUserAccountRootById(
+        {
+          userId: user.id,
+          clinicId: context.clinic.id,
+          accountRootUserId: safeUserId
+        },
+        client
+      );
+    }
+    const normalizedUsers = scopedCurrentUsers.map((user) => normalizePortalUserRecord({
+      ...user,
+      accountRootUserId: safeUserId
+    }, safeUserId));
     await createPortalUserAuditEvent(
       {
         tenantId: context.tenantId,
@@ -441,7 +470,8 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
   const removed = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
     const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
-    const target = current.find((item) => String(item.id) === String(userId));
+    const scopedCurrent = filterClientScopedPortalUsers(current, accountConfig);
+    const target = scopedCurrent.find((item) => String(item.id) === String(userId));
     if (!target) return null;
 
     if (accountConfig.primaryPortalUserId && String(target.id) === String(accountConfig.primaryPortalUserId)) {
@@ -451,8 +481,7 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
     }
 
     if (target.role === 'owner') {
-      const ownerCount = await countOwnersByClinicId(context.clinic.id, client);
-      if (ownerCount <= 1) {
+      if (countOwners(scopedCurrent) <= 1) {
         const error = new Error('cannot_delete_last_owner');
         error.code = 'LAST_OWNER_DELETE';
         throw error;

@@ -23,6 +23,7 @@ async function listPortalUsersByClinicId(clinicId, client = null) {
             "clinicId",
             name,
             email,
+            "accountRootUserId",
             CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
             active,
             "createdAt",
@@ -59,17 +60,42 @@ async function countOwnersByClinicId(clinicId, client = null) {
 async function createPortalUser(payload, client = null) {
   const result = await dbQuery(
     client,
-    `INSERT INTO staff_users ("clinicId", name, email, "passwordHash", role, "accountType", active, "updatedAt")
-     VALUES ($1, $2, $3, $4, $5, '${PORTAL_ACCOUNT_TYPE}', TRUE, NOW())
+    `INSERT INTO staff_users ("clinicId", name, email, "passwordHash", role, "accountType", active, "accountRootUserId", "updatedAt")
+     VALUES ($1, $2, $3, $4, $5, '${PORTAL_ACCOUNT_TYPE}', TRUE, $6::uuid, NOW())
      RETURNING id,
                "clinicId",
                name,
                email,
+               "accountRootUserId",
                CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
                active,
                "createdAt",
                "updatedAt"`,
-    [payload.clinicId, payload.name, payload.email, payload.passwordHash, payload.role]
+    [payload.clinicId, payload.name, payload.email, payload.passwordHash, payload.role, payload.accountRootUserId || null]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function updatePortalUserAccountRootById(payload, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE staff_users
+     SET "accountRootUserId" = $3::uuid,
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+     RETURNING id,
+               "clinicId",
+               name,
+               email,
+               "accountRootUserId",
+               CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+               active,
+               "createdAt",
+               "updatedAt"`,
+    [payload.userId, payload.clinicId, payload.accountRootUserId]
   );
 
   return result.rows[0] || null;
@@ -89,6 +115,7 @@ async function updatePortalUserRole(payload, client = null) {
                "clinicId",
                name,
                email,
+               "accountRootUserId",
                CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
                active,
                "createdAt",
@@ -121,6 +148,7 @@ async function findPortalUserByEmail(email, client = null) {
             su."clinicId",
             su.name,
             su.email,
+            su."accountRootUserId",
             CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS role,
             su.active,
             su."passwordHash",
@@ -150,6 +178,7 @@ async function findPortalUserByIdAndClinicId(userId, clinicId, client = null) {
             "clinicId",
             name,
             email,
+            "accountRootUserId",
             CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
             active,
             "createdAt",
@@ -178,6 +207,7 @@ async function findPortalUserByNameAndClinicId(name, clinicId, client = null) {
             "clinicId",
             name,
             email,
+            "accountRootUserId",
             CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
             active,
             "createdAt",
@@ -201,6 +231,7 @@ module.exports = {
   countOwnersByClinicId,
   listPortalUsersByClinicId,
   createPortalUser,
+  updatePortalUserAccountRootById,
   updatePortalUserRole,
   deletePortalUserById,
   findPortalUserByEmail,
