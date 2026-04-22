@@ -1934,11 +1934,138 @@ function buildDemoExperienceReply(step) {
     '- evitar leads frios',
     '- supervisar la operacion con mas control',
     '',
-    'Si queres avanzar ahora, escribi una de estas opciones:',
+    'Si queres avanzar ahora, elegi una opcion:',
     '',
-    '- "activar" y seguimos con el setup guiado',
-    '- "ver planes" y te muestro las opciones',
-    '- "humano" y te derivamos con el equipo'
+    '1️⃣ Que te contacte un asesor',
+    '2️⃣ Recibir los datos para pagar y avanzar',
+    '',
+    'Responde 1 o 2 y seguimos.'
+  ].join('\n');
+}
+
+function buildDemoCommercialCloseReply() {
+  return [
+    'Perfecto 🙌',
+    '',
+    'Con esto ya tengo lo necesario para que el equipo comercial entienda tu caso y te acompañe bien.',
+    '',
+    'Podemos seguir por dos caminos:',
+    '',
+    '1️⃣ Que te contacte un asesor',
+    '2️⃣ Recibir los datos para pagar y avanzar',
+    '',
+    'Responde 1 o 2 y seguimos.'
+  ].join('\n');
+}
+
+function parseDemoCommercialCloseOption(input) {
+  const normalized = normalizeCommandText(input);
+  if (!normalized) return null;
+
+  if (
+    normalized === '1' ||
+    normalized.includes('asesor') ||
+    normalized.includes('contact') ||
+    normalized.includes('humano') ||
+    normalized.includes('persona') ||
+    normalized.includes('equipo')
+  ) {
+    return 'advisor';
+  }
+
+  if (
+    normalized === '2' ||
+    normalized.includes('pagar') ||
+    normalized.includes('pago') ||
+    normalized.includes('transferencia') ||
+    normalized.includes('alias') ||
+    normalized.includes('cbu') ||
+    normalized.includes('avanzar') ||
+    normalized.includes('activar')
+  ) {
+    return 'payment';
+  }
+
+  return null;
+}
+
+function isDemoCommercialOnboardingContext(safeContext) {
+  const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
+  return String(context.demoEntrySource || '').trim().toLowerCase() === 'public_demo_whatsapp';
+}
+
+function buildDemoLeadSummary({ conversation, contact, onboarding, action }) {
+  const safeOnboarding = getOnboardingData({ onboarding });
+  const source = 'demo_whatsapp';
+  const capturedAt = new Date().toISOString();
+  const contactName = String((contact && contact.name) || '').trim() || null;
+  const contactPhone = String((contact && (contact.whatsappPhone || contact.phone || contact.waId)) || '').trim() || null;
+  const summaryLines = [
+    'Lead desde demo WhatsApp',
+    `Accion solicitada: ${action === 'payment' ? 'pago/avance de plan' : 'contactar asesor'}`,
+    contactName ? `Nombre/contacto: ${contactName}` : null,
+    contactPhone ? `WhatsApp: ${contactPhone}` : null,
+    safeOnboarding.businessType ? `Tipo de negocio: ${safeOnboarding.businessType}` : null,
+    safeOnboarding.mainOffer ? `Rubro/oferta: ${safeOnboarding.mainOffer}` : null,
+    safeOnboarding.goal ? `Objetivo principal: ${safeOnboarding.goal}` : null,
+    safeOnboarding.channel ? `Usa WhatsApp: ${safeOnboarding.channel}` : null
+  ].filter(Boolean);
+
+  return {
+    source,
+    capturedAt,
+    action,
+    conversationId: conversation && conversation.id ? conversation.id : null,
+    contact: {
+      id: contact && contact.id ? contact.id : null,
+      name: contactName,
+      phone: contactPhone
+    },
+    onboarding: safeOnboarding,
+    summaryText: summaryLines.join('\n')
+  };
+}
+
+async function recordDemoCommercialLead({ conversation, contact, onboarding, action }) {
+  const summary = buildDemoLeadSummary({ conversation, contact, onboarding, action });
+  await addEvent({
+    clinicId: conversation.clinicId,
+    conversationId: conversation.id,
+    type: action === 'payment' ? 'DEMO_PAYMENT_INTENT' : 'DEMO_ADVISOR_REQUESTED',
+    data: summary
+  });
+  return summary;
+}
+
+function buildDemoAdvisorReply(summary) {
+  return [
+    'Perfecto.',
+    '',
+    'Ya dejé registrado el resumen de tu demo para que un asesor comercial te contacte con contexto.',
+    '',
+    'Resumen:',
+    summary && summary.summaryText ? summary.summaryText : 'Lead desde demo WhatsApp',
+    '',
+    'En breve te contactamos para avanzar.'
+  ].join('\n');
+}
+
+function buildDemoPaymentReply(transferConfig) {
+  if (!hasConfiguredTransferData(transferConfig)) {
+    return [
+      'Perfecto. Ya dejé registrada tu intención de avanzar con el pago.',
+      '',
+      'Ahora mismo no tengo datos de transferencia configurados para pasarte por acá.',
+      'Te va a contactar un asesor para indicarte el siguiente paso.'
+    ].join('\n');
+  }
+
+  return [
+    'Perfecto. Para avanzar con el plan, podés pagar por transferencia.',
+    '',
+    buildTransferInstructionsReply(transferConfig),
+    '',
+    'Después de pagar, mandame el comprobante por acá y lo dejamos registrado para validación.'
   ].join('\n');
 }
 
@@ -3697,6 +3824,10 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     if (onboardingStep === 4) {
       const answer = String(inboundText || '').trim();
+      const nextOnboarding = {
+        ...onboarding,
+        channel: normalizeOnboardingChannel(answer) || answer
+      };
       if (!answer) {
         return {
           replyText: buildOnboardingReply(4),
@@ -3709,14 +3840,13 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       }
 
       return {
-        replyText: buildOnboardingReply(5),
+        replyText: isDemoCommercialOnboardingContext(safeContext)
+          ? buildDemoCommercialCloseReply()
+          : buildOnboardingReply(5),
         newState: 'ONBOARDING',
         newStage: getOnboardingStageKey(5),
         contextPatch: {
-          onboarding: {
-            ...onboarding,
-            channel: normalizeOnboardingChannel(answer) || answer
-          },
+          onboarding: nextOnboarding,
           commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
           commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
           commerceActivationOfferState: 'onboarding_completed',
@@ -3731,9 +3861,72 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       const existingPreview = safeContext.generatedBotPreview && typeof safeContext.generatedBotPreview === 'object'
         ? safeContext.generatedBotPreview
         : null;
+      const demoCommercialContext = isDemoCommercialOnboardingContext(safeContext);
 
       if (isPublicDemoExperienceIntent(inboundText)) {
         return buildDemoEntryDecision();
+      }
+
+      if (demoCommercialContext) {
+        const closeOption = parseDemoCommercialCloseOption(inboundText);
+        if (closeOption === 'advisor') {
+          const summary = await recordDemoCommercialLead({
+            conversation,
+            contact,
+            onboarding,
+            action: 'advisor'
+          });
+          return {
+            replyText: buildDemoAdvisorReply(summary),
+            newState: 'IDLE',
+            newStage: 'handoff',
+            contextPatch: {
+              demoCommercialOutcome: 'advisor_requested',
+              demoLeadSummary: summary,
+              commerceActivationOfferState: 'commercial_handoff',
+              commerceActivationChoice: 'advisor'
+            }
+          };
+        }
+
+        if (closeOption === 'payment') {
+          const summary = await recordDemoCommercialLead({
+            conversation,
+            contact,
+            onboarding,
+            action: 'payment'
+          });
+          const hasTransferData = hasConfiguredTransferData(transferConfig);
+          return {
+            replyText: buildDemoPaymentReply(transferConfig),
+            newState: hasTransferData ? 'PAYMENT_TRANSFER' : 'IDLE',
+            newStage: hasTransferData ? 'payment_requested' : 'handoff',
+            contextPatch: {
+              demoCommercialOutcome: 'payment_requested',
+              demoLeadSummary: summary,
+              commerceActivationOfferState: 'payment_requested',
+              commerceActivationChoice: 'payment',
+              transferPayment: hasTransferData
+                ? {
+                  orderId: null,
+                  status: 'payment_requested',
+                  paymentMethod: 'bank_transfer',
+                  destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+                  requestedAt: new Date().toISOString()
+                }
+                : null
+            }
+          };
+        }
+
+        return {
+          replyText: buildDemoCommercialCloseReply(),
+          newState: 'ONBOARDING',
+          newStage: getOnboardingStageKey(5),
+          contextPatch: {
+            onboarding
+          }
+        };
       }
 
       if (existingPreview && editIntent) {
@@ -3904,7 +4097,9 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     }
 
     return {
-      replyText: buildOnboardingReply(5),
+      replyText: isDemoCommercialOnboardingContext(safeContext)
+        ? buildDemoCommercialCloseReply()
+        : buildOnboardingReply(5),
       newState: 'ONBOARDING',
       newStage: getOnboardingStageKey(5),
       contextPatch: {
@@ -3922,11 +4117,66 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       ? Number(safeContext.commerceDemoStep)
       : 1;
 
+    if (demoStep >= 5) {
+      const closeOption = parseDemoCommercialCloseOption(inboundText);
+      if (closeOption === 'advisor') {
+        const summary = await recordDemoCommercialLead({
+          conversation,
+          contact,
+          onboarding: getOnboardingData(safeContext),
+          action: 'advisor'
+        });
+        return {
+          replyText: buildDemoAdvisorReply(summary),
+          newState: 'IDLE',
+          newStage: 'handoff',
+          contextPatch: buildCommerceResetPatch({
+            demoEntrySource: 'public_demo_whatsapp',
+            demoCommercialOutcome: 'advisor_requested',
+            demoLeadSummary: summary,
+            commerceActivationOfferState: 'commercial_handoff',
+            commerceActivationChoice: 'advisor'
+          })
+        };
+      }
+
+      if (closeOption === 'payment') {
+        const summary = await recordDemoCommercialLead({
+          conversation,
+          contact,
+          onboarding: getOnboardingData(safeContext),
+          action: 'payment'
+        });
+        const hasTransferData = hasConfiguredTransferData(transferConfig);
+        return {
+          replyText: buildDemoPaymentReply(transferConfig),
+          newState: hasTransferData ? 'PAYMENT_TRANSFER' : 'IDLE',
+          newStage: hasTransferData ? 'payment_requested' : 'handoff',
+          contextPatch: buildCommerceResetPatch({
+            demoEntrySource: 'public_demo_whatsapp',
+            demoCommercialOutcome: 'payment_requested',
+            demoLeadSummary: summary,
+            commerceActivationOfferState: 'payment_requested',
+            commerceActivationChoice: 'payment',
+            transferPayment: hasTransferData
+              ? {
+                orderId: null,
+                status: 'payment_requested',
+                paymentMethod: 'bank_transfer',
+                destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+                requestedAt: new Date().toISOString()
+              }
+              : null
+          })
+        };
+      }
+    }
+
     if (isDemoHumanIntent(inboundText)) {
       return null;
     }
 
-    if (isDemoActivateIntent(inboundText)) {
+    if (isDemoActivateIntent(inboundText) && demoStep < 5) {
       return {
         replyText: buildOnboardingReply(1),
         newState: 'ONBOARDING',
@@ -3936,6 +4186,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
           commerceActivationOfferState: 'onboarding',
           commerceActivationChoice: '1',
+          demoEntrySource: 'public_demo_whatsapp',
           onboarding: {
             businessType: null,
             mainOffer: null,
@@ -7896,6 +8147,10 @@ module.exports = {
     resolveBotDomainRoute,
     buildActiveBotDomainPatch,
     buildDemoExperienceReply,
+    buildDemoCommercialCloseReply,
+    parseDemoCommercialCloseOption,
+    buildDemoLeadSummary,
+    buildDemoPaymentReply,
     resolveCommerceDecision,
     resolveActiveAgendaGuardDecision,
     resolveAgendaTimingDecision,
