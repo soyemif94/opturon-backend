@@ -78,6 +78,29 @@ function normalizePortalUserRecord(user, primaryPortalUserId) {
   };
 }
 
+function filterClientScopedPortalUsers(users, accountConfig) {
+  const currentUsers = Array.isArray(users) ? users : [];
+  if (!accountConfig || accountConfig.accountScope !== 'client' || !accountConfig.primaryPortalUserId) {
+    return currentUsers;
+  }
+
+  const primaryUser = currentUsers.find((user) => String(user.id) === String(accountConfig.primaryPortalUserId));
+  if (!primaryUser || !primaryUser.createdAt) {
+    return currentUsers;
+  }
+
+  const primaryCreatedAt = new Date(primaryUser.createdAt).getTime();
+  if (!Number.isFinite(primaryCreatedAt)) {
+    return currentUsers;
+  }
+
+  return currentUsers.filter((user) => {
+    if (String(user.id) === String(accountConfig.primaryPortalUserId)) return true;
+    const userCreatedAt = new Date(user.createdAt).getTime();
+    return Number.isFinite(userCreatedAt) && userCreatedAt >= primaryCreatedAt;
+  });
+}
+
 async function resolvePrimaryPortalUserId(clinicId, users, client = null) {
   const config = await getClinicPortalAccountConfigById(clinicId, client);
   const currentUsers = Array.isArray(users) ? users : [];
@@ -123,7 +146,8 @@ async function listPortalUsers(tenantId) {
 
   const currentUsers = await listPortalUsersByClinicId(context.clinic.id);
   const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers);
-  const users = currentUsers.map((user) => normalizePortalUserRecord(user, accountConfig.primaryPortalUserId));
+  const scopedUsers = filterClientScopedPortalUsers(currentUsers, accountConfig);
+  const users = scopedUsers.map((user) => normalizePortalUserRecord(user, accountConfig.primaryPortalUserId));
   return {
     ok: true,
     tenantId: context.tenantId,
@@ -165,7 +189,8 @@ async function invitePortalUser(tenantId, payload, options = {}) {
     const created = await withTransaction(async (client) => {
       const currentUsers = await listPortalUsersByClinicId(context.clinic.id, client);
       const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers, client);
-      const normalizedCurrentUsers = currentUsers.map((user) =>
+      const scopedCurrentUsers = filterClientScopedPortalUsers(currentUsers, accountConfig);
+      const normalizedCurrentUsers = scopedCurrentUsers.map((user) =>
         normalizePortalUserRecord(user, accountConfig.primaryPortalUserId)
       );
       const currentMeta = buildPortalUsersMeta(
@@ -203,7 +228,7 @@ async function invitePortalUser(tenantId, payload, options = {}) {
         await updateClinicPortalPrimaryUserIdById(context.clinic.id, primaryPortalUserId, client);
       }
 
-      const normalizedNextUsers = [...currentUsers, createdUser].map((user) =>
+      const normalizedNextUsers = [...scopedCurrentUsers, createdUser].map((user) =>
         normalizePortalUserRecord(user, primaryPortalUserId)
       );
       const normalizedCreatedUser = normalizePortalUserRecord(createdUser, primaryPortalUserId);
