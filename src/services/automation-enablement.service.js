@@ -4,9 +4,21 @@ const {
   findAutomationTemplateByKey,
   findTenantAutomationTemplateByClinicIdAndKey
 } = require('../repositories/automation-templates.repository');
+const { buildTenantPolicyFromSettings } = require('./tenant-policy.service');
 
 const BUSINESS_TYPES = new Set(['dental_clinic', 'medical_clinic', 'retail_products', 'services_general', 'beauty_salon']);
-const BUSINESS_CAPABILITIES = new Set(['whatsapp', 'contacts', 'agenda', 'catalog', 'payments']);
+const BUSINESS_CAPABILITIES = new Set([
+  'whatsapp',
+  'contacts',
+  'crm',
+  'agenda',
+  'catalog',
+  'automations',
+  'sales',
+  'payments',
+  'payments_transfer',
+  'loyalty'
+]);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -44,7 +56,8 @@ async function resolveClinicForAutomation({ tenantId, clinicId }) {
 
 async function buildResolvedCapabilities({ clinic, capabilitiesHint = [] }) {
   const businessProfile = clinic && clinic.businessProfile && typeof clinic.businessProfile === 'object' ? clinic.businessProfile : {};
-  const resolved = new Set(normalizeCapabilities(businessProfile.capabilities));
+  const policy = buildTenantPolicyFromSettings(clinic && clinic.settings);
+  const resolved = new Set(normalizeCapabilities(policy.capabilities.length ? policy.capabilities : businessProfile.capabilities));
 
   for (const capability of normalizeCapabilities(capabilitiesHint)) {
     resolved.add(capability);

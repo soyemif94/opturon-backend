@@ -3,6 +3,7 @@ const { listProductsByClinicId } = require('../repositories/products.repository'
 const { listAutomationsByClinicId } = require('../repositories/automations.repository');
 const { query } = require('../db/client');
 const { logInfo, logWarn } = require('../utils/logger');
+const { buildTenantPolicyFromSettings } = require('./tenant-policy.service');
 
 function summarizeClinic(clinic) {
   if (!clinic) return null;
@@ -179,6 +180,7 @@ async function resolvePortalTenantContext(externalTenantId) {
   );
   const activeAutomations = (Array.isArray(automations) ? automations : []).filter((automation) => automation && automation.enabled !== false);
   const conversationsCount = Number(conversationsResult.rows[0] && conversationsResult.rows[0].total ? conversationsResult.rows[0].total : 0);
+  const policy = buildTenantPolicyFromSettings(clinic.settings);
 
   if (!channelSelection.channel && channelSelection.reason !== 'mapped_clinic_without_whatsapp_channel') {
     logWarn('portal_channel_selection_ambiguous', {
@@ -222,6 +224,7 @@ async function resolvePortalTenantContext(externalTenantId) {
       automationsCount: activeAutomations.length
     },
     botMode: resolveClinicBotMode(clinic),
+    policy,
     reason: channelSelection.reason
   };
 }

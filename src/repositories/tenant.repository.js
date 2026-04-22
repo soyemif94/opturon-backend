@@ -28,6 +28,11 @@ function parsePositiveLimit(value) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function parseNonNegativeLimit(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function normalizeString(value) {
   return String(value || '').trim();
 }
@@ -61,7 +66,9 @@ function buildPortalAccountConfig(settings) {
   const accountScope = normalizePortalAccountScope(settings);
   const primaryPortalUserId = normalizeString(settings?.portal?.primaryPortalUserId) || null;
   const explicitLimit =
+    parseNonNegativeLimit(settings?.portal?.policy?.limits?.maxPortalUsers) ??
     parsePositiveLimit(settings?.portal?.limits?.subaccounts) ??
+    parsePositiveLimit(settings?.portal?.limits?.maxPortalUsers) ??
     parsePositiveLimit(settings?.portal?.userLimits?.subaccounts) ??
     parsePositiveLimit(settings?.portal?.subaccountLimit);
   const unlimitedSubaccounts = accountScope === 'opturon_admin';
@@ -69,9 +76,9 @@ function buildPortalAccountConfig(settings) {
   return {
     accountScope,
     primaryPortalUserId,
-    subaccountLimit: unlimitedSubaccounts ? null : explicitLimit || DEFAULT_PORTAL_SUBACCOUNT_LIMIT,
+    subaccountLimit: unlimitedSubaccounts ? null : explicitLimit !== null ? explicitLimit : DEFAULT_PORTAL_SUBACCOUNT_LIMIT,
     unlimitedSubaccounts,
-    limitSource: unlimitedSubaccounts ? 'opturon_admin_scope' : explicitLimit ? 'clinic_settings' : 'default_env'
+    limitSource: unlimitedSubaccounts ? 'opturon_admin_scope' : explicitLimit !== null ? 'clinic_settings' : 'default_env'
   };
 }
 

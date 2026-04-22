@@ -2711,6 +2711,7 @@ async function getPortalAutomations(req, res) {
         tenantId: result.tenantId,
         automations: result.automations,
         businessProfile: result.businessProfile,
+        policy: result.policy || null,
         catalog: result.catalog
       }
     });

@@ -22,6 +22,7 @@ const {
   buildResolvedCapabilities,
   evaluateTemplateCompatibility
 } = require('./automation-enablement.service');
+const { buildTenantPolicyFromSettings } = require('./tenant-policy.service');
 
 const ALLOWED_TRIGGERS = new Set(['message_received', 'keyword', 'off_hours', 'new_contact']);
 const ALLOWED_ACTIONS = new Set(['send_message', 'assign_human', 'tag_contact']);
@@ -57,7 +58,8 @@ function normalizeTrigger(payload) {
 
 async function normalizeBusinessProfileSnapshot(clinic, rawProfile, context) {
   const profile = rawProfile && typeof rawProfile === 'object' ? rawProfile : {};
-  const explicitCapabilities = normalizeCapabilities(profile.capabilities);
+  const policy = buildTenantPolicyFromSettings(clinic && clinic.settings);
+  const explicitCapabilities = normalizeCapabilities(policy.capabilities.length ? policy.capabilities : profile.capabilities);
   const resolvedCapabilities = await buildResolvedCapabilities({ clinic, capabilitiesHint: explicitCapabilities });
 
   return {
@@ -203,6 +205,7 @@ async function listPortalAutomations(tenantId) {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
+    policy: context.policy || null,
     automations,
     businessProfile,
     catalog
