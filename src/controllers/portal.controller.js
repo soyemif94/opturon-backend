@@ -149,8 +149,12 @@ const {
   syncPortalWhatsAppTemplates
 } = require('../services/portal-whatsapp-templates.service');
 
+function getRequestTenantId(req) {
+  return String(req.activeTenantId || req.params.tenantId || '').trim();
+}
+
 async function getPortalTenantContext(req, res) {
-  const tenantId = String(req.params.tenantId || req.query.tenantId || '').trim();
+  const tenantId = String(req.activeTenantId || req.params.tenantId || req.query.tenantId || '').trim();
 
   try {
     const result = await resolvePortalTenantContext(tenantId);
@@ -177,7 +181,7 @@ async function getPortalTenantContext(req, res) {
 }
 
 async function postPortalTenantProvision(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await provisionPortalTenant(tenantId, req.body || {});
@@ -200,7 +204,7 @@ async function postPortalTenantProvision(req, res) {
 }
 
 async function getPortalConversations(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const visibility = String(req.query.visibility || 'active').trim().toLowerCase() === 'archived' ? 'archived' : 'active';
 
   try {
@@ -224,7 +228,7 @@ async function getPortalConversations(req, res) {
 }
 
 async function getPortalConversation(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const conversationId = String(req.params.conversationId || '').trim();
 
   try {
@@ -251,7 +255,7 @@ async function getPortalConversation(req, res) {
 }
 
 async function updatePortalConversation(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const conversationId = String(req.params.conversationId || '').trim();
 
   try {
@@ -281,7 +285,7 @@ async function updatePortalConversation(req, res) {
 }
 
 async function postPortalMessage(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const conversationId = String((req.body && req.body.conversationId) || '').trim();
   const text = req.body && req.body.text;
 
@@ -311,7 +315,7 @@ async function postPortalMessage(req, res) {
 }
 
 async function getPortalOrders(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalOrders(tenantId);
@@ -337,7 +341,7 @@ async function getPortalOrders(req, res) {
 }
 
 async function getPortalOrder(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const orderId = String(req.params.orderId || '').trim();
 
   try {
@@ -361,7 +365,7 @@ async function getPortalOrder(req, res) {
 }
 
 async function postPortalOrder(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalOrder(tenantId, req.body || {});
@@ -430,7 +434,7 @@ async function postPortalOrder(req, res) {
 }
 
 async function updatePortalOrderStatus(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const orderId = String(req.params.orderId || '').trim();
 
   try {
@@ -471,7 +475,7 @@ async function updatePortalOrderStatus(req, res) {
 }
 
 async function getPortalProducts(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalProducts(tenantId);
@@ -514,7 +518,7 @@ async function getPortalProducts(req, res) {
 }
 
 async function getPortalProduct(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const productId = String(req.params.productId || '').trim();
 
   try {
@@ -538,7 +542,7 @@ async function getPortalProduct(req, res) {
 }
 
 async function getPortalProductCategories(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const includeInactive = String(req.query.includeInactive || '').trim().toLowerCase() === 'true';
 
   try {
@@ -565,7 +569,7 @@ async function getPortalProductCategories(req, res) {
 }
 
 async function patchPortalConversationsArchive(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const actorId = req.user && req.user.id ? String(req.user.id) : null;
   const actorName = req.user && req.user.name ? String(req.user.name) : null;
 
@@ -590,7 +594,7 @@ async function patchPortalConversationsArchive(req, res) {
 }
 
 async function patchPortalConversationsRestore(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await restorePortalConversations(tenantId, req.body || {});
@@ -613,7 +617,7 @@ async function patchPortalConversationsRestore(req, res) {
 }
 
 async function getPortalOrdersPaymentMetrics(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const range = String(req.query.range || '').trim();
 
   try {
@@ -637,7 +641,7 @@ async function getPortalOrdersPaymentMetrics(req, res) {
 }
 
 async function patchPortalConversationAssignSeller(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const conversationId = String(req.params.conversationId || '').trim();
 
   try {
@@ -665,7 +669,7 @@ async function patchPortalConversationAssignSeller(req, res) {
 }
 
 async function patchPortalConversationLeadStatusController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const conversationId = String(req.params.conversationId || '').trim();
 
   try {
@@ -692,7 +696,7 @@ async function patchPortalConversationLeadStatusController(req, res) {
 }
 
 async function patchPortalConversationNextActionController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const conversationId = String(req.params.conversationId || '').trim();
 
   try {
@@ -723,7 +727,7 @@ async function patchPortalConversationNextActionController(req, res) {
 }
 
 async function getPortalSellerMetricsController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalSellerMetrics(tenantId);
@@ -746,7 +750,7 @@ async function getPortalSellerMetricsController(req, res) {
 }
 
 async function postPortalOrderPaymentValidation(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const orderId = String(req.params.orderId || '').trim();
   const actorId = String(req.get('x-portal-actor-id') || '').trim() || null;
   const actorName = String(req.get('x-portal-actor-name') || '').trim() || null;
@@ -788,7 +792,7 @@ async function postPortalOrderPaymentValidation(req, res) {
 }
 
 async function patchPortalOrderController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const orderId = String(req.params.orderId || '').trim();
 
   try {
@@ -826,7 +830,7 @@ async function patchPortalOrderController(req, res) {
 }
 
 async function postPortalProduct(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalProduct(tenantId, req.body || {});
@@ -858,7 +862,7 @@ async function postPortalProduct(req, res) {
 }
 
 async function postPortalProductCategory(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalProductCategoryRecord(tenantId, req.body || {});
@@ -888,7 +892,7 @@ async function postPortalProductCategory(req, res) {
 }
 
 async function postPortalProductsBulk(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalProductsBulk(tenantId, req.body || {});
@@ -921,7 +925,7 @@ async function postPortalProductsBulk(req, res) {
 }
 
 async function updatePortalProduct(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const productId = String(req.params.productId || '').trim();
 
   try {
@@ -955,7 +959,7 @@ async function updatePortalProduct(req, res) {
 }
 
 async function updatePortalProductCategory(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const categoryId = String(req.params.categoryId || '').trim();
 
   try {
@@ -987,7 +991,7 @@ async function updatePortalProductCategory(req, res) {
 }
 
 async function destroyPortalProductCategory(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const categoryId = String(req.params.categoryId || '').trim();
 
   try {
@@ -1025,7 +1029,7 @@ async function destroyPortalProductCategory(req, res) {
 }
 
 async function updatePortalProductStatus(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const productId = String(req.params.productId || '').trim();
 
   try {
@@ -1055,7 +1059,7 @@ async function updatePortalProductStatus(req, res) {
 }
 
 async function destroyPortalProduct(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const productId = String(req.params.productId || '').trim();
 
   try {
@@ -1093,7 +1097,7 @@ async function destroyPortalProduct(req, res) {
 }
 
 async function getPortalUsers(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalUsers(tenantId);
@@ -1121,7 +1125,7 @@ async function getPortalUsers(req, res) {
 }
 
 async function getPortalContacts(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const visibility = String(req.query.visibility || 'active').trim().toLowerCase() === 'archived' ? 'archived' : 'active';
 
   try {
@@ -1148,7 +1152,7 @@ async function getPortalContacts(req, res) {
 }
 
 async function getPortalContact(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const contactId = String(req.params.contactId || '').trim();
 
   try {
@@ -1172,7 +1176,7 @@ async function getPortalContact(req, res) {
 }
 
 async function postPortalContact(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalContact(tenantId, req.body || {});
@@ -1203,7 +1207,7 @@ async function postPortalContact(req, res) {
 }
 
 async function patchPortalContact(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const contactId = String(req.params.contactId || '').trim();
 
   try {
@@ -1236,7 +1240,7 @@ async function patchPortalContact(req, res) {
 }
 
 async function getPortalInvoices(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalInvoices(tenantId);
@@ -1262,7 +1266,7 @@ async function getPortalInvoices(req, res) {
 }
 
 async function getPortalInvoice(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const invoiceId = String(req.params.invoiceId || '').trim();
 
   try {
@@ -1286,7 +1290,7 @@ async function getPortalInvoice(req, res) {
 }
 
 async function postPortalInvoice(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalInvoice(tenantId, req.body || {});
@@ -1337,7 +1341,7 @@ async function postPortalInvoice(req, res) {
 }
 
 async function patchPortalInvoice(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const invoiceId = String(req.params.invoiceId || '').trim();
 
   try {
@@ -1387,7 +1391,7 @@ async function patchPortalInvoice(req, res) {
 }
 
 async function patchPortalInvoiceAccountingController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const invoiceId = String(req.params.invoiceId || '').trim();
 
   try {
@@ -1422,7 +1426,7 @@ async function patchPortalInvoiceAccountingController(req, res) {
 }
 
 async function getPortalInvoicesCsvExport(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await exportPortalInvoicesCsv(tenantId, req.query || {});
@@ -1444,7 +1448,7 @@ async function getPortalInvoicesCsvExport(req, res) {
 }
 
 async function patchPortalInvoicesBulkStatus(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await updatePortalInvoicesBulkStatus(tenantId, req.body || {});
@@ -1482,7 +1486,7 @@ async function patchPortalInvoicesBulkStatus(req, res) {
 }
 
 async function postPortalInvoicesBulkDownload(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await downloadPortalInvoicesBundle(tenantId, req.body || {});
@@ -1513,7 +1517,7 @@ async function postPortalInvoicesBulkDownload(req, res) {
 }
 
 async function getPortalInvoiceDocumentController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const invoiceId = String(req.params.invoiceId || '').trim();
 
   try {
@@ -1536,7 +1540,7 @@ async function getPortalInvoiceDocumentController(req, res) {
 }
 
 async function getPortalInvoiceDownloadController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const invoiceId = String(req.params.invoiceId || '').trim();
   const format = String(req.query.format || '').trim();
 
@@ -1560,7 +1564,7 @@ async function getPortalInvoiceDownloadController(req, res) {
 }
 
 async function postPortalInvoiceIssue(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const invoiceId = String(req.params.invoiceId || '').trim();
 
   try {
@@ -1608,7 +1612,7 @@ async function postPortalInvoiceIssue(req, res) {
 }
 
 async function postPortalInvoiceVoid(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const invoiceId = String(req.params.invoiceId || '').trim();
 
   try {
@@ -1643,7 +1647,7 @@ async function postPortalInvoiceVoid(req, res) {
 }
 
 async function getPortalPayments(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalPayments(tenantId);
@@ -1669,7 +1673,7 @@ async function getPortalPayments(req, res) {
 }
 
 async function patchPortalContactsArchive(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await archivePortalContacts(tenantId, req.body || {});
@@ -1692,7 +1696,7 @@ async function patchPortalContactsArchive(req, res) {
 }
 
 async function patchPortalContactsRestore(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await restorePortalContacts(tenantId, req.body || {});
@@ -1715,7 +1719,7 @@ async function patchPortalContactsRestore(req, res) {
 }
 
 async function getPortalPaymentDestinations(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const includeInactive = String(req.query.includeInactive || '').trim() === '1';
 
   try {
@@ -1742,7 +1746,7 @@ async function getPortalPaymentDestinations(req, res) {
 }
 
 async function postPortalPaymentDestination(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalPaymentDestination(tenantId, req.body || {});
@@ -1778,7 +1782,7 @@ async function postPortalPaymentDestination(req, res) {
 }
 
 async function patchPortalPaymentDestinationController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const destinationId = String(req.params.destinationId || '').trim();
 
   try {
@@ -1816,7 +1820,7 @@ async function patchPortalPaymentDestinationController(req, res) {
 }
 
 async function getPortalCashOverview(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalCashOverview(tenantId);
@@ -1843,7 +1847,7 @@ async function getPortalCashOverview(req, res) {
 }
 
 async function postPortalCashSession(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
   const payload = {
     ...(req.body || {}),
@@ -1886,7 +1890,7 @@ async function postPortalCashSession(req, res) {
 }
 
 async function postPortalCashSessionClose(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const sessionId = String(req.params.sessionId || '').trim();
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
   const payload = {
@@ -1930,7 +1934,7 @@ async function postPortalCashSessionClose(req, res) {
 }
 
 async function getPortalAgenda(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalAgendaItems(tenantId, req.query || {});
@@ -1957,7 +1961,7 @@ async function getPortalAgenda(req, res) {
 }
 
 async function postPortalAgenda(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalAgendaItem(tenantId, req.body || {});
@@ -1999,7 +2003,7 @@ async function postPortalAgenda(req, res) {
 }
 
 async function getPortalAgendaAvailabilityController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalAgendaAvailability(tenantId, req.query || {});
@@ -2026,7 +2030,7 @@ async function getPortalAgendaAvailabilityController(req, res) {
 }
 
 async function postPortalAgendaReservation(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalAgendaReservation(tenantId, req.body || {});
@@ -2068,7 +2072,7 @@ async function postPortalAgendaReservation(req, res) {
 }
 
 async function patchPortalAgenda(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const itemId = String(req.params.itemId || '').trim();
 
   try {
@@ -2111,7 +2115,7 @@ async function patchPortalAgenda(req, res) {
 }
 
 async function deletePortalAgenda(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const itemId = String(req.params.itemId || '').trim();
 
   try {
@@ -2140,7 +2144,7 @@ async function deletePortalAgenda(req, res) {
 }
 
 async function getPortalPayment(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const paymentId = String(req.params.paymentId || '').trim();
 
   try {
@@ -2164,7 +2168,7 @@ async function getPortalPayment(req, res) {
 }
 
 async function getPortalPaymentAllocations(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const paymentId = String(req.params.paymentId || '').trim();
 
   try {
@@ -2191,7 +2195,7 @@ async function getPortalPaymentAllocations(req, res) {
 }
 
 async function postPortalPayment(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalPayment(tenantId, req.body || {});
@@ -2234,7 +2238,7 @@ async function postPortalPayment(req, res) {
 }
 
 async function postPortalPaymentAllocation(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const paymentId = String(req.params.paymentId || '').trim();
 
   try {
@@ -2284,7 +2288,7 @@ async function postPortalPaymentAllocation(req, res) {
 }
 
 async function postPortalPaymentVoid(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const paymentId = String(req.params.paymentId || '').trim();
 
   try {
@@ -2319,7 +2323,7 @@ async function postPortalPaymentVoid(req, res) {
 }
 
 async function getPortalSalesSummary(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getSalesSummary(tenantId);
@@ -2345,7 +2349,7 @@ async function getPortalSalesSummary(req, res) {
 }
 
 async function getPortalSalesMetrics(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getSalesMetrics(tenantId);
@@ -2371,7 +2375,7 @@ async function getPortalSalesMetrics(req, res) {
 }
 
 async function getPortalSalesOpportunities(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listSalesOpportunities(tenantId);
@@ -2397,7 +2401,7 @@ async function getPortalSalesOpportunities(req, res) {
 }
 
 async function getPortalLoyaltyProgramController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalLoyaltyProgram(tenantId);
@@ -2423,7 +2427,7 @@ async function getPortalLoyaltyProgramController(req, res) {
 }
 
 async function patchPortalLoyaltyProgramController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await updatePortalLoyaltyProgram(tenantId, req.body || {});
@@ -2454,7 +2458,7 @@ async function patchPortalLoyaltyProgramController(req, res) {
 }
 
 async function getPortalLoyaltyRewardsController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalLoyaltyRewards(tenantId);
@@ -2480,7 +2484,7 @@ async function getPortalLoyaltyRewardsController(req, res) {
 }
 
 async function postPortalLoyaltyRewardController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalLoyaltyReward(tenantId, req.body || {});
@@ -2511,7 +2515,7 @@ async function postPortalLoyaltyRewardController(req, res) {
 }
 
 async function patchPortalLoyaltyRewardController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const rewardId = String(req.params.rewardId || '').trim();
 
   try {
@@ -2546,7 +2550,7 @@ async function patchPortalLoyaltyRewardController(req, res) {
 }
 
 async function getPortalLoyaltyContactController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const contactId = String(req.params.contactId || '').trim();
 
   try {
@@ -2579,7 +2583,7 @@ async function getPortalLoyaltyContactController(req, res) {
 }
 
 async function getPortalLoyaltyOverviewController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalLoyaltyOverview(tenantId);
@@ -2605,7 +2609,7 @@ async function getPortalLoyaltyOverviewController(req, res) {
 }
 
 async function postPortalLoyaltyRedeemController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await redeemPortalLoyaltyReward(tenantId, req.body || {});
@@ -2642,7 +2646,7 @@ async function postPortalLoyaltyRedeemController(req, res) {
 }
 
 async function getPortalInvoiceAllocations(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const invoiceId = String(req.params.invoiceId || '').trim();
 
   try {
@@ -2669,7 +2673,7 @@ async function getPortalInvoiceAllocations(req, res) {
 }
 
 async function getPortalBusiness(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalBusinessSettings(tenantId);
@@ -2692,7 +2696,7 @@ async function getPortalBusiness(req, res) {
 }
 
 async function getPortalAutomations(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalAutomations(tenantId);
@@ -2720,7 +2724,7 @@ async function getPortalAutomations(req, res) {
 }
 
 async function patchPortalAutomationTemplate(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const templateKey = String(req.params.templateKey || '').trim();
 
   try {
@@ -2763,7 +2767,7 @@ async function patchPortalAutomationTemplate(req, res) {
 }
 
 async function getPortalAutomationTemplateMetrics(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const templateKey = String(req.params.templateKey || '').trim();
   const limit = Number(req.query.limit || 20);
 
@@ -2801,7 +2805,7 @@ async function getPortalAutomationTemplateMetrics(req, res) {
 }
 
 async function postPortalUser(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
 
   try {
@@ -2845,7 +2849,7 @@ async function postPortalUser(req, res) {
 }
 
 async function patchPortalPrimaryUser(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const userId = String((req.body && req.body.userId) || '').trim();
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
 
@@ -2885,7 +2889,7 @@ async function patchPortalPrimaryUser(req, res) {
 }
 
 async function deletePortalArchivedContactsController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await deletePortalArchivedContacts(tenantId, req.body || {});
@@ -2908,7 +2912,7 @@ async function deletePortalArchivedContactsController(req, res) {
 }
 
 async function patchPortalBusiness(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await updatePortalBusinessSettings(tenantId, req.body || {});
@@ -2931,7 +2935,7 @@ async function patchPortalBusiness(req, res) {
 }
 
 async function postPortalAutomation(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalAutomation(tenantId, req.body || {});
@@ -2972,7 +2976,7 @@ async function postPortalAutomation(req, res) {
 }
 
 async function patchPortalAutomation(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const automationId = String(req.params.automationId || '').trim();
 
   try {
@@ -3009,7 +3013,7 @@ async function patchPortalAutomation(req, res) {
 }
 
 async function destroyPortalAutomation(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const automationId = String(req.params.automationId || '').trim();
 
   try {
@@ -3045,7 +3049,7 @@ async function destroyPortalAutomation(req, res) {
 }
 
 async function patchPortalUser(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const userId = String(req.params.userId || '').trim();
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
 
@@ -3082,7 +3086,7 @@ async function patchPortalUser(req, res) {
 }
 
 async function destroyPortalUser(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const userId = String(req.params.userId || '').trim();
   const currentUserId = String(req.get('x-portal-actor-id') || '').trim();
 
@@ -3163,7 +3167,7 @@ async function getPortalAuthUser(req, res) {
 }
 
 async function postPortalWhatsAppEmbeddedSignupBootstrap(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
   const redirectUri = String((req.body && req.body.redirectUri) || '').trim();
   const actorUserId = String((req.body && req.body.actorUserId) || '').trim() || null;
 
@@ -3202,7 +3206,7 @@ async function postPortalWhatsAppEmbeddedSignupBootstrap(req, res) {
 }
 
 async function getPortalWhatsAppEmbeddedSignupStatus(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalWhatsAppSignupStatus(tenantId);
@@ -3267,7 +3271,7 @@ async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
 }
 
 async function postPortalWhatsAppManualConnect(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await connectPortalWhatsAppManual(tenantId, req.body || {});
@@ -3298,7 +3302,7 @@ async function postPortalWhatsAppManualConnect(req, res) {
 }
 
 async function postPortalWhatsAppDiscoverAssets(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await discoverTenantWhatsAppAssets(tenantId, req.body || {});
@@ -3329,7 +3333,7 @@ async function postPortalWhatsAppDiscoverAssets(req, res) {
 }
 
 async function getPortalWhatsAppDefaultChannel(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalWhatsAppChannelSettings(tenantId);
@@ -3363,7 +3367,7 @@ async function getPortalWhatsAppDefaultChannel(req, res) {
 }
 
 async function patchPortalWhatsAppDefaultChannel(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await updatePortalWhatsAppDefaultChannel(tenantId, req.body || {});
@@ -3399,7 +3403,7 @@ async function patchPortalWhatsAppDefaultChannel(req, res) {
 }
 
 async function getPortalWhatsAppTemplateBlueprints(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalWhatsAppTemplateBlueprints(tenantId);
@@ -3429,7 +3433,7 @@ async function getPortalWhatsAppTemplateBlueprints(req, res) {
 }
 
 async function getPortalWhatsAppTemplates(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await listPortalWhatsAppTemplates(tenantId);
@@ -3466,7 +3470,7 @@ async function getPortalWhatsAppTemplates(req, res) {
 }
 
 async function postPortalWhatsAppTemplateFromBlueprint(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await createPortalWhatsAppTemplateFromBlueprint(tenantId, req.body || {});
@@ -3510,7 +3514,7 @@ async function postPortalWhatsAppTemplateFromBlueprint(req, res) {
 }
 
 async function postPortalWhatsAppTemplatesSync(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await syncPortalWhatsAppTemplates(tenantId);
@@ -3591,7 +3595,7 @@ function mapPortalWhatsAppConnectReasonToStatus(reason, fallbackStatus = 422) {
 }
 
 async function getPortalInstagramStatus(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalInstagramConnectionStatus(tenantId);
@@ -3614,7 +3618,7 @@ async function getPortalInstagramStatus(req, res) {
 }
 
 async function postPortalInstagramConnect(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await connectPortalInstagramChannel(tenantId, {
@@ -3662,7 +3666,7 @@ async function postPortalInstagramConnect(req, res) {
 }
 
 async function getPortalBotSettingsController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalBotSettings(tenantId);
@@ -3685,7 +3689,7 @@ async function getPortalBotSettingsController(req, res) {
 }
 
 async function patchPortalBotSettingsController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await updatePortalBotSettings(tenantId, req.body || {});
@@ -3721,7 +3725,7 @@ async function patchPortalBotSettingsController(req, res) {
 }
 
 async function getPortalBotTransferConfigController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await getPortalBotTransferConfig(tenantId);
@@ -3744,7 +3748,7 @@ async function getPortalBotTransferConfigController(req, res) {
 }
 
 async function postPortalBotTransferConfigController(req, res) {
-  const tenantId = String(req.params.tenantId || '').trim();
+  const tenantId = getRequestTenantId(req);
 
   try {
     const result = await updatePortalBotTransferConfig(tenantId, req.body || {});

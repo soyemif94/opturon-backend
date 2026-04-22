@@ -12,6 +12,7 @@ const debugRoutes = require('./routes/debug.routes');
 const debugPhase2Routes = require('./routes/debug.phase2.routes');
 const debugWhatsAppRoutes = require('./routes/debug.whatsapp');
 const portalRoutes = require('./routes/portal.routes');
+const adminRoutes = require('./routes/admin.routes');
 const env = require('./config/env');
 const buildInfo = require('./utils/build');
 
@@ -60,6 +61,7 @@ function createApp() {
     })
   );
   app.use('/metrics', metricsRoutes);
+  app.use('/api/admin', adminRoutes);
   app.use('/portal', portalRoutes);
   if (env.whatsappDebug && env.debugApiEnabled) {
     app.use('/debug', debugWhatsAppRoutes);

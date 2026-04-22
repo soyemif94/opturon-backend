@@ -113,8 +113,11 @@ const {
   deletePortalAgenda
 } = require('../controllers/portal.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
+const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 
 const router = express.Router();
+
+router.use('/tenants/:tenantId', applyPortalActiveTenant);
 
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
 router.post('/tenants/:tenantId/provision', requirePortalInternalAuth, postPortalTenantProvision);
