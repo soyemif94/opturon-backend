@@ -8,12 +8,14 @@ function dbQuery(client, text, params) {
 }
 
 function normalizeTemplate(row) {
+  const businessTypes = Array.isArray(row.businessTypes) ? row.businessTypes.filter(Boolean) : [];
   return {
     key: row.key,
     name: row.name,
     description: row.description || null,
     category: row.category,
-    businessTypes: Array.isArray(row.businessTypes) ? row.businessTypes.filter(Boolean) : [],
+    businessTypes,
+    compatibleBusinessTypes: businessTypes,
     requiredCapabilities: Array.isArray(row.requiredCapabilities) ? row.requiredCapabilities.filter(Boolean) : [],
     defaultEnabled: Boolean(row.defaultEnabled),
     status: row.status || 'active',

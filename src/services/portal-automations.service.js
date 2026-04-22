@@ -197,7 +197,7 @@ async function listPortalAutomations(tenantId) {
       buildTemplateAvailability(template, tenantTemplateMap.get(template.key) || null, businessProfile, automations),
       botClinic
     )
-  );
+  ).filter((template) => template.compatible === true);
 
   return {
     ok: true,

@@ -72,7 +72,11 @@ async function buildResolvedCapabilities({ clinic, capabilitiesHint = [] }) {
 
 function evaluateTemplateCompatibility({ template, businessType, resolvedCapabilities }) {
   const requiredCapabilities = Array.isArray(template && template.requiredCapabilities) ? template.requiredCapabilities : [];
-  const allowedBusinessTypes = Array.isArray(template && template.businessTypes) ? template.businessTypes : [];
+  const allowedBusinessTypes = Array.isArray(template && template.compatibleBusinessTypes)
+    ? template.compatibleBusinessTypes
+    : Array.isArray(template && template.businessTypes)
+      ? template.businessTypes
+      : [];
   const capabilitySet = new Set(Array.isArray(resolvedCapabilities) ? resolvedCapabilities : []);
   const businessTypeMatch = !allowedBusinessTypes.length || allowedBusinessTypes.includes(businessType);
   const missingCapabilities = requiredCapabilities.filter((item) => !capabilitySet.has(item));
