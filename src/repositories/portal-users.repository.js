@@ -60,8 +60,12 @@ async function countOwnersByClinicId(clinicId, client = null) {
 async function createPortalUser(payload, client = null) {
   const result = await dbQuery(
     client,
-    `INSERT INTO staff_users ("clinicId", name, email, "passwordHash", role, "accountType", active, "accountRootUserId", "updatedAt")
-     VALUES ($1, $2, $3, $4, $5, '${PORTAL_ACCOUNT_TYPE}', TRUE, $6::uuid, NOW())
+    `WITH next_user AS (
+       SELECT gen_random_uuid() AS id
+     )
+     INSERT INTO staff_users (id, "clinicId", name, email, "passwordHash", role, "accountType", active, "accountRootUserId", "updatedAt")
+     SELECT next_user.id, $1, $2, $3, $4, $5, '${PORTAL_ACCOUNT_TYPE}', TRUE, COALESCE($6::uuid, next_user.id), NOW()
+     FROM next_user
      RETURNING id,
                "clinicId",
                name,
@@ -78,6 +82,10 @@ async function createPortalUser(payload, client = null) {
 }
 
 async function updatePortalUserAccountRootById(payload, client = null) {
+  if (!payload.accountRootUserId) {
+    throw new Error('missing_account_root_user_id');
+  }
+
   const result = await dbQuery(
     client,
     `UPDATE staff_users

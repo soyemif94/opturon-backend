@@ -84,22 +84,21 @@ function filterClientScopedPortalUsers(users, accountConfig) {
     return currentUsers;
   }
 
-  const primaryUser = currentUsers.find((user) => String(user.id) === String(accountConfig.primaryPortalUserId));
-  if (!primaryUser) {
-    return currentUsers;
-  }
-
   const rootId = String(accountConfig.primaryPortalUserId);
-  const primaryCreatedAt = new Date(primaryUser.createdAt).getTime();
-
   return currentUsers.filter((user) => {
-    if (String(user.id) === rootId) return true;
-    const accountRootUserId = normalizeString(user.accountRootUserId);
-    if (accountRootUserId) return accountRootUserId === rootId;
-    if (!Number.isFinite(primaryCreatedAt)) return false;
-    const userCreatedAt = new Date(user.createdAt).getTime();
-    return Number.isFinite(userCreatedAt) && userCreatedAt >= primaryCreatedAt;
+    return normalizeString(user.accountRootUserId) === rootId;
   });
+}
+
+function assertRootBelongsToClinic(users, accountConfig, clinicId) {
+  const rootId = normalizeString(accountConfig && accountConfig.primaryPortalUserId);
+  if (!rootId) return;
+  const rootUser = (Array.isArray(users) ? users : []).find((user) => String(user.id) === rootId);
+  if (!rootUser || String(rootUser.clinicId) !== String(clinicId)) {
+    const error = new Error('portal_user_account_root_invalid');
+    error.code = 'PORTAL_USER_ACCOUNT_ROOT_INVALID';
+    throw error;
+  }
 }
 
 function countOwners(users) {
@@ -194,6 +193,7 @@ async function invitePortalUser(tenantId, payload, options = {}) {
     const created = await withTransaction(async (client) => {
       const currentUsers = await listPortalUsersByClinicId(context.clinic.id, client);
       const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers, client);
+      assertRootBelongsToClinic(currentUsers, accountConfig, context.clinic.id);
       const scopedCurrentUsers = filterClientScopedPortalUsers(currentUsers, accountConfig);
       const normalizedCurrentUsers = scopedCurrentUsers.map((user) =>
         normalizePortalUserRecord(user, accountConfig.primaryPortalUserId)
@@ -317,6 +317,7 @@ async function updatePortalUser(tenantId, userId, payload) {
   const user = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
     const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
+    assertRootBelongsToClinic(current, accountConfig, context.clinic.id);
     const scopedCurrent = filterClientScopedPortalUsers(current, accountConfig);
     const target = scopedCurrent.find((item) => String(item.id) === String(userId));
     if (!target) return null;
@@ -390,6 +391,7 @@ async function assignPrimaryPortalUser(tenantId, userId, options = {}) {
   const result = await withTransaction(async (client) => {
     const currentUsers = await listPortalUsersByClinicId(context.clinic.id, client);
     const accountConfig = await getClinicPortalAccountConfigById(context.clinic.id, client);
+    assertRootBelongsToClinic(currentUsers, accountConfig, context.clinic.id);
     const scopedCurrentUsers = filterClientScopedPortalUsers(currentUsers, accountConfig);
     const target = scopedCurrentUsers.find((item) => String(item.id) === safeUserId);
     if (!target) return null;
@@ -470,6 +472,7 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
   const removed = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
     const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
+    assertRootBelongsToClinic(current, accountConfig, context.clinic.id);
     const scopedCurrent = filterClientScopedPortalUsers(current, accountConfig);
     const target = scopedCurrent.find((item) => String(item.id) === String(userId));
     if (!target) return null;
