@@ -122,6 +122,23 @@ function buildTenantPolicyFromSettings(settings) {
   };
 }
 
+function getBusinessProfileName(settings) {
+  const safeSettings = parseSettings(settings);
+  const businessProfile = safeSettings.businessProfile && typeof safeSettings.businessProfile === 'object'
+    ? safeSettings.businessProfile
+    : {};
+  return normalizeString(businessProfile.name);
+}
+
+function buildTenantDisplayName(clinic) {
+  return (
+    normalizeString(clinic.name) ||
+    getBusinessProfileName(clinic.settings) ||
+    normalizeString(clinic.primaryEmail) ||
+    normalizeString(clinic.externalTenantId)
+  );
+}
+
 async function resolveTenantPolicyByClinicId(clinicId, client = null) {
   const result = await (client || { query }).query(
     `SELECT settings
@@ -152,25 +169,55 @@ async function resolveTenantPolicyByExternalTenantId(externalTenantId) {
 
 async function listTenantPolicies() {
   const result = await query(
-    `SELECT id, name, timezone, "externalTenantId", settings, "createdAt", "updatedAt"
-     FROM clinics
-     WHERE NULLIF(TRIM(COALESCE("externalTenantId", '')), '') IS NOT NULL
-       AND COALESCE(settings->'portal'->>'accountScope', '') <> 'opturon_admin'
-     ORDER BY name ASC, "createdAt" DESC`
+    `SELECT c.id,
+            c.name,
+            c.timezone,
+            c."externalTenantId",
+            c.settings,
+            c."createdAt",
+            c."updatedAt",
+            primary_user.email AS "primaryEmail"
+     FROM clinics c
+     LEFT JOIN LATERAL (
+       SELECT su.email
+       FROM staff_users su
+       WHERE su."clinicId" = c.id
+         AND su."accountType" = 'client_portal'
+         AND su.email IS NOT NULL
+         AND su.active = TRUE
+       ORDER BY
+         CASE
+           WHEN NULLIF(c.settings->'portal'->>'primaryPortalUserId', '') IS NOT NULL
+             AND su.id::TEXT = c.settings->'portal'->>'primaryPortalUserId'
+           THEN 0
+           ELSE 1
+         END,
+         CASE WHEN su.role = 'owner' THEN 0 ELSE 1 END,
+         su."createdAt" ASC
+       LIMIT 1
+     ) primary_user ON TRUE
+     WHERE NULLIF(TRIM(COALESCE(c."externalTenantId", '')), '') IS NOT NULL
+       AND COALESCE(c.settings->'portal'->>'accountScope', '') <> 'opturon_admin'
+     ORDER BY c.name ASC NULLS LAST, c."createdAt" DESC`
   );
 
   return {
     ok: true,
-    tenants: result.rows.map((clinic) => ({
-      id: clinic.id,
-      name: clinic.name || clinic.externalTenantId,
-      tenantId: clinic.externalTenantId,
-      externalTenantId: clinic.externalTenantId,
-      timezone: clinic.timezone || null,
-      createdAt: clinic.createdAt || null,
-      updatedAt: clinic.updatedAt || null,
-      policy: buildTenantPolicyFromSettings(clinic.settings)
-    }))
+    tenants: result.rows.map((clinic) => {
+      const displayName = buildTenantDisplayName(clinic);
+      return {
+        id: clinic.id,
+        name: clinic.name || clinic.externalTenantId,
+        displayName,
+        primaryEmail: clinic.primaryEmail || null,
+        tenantId: clinic.externalTenantId,
+        externalTenantId: clinic.externalTenantId,
+        timezone: clinic.timezone || null,
+        createdAt: clinic.createdAt || null,
+        updatedAt: clinic.updatedAt || null,
+        policy: buildTenantPolicyFromSettings(clinic.settings)
+      };
+    })
   };
 }
 
