@@ -58,7 +58,9 @@ const {
   markAgendaItemReminderSent,
   releaseAgendaItemReminderClaim,
   findLatestActiveAgendaAppointmentByConversation,
-  updateAgendaItemById
+  updateAgendaItemById,
+  listAgendaItemsByClinicAndRange,
+  createAgendaItem
 } = require('./repositories/agenda-items.repository');
 const {
   buildTransferInstructionsText,
@@ -1994,6 +1996,11 @@ function isDemoCommercialOnboardingContext(safeContext) {
   return String(context.demoEntrySource || '').trim().toLowerCase() === 'public_demo_whatsapp';
 }
 
+function resolveClinicTimezone(clinic) {
+  const timezone = String(clinic && clinic.timezone ? clinic.timezone : '').trim() || 'America/Argentina/Buenos_Aires';
+  return DateTime.now().setZone(timezone).isValid ? timezone : 'America/Argentina/Buenos_Aires';
+}
+
 function buildDemoLeadSummary({ conversation, contact, onboarding, action }) {
   const safeOnboarding = getOnboardingData({ onboarding });
   const source = 'demo_whatsapp';
@@ -2026,15 +2033,111 @@ function buildDemoLeadSummary({ conversation, contact, onboarding, action }) {
   };
 }
 
-async function recordDemoCommercialLead({ conversation, contact, onboarding, action }) {
+function buildDemoAdvisorFollowUpDescription(summary) {
+  return [
+    'Seguimiento comercial solicitado desde demo WhatsApp.',
+    '',
+    summary && summary.summaryText ? summary.summaryText : 'Lead desde demo WhatsApp',
+    '',
+    'Accion sugerida: contactar hoy para avanzar con asesoramiento comercial.'
+  ].join('\n');
+}
+
+async function findExistingDemoAdvisorAgendaFollowUp({ clinicId, conversationId, contactId, date }) {
+  const items = await listAgendaItemsByClinicAndRange(clinicId, date, date);
+  return items.find((item) => {
+    if (!item || item.status === 'cancelled') return false;
+    if (item.type !== 'follow_up') return false;
+    if (item.origin !== 'demo_whatsapp') return false;
+    if (item.commercialActionType !== 'follow_up') return false;
+    if (conversationId && item.conversationId === conversationId) return true;
+    if (contactId && item.contactId === contactId) return true;
+    return false;
+  }) || null;
+}
+
+async function ensureDemoAdvisorAgendaFollowUp({ conversation, contact, summary, clinic }) {
+  const timezone = resolveClinicTimezone(clinic);
+  const now = DateTime.now().setZone(timezone);
+  const date = now.toISODate();
+  const nextActionAt = now.toUTC().toISO();
+  const existing = await findExistingDemoAdvisorAgendaFollowUp({
+    clinicId: conversation.clinicId,
+    conversationId: conversation.id,
+    contactId: contact && contact.id ? contact.id : null,
+    date
+  });
+
+  if (existing) {
+    return {
+      created: false,
+      item: existing
+    };
+  }
+
+  const item = await createAgendaItem({
+    clinicId: conversation.clinicId,
+    date,
+    startAt: null,
+    endAt: null,
+    contactId: contact && contact.id ? contact.id : null,
+    conversationId: conversation.id,
+    assignedUserId: null,
+    assignedUserName: 'Antonella / asesor comercial',
+    type: 'follow_up',
+    title: 'Contactar lead de demo WhatsApp',
+    description: buildDemoAdvisorFollowUpDescription(summary),
+    status: 'pending',
+    commercialActionType: 'follow_up',
+    commercialOutcome: 'proposal_requested',
+    origin: 'demo_whatsapp',
+    location: 'WhatsApp',
+    resultNote: null,
+    nextStepNote: 'Contactar al lead y avanzar asesoramiento comercial.',
+    nextActionAt
+  });
+
+  return {
+    created: true,
+    item
+  };
+}
+
+async function recordDemoCommercialLead({ conversation, contact, onboarding, action, clinic = null }) {
   const summary = buildDemoLeadSummary({ conversation, contact, onboarding, action });
+  let agendaFollowUp = null;
+  if (action === 'advisor') {
+    agendaFollowUp = await ensureDemoAdvisorAgendaFollowUp({
+      conversation,
+      contact,
+      summary,
+      clinic
+    });
+  }
+
   await addEvent({
     clinicId: conversation.clinicId,
     conversationId: conversation.id,
     type: action === 'payment' ? 'DEMO_PAYMENT_INTENT' : 'DEMO_ADVISOR_REQUESTED',
-    data: summary
+    data: {
+      ...summary,
+      agendaFollowUp: agendaFollowUp
+        ? {
+          created: agendaFollowUp.created,
+          id: agendaFollowUp.item && agendaFollowUp.item.id ? agendaFollowUp.item.id : null
+        }
+        : null
+    }
   });
-  return summary;
+  return {
+    ...summary,
+    agendaFollowUp: agendaFollowUp
+      ? {
+        created: agendaFollowUp.created,
+        id: agendaFollowUp.item && agendaFollowUp.item.id ? agendaFollowUp.item.id : null
+      }
+      : null
+  };
 }
 
 function buildDemoAdvisorReply(summary) {
@@ -3874,7 +3977,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
             conversation,
             contact,
             onboarding,
-            action: 'advisor'
+            action: 'advisor',
+            clinic
           });
           return {
             replyText: buildDemoAdvisorReply(summary),
@@ -4124,7 +4228,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           conversation,
           contact,
           onboarding: getOnboardingData(safeContext),
-          action: 'advisor'
+          action: 'advisor',
+          clinic
         });
         return {
           replyText: buildDemoAdvisorReply(summary),
