@@ -41,6 +41,32 @@ async function listPortalUsersByClinicId(clinicId, client = null) {
   return result.rows;
 }
 
+async function listPortalUsersForOpturonAdmin(client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT su.id,
+            su."clinicId",
+            su.name,
+            su.email,
+            su."accountRootUserId",
+            CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS role,
+            su.active,
+            su."createdAt",
+            su."updatedAt",
+            c.name AS "clinicName",
+            c."externalTenantId" AS "tenantId"
+     FROM staff_users su
+     INNER JOIN clinics c ON c.id = su."clinicId"
+     WHERE su."accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND su.email IS NOT NULL
+       AND su.active = TRUE
+       AND su.role IN ${PORTAL_ROLE_SQL}
+     ORDER BY c.name ASC NULLS LAST, su."createdAt" ASC`
+  );
+
+  return result.rows;
+}
+
 async function countOwnersByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -205,6 +231,35 @@ async function findPortalUserByIdAndClinicId(userId, clinicId, client = null) {
   return result.rows[0] || null;
 }
 
+async function findPortalUserById(userId, client = null) {
+  if (!isUuid(userId)) {
+    return null;
+  }
+
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            "clinicId",
+            name,
+            email,
+            "accountRootUserId",
+            CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+            active,
+            "createdAt",
+            "updatedAt"
+     FROM staff_users
+     WHERE id = $1
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND email IS NOT NULL
+       AND active = TRUE
+       AND role IN ${PORTAL_ROLE_SQL}
+     LIMIT 1`,
+    [userId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function findPortalUserByNameAndClinicId(name, clinicId, client = null) {
   const safeName = String(name || '').trim();
   if (!safeName) return null;
@@ -238,11 +293,13 @@ async function findPortalUserByNameAndClinicId(name, clinicId, client = null) {
 module.exports = {
   countOwnersByClinicId,
   listPortalUsersByClinicId,
+  listPortalUsersForOpturonAdmin,
   createPortalUser,
   updatePortalUserAccountRootById,
   updatePortalUserRole,
   deletePortalUserById,
   findPortalUserByEmail,
+  findPortalUserById,
   findPortalUserByIdAndClinicId,
   findPortalUserByNameAndClinicId
 };

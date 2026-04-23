@@ -7,11 +7,13 @@ const {
 } = require('../repositories/tenant.repository');
 const {
   listPortalUsersByClinicId,
+  listPortalUsersForOpturonAdmin,
   createPortalUser,
   updatePortalUserAccountRootById,
   updatePortalUserRole,
   deletePortalUserById,
-  findPortalUserByEmail
+  findPortalUserByEmail,
+  findPortalUserById
 } = require('../repositories/portal-users.repository');
 const {
   createPortalUserAuditEvent,
@@ -75,6 +77,13 @@ function normalizePortalUserRecord(user, primaryPortalUserId) {
   return {
     ...user,
     accountKind: safePrimaryId && String(user.id) === safePrimaryId ? 'primary' : 'subaccount'
+  };
+}
+
+function normalizeAdminPortalUserRecord(user) {
+  return {
+    ...user,
+    accountKind: String(user.role || '').toLowerCase() === 'owner' ? 'primary' : 'subaccount'
   };
 }
 
@@ -150,6 +159,28 @@ async function listPortalUsers(tenantId) {
 
   const currentUsers = await listPortalUsersByClinicId(context.clinic.id);
   const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers);
+
+  if (accountConfig.accountScope === 'opturon_admin') {
+    const users = (await listPortalUsersForOpturonAdmin()).map(normalizeAdminPortalUserRecord);
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      users,
+      activity: await listPortalUserAuditEventsByClinicId(context.clinic.id, 10),
+      meta: buildPortalUsersMeta(
+        users,
+        {
+          subaccountLimit: accountConfig.subaccountLimit,
+          unlimitedSubaccounts: true,
+          accountScope: accountConfig.accountScope,
+          source: accountConfig.limitSource
+        },
+        accountConfig.primaryPortalUserId
+      )
+    };
+  }
+
   const scopedUsers = filterClientScopedPortalUsers(currentUsers, accountConfig);
   const users = scopedUsers.map((user) => normalizePortalUserRecord(user, accountConfig.primaryPortalUserId));
   return {
@@ -317,6 +348,41 @@ async function updatePortalUser(tenantId, userId, payload) {
   const user = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
     const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
+
+    if (accountConfig.accountScope === 'opturon_admin') {
+      const target = await findPortalUserById(userId, client);
+      if (!target) return null;
+      const previousRole = target.role;
+      const updatedUser = await updatePortalUserRole(
+        {
+          userId,
+          clinicId: target.clinicId,
+          role
+        },
+        client
+      );
+      if (updatedUser) {
+        await createPortalUserAuditEvent(
+          {
+            tenantId: context.tenantId,
+            clinicId: target.clinicId,
+            actorUserId,
+            targetUserId: updatedUser.id,
+            action: 'tenant_portal_user_role_updated',
+            payload: {
+              targetUserId: updatedUser.id,
+              name: updatedUser.name,
+              previousRole,
+              nextRole: updatedUser.role,
+              managedFrom: 'opturon_admin'
+            }
+          },
+          client
+        );
+      }
+      return updatedUser;
+    }
+
     assertRootBelongsToClinic(current, accountConfig, context.clinic.id);
     const scopedCurrent = filterClientScopedPortalUsers(current, accountConfig);
     const target = scopedCurrent.find((item) => String(item.id) === String(userId));
@@ -472,6 +538,36 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
   const removed = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
     const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
+
+    if (accountConfig.accountScope === 'opturon_admin') {
+      const target = await findPortalUserById(userId, client);
+      if (!target) return null;
+      await createPortalUserAuditEvent(
+        {
+          tenantId: context.tenantId,
+          clinicId: target.clinicId,
+          actorUserId,
+          targetUserId: target.id,
+          action: 'tenant_portal_user_deleted',
+          payload: {
+            targetUserId: target.id,
+            name: target.name,
+            email: target.email,
+            role: target.role,
+            managedFrom: 'opturon_admin'
+          }
+        },
+        client
+      );
+      return deletePortalUserById(
+        {
+          userId,
+          clinicId: target.clinicId
+        },
+        client
+      );
+    }
+
     assertRootBelongsToClinic(current, accountConfig, context.clinic.id);
     const scopedCurrent = filterClientScopedPortalUsers(current, accountConfig);
     const target = scopedCurrent.find((item) => String(item.id) === String(userId));
