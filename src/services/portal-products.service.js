@@ -65,6 +65,24 @@ function normalizeMetadata(value) {
   return value;
 }
 
+function normalizeAttributes(value) {
+  const items = Array.isArray(value) ? value : [];
+  return items
+    .map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+      const name = normalizeString(item.name);
+      if (!name) return null;
+      const options = Array.isArray(item.options)
+        ? Array.from(new Set(item.options.map((option) => normalizeString(option)).filter(Boolean)))
+        : [];
+      return {
+        name,
+        options
+      };
+    })
+    .filter(Boolean);
+}
+
 function normalizeDateOnly(value) {
   const normalized = normalizeString(value);
   if (!normalized) return null;
@@ -91,6 +109,8 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
     status: PRODUCT_STATUSES.has(requestedStatus) ? requestedStatus : fallbackStatus,
     sku: normalizeString(payload && payload.sku) || null,
     categoryId: normalizeString(payload && payload.categoryId) || null,
+    subcategory: normalizeString(payload && (payload.subcategory ?? payload.subcategoryName)) || null,
+    attributes: normalizeAttributes(payload && (payload.attributes ?? payload.configurableAttributes ?? payload.variants)),
     expirationDate,
     discountPercentage,
     metadata: normalizeMetadata(payload && payload.metadata)
@@ -104,6 +124,10 @@ function validateProductPayload(product) {
   if (!Number.isInteger(product.stock) || product.stock < 0) return 'invalid_product_stock';
   if (!PRODUCT_STATUSES.has(product.status)) return 'invalid_product_status';
   if (product.expirationDate === '__invalid__') return 'invalid_product_expiration_date';
+  if (!Array.isArray(product.attributes)) return 'invalid_product_attributes';
+  if (product.attributes.some((attribute) => !attribute || !attribute.name || !Array.isArray(attribute.options))) {
+    return 'invalid_product_attributes';
+  }
   if (product.discountPercentage !== null && product.discountPercentage !== undefined) {
     if (!Number.isFinite(product.discountPercentage) || product.discountPercentage <= 0 || product.discountPercentage > 100) {
       return 'invalid_product_discount_percentage';

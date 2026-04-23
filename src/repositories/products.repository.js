@@ -21,11 +21,71 @@ function normalizeDateOnly(value) {
   return normalized;
 }
 
+function normalizeMetadataObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value;
+}
+
+function normalizeProductAttributeRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const name = String(value.name || '').trim();
+  if (!name) return null;
+
+  const options = Array.isArray(value.options)
+    ? Array.from(
+        new Set(
+          value.options
+            .map((option) => String(option || '').trim())
+            .filter(Boolean)
+        )
+      )
+    : [];
+
+  return {
+    name,
+    options
+  };
+}
+
+function extractCatalogMetadata(metadata) {
+  const safeMetadata = normalizeMetadataObject(metadata);
+  const catalog = normalizeMetadataObject(safeMetadata.catalog);
+  const subcategory = String(catalog.subcategory || '').trim() || null;
+  const attributes = Array.isArray(catalog.attributes)
+    ? catalog.attributes.map(normalizeProductAttributeRecord).filter(Boolean)
+    : [];
+
+  return {
+    subcategory,
+    attributes
+  };
+}
+
+function buildStoredMetadata(inputMetadata, input) {
+  const safeMetadata = normalizeMetadataObject(inputMetadata);
+  const safeCatalog = normalizeMetadataObject(safeMetadata.catalog);
+  const nextCatalog = {
+    ...safeCatalog,
+    subcategory: String(input.subcategory || '').trim() || null,
+    attributes: Array.isArray(input.attributes)
+      ? input.attributes.map(normalizeProductAttributeRecord).filter(Boolean)
+      : []
+  };
+
+  return {
+    ...safeMetadata,
+    catalog: nextCatalog
+  };
+}
+
 function normalizeProduct(row) {
   const unitPrice = quantizeDecimal(row.unitPrice ?? row.price ?? 0, 2, 0);
   const vatRate = quantizeDecimal(row.vatRate ?? 0, 2, 0);
   const discountPercentage = row.discountPercentage == null ? null : quantizeDecimal(row.discountPercentage, 2, 0);
   const status = row.status || 'active';
+  const metadata = normalizeMetadataObject(row.metadata);
+  const catalogMetadata = extractCatalogMetadata(metadata);
 
   return {
     id: row.id,
@@ -43,9 +103,11 @@ function normalizeProduct(row) {
     sku: row.sku || null,
     categoryId: row.categoryId || null,
     categoryName: row.categoryName || null,
+    subcategory: catalogMetadata.subcategory,
+    attributes: catalogMetadata.attributes,
     expirationDate: normalizeDateOnly(row.expirationDate),
     discountPercentage,
-    metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {},
+    metadata,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
   };
@@ -121,6 +183,7 @@ async function findProductById(productId, clinicId, client = null) {
 async function createProduct(input, client = null) {
   const safeUnitPrice = quantizeDecimal(input.unitPrice ?? input.price ?? 0, 2, 0);
   const safeVatRate = quantizeDecimal(input.vatRate ?? input.taxRate ?? 0, 2, 0);
+  const storedMetadata = buildStoredMetadata(input.metadata, input);
 
   const result = await dbQuery(
     client,
@@ -157,7 +220,7 @@ async function createProduct(input, client = null) {
       input.categoryId || null,
       input.expirationDate || null,
       input.discountPercentage == null ? null : quantizeDecimal(input.discountPercentage, 2, 0),
-      JSON.stringify(input.metadata || {})
+      JSON.stringify(storedMetadata)
     ]
   );
 
@@ -170,6 +233,12 @@ async function updateProduct(productId, clinicId, payload, client = null) {
 
   const safeUnitPrice = quantizeDecimal(payload.unitPrice ?? payload.price ?? current.unitPrice ?? current.price ?? 0, 2, 0);
   const safeVatRate = quantizeDecimal(payload.vatRate ?? payload.taxRate ?? current.vatRate ?? current.taxRate ?? 0, 2, 0);
+  const storedMetadata = buildStoredMetadata(payload.metadata ?? current.metadata, {
+    ...current,
+    ...payload,
+    subcategory: payload.subcategory !== undefined ? payload.subcategory : current.subcategory,
+    attributes: payload.attributes !== undefined ? payload.attributes : current.attributes
+  });
 
   await dbQuery(
     client,
@@ -206,7 +275,7 @@ async function updateProduct(productId, clinicId, payload, client = null) {
       payload.categoryId || null,
       payload.expirationDate || null,
       payload.discountPercentage == null ? null : quantizeDecimal(payload.discountPercentage, 2, 0),
-      JSON.stringify(payload.metadata || {})
+      JSON.stringify(storedMetadata)
     ]
   );
 
