@@ -1,5 +1,10 @@
 const { withTransaction } = require('../db/client');
-const { findClinicByExternalTenantId } = require('../repositories/tenant.repository');
+const {
+  findClinicByExternalTenantId,
+  findChannelByIdAndClinicId,
+  findPreferredWhatsAppChannelByClinicId
+} = require('../repositories/tenant.repository');
+const { findContactByIdAndClinicId } = require('../repositories/contact.repository');
 const {
   findAgendaItemById,
   updateAgendaItemById
@@ -7,6 +12,7 @@ const {
 const { addEvent } = require('../repositories/conversation-events.repository');
 const { openHandoff } = require('../repositories/handoff.repository');
 const conversationRepo = require('../conversations/conversation.repo');
+const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -21,6 +27,62 @@ function parseAction(value) {
 
 function parseContext(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function formatMoney(amount, currency = 'ARS') {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return null;
+  try {
+    return new Intl.NumberFormat('es-AR', {
+      style: 'currency',
+      currency: String(currency || 'ARS').trim() || 'ARS',
+      maximumFractionDigits: 0
+    }).format(value);
+  } catch (error) {
+    return `${currency || 'ARS'} ${value}`;
+  }
+}
+
+function normalizePlan(plan) {
+  return plan && typeof plan === 'object' && !Array.isArray(plan) ? plan : null;
+}
+
+function buildOnboardingSummary({ transferPayment, context }) {
+  const plan = normalizePlan(transferPayment && transferPayment.selectedPlan);
+  const onboarding = parseContext(context && context.onboarding);
+  const pieces = [
+    'Pago validado por transferencia. Continuar onboarding/instalacion.',
+    plan && plan.name ? `Plan: ${plan.name}${plan.price ? ` (${formatMoney(plan.price, plan.currency)})` : ''}.` : null,
+    onboarding.businessType ? `Tipo de negocio: ${onboarding.businessType}.` : null,
+    onboarding.mainOffer ? `Oferta principal: ${onboarding.mainOffer}.` : null,
+    onboarding.goal ? `Objetivo: ${onboarding.goal}.` : null,
+    onboarding.channel ? `Canal: ${onboarding.channel}.` : 'Canal: whatsapp.'
+  ];
+  return pieces.filter(Boolean).join(' ');
+}
+
+function buildOnboardingContext({ context, transferPayment, now, actorId }) {
+  const existingOnboarding = parseContext(context && context.onboarding);
+  const plan = normalizePlan(transferPayment && transferPayment.selectedPlan);
+  const summary = buildOnboardingSummary({ transferPayment, context });
+
+  return {
+    ...existingOnboarding,
+    status: 'pending',
+    source: 'transfer_payment_validated',
+    channel: existingOnboarding.channel || 'whatsapp',
+    selectedPlan: plan,
+    summary,
+    handoffReason: 'transfer_payment_validated',
+    pendingSince: existingOnboarding.pendingSince || now,
+    validatedAt: now,
+    validatedBy: actorId || null
+  };
+}
+
+function prependContextItem(items, nextItem, maxItems = 50) {
+  const list = Array.isArray(items) ? items : [];
+  return [nextItem, ...list].slice(0, maxItems);
 }
 
 function buildTransferPaymentPatch({ transferPayment, action, actorId, reason, now }) {
@@ -50,6 +112,26 @@ function buildTransferPaymentPatch({ transferPayment, action, actorId, reason, n
 }
 
 async function updateConversationPaymentValidation({ conversation, context, transferPayment, action, actorId, reason, now }, client) {
+  const nextOnboarding = action === 'approved'
+    ? buildOnboardingContext({ context, transferPayment, now, actorId })
+    : null;
+  const onboardingTask = action === 'approved'
+    ? {
+        id: `payment-onboarding-${now}`,
+        title: 'Iniciar onboarding / instalacion',
+        status: 'todo',
+        dueDate: now.slice(0, 10),
+        source: 'transfer_payment_validated'
+      }
+    : null;
+  const onboardingNote = action === 'approved'
+    ? {
+        id: `payment-validation-${now}`,
+        text: nextOnboarding.summary,
+        createdAt: now,
+        source: 'transfer_payment_validated'
+      }
+    : null;
   const nextContext = {
     ...context,
     transferPayment: buildTransferPaymentPatch({
@@ -58,7 +140,10 @@ async function updateConversationPaymentValidation({ conversation, context, tran
       actorId,
       reason,
       now
-    })
+    }),
+    ...(nextOnboarding ? { onboarding: nextOnboarding } : {}),
+    ...(onboardingNote ? { portalNotes: prependContextItem(context.portalNotes, onboardingNote) } : {}),
+    ...(onboardingTask ? { portalTasks: prependContextItem(context.portalTasks, onboardingTask) } : {})
   };
 
   const nextStage = action === 'approved' ? 'installation_pending' : 'payment_rejected';
@@ -85,12 +170,74 @@ async function updateConversationPaymentValidation({ conversation, context, tran
       nextStatus,
       nextLeadStatus,
       action === 'approved'
-        ? 'Pago validado: continuar onboarding/instalacion.'
+        ? nextOnboarding.summary
         : 'Pago rechazado/no encontrado: recontactar para revisar comprobante.'
     ]
   );
 
   return result.rows[0] || null;
+}
+
+function buildPaymentValidatedClientReply() {
+  return [
+    'Perfecto, ya validamos tu pago.',
+    '',
+    'En breve un asesor se va a poner en contacto para iniciar la configuracion de tu sistema.',
+    'No activamos nada automaticamente: vamos a acompañarte con la instalacion paso a paso.'
+  ].join('\n');
+}
+
+async function sendPaymentValidatedClientReply({ clinic, conversation }) {
+  const contact = await findContactByIdAndClinicId(conversation.contactId, clinic.id);
+  if (!contact || !contact.waId) {
+    return { sent: false, reason: 'contact_without_waid' };
+  }
+
+  const channel =
+    (conversation.channelId ? await findChannelByIdAndClinicId(conversation.channelId, clinic.id) : null) ||
+    await findPreferredWhatsAppChannelByClinicId(clinic.id);
+
+  if (!channel) {
+    return { sent: false, reason: 'whatsapp_channel_not_found' };
+  }
+  if (String(channel.status || '').trim().toLowerCase() !== 'active') {
+    return { sent: false, reason: 'whatsapp_channel_inactive' };
+  }
+
+  const text = buildPaymentValidatedClientReply();
+  const sendResult = await sendChannelScopedMessage(
+    { to: contact.waId, text },
+    {
+      requestId: `transfer-payment-validation:${conversation.id}`,
+      credentials: {
+        tenantId: clinic.externalTenantId || null,
+        clinicId: clinic.id,
+        conversationId: conversation.id,
+        channelId: channel.id,
+        accessToken: channel.accessToken || undefined,
+        phoneNumberId: channel.phoneNumberId,
+        provider: channel.provider || null,
+        status: channel.status || null,
+        wabaId: channel.wabaId || null
+      }
+    }
+  );
+
+  const outbound = await conversationRepo.insertOutboundMessage({
+    conversationId: conversation.id,
+    waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
+    from: channel.phoneNumberId || null,
+    to: contact.waId,
+    type: 'text',
+    text,
+    raw: sendResult && sendResult.raw ? sendResult.raw : {}
+  });
+
+  return {
+    sent: true,
+    messageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
+    outboundMessageId: outbound && outbound.row ? outbound.row.id : null
+  };
 }
 
 async function resolveValidationTarget({ clinic, conversationId, agendaItemId }, client) {
@@ -139,7 +286,7 @@ async function validateTransferPaymentByExternalTenantId({ tenantId, conversatio
     return { ok: false, status: 404, reason: 'tenant_not_found' };
   }
 
-  return withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
     const target = await resolveValidationTarget({ clinic, conversationId, agendaItemId }, client);
     if (!target.ok) return target;
 
@@ -214,6 +361,22 @@ async function validateTransferPaymentByExternalTenantId({ tenantId, conversatio
         leadId: null,
         reason: 'transfer_payment_validated'
       }, client);
+
+      await addEvent({
+        clinicId: clinic.id,
+        conversationId: target.conversation.id,
+        type: 'TRANSFER_PAYMENT_ONBOARDING_HANDOFF_CREATED',
+        data: {
+          status: 'onboarding_pending',
+          handoffId: handoff ? handoff.id : null,
+          handoffReason: 'transfer_payment_validated',
+          channel: 'whatsapp',
+          selectedPlan: transferPayment.selectedPlan || null,
+          summary: updatedConversation && updatedConversation.context && updatedConversation.context.onboarding
+            ? updatedConversation.context.onboarding.summary || null
+            : null
+        }
+      }, client);
     }
 
     return {
@@ -226,6 +389,32 @@ async function validateTransferPaymentByExternalTenantId({ tenantId, conversatio
       handoff
     };
   });
+
+  if (result && result.ok && normalizedAction === 'approved') {
+    try {
+      const notification = await sendPaymentValidatedClientReply({
+        clinic,
+        conversation: result.conversation
+      });
+      result.clientNotification = notification;
+      await addEvent({
+        clinicId: clinic.id,
+        conversationId: result.conversation.id,
+        type: notification.sent ? 'TRANSFER_PAYMENT_VALIDATION_CLIENT_NOTIFIED' : 'TRANSFER_PAYMENT_VALIDATION_CLIENT_NOTIFICATION_SKIPPED',
+        data: notification
+      });
+    } catch (error) {
+      result.clientNotification = { sent: false, reason: 'send_failed', detail: error.message };
+      await addEvent({
+        clinicId: clinic.id,
+        conversationId: result.conversation.id,
+        type: 'TRANSFER_PAYMENT_VALIDATION_CLIENT_NOTIFICATION_FAILED',
+        data: result.clientNotification
+      });
+    }
+  }
+
+  return result;
 }
 
 module.exports = {
