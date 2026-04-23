@@ -2931,10 +2931,21 @@ function parseTransferPaymentIntent(input) {
   if (
     text.includes('ya pague') ||
     text.includes('ya pagué') ||
+    text.includes('ya transferi') ||
+    text.includes('ya transferí') ||
+    text.includes('hice la transferencia') ||
+    text.includes('hice una transferencia') ||
+    text.includes('listo pagado') ||
+    text.includes('listo, pagado') ||
+    text.includes('listo transferido') ||
+    text.includes('listo, transferido') ||
+    text === 'pagado' ||
     text.includes('te mando el comprobante') ||
+    text.includes('te mande el comprobante') ||
     text.includes('te envio el comprobante') ||
     text.includes('te envié el comprobante') ||
     text.includes('mando comprobante') ||
+    text.includes('mande comprobante') ||
     text.includes('envio comprobante') ||
     text.includes('envié comprobante')
   ) {
@@ -3050,6 +3061,128 @@ function buildTransferInstructionsWithPlanReply(transferConfig, selectedPlan) {
   ].filter((line) => line !== null).join('\n');
 }
 
+function buildTransferPaymentFollowUpDescription({ selectedPlan, proofMetadata, source }) {
+  return [
+    'Pago por transferencia informado por WhatsApp.',
+    '',
+    `Origen: ${source || 'whatsapp_payment'}`,
+    selectedPlan ? `Plan: ${selectedPlan.name} - ${formatMoney(selectedPlan.price, selectedPlan.currency)}` : null,
+    proofMetadata && proofMetadata.type ? `Comprobante/adjunto: ${proofMetadata.type}` : null,
+    proofMetadata && proofMetadata.filename ? `Archivo: ${proofMetadata.filename}` : null,
+    '',
+    'Estado: pendiente de validacion humana.',
+    'Accion sugerida: revisar comprobante/contactar al cliente y continuar activacion/instalacion.'
+  ].filter(Boolean).join('\n');
+}
+
+async function findExistingTransferPaymentFollowUp({ clinicId, conversationId, contactId, date }) {
+  const items = await listAgendaItemsByClinicAndRange(clinicId, date, date);
+  return items.find((item) => {
+    if (!item || item.status === 'cancelled') return false;
+    if (item.type !== 'follow_up') return false;
+    if (item.origin !== 'transfer_payment') return false;
+    if (item.commercialActionType !== 'follow_up') return false;
+    if (conversationId && item.conversationId === conversationId) return true;
+    if (contactId && item.contactId === contactId) return true;
+    return false;
+  }) || null;
+}
+
+async function ensureTransferPaymentValidationFollowUp({ conversation, contact, selectedPlan, proofMetadata, source, clinic }) {
+  const timezone = resolveClinicTimezone(clinic);
+  const now = DateTime.now().setZone(timezone);
+  const date = now.toISODate();
+  const nextActionAt = now.toUTC().toISO();
+  const existing = await findExistingTransferPaymentFollowUp({
+    clinicId: conversation.clinicId,
+    conversationId: conversation.id,
+    contactId: contact && contact.id ? contact.id : null,
+    date
+  });
+
+  if (existing) {
+    return {
+      created: false,
+      item: existing
+    };
+  }
+
+  const item = await createAgendaItem({
+    clinicId: conversation.clinicId,
+    date,
+    startAt: null,
+    endAt: null,
+    contactId: contact && contact.id ? contact.id : null,
+    conversationId: conversation.id,
+    assignedUserId: null,
+    assignedUserName: 'Antonella / asesor comercial',
+    type: 'follow_up',
+    title: 'Validar pago informado por transferencia',
+    description: buildTransferPaymentFollowUpDescription({ selectedPlan, proofMetadata, source }),
+    status: 'pending',
+    commercialActionType: 'follow_up',
+    commercialOutcome: 'proposal_requested',
+    origin: 'transfer_payment',
+    location: 'WhatsApp',
+    resultNote: null,
+    nextStepNote: 'Validar pago informado y continuar activacion/instalacion.',
+    nextActionAt
+  });
+
+  return {
+    created: true,
+    item
+  };
+}
+
+async function recordTransferPaymentReported({ conversation, contact, transferContext, selectedPlan = null, proofMetadata = null, source = 'whatsapp_payment', clinic = null }) {
+  const normalizedPlan = normalizePaymentPlan(selectedPlan || (transferContext && transferContext.selectedPlan));
+  const reportedAt = new Date().toISOString();
+  const agendaFollowUp = await ensureTransferPaymentValidationFollowUp({
+    conversation,
+    contact,
+    selectedPlan: normalizedPlan,
+    proofMetadata,
+    source,
+    clinic
+  });
+
+  await addEvent({
+    clinicId: conversation.clinicId,
+    conversationId: conversation.id,
+    type: 'TRANSFER_PAYMENT_REPORTED',
+    data: {
+      source,
+      status: 'payment_reported',
+      reportedAt,
+      awaitingHumanValidation: true,
+      conversationId: conversation.id,
+      contact: {
+        id: contact && contact.id ? contact.id : null,
+        name: contact && contact.name ? contact.name : null,
+        phone: contact && (contact.whatsappPhone || contact.phone || contact.waId)
+          ? (contact.whatsappPhone || contact.phone || contact.waId)
+          : null
+      },
+      selectedPlan: normalizedPlan,
+      proofMetadata,
+      agendaFollowUp: {
+        created: agendaFollowUp.created,
+        id: agendaFollowUp.item && agendaFollowUp.item.id ? agendaFollowUp.item.id : null
+      }
+    }
+  });
+
+  return {
+    selectedPlan: normalizedPlan,
+    reportedAt,
+    agendaFollowUp: {
+      created: agendaFollowUp.created,
+      id: agendaFollowUp.item && agendaFollowUp.item.id ? agendaFollowUp.item.id : null
+    }
+  };
+}
+
 function isInboundPaymentProofMessage(inboundMessage) {
   if (!inboundMessage || typeof inboundMessage !== 'object') return false;
   const type = String(inboundMessage.type || '').trim().toLowerCase();
@@ -3099,18 +3232,18 @@ function buildTransferProofRequestReply() {
 
 function buildTransferPendingValidationReply() {
   return [
-    'Recibí tu comprobante.',
+    'Perfecto, ya dejé asentado que informaste el pago.',
     '',
-    'Lo dejé registrado y quedó pendiente de validación.',
-    'Te aviso por acá cuando esté validado.'
+    'Queda pendiente de confirmación humana.',
+    'A la brevedad un asesor se va a contactar para continuar con la activación / instalación del software.'
   ].join('\n');
 }
 
 function buildTransferPendingStatusReply() {
   return [
-    'Tu comprobante ya quedó registrado.',
+    'Tu pago informado ya quedó registrado.',
     '',
-    'Por ahora sigue pendiente de validación. Ni bien se revise, te avisamos por acá.'
+    'Por ahora sigue pendiente de validación humana. A la brevedad un asesor se va a contactar para continuar.'
   ].join('\n');
 }
 
@@ -3792,7 +3925,13 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     (safeContext && safeContext.commerceLastOrderId) ||
     ''
   ).trim() || null;
-  const transferFlowActive = currentState === 'PAYMENT_TRANSFER' || Boolean(transferContext && transferContext.orderId);
+  const transferFlowActive = currentState === 'PAYMENT_TRANSFER' || Boolean(transferContext);
+  const transferStatus = String(transferContext && transferContext.status ? transferContext.status : '').trim().toLowerCase();
+  const canReportTransferPayment =
+    transferFlowActive &&
+    transferStatus !== 'awaiting_plan_selection' &&
+    transferStatus !== 'payment_reported' &&
+    transferStatus !== 'payment_pending_validation';
   const ensureOrderPendingForTransfer = async () => {
     if (!transferOrderId) return null;
     const patchPayload = {
@@ -3832,9 +3971,18 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     });
   }
 
-  if (transferOrderId && isInboundPaymentProofMessage(inboundMessage) && transferFlowActive) {
+  if ((isInboundPaymentProofMessage(inboundMessage) && canReportTransferPayment) || (transferIntent === 'proof_notice' && canReportTransferPayment)) {
     const order = await ensureOrderPendingForTransfer();
     const proofMetadata = extractPaymentProofMetadata(inboundMessage);
+    const reported = await recordTransferPaymentReported({
+      conversation,
+      contact,
+      transferContext,
+      selectedPlan: transferContext && transferContext.selectedPlan ? transferContext.selectedPlan : null,
+      proofMetadata,
+      source: transferContext && transferContext.source ? transferContext.source : 'whatsapp_payment',
+      clinic
+    });
     return {
       replyText: buildTransferPendingValidationReply(),
       newState: 'PAYMENT_TRANSFER',
@@ -3844,20 +3992,29 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : new Date().toISOString(),
         transferPayment: {
           orderId: transferOrderId,
-          status: 'payment_pending_validation',
+          status: 'payment_reported',
           paymentMethod: 'bank_transfer',
+          source: transferContext && transferContext.source ? transferContext.source : 'whatsapp_payment',
+          selectedPlan: reported.selectedPlan,
           destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
           requestedAt: transferContext && transferContext.requestedAt ? transferContext.requestedAt : new Date().toISOString(),
-          proofSubmittedAt: new Date().toISOString(),
+          reportedAt: reported.reportedAt,
+          awaitingHumanValidation: true,
+          proofSubmittedAt: reported.reportedAt,
           proofMessageId: inboundMessage && inboundMessage.id ? inboundMessage.id : null,
           proofMetadata,
-          orderPaymentStatus: order && order.paymentStatus ? order.paymentStatus : 'pending'
+          orderPaymentStatus: order && order.paymentStatus ? order.paymentStatus : 'pending',
+          agendaFollowUp: reported.agendaFollowUp
         }
       }
     };
   }
 
   if (transferIntent === 'request' || transferIntent === 'proof_notice') {
+    if (transferIntent === 'proof_notice') {
+      return null;
+    }
+
     if (!transferOrderId) {
       const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
       const selectedPlan =
@@ -3936,7 +4093,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (currentState === 'PAYMENT_TRANSFER') {
-    if (transferContext && transferContext.status === 'payment_pending_validation') {
+    if (transferContext && (transferContext.status === 'payment_pending_validation' || transferContext.status === 'payment_reported')) {
       return {
         replyText: buildTransferPendingStatusReply(),
         newState: 'PAYMENT_TRANSFER',
