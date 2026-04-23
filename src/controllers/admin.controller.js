@@ -1,5 +1,6 @@
 const { setActiveTenantForAdmin } = require('../services/portal-active-tenant.service');
 const {
+  listTenantPolicies,
   resolveTenantPolicyByExternalTenantId,
   updateTenantPolicyByExternalTenantId
 } = require('../services/tenant-policy.service');
@@ -60,6 +61,19 @@ async function getTenantPolicy(req, res) {
     return res.status(500).json({
       success: false,
       error: 'tenant_policy_read_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getTenants(req, res) {
+  try {
+    const result = await listTenantPolicies();
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'tenants_list_failed',
       details: error.message
     });
   }
@@ -129,6 +143,7 @@ async function postTransferPaymentValidation(req, res) {
 
 module.exports = {
   postSetActiveTenant,
+  getTenants,
   getTenantPolicy,
   patchTenantPolicy,
   postTransferPaymentValidation

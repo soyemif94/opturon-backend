@@ -150,6 +150,30 @@ async function resolveTenantPolicyByExternalTenantId(externalTenantId) {
   };
 }
 
+async function listTenantPolicies() {
+  const result = await query(
+    `SELECT id, name, timezone, "externalTenantId", settings, "createdAt", "updatedAt"
+     FROM clinics
+     WHERE NULLIF(TRIM(COALESCE("externalTenantId", '')), '') IS NOT NULL
+       AND COALESCE(settings->'portal'->>'accountScope', '') <> 'opturon_admin'
+     ORDER BY name ASC, "createdAt" DESC`
+  );
+
+  return {
+    ok: true,
+    tenants: result.rows.map((clinic) => ({
+      id: clinic.id,
+      name: clinic.name || clinic.externalTenantId,
+      tenantId: clinic.externalTenantId,
+      externalTenantId: clinic.externalTenantId,
+      timezone: clinic.timezone || null,
+      createdAt: clinic.createdAt || null,
+      updatedAt: clinic.updatedAt || null,
+      policy: buildTenantPolicyFromSettings(clinic.settings)
+    }))
+  };
+}
+
 function sanitizeTenantPolicyPatch(payload) {
   const input = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
   return {
@@ -228,6 +252,7 @@ function isModuleEnabled(policy, moduleName) {
 module.exports = {
   MODULES,
   buildTenantPolicyFromSettings,
+  listTenantPolicies,
   resolveTenantPolicyByClinicId,
   resolveTenantPolicyByExternalTenantId,
   updateTenantPolicyByExternalTenantId,

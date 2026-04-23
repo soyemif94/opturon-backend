@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   postSetActiveTenant,
+  getTenants,
   getTenantPolicy,
   patchTenantPolicy,
   postTransferPaymentValidation
@@ -10,6 +11,7 @@ const { requirePortalInternalAuth } = require('../middlewares/portal-internal-au
 const router = express.Router();
 
 router.post('/set-active-tenant', requirePortalInternalAuth, postSetActiveTenant);
+router.get('/tenants', requirePortalInternalAuth, getTenants);
 router.get('/tenants/:tenantId/policy', requirePortalInternalAuth, getTenantPolicy);
 router.patch('/tenants/:tenantId/policy', requirePortalInternalAuth, patchTenantPolicy);
 router.post('/tenants/:tenantId/transfer-payments/validation', requirePortalInternalAuth, postTransferPaymentValidation);
