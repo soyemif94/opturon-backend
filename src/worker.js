@@ -2172,6 +2172,28 @@ function buildDemoPaymentReply(transferConfig) {
   ].join('\n');
 }
 
+async function recordTransferPaymentIntent({ conversation, contact, selectedPlan = null, source = 'whatsapp_payment', status = 'payment_requested' }) {
+  await addEvent({
+    clinicId: conversation.clinicId,
+    conversationId: conversation.id,
+    type: source === 'demo_whatsapp' ? 'DEMO_PAYMENT_INTENT' : 'TRANSFER_PAYMENT_INTENT',
+    data: {
+      source,
+      status,
+      capturedAt: new Date().toISOString(),
+      conversationId: conversation.id,
+      contact: {
+        id: contact && contact.id ? contact.id : null,
+        name: contact && contact.name ? contact.name : null,
+        phone: contact && (contact.whatsappPhone || contact.phone || contact.waId)
+          ? (contact.whatsappPhone || contact.phone || contact.waId)
+          : null
+      },
+      selectedPlan
+    }
+  });
+}
+
 function isDemoAdvanceIntent(input) {
   const normalized = normalizeCommandText(input);
   if (!normalized) return false;
@@ -2921,6 +2943,11 @@ function parseTransferPaymentIntent(input) {
 
   if (
     text.includes('quiero pagar') ||
+    text.includes('avanzar con el pago') ||
+    text.includes('pasar al pago') ||
+    text.includes('seguir con el pago') ||
+    text.includes('contratar') ||
+    text.includes('quiero contratar') ||
     text.includes('te transfiero') ||
     text.includes('pasame alias') ||
     text.includes('pasame cbu') ||
@@ -2933,6 +2960,94 @@ function parseTransferPaymentIntent(input) {
   }
 
   return null;
+}
+
+function buildPaymentPlanCatalogReply(planProducts) {
+  const plans = getOrderedPlanProducts(planProducts);
+  if (!plans.length) {
+    return [
+      'Perfecto. Queres avanzar con el pago.',
+      '',
+      'Ahora mismo no encuentro planes activos para elegir por WhatsApp.',
+      'Te va a contactar un asesor para indicarte el siguiente paso.'
+    ].join('\n');
+  }
+
+  return [
+    'Perfecto. Para avanzar con el pago, primero elegi el plan:',
+    '',
+    ...plans.map((plan, index) => `${index + 1}. ${plan.name} - ${formatMoney(plan.price, plan.currency)}`),
+    '',
+    'Responde con el numero del plan o con el nombre.'
+  ].join('\n');
+}
+
+function normalizePaymentPlan(product) {
+  if (!product || typeof product !== 'object') return null;
+  const productId = String(product.id || product.productId || '').trim();
+  const name = String(product.name || '').trim();
+  if (!productId || !name) return null;
+  return {
+    productId,
+    name,
+    price: Number(product.price || 0),
+    currency: String(product.currency || 'ARS').trim().toUpperCase() || 'ARS',
+    sku: product.sku || null
+  };
+}
+
+function parsePaymentPlanSelection(rawText, planProducts) {
+  const plans = getOrderedPlanProducts(planProducts);
+  if (!plans.length) return null;
+  const numericSelection = parseCommerceSelection(rawText, plans.length);
+  if (numericSelection) {
+    return normalizePaymentPlan(plans[numericSelection - 1]);
+  }
+
+  const referencedPlan = findReferencedPlan(plans, rawText);
+  return normalizePaymentPlan(referencedPlan);
+}
+
+function resolveExistingPaymentPlan(safeContext, planProducts) {
+  const transferContext = safeContext && safeContext.transferPayment && typeof safeContext.transferPayment === 'object'
+    ? safeContext.transferPayment
+    : null;
+  const selectedPlan = transferContext && transferContext.selectedPlan ? normalizePaymentPlan(transferContext.selectedPlan) : null;
+  if (selectedPlan) return selectedPlan;
+
+  const cartItems = normalizeCommerceCartItems(safeContext);
+  const cartPlan = cartItems.find((item) => isPlanProduct(item));
+  if (cartPlan) return normalizePaymentPlan(cartPlan);
+
+  const suggestedProductId = String(safeContext && safeContext.commerceSuggestedProductId ? safeContext.commerceSuggestedProductId : '').trim();
+  if (suggestedProductId) {
+    const plans = getOrderedPlanProducts(planProducts);
+    return normalizePaymentPlan(plans.find((plan) => String(plan.id || plan.productId || '').trim() === suggestedProductId));
+  }
+
+  return null;
+}
+
+function buildTransferInstructionsWithPlanReply(transferConfig, selectedPlan) {
+  if (!hasConfiguredTransferData(transferConfig)) {
+    return [
+      'Perfecto. Ya dejé registrada tu intención de avanzar con el pago.',
+      selectedPlan ? `Plan elegido: ${selectedPlan.name} - ${formatMoney(selectedPlan.price, selectedPlan.currency)}` : null,
+      '',
+      'Ahora mismo no tengo datos de transferencia configurados para pasarte por acá.',
+      'Te va a contactar un asesor para indicarte el siguiente paso.'
+    ].filter(Boolean).join('\n');
+  }
+
+  return [
+    'Perfecto. Ya podemos avanzar por transferencia.',
+    '',
+    selectedPlan ? `Plan elegido: ${selectedPlan.name} - ${formatMoney(selectedPlan.price, selectedPlan.currency)}` : null,
+    '',
+    buildTransferInstructionsReply(transferConfig),
+    '',
+    'Despues de pagar, mandame el comprobante por aca. Un asesor lo valida y continua la activacion.'
+  ].filter((line) => line !== null).join('\n');
 }
 
 function isInboundPaymentProofMessage(inboundMessage) {
@@ -3553,6 +3668,69 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       })
     };
   };
+  const buildPaymentPlanSelectionDecision = async ({ source = 'whatsapp_payment' } = {}) => {
+    const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
+    await recordTransferPaymentIntent({
+      conversation,
+      contact,
+      selectedPlan: null,
+      source,
+      status: 'awaiting_plan_selection'
+    });
+
+    return {
+      replyText: buildPaymentPlanCatalogReply(plans),
+      newState: 'PAYMENT_TRANSFER',
+      newStage: 'payment_plan_selection',
+      contextPatch: {
+        activeBotDomain: 'commerce',
+        transferPayment: {
+          orderId: null,
+          status: 'awaiting_plan_selection',
+          paymentMethod: 'bank_transfer',
+          source,
+          requestedAt: new Date().toISOString()
+        },
+        commerceCatalog: plans.map((plan, index) => ({
+          ...plan,
+          productId: plan.id || plan.productId,
+          index: index + 1
+        })),
+        commerceCartItems: null,
+        commerceSelectedProduct: null
+      }
+    };
+  };
+  const buildPaymentInstructionsDecision = async ({ selectedPlan, source = 'whatsapp_payment' } = {}) => {
+    const normalizedPlan = normalizePaymentPlan(selectedPlan);
+    const hasTransferData = hasConfiguredTransferData(transferConfig);
+    await recordTransferPaymentIntent({
+      conversation,
+      contact,
+      selectedPlan: normalizedPlan,
+      source,
+      status: hasTransferData ? 'payment_requested' : 'missing_transfer_config'
+    });
+
+    return {
+      replyText: buildTransferInstructionsWithPlanReply(transferConfig, normalizedPlan),
+      newState: hasTransferData ? 'PAYMENT_TRANSFER' : 'IDLE',
+      newStage: hasTransferData ? 'payment_requested' : 'handoff',
+      contextPatch: {
+        activeBotDomain: 'commerce',
+        commerceCartItems: normalizedPlan ? [{ ...normalizedPlan, quantity: 1 }] : null,
+        transferPayment: {
+          orderId: null,
+          status: hasTransferData ? 'payment_requested' : 'missing_transfer_config',
+          paymentMethod: 'bank_transfer',
+          source,
+          selectedPlan: normalizedPlan,
+          destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+          requestedAt: new Date().toISOString()
+        }
+      }
+    };
+  };
 
   const buildDemoEntryDecision = () => ({
     replyText: buildDemoExperienceReply(1),
@@ -3629,6 +3807,31 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     return patchResult && patchResult.ok ? patchResult.order : null;
   };
 
+  if (transferContext && transferContext.status === 'awaiting_plan_selection') {
+    const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
+    const selectedPlan = parsePaymentPlanSelection(inboundText, plans);
+    if (!selectedPlan) {
+      return {
+        replyText: buildPaymentPlanCatalogReply(plans),
+        newState: 'PAYMENT_TRANSFER',
+        newStage: 'payment_plan_selection',
+        contextPatch: {
+          transferPayment: transferContext,
+          commerceCatalog: plans.map((plan, index) => ({
+            ...plan,
+            productId: plan.id || plan.productId,
+            index: index + 1
+          }))
+        }
+      };
+    }
+
+    return buildPaymentInstructionsDecision({
+      selectedPlan,
+      source: transferContext.source || 'whatsapp_payment'
+    });
+  }
+
   if (transferOrderId && isInboundPaymentProofMessage(inboundMessage) && transferFlowActive) {
     const order = await ensureOrderPendingForTransfer();
     const proofMetadata = extractPaymentProofMetadata(inboundMessage);
@@ -3656,11 +3859,21 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
   if (transferIntent === 'request' || transferIntent === 'proof_notice') {
     if (!transferOrderId) {
-      return {
-        replyText: 'Primero dejemos tu plan o pedido confirmado, y ahí sí te paso cómo seguir con el pago.',
-        newState: currentState || 'READY',
-        contextPatch: null
-      };
+      const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
+      const selectedPlan =
+        resolveExistingPaymentPlan(safeContext, plans) ||
+        parsePaymentPlanSelection(inboundText, plans);
+
+      if (selectedPlan) {
+        return buildPaymentInstructionsDecision({
+          selectedPlan,
+          source: 'whatsapp_payment'
+        });
+      }
+
+      return buildPaymentPlanSelectionDecision({
+        source: 'whatsapp_payment'
+      });
     }
 
     if (!hasConfiguredTransferData(transferConfig)) {
@@ -4000,27 +4213,14 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
             onboarding,
             action: 'payment'
           });
-          const hasTransferData = hasConfiguredTransferData(transferConfig);
-          return {
-            replyText: buildDemoPaymentReply(transferConfig),
-            newState: hasTransferData ? 'PAYMENT_TRANSFER' : 'IDLE',
-            newStage: hasTransferData ? 'payment_requested' : 'handoff',
-            contextPatch: {
-              demoCommercialOutcome: 'payment_requested',
-              demoLeadSummary: summary,
-              commerceActivationOfferState: 'payment_requested',
-              commerceActivationChoice: 'payment',
-              transferPayment: hasTransferData
-                ? {
-                  orderId: null,
-                  status: 'payment_requested',
-                  paymentMethod: 'bank_transfer',
-                  destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
-                  requestedAt: new Date().toISOString()
-                }
-                : null
-            }
-          };
+          const paymentDecision = await buildPaymentPlanSelectionDecision({ source: 'demo_whatsapp' });
+          paymentDecision.contextPatch = mergeContextPatches(paymentDecision.contextPatch, {
+            demoCommercialOutcome: 'payment_plan_selection',
+            demoLeadSummary: summary,
+            commerceActivationOfferState: 'payment_plan_selection',
+            commerceActivationChoice: 'payment'
+          });
+          return paymentDecision;
         }
 
         return {
@@ -4252,28 +4452,15 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           onboarding: getOnboardingData(safeContext),
           action: 'payment'
         });
-        const hasTransferData = hasConfiguredTransferData(transferConfig);
-        return {
-          replyText: buildDemoPaymentReply(transferConfig),
-          newState: hasTransferData ? 'PAYMENT_TRANSFER' : 'IDLE',
-          newStage: hasTransferData ? 'payment_requested' : 'handoff',
-          contextPatch: buildCommerceResetPatch({
-            demoEntrySource: 'public_demo_whatsapp',
-            demoCommercialOutcome: 'payment_requested',
-            demoLeadSummary: summary,
-            commerceActivationOfferState: 'payment_requested',
-            commerceActivationChoice: 'payment',
-            transferPayment: hasTransferData
-              ? {
-                orderId: null,
-                status: 'payment_requested',
-                paymentMethod: 'bank_transfer',
-                destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
-                requestedAt: new Date().toISOString()
-              }
-              : null
-          })
-        };
+        const paymentDecision = await buildPaymentPlanSelectionDecision({ source: 'demo_whatsapp' });
+        paymentDecision.contextPatch = mergeContextPatches(paymentDecision.contextPatch, {
+          demoEntrySource: 'public_demo_whatsapp',
+          demoCommercialOutcome: 'payment_plan_selection',
+          demoLeadSummary: summary,
+          commerceActivationOfferState: 'payment_plan_selection',
+          commerceActivationChoice: 'payment'
+        });
+        return paymentDecision;
       }
     }
 
