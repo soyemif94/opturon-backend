@@ -3,6 +3,7 @@ const {
   resolveTenantPolicyByExternalTenantId,
   updateTenantPolicyByExternalTenantId
 } = require('../services/tenant-policy.service');
+const { validateTransferPaymentByExternalTenantId } = require('../services/transfer-payment-validation.service');
 
 async function postSetActiveTenant(req, res) {
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
@@ -93,8 +94,42 @@ async function patchTenantPolicy(req, res) {
   }
 }
 
+async function postTransferPaymentValidation(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const actorId = String(req.get('x-portal-actor-id') || req.get('x-admin-actor-id') || '').trim();
+  const payload = req.body || {};
+
+  try {
+    const result = await validateTransferPaymentByExternalTenantId({
+      tenantId,
+      conversationId: payload.conversationId,
+      agendaItemId: payload.agendaItemId,
+      action: payload.action,
+      reason: payload.reason,
+      actorId
+    });
+
+    if (!result.ok) {
+      return res.status(result.status || 400).json({
+        success: false,
+        error: result.reason,
+        currentStatus: result.currentStatus || undefined
+      });
+    }
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'transfer_payment_validation_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   postSetActiveTenant,
   getTenantPolicy,
-  patchTenantPolicy
+  patchTenantPolicy,
+  postTransferPaymentValidation
 };
