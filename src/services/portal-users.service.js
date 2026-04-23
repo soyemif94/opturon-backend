@@ -3,7 +3,8 @@ const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   getClinicPortalAccountConfigById,
-  updateClinicPortalPrimaryUserIdById
+  updateClinicPortalPrimaryUserIdById,
+  provisionCleanClinicForExternalTenant
 } = require('../repositories/tenant.repository');
 const {
   listPortalUsersByClinicId,
@@ -40,6 +41,23 @@ function normalizeRole(value) {
 function normalizeAuditActorId(value) {
   const safeValue = normalizeString(value);
   return safeValue || null;
+}
+
+function slugifyTenantToken(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+}
+
+function buildProvisionedTenantId({ name, email }) {
+  const emailLocalPart = normalizeEmail(email).split('@')[0] || '';
+  const base = slugifyTenantToken(name) || slugifyTenantToken(emailLocalPart) || 'cliente';
+  const suffix = Date.now().toString(36);
+  return `tenant_${base}_${suffix}`;
 }
 
 function countSubaccounts(users) {
@@ -224,6 +242,80 @@ async function invitePortalUser(tenantId, payload, options = {}) {
     const created = await withTransaction(async (client) => {
       const currentUsers = await listPortalUsersByClinicId(context.clinic.id, client);
       const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers, client);
+
+      if (accountConfig.accountScope === 'opturon_admin' && role === 'owner') {
+        const provisionedTenantId = buildProvisionedTenantId({ name, email });
+        const targetClinic = await provisionCleanClinicForExternalTenant(
+          {
+            externalTenantId: provisionedTenantId,
+            name,
+            timezone: context.clinic.timezone || 'America/Argentina/Buenos_Aires'
+          },
+          client
+        );
+
+        let createdUser = await createPortalUser(
+          {
+            clinicId: targetClinic.id,
+            name,
+            email,
+            passwordHash: hashSync(password, 10),
+            role,
+            accountRootUserId: null
+          },
+          client
+        );
+
+        await updateClinicPortalPrimaryUserIdById(targetClinic.id, createdUser.id, client);
+        createdUser = await updatePortalUserAccountRootById(
+          {
+            userId: createdUser.id,
+            clinicId: targetClinic.id,
+            accountRootUserId: createdUser.id
+          },
+          client
+        ) || createdUser;
+
+        const targetAccountConfig = await getClinicPortalAccountConfigById(targetClinic.id, client);
+        const normalizedCreatedUser = normalizePortalUserRecord(createdUser, createdUser.id);
+
+        await createPortalUserAuditEvent(
+          {
+            tenantId: provisionedTenantId,
+            clinicId: targetClinic.id,
+            actorUserId,
+            targetUserId: createdUser.id,
+            action: 'tenant_portal_user_created',
+            payload: {
+              targetUserId: createdUser.id,
+              name: createdUser.name,
+              email: createdUser.email,
+              role: createdUser.role,
+              accountKind: normalizedCreatedUser.accountKind,
+              managedFrom: 'opturon_admin',
+              provisionedTenantId
+            }
+          },
+          client
+        );
+
+        return {
+          tenantId: provisionedTenantId,
+          clinic: targetClinic,
+          user: normalizedCreatedUser,
+          meta: buildPortalUsersMeta(
+            [normalizedCreatedUser],
+            {
+              subaccountLimit: targetAccountConfig.subaccountLimit,
+              unlimitedSubaccounts: targetAccountConfig.unlimitedSubaccounts,
+              accountScope: targetAccountConfig.accountScope,
+              source: targetAccountConfig.limitSource
+            },
+            createdUser.id
+          )
+        };
+      }
+
       assertRootBelongsToClinic(currentUsers, accountConfig, context.clinic.id);
       const scopedCurrentUsers = filterClientScopedPortalUsers(currentUsers, accountConfig);
       const normalizedCurrentUsers = scopedCurrentUsers.map((user) =>
@@ -322,8 +414,15 @@ async function invitePortalUser(tenantId, payload, options = {}) {
 
     return {
       ok: true,
-      tenantId: context.tenantId,
-      clinic: context.clinic,
+      tenantId: created.tenantId || context.tenantId,
+      clinic: created.clinic
+        ? {
+            id: created.clinic.id,
+            name: created.clinic.name || null,
+            timezone: created.clinic.timezone || null,
+            externalTenantId: created.clinic.externalTenantId || null
+          }
+        : context.clinic,
       user: created.user,
       meta: created.meta
     };
