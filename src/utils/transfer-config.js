@@ -127,7 +127,7 @@ function buildTransferInstructionsText(rawConfig) {
   lines.push('');
   lines.push(
     transferConfig.instructions ||
-    'Cuando hagas la transferencia, mandame el comprobante por acá y lo dejo registrado.'
+    'Cuando hagas la transferencia, mandame el comprobante por acá y lo dejo registrado para revision.'
   );
 
   return lines.join('\n');

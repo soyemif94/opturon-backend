@@ -870,11 +870,11 @@ function resolvePlanProfile(product) {
       result: 'centralizar conversaciones, responder mejor y empezar a seguir oportunidades sin depender de memoria ni planillas',
       featureLines: [
         '1 canal de WhatsApp',
-        'inbox basico con contexto',
+        'bandeja de mensajes con contexto',
         'catalogo simple',
         'bot de atencion inicial y respuestas automaticas'
       ],
-      usersLabel: '1 cuenta principal + subcuentas operativas segun el cupo activo de tu plan',
+      usersLabel: '1 cuenta principal + accesos para tu equipo segun el plan',
       controlLevel: 'Control operativo inicial'
     };
   }
@@ -883,14 +883,14 @@ function resolvePlanProfile(product) {
     return {
       shortDescription: 'Para vender con seguimiento real y operacion diaria mas ordenada.',
       problemSolved: 'ya tienes consultas y ventas por WhatsApp, pero falta seguimiento comercial serio',
-      result: 'trabajar con pipeline, seguimiento visible y una operacion comercial mucho mas clara',
+      result: 'trabajar con seguimiento visible y una operacion comercial mucho mas clara',
       featureLines: [
         'bot de ventas mas completo',
         'categorias y catalogo mas armado',
         'toma de pedidos',
         'seguimiento de conversaciones desde el panel'
       ],
-      usersLabel: '1 cuenta principal + subcuentas operativas para trabajar en equipo segun el cupo contratado',
+      usersLabel: '1 cuenta principal + accesos para trabajar en equipo segun el plan',
       controlLevel: 'Control comercial diario'
     };
   }
@@ -906,7 +906,7 @@ function resolvePlanProfile(product) {
         'integraciones avanzadas a medida',
         'setup mas acompañado'
       ],
-      usersLabel: '1 cuenta principal + equipo ampliado con subcuentas segun el cupo definido para tu operacion',
+      usersLabel: '1 cuenta principal + equipo ampliado segun el plan',
       controlLevel: 'Control operativo alto'
     };
   }
@@ -916,7 +916,7 @@ function resolvePlanProfile(product) {
     problemSolved: 'quieres ordenar ventas y seguimiento por WhatsApp',
     result: 'trabajar con una operacion mas clara y un proceso comercial mejor guiado',
     featureLines,
-    usersLabel: '1 cuenta principal + subcuentas operativas segun el cupo del plan',
+    usersLabel: '1 cuenta principal + accesos para tu equipo segun el plan',
     controlLevel: 'Control operativo segun configuracion'
   };
 }
@@ -1877,12 +1877,12 @@ function buildDemoExperienceReply(step) {
       '',
       'Hagamos una mini demo guiada de Opturon por WhatsApp.',
       '',
-      'Problema real: entran consultas, nadie sabe quien responde y las oportunidades se enfrían.',
+      'Problema real: entran consultas, nadie sabe quién responde y muchas oportunidades se enfrían.',
       '',
       'Cliente:',
       '"Hola, quiero info y precios"',
       '',
-      'Escribi solo "seguir" y te muestro la primera respuesta.'
+      'Escribí solo "seguir" y te muestro la primera respuesta.'
     ].join('\n');
   }
 
@@ -1897,9 +1897,9 @@ function buildDemoExperienceReply(step) {
       '2️⃣ Quiero que me contacten',
       '3️⃣ Quiero ver opciones"',
       '',
-      'Al mismo tiempo, el lead entra al inbox con owner, estado comercial y contexto.',
+      'Al mismo tiempo, la consulta queda guardada con contexto, responsable y estado de seguimiento.',
       '',
-      'Escribi solo "seguir" y avanzamos.'
+      'Escribí solo "seguir" y avanzamos.'
     ].join('\n');
   }
 
@@ -1908,9 +1908,9 @@ function buildDemoExperienceReply(step) {
       'Cliente:',
       '"Quiero precios y que me contacten mañana"',
       '',
-      'Opturon no solo responde: tambien deja una proxima accion para que el lead no se pierda.',
+      'Opturon no solo responde: también deja anotado el siguiente paso para que la consulta no se pierda.',
       '',
-      'Escribi solo "seguir" y te muestro que ve tu equipo.'
+      'Escribí solo "seguir" y te muestro qué ve tu equipo.'
     ].join('\n');
   }
 
@@ -1918,25 +1918,25 @@ function buildDemoExperienceReply(step) {
     return [
       'Esto ve tu equipo adentro de Opturon:',
       '',
-      '- lead asignado a un vendedor',
-      '- estado comercial visible',
+      '- consulta asignada a una persona del equipo',
+      '- estado del seguimiento visible',
       '- seguimiento con fecha y nota',
-      '- alertas si se vence o queda sin atender',
+      '- alertas si queda pendiente o sin atender',
       '',
-      'Asi el vendedor sabe que hacer y supervision detecta atrasos sin depender de memoria ni planillas.',
+      'Así cada persona sabe qué hacer y quien supervisa puede detectar atrasos sin depender de memoria ni planillas.',
       '',
-      'Escribi solo "seguir" para ver el cierre.'
+      'Escribí solo "seguir" para ver el cierre.'
     ].join('\n');
   }
 
   return [
     'En resumen, Opturon te ayuda a:',
     '- responder mas rapido',
-    '- ordenar vendedores y seguimientos',
-    '- evitar leads frios',
+    '- ordenar respuestas y seguimientos',
+    '- evitar consultas frias',
     '- supervisar la operacion con mas control',
     '',
-    'Si queres avanzar ahora, elegi una opcion:',
+    'Si querés avanzar ahora, elegí una opción:',
     '',
     '1️⃣ Que te contacte un asesor',
     '2️⃣ Recibir los datos para pagar y avanzar',
@@ -2008,8 +2008,8 @@ function buildDemoLeadSummary({ conversation, contact, onboarding, action }) {
   const contactName = String((contact && contact.name) || '').trim() || null;
   const contactPhone = String((contact && (contact.whatsappPhone || contact.phone || contact.waId)) || '').trim() || null;
   const summaryLines = [
-    'Lead desde demo WhatsApp',
-    `Accion solicitada: ${action === 'payment' ? 'pago/avance de plan' : 'contactar asesor'}`,
+    'Consulta desde demo de WhatsApp',
+    `Acción solicitada: ${action === 'payment' ? 'pago / avanzar con el plan' : 'hablar con un asesor'}`,
     contactName ? `Nombre/contacto: ${contactName}` : null,
     contactPhone ? `WhatsApp: ${contactPhone}` : null,
     safeOnboarding.businessType ? `Tipo de negocio: ${safeOnboarding.businessType}` : null,
@@ -2037,9 +2037,9 @@ function buildDemoAdvisorFollowUpDescription(summary) {
   return [
     'Seguimiento comercial solicitado desde demo WhatsApp.',
     '',
-    summary && summary.summaryText ? summary.summaryText : 'Lead desde demo WhatsApp',
+    summary && summary.summaryText ? summary.summaryText : 'Consulta desde demo de WhatsApp',
     '',
-    'Accion sugerida: contactar hoy para avanzar con asesoramiento comercial.'
+    'Acción sugerida: contactar hoy para avanzar con asesoramiento comercial.'
   ].join('\n');
 }
 
@@ -2144,10 +2144,10 @@ function buildDemoAdvisorReply(summary) {
   return [
     'Perfecto.',
     '',
-    'Ya dejé registrado el resumen de tu demo para que un asesor comercial te contacte con contexto.',
+    'Ya dejé registrada tu consulta para que un asesor te contacte con contexto.',
     '',
     'Resumen:',
-    summary && summary.summaryText ? summary.summaryText : 'Lead desde demo WhatsApp',
+    summary && summary.summaryText ? summary.summaryText : 'Consulta desde demo de WhatsApp',
     '',
     'En breve te contactamos para avanzar.'
   ].join('\n');
@@ -2159,16 +2159,14 @@ function buildDemoPaymentReply(transferConfig) {
       'Perfecto. Ya dejé registrada tu intención de avanzar con el pago.',
       '',
       'Ahora mismo no tengo datos de transferencia configurados para pasarte por acá.',
-      'Te va a contactar un asesor para indicarte el siguiente paso.'
+      'Te va a contactar una persona del equipo para indicarte el siguiente paso.'
     ].join('\n');
   }
 
   return [
-    'Perfecto. Para avanzar con el plan, podés pagar por transferencia.',
-    '',
     buildTransferInstructionsReply(transferConfig),
     '',
-    'Después de pagar, mandame el comprobante por acá y lo dejamos registrado para validación.'
+    'Después de pagar, mandame el comprobante por acá y lo dejamos registrado para revisión.'
   ].join('\n');
 }
 
@@ -3046,18 +3044,16 @@ function buildTransferInstructionsWithPlanReply(transferConfig, selectedPlan) {
       selectedPlan ? `Plan elegido: ${selectedPlan.name} - ${formatMoney(selectedPlan.price, selectedPlan.currency)}` : null,
       '',
       'Ahora mismo no tengo datos de transferencia configurados para pasarte por acá.',
-      'Te va a contactar un asesor para indicarte el siguiente paso.'
+      'Te va a contactar una persona del equipo para indicarte el siguiente paso.'
     ].filter(Boolean).join('\n');
   }
 
   return [
-    'Perfecto. Ya podemos avanzar por transferencia.',
-    '',
     selectedPlan ? `Plan elegido: ${selectedPlan.name} - ${formatMoney(selectedPlan.price, selectedPlan.currency)}` : null,
     '',
     buildTransferInstructionsReply(transferConfig),
     '',
-    'Despues de pagar, mandame el comprobante por aca. Un asesor lo valida y continua la activacion.'
+    'Después de pagar, mandame el comprobante por acá. Una persona del equipo lo revisa y seguimos con el alta.'
   ].filter((line) => line !== null).join('\n');
 }
 
@@ -3218,7 +3214,7 @@ function buildTransferMissingConfigReply() {
   return [
     'Todavía no tengo datos de transferencia configurados para pasarte por acá.',
     '',
-    'Si querés, te puede ayudar alguien del equipo para terminar el cobro.'
+    'Si querés, alguien del equipo puede ayudarte a completar el pago.'
   ].join('\n');
 }
 
@@ -3226,16 +3222,16 @@ function buildTransferProofRequestReply() {
   return [
     'Perfecto.',
     '',
-    'Mandame la foto o el archivo del comprobante y lo dejo registrado para validación.'
+    'Mandame la foto o el archivo del comprobante y lo dejo registrado para revisión.'
   ].join('\n');
 }
 
 function buildTransferPendingValidationReply() {
   return [
-    'Perfecto, ya dejé asentado que informaste el pago.',
+    'Perfecto, ya dejé registrado que informaste el pago.',
     '',
-    'Queda pendiente de confirmación humana.',
-    'A la brevedad un asesor se va a contactar para continuar con la activación / instalación del software.'
+    'Ahora lo tiene que revisar una persona del equipo.',
+    'A la brevedad te vamos a escribir para continuar con la puesta en marcha.'
   ].join('\n');
 }
 
@@ -3243,7 +3239,7 @@ function buildTransferPendingStatusReply() {
   return [
     'Tu pago informado ya quedó registrado.',
     '',
-    'Por ahora sigue pendiente de validación humana. A la brevedad un asesor se va a contactar para continuar.'
+    'Por ahora sigue pendiente de revisión. A la brevedad una persona del equipo te va a contactar para continuar.'
   ].join('\n');
 }
 
