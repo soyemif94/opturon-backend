@@ -65,6 +65,30 @@ function normalizeMetadata(value) {
   return value;
 }
 
+function normalizeProductImage(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '__invalid__';
+
+  const rawUrl = normalizeString(value.url);
+  if (!rawUrl) return null;
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '__invalid__';
+    }
+
+    return {
+      url: parsed.toString(),
+      alt: normalizeString(value.alt) || null,
+      source: normalizeString(value.source) || 'external_url'
+    };
+  } catch (error) {
+    return '__invalid__';
+  }
+}
+
 function normalizeAttributes(value) {
   const items = Array.isArray(value) ? value : [];
   return items
@@ -111,6 +135,7 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
     categoryId: normalizeString(payload && payload.categoryId) || null,
     subcategory: normalizeString(payload && (payload.subcategory ?? payload.subcategoryName)) || null,
     attributes: normalizeAttributes(payload && (payload.attributes ?? payload.configurableAttributes ?? payload.variants)),
+    image: normalizeProductImage(payload && payload.image),
     expirationDate,
     discountPercentage,
     metadata: normalizeMetadata(payload && payload.metadata)
@@ -128,6 +153,7 @@ function validateProductPayload(product) {
   if (product.attributes.some((attribute) => !attribute || !attribute.name || !Array.isArray(attribute.options))) {
     return 'invalid_product_attributes';
   }
+  if (product.image === '__invalid__') return 'invalid_product_image';
   if (product.discountPercentage !== null && product.discountPercentage !== undefined) {
     if (!Number.isFinite(product.discountPercentage) || product.discountPercentage <= 0 || product.discountPercentage > 100) {
       return 'invalid_product_discount_percentage';

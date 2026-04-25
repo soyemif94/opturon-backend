@@ -875,7 +875,8 @@ async function postPortalProduct(req, res) {
         result.reason === 'invalid_product_tax_rate' ||
         result.reason === 'invalid_product_stock' ||
         result.reason === 'invalid_product_status' ||
-        result.reason === 'invalid_product_attributes'
+        result.reason === 'invalid_product_attributes' ||
+        result.reason === 'invalid_product_image'
           ? 400
           : 404;
 
@@ -973,7 +974,8 @@ async function updatePortalProduct(req, res) {
         result.reason === 'invalid_product_tax_rate' ||
         result.reason === 'invalid_product_stock' ||
         result.reason === 'invalid_product_status' ||
-        result.reason === 'invalid_product_attributes'
+        result.reason === 'invalid_product_attributes' ||
+        result.reason === 'invalid_product_image'
           ? 400
           : 404;
 

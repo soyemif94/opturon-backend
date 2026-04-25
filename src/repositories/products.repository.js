@@ -48,6 +48,30 @@ function normalizeProductAttributeRecord(value) {
   };
 }
 
+function normalizeProductImageRecord(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '__invalid__';
+
+  const rawUrl = String(value.url || '').trim();
+  if (!rawUrl) return null;
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '__invalid__';
+    }
+
+    return {
+      url: parsed.toString(),
+      alt: String(value.alt || '').trim() || null,
+      source: String(value.source || '').trim() || 'external_url'
+    };
+  } catch (error) {
+    return '__invalid__';
+  }
+}
+
 function extractCatalogMetadata(metadata) {
   const safeMetadata = normalizeMetadataObject(metadata);
   const catalog = normalizeMetadataObject(safeMetadata.catalog);
@@ -55,16 +79,38 @@ function extractCatalogMetadata(metadata) {
   const attributes = Array.isArray(catalog.attributes)
     ? catalog.attributes.map(normalizeProductAttributeRecord).filter(Boolean)
     : [];
+  const image = normalizeProductImageRecord(catalog.image);
 
   return {
     subcategory,
-    attributes
+    attributes,
+    image: image === '__invalid__' ? null : image || null
+  };
+}
+
+function mergeProductMetadata(currentMetadata, nextMetadata) {
+  const current = normalizeMetadataObject(currentMetadata);
+  const incoming = normalizeMetadataObject(nextMetadata);
+  const currentCatalog = normalizeMetadataObject(current.catalog);
+  const incomingCatalog = normalizeMetadataObject(incoming.catalog);
+
+  return {
+    ...current,
+    ...incoming,
+    catalog: {
+      ...currentCatalog,
+      ...incomingCatalog
+    }
   };
 }
 
 function buildStoredMetadata(inputMetadata, input) {
   const safeMetadata = normalizeMetadataObject(inputMetadata);
   const safeCatalog = normalizeMetadataObject(safeMetadata.catalog);
+  const normalizedImage =
+    Object.prototype.hasOwnProperty.call(input || {}, 'image')
+      ? normalizeProductImageRecord(input.image)
+      : normalizeProductImageRecord(safeCatalog.image);
   const nextCatalog = {
     ...safeCatalog,
     subcategory: String(input.subcategory || '').trim() || null,
@@ -72,6 +118,11 @@ function buildStoredMetadata(inputMetadata, input) {
       ? input.attributes.map(normalizeProductAttributeRecord).filter(Boolean)
       : []
   };
+  if (normalizedImage === '__invalid__') {
+    nextCatalog.image = null;
+  } else if (normalizedImage !== undefined) {
+    nextCatalog.image = normalizedImage;
+  }
 
   return {
     ...safeMetadata,
@@ -105,6 +156,7 @@ function normalizeProduct(row) {
     categoryName: row.categoryName || null,
     subcategory: catalogMetadata.subcategory,
     attributes: catalogMetadata.attributes,
+    image: catalogMetadata.image,
     expirationDate: normalizeDateOnly(row.expirationDate),
     discountPercentage,
     metadata,
@@ -233,11 +285,12 @@ async function updateProduct(productId, clinicId, payload, client = null) {
 
   const safeUnitPrice = quantizeDecimal(payload.unitPrice ?? payload.price ?? current.unitPrice ?? current.price ?? 0, 2, 0);
   const safeVatRate = quantizeDecimal(payload.vatRate ?? payload.taxRate ?? current.vatRate ?? current.taxRate ?? 0, 2, 0);
-  const storedMetadata = buildStoredMetadata(payload.metadata ?? current.metadata, {
+  const storedMetadata = buildStoredMetadata(mergeProductMetadata(current.metadata, payload.metadata), {
     ...current,
     ...payload,
     subcategory: payload.subcategory !== undefined ? payload.subcategory : current.subcategory,
-    attributes: payload.attributes !== undefined ? payload.attributes : current.attributes
+    attributes: payload.attributes !== undefined ? payload.attributes : current.attributes,
+    image: payload.image !== undefined ? payload.image : current.image
   });
 
   await dbQuery(
