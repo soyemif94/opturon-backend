@@ -4,6 +4,7 @@ const {
   postPortalTenantProvision,
   getPortalConversations,
   getPortalConversation,
+  getPortalConversationMessageMedia,
   updatePortalConversation,
   patchPortalConversationAssignSeller,
   patchPortalConversationLeadStatusController,
@@ -134,6 +135,7 @@ router.get('/tenants/:tenantId/conversations', inboxModule, getPortalConversatio
 router.patch('/tenants/:tenantId/conversations/archive', inboxModule, patchPortalConversationsArchive);
 router.patch('/tenants/:tenantId/conversations/restore', inboxModule, patchPortalConversationsRestore);
 router.get('/tenants/:tenantId/conversations/:conversationId', inboxModule, getPortalConversation);
+router.get('/tenants/:tenantId/conversations/:conversationId/messages/:messageId/media', inboxModule, getPortalConversationMessageMedia);
 router.patch('/tenants/:tenantId/conversations/:conversationId/assign-seller', inboxModule, patchPortalConversationAssignSeller);
 router.patch('/tenants/:tenantId/conversations/:conversationId/lead-status', inboxModule, patchPortalConversationLeadStatusController);
 router.patch('/tenants/:tenantId/conversations/:conversationId/next-action', inboxModule, patchPortalConversationNextActionController);

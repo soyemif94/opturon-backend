@@ -11,9 +11,202 @@ const { findLatestOrderByConversationId, findOrderById } = require('../repositor
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
+const graphClient = require('../whatsapp/whatsapp-graph.client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const env = require('../config/env');
 const { logInfo, logWarn } = require('../utils/logger');
+
+function normalizeString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function extractImageMediaFromRaw(raw) {
+  const safeRaw = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const message = safeRaw.message && typeof safeRaw.message === 'object' && !Array.isArray(safeRaw.message)
+    ? safeRaw.message
+    : {};
+  const image = message.image && typeof message.image === 'object' && !Array.isArray(message.image)
+    ? message.image
+    : null;
+
+  if (!image) return null;
+
+  const mediaId = normalizeString(image.id);
+  return {
+    mediaId: mediaId || null,
+    mimeType: normalizeString(image.mime_type || image.mimeType) || null,
+    caption: normalizeString(image.caption) || null,
+    filename: normalizeString(image.filename) || null,
+    sha256: normalizeString(image.sha256) || null
+  };
+}
+
+function mapPortalConversationMessage(message) {
+  const type = normalizeString(message && message.type) || 'text';
+  const imageMedia = extractImageMediaFromRaw(message && message.raw);
+  const caption = imageMedia && imageMedia.caption ? imageMedia.caption : '';
+
+  return {
+    id: message.id,
+    direction: message.direction,
+    type,
+    text: message.text || '',
+    caption,
+    timestamp: message.createdAt,
+    status: message.direction === 'inbound' ? 'read' : 'sent',
+    media: imageMedia
+      ? {
+          mediaId: imageMedia.mediaId,
+          mimeType: imageMedia.mimeType,
+          filename: imageMedia.filename,
+          sha256: imageMedia.sha256,
+          caption: imageMedia.caption,
+          available: Boolean(imageMedia.mediaId)
+        }
+      : null
+  };
+}
+
+async function resolveConversationRuntimeChannel(context, conversation) {
+  if (!context || !conversation) return null;
+
+  if (context.channel && context.channel.id && context.channel.id === conversation.channelId) {
+    return context.channel;
+  }
+
+  const conversationChannel = conversation.channelId
+    ? await findChannelByIdAndClinicId(conversation.channelId, context.clinic.id)
+    : null;
+
+  return conversationChannel || context.channel || null;
+}
+
+async function fetchConversationMessageMedia(tenantId, conversationId, messageId) {
+  const context = await resolveRuntimeContext(tenantId);
+  if (!context.ok) return context;
+
+  const conversation = await conversationRepo.getConversationByIdAndClinicId(conversationId, context.clinic.id);
+  if (!conversation) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'conversation_not_found'
+    };
+  }
+
+  const [messages, runtimeChannel] = await Promise.all([
+    conversationRepo.listConversationMessagesByClinicId(conversation.id, context.clinic.id, null),
+    resolveConversationRuntimeChannel(context, conversation)
+  ]);
+
+  const message = messages.find((item) => String(item.id) === String(messageId || '').trim()) || null;
+  if (!message) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(runtimeChannel || context.channel),
+      reason: 'message_not_found'
+    };
+  }
+
+  const imageMedia = extractImageMediaFromRaw(message.raw);
+  if (!imageMedia || !imageMedia.mediaId) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(runtimeChannel || context.channel),
+      reason: 'message_media_unavailable'
+    };
+  }
+
+  if (!runtimeChannel || !normalizeString(runtimeChannel.accessToken)) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(runtimeChannel || context.channel),
+      reason: 'conversation_channel_missing_credentials'
+    };
+  }
+
+  const metadataResult = await graphClient.request('GET', `/${imageMedia.mediaId}`, {
+    credentials: {
+      accessToken: runtimeChannel.accessToken,
+      phoneNumberId: runtimeChannel.phoneNumberId || undefined
+    },
+    maxRetries: 1
+  });
+
+  const mediaUrl = normalizeString(metadataResult && metadataResult.data && metadataResult.data.url);
+  if (!metadataResult.ok || !mediaUrl) {
+    logWarn('portal_conversation_media_metadata_failed', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      messageId: message.id,
+      mediaId: imageMedia.mediaId,
+      status: metadataResult ? metadataResult.status : null,
+      errorCode: metadataResult ? metadataResult.error_code : null
+    });
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(runtimeChannel),
+      reason: 'media_metadata_fetch_failed'
+    };
+  }
+
+  const mediaResponse = await fetch(mediaUrl, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${runtimeChannel.accessToken}`
+    }
+  });
+
+  if (!mediaResponse.ok) {
+    logWarn('portal_conversation_media_download_failed', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      messageId: message.id,
+      mediaId: imageMedia.mediaId,
+      status: mediaResponse.status
+    });
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(runtimeChannel),
+      reason: 'media_download_failed'
+    };
+  }
+
+  const arrayBuffer = await mediaResponse.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const contentType = normalizeString(mediaResponse.headers.get('content-type')) || imageMedia.mimeType || 'application/octet-stream';
+  const contentLengthHeader = normalizeString(mediaResponse.headers.get('content-length'));
+  const contentLength = contentLengthHeader ? Number(contentLengthHeader) : buffer.length;
+  const extension = contentType.startsWith('image/') ? contentType.slice('image/'.length).split(';')[0] : 'bin';
+  const fallbackFilename = `whatsapp-media-${message.id}.${extension || 'bin'}`;
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    channel: toPortalChannel(runtimeChannel),
+    media: {
+      contentType,
+      contentLength: Number.isFinite(contentLength) ? contentLength : null,
+      filename: imageMedia.filename || fallbackFilename,
+      buffer
+    }
+  };
+}
 
 function parseContext(context) {
   return context && typeof context === 'object' && !Array.isArray(context) ? context : {};
@@ -481,13 +674,7 @@ async function getPortalConversationDetail(tenantId, conversationId) {
         }
         : undefined,
       deal: mapDeal(contextData, conversation.contactId),
-      messages: messages.map((message) => ({
-        id: message.id,
-        direction: message.direction,
-        text: message.text || '',
-        timestamp: message.createdAt,
-        status: message.direction === 'inbound' ? 'read' : 'sent'
-      })),
+      messages: messages.map((message) => mapPortalConversationMessage(message)),
       notes: Array.isArray(contextData.portalNotes) ? contextData.portalNotes : [],
       tasks: Array.isArray(contextData.portalTasks) ? contextData.portalTasks : [],
       assignee: assignedSeller && assignedSeller.name
@@ -1179,6 +1366,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
 module.exports = {
   listPortalConversations,
   getPortalConversationDetail,
+  fetchConversationMessageMedia,
   patchPortalConversation,
   patchPortalConversationLeadStatus,
   patchPortalConversationNextAction,

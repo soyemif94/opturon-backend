@@ -3,6 +3,7 @@ const { logError } = require('../utils/logger');
 const {
   listPortalConversations,
   getPortalConversationDetail,
+  fetchConversationMessageMedia,
   patchPortalConversation,
   patchPortalConversationLeadStatus,
   patchPortalConversationNextAction,
@@ -249,6 +250,38 @@ async function getPortalConversation(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_conversation_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalConversationMessageMedia(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const conversationId = String(req.params.conversationId || '').trim();
+  const messageId = String(req.params.messageId || '').trim();
+
+  try {
+    const result = await fetchConversationMessageMedia(tenantId, conversationId, messageId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ? 400
+          : result.reason === 'conversation_channel_missing_credentials' ? 409
+            : result.reason === 'media_metadata_fetch_failed' || result.reason === 'media_download_failed' ? 502
+              : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', result.media.contentType || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.setHeader('Content-Disposition', `inline; filename="${result.media.filename}"`);
+    if (result.media.contentLength) {
+      res.setHeader('Content-Length', String(result.media.contentLength));
+    }
+    return res.status(200).send(result.media.buffer);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_conversation_media_failed',
       details: error.message
     });
   }
@@ -3793,6 +3826,7 @@ module.exports = {
   postPortalTenantProvision,
   getPortalConversations,
   getPortalConversation,
+  getPortalConversationMessageMedia,
   updatePortalConversation,
   patchPortalConversationAssignSeller,
   patchPortalConversationLeadStatusController,
