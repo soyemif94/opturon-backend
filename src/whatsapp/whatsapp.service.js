@@ -277,6 +277,35 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
               phoneNumberId
             }
           });
+  } else if (body && body.type === 'image') {
+    graphResponse =
+      mode === 'channel_scoped'
+        ? await graphClient.sendImageMessageViaGraphScoped({
+            phoneNumberId,
+            to,
+            link: body && body.image && body.image.link ? String(body.image.link) : '',
+            caption: body && body.image && body.image.caption ? String(body.image.caption) : '',
+            requestId,
+            credentials: {
+              ...(credentials || {}),
+              channelId,
+              accessToken,
+              phoneNumberId
+            }
+          })
+        : await graphClient.sendImageMessageViaGraphLegacy({
+            phoneNumberId,
+            to,
+            link: body && body.image && body.image.link ? String(body.image.link) : '',
+            caption: body && body.image && body.image.caption ? String(body.image.caption) : '',
+            requestId,
+            credentials: {
+              ...(credentials || {}),
+              channelId,
+              accessToken,
+              phoneNumberId
+            }
+          });
   } else {
     graphResponse =
       mode === 'channel_scoped'
@@ -451,6 +480,32 @@ async function sendChannelScopedMessage(message, context = {}) {
     });
   }
 
+  const imageLink =
+    payload.image && typeof payload.image === 'object' && !Array.isArray(payload.image)
+      ? String(payload.image.link || '').trim()
+      : '';
+  if (imageLink) {
+    const caption =
+      payload.image && typeof payload.image === 'object' && !Array.isArray(payload.image)
+        ? String(payload.image.caption || '').trim()
+        : '';
+
+    return sendGraphMessage({
+      requestId,
+      credentials,
+      toRaw,
+      body: {
+        type: 'image',
+        image: {
+          link: imageLink,
+          ...(caption ? { caption } : {})
+        }
+      },
+      logLabel: 'WhatsApp channel-scoped send',
+      mode: 'channel_scoped'
+    });
+  }
+
   const text = String(payload.text || '').trim();
   if (!text) {
     throw new Error('Text is required.');
@@ -492,6 +547,32 @@ async function sendLegacyGlobalMessage(message, context = {}) {
           name: templateName,
           language: { code: languageCode },
           ...(components.length ? { components } : {})
+        }
+      },
+      logLabel: 'WhatsApp legacy global send',
+      mode: 'legacy_global'
+    });
+  }
+
+  const imageLink =
+    payload.image && typeof payload.image === 'object' && !Array.isArray(payload.image)
+      ? String(payload.image.link || '').trim()
+      : '';
+  if (imageLink) {
+    const caption =
+      payload.image && typeof payload.image === 'object' && !Array.isArray(payload.image)
+        ? String(payload.image.caption || '').trim()
+        : '';
+
+    return sendGraphMessage({
+      requestId,
+      credentials,
+      toRaw,
+      body: {
+        type: 'image',
+        image: {
+          link: imageLink,
+          ...(caption ? { caption } : {})
         }
       },
       logLabel: 'WhatsApp legacy global send',

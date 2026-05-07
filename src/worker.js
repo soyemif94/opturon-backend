@@ -769,6 +769,8 @@ function buildCommerceCatalogPage(products, { offset = 0, categoryId = null, lim
     currency: String(product.currency || 'ARS').toUpperCase() || 'ARS',
     stock: Number(product.stock || 0),
     sku: product.sku || null,
+    description: product.description || null,
+    image: product.image || null,
     categoryId: product.categoryId || null,
     categoryName: product.categoryName || null
   }));
@@ -797,6 +799,47 @@ function buildCommerceCatalogPage(products, { offset = 0, categoryId = null, lim
 function formatCommerceIndex(index) {
   const digits = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
   return digits[index - 1] || `${index}.`;
+}
+
+function buildCatalogProductImageCaption(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const name = String(safeProduct.name || '').trim();
+  const price = Number(safeProduct.price || safeProduct.unitPrice || 0);
+  const currency = String(safeProduct.currency || 'ARS').trim().toUpperCase() || 'ARS';
+  const description = String(safeProduct.description || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+  const shortDescription = description.length > 220 ? `${description.slice(0, 217).trim()}...` : description;
+  const lines = [name || 'Producto'];
+
+  if (Number.isFinite(price) && price > 0) {
+    lines.push(formatMoney(price, currency));
+  }
+  if (shortDescription) {
+    lines.push(shortDescription);
+  }
+
+  return lines.join('\n').slice(0, 1024);
+}
+
+function buildCatalogProductImageMessage(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const image = safeProduct.image && typeof safeProduct.image === 'object' && !Array.isArray(safeProduct.image)
+    ? safeProduct.image
+    : null;
+  const link = String(image && image.url ? image.url : '').trim();
+  if (!link) return null;
+
+  return {
+    type: 'image',
+    image: {
+      link,
+      caption: buildCatalogProductImageCaption(safeProduct)
+    },
+    productId: safeProduct.id || safeProduct.productId || null
+  };
 }
 
 function isPlanProduct(product) {
@@ -3467,6 +3510,7 @@ async function resolveCommerceCartAddition({
 
   return {
     replyText: isPlanProduct(latestProduct) ? buildPlanSelectionReply(latestProduct) : buildCommerceCartReply(updatedCartItems),
+    outboundMedia: isPlanProduct(latestProduct) ? null : [buildCatalogProductImageMessage(latestProduct)].filter(Boolean),
     newState: 'WAITING_PRODUCT_SELECTION',
     contextPatch: buildCommerceResetPatch({
       commerceCatalog: catalogFromContext.length
@@ -5326,6 +5370,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     return {
       replyText: `Elegiste: ${selectedProduct.name}\n\n¿Cuántas unidades querés?`,
+      outboundMedia: [buildCatalogProductImageMessage(selectedProduct)].filter(Boolean),
       newState: 'WAITING_QUANTITY',
       contextPatch: {
         commerceCatalog: products,
@@ -7322,6 +7367,7 @@ async function processConversationReplyJob(job) {
   if (automationRuntime.replyText) {
     decision = {
       replyText: automationRuntime.replyText,
+      outboundMedia: Array.isArray(automationRuntime.outboundMedia) ? automationRuntime.outboundMedia : null,
       newState: conversation.state || 'READY',
       contextPatch: automationContextPatch
     };
@@ -8146,6 +8192,77 @@ async function processConversationReplyJob(job) {
     phoneNumberId: replyChannelCredentials.phoneNumberId,
     hasAccessToken: true
   });
+
+  const outboundMedia = Array.isArray(decision && decision.outboundMedia)
+    ? decision.outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
+    : [];
+
+  for (const mediaMessage of outboundMedia) {
+    try {
+      const mediaSendResult = await sendChannelScopedMessage(
+        {
+          to: contact.waId,
+          image: {
+            link: String(mediaMessage.image.link || '').trim(),
+            caption: String(mediaMessage.image.caption || '').trim()
+          }
+        },
+        {
+          requestId,
+          credentials: {
+            ...replyChannelCredentials
+          }
+        }
+      );
+
+      const mediaOutboundWrite = await conversationRepo.insertOutboundMessage({
+        conversationId: conversation.id,
+        waMessageId: mediaSendResult && mediaSendResult.messageId ? mediaSendResult.messageId : null,
+        from: replyChannelCredentials.phoneNumberId,
+        to: contact.waId || null,
+        type: 'image',
+        text: mediaMessage.image.caption || null,
+        raw: {
+          ...(mediaSendResult && mediaSendResult.raw ? mediaSendResult.raw : {}),
+          message: {
+            image: {
+              link: String(mediaMessage.image.link || '').trim(),
+              caption: String(mediaMessage.image.caption || '').trim() || null
+            }
+          },
+          automation: {
+            inboundMessageId: inboundMessage.id,
+            inboundWaMessageId: waMessageId,
+            source: decisionSource || null,
+            jobId: job.id,
+            productId: mediaMessage.productId || null
+          }
+        }
+      });
+
+      if (mediaOutboundWrite && mediaOutboundWrite.inserted === false) {
+        logWarn('outbound_duplicate_waMessageId_skipped', {
+          requestId,
+          jobId: job.id,
+          conversationId: conversation.id,
+          waMessageId: mediaSendResult && mediaSendResult.messageId ? mediaSendResult.messageId : null
+        });
+      }
+    } catch (error) {
+      logWarn('worker_whatsapp_media_send_failed', {
+        requestId,
+        jobId: job.id,
+        conversationId: conversation.id,
+        clinicId: conversation.clinicId || job.clinicId || null,
+        channelId: replyChannelCredentials.channelId,
+        productId: mediaMessage.productId || null,
+        error: error.message,
+        graphStatus: error.graphStatus || null,
+        graphErrorCode: error.graphErrorCode || null,
+        graphErrorSubcode: error.graphErrorSubcode || null
+      });
+    }
+  }
 
   const sendResult = await sendChannelScopedMessage(
     { to: contact.waId, text: replyText },

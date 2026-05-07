@@ -315,6 +315,95 @@ async function sendTemplateMessageViaGraphInternal({
   };
 }
 
+async function sendImageMessageViaGraphInternal({
+  phoneNumberId,
+  to,
+  link,
+  caption = null,
+  requestId = null,
+  credentials = null,
+  mode = 'legacy_global'
+}) {
+  const normalizedPhoneNumberId =
+    mode === 'channel_scoped'
+      ? resolveScopedPhoneNumberId(credentials, phoneNumberId)
+      : resolveLegacyPhoneNumberId(credentials, phoneNumberId);
+  const { accessToken, authSource } =
+    mode === 'channel_scoped'
+      ? resolveScopedAccessToken(credentials)
+      : resolveLegacyAccessToken(credentials);
+  const normalizedTo = normalizeToDigits(to);
+  const imageLink = String(link || '').trim();
+  const imageCaption = String(caption || '').trim();
+  const toLast4 = normalizedTo ? normalizedTo.slice(-4) : null;
+  const toLen = normalizedTo ? normalizedTo.length : 0;
+
+  if (!/^\d{8,15}$/.test(normalizedTo)) {
+    throw new Error('Invalid "to". Expected E164 digits only (8..15).');
+  }
+
+  if (!imageLink) {
+    throw new Error('image.link is required.');
+  }
+
+  try {
+    const parsedLink = new URL(imageLink);
+    if (parsedLink.protocol !== 'http:' && parsedLink.protocol !== 'https:') {
+      throw new Error('invalid_protocol');
+    }
+  } catch (error) {
+    throw new Error('image.link must be a valid http/https URL.');
+  }
+
+  const body = {
+    messaging_product: 'whatsapp',
+    to: normalizedTo,
+    type: 'image',
+    image: {
+      link: imageLink
+    }
+  };
+  if (imageCaption) {
+    body.image.caption = imageCaption;
+  }
+
+  const url = buildMessagesEndpointUrl(normalizedPhoneNumberId, GRAPH_API_VERSION);
+  logInfo('graph_request_prepare', {
+    requestId,
+    method: 'POST',
+    phoneNumberId: normalizedPhoneNumberId,
+    authSource,
+    toLast4,
+    toLen,
+    graphVersion: GRAPH_API_VERSION
+  });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  const raw = await response.text();
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    parsed = null;
+  }
+  const fbtrace_id = extractFbTraceIdFromRaw(raw);
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    raw,
+    json: parsed,
+    fbtrace_id
+  };
+}
+
 async function sendTextMessageViaGraphScoped(options) {
   return sendTextMessageViaGraphInternal({
     ...(options || {}),
@@ -338,6 +427,20 @@ async function sendTemplateMessageViaGraphScoped(options) {
 
 async function sendTemplateMessageViaGraphLegacy(options) {
   return sendTemplateMessageViaGraphInternal({
+    ...(options || {}),
+    mode: 'legacy_global'
+  });
+}
+
+async function sendImageMessageViaGraphScoped(options) {
+  return sendImageMessageViaGraphInternal({
+    ...(options || {}),
+    mode: 'channel_scoped'
+  });
+}
+
+async function sendImageMessageViaGraphLegacy(options) {
+  return sendImageMessageViaGraphInternal({
     ...(options || {}),
     mode: 'legacy_global'
   });
@@ -552,11 +655,18 @@ async function sendTemplateMessageViaGraph(options) {
   return sendTemplateMessageViaGraphLegacy(options);
 }
 
+async function sendImageMessageViaGraph(options) {
+  return sendImageMessageViaGraphLegacy(options);
+}
+
 module.exports = {
   request,
   buildGraphUrl,
   buildMessagesEndpointUrl,
   classifyGraphError,
+  sendImageMessageViaGraph,
+  sendImageMessageViaGraphScoped,
+  sendImageMessageViaGraphLegacy,
   sendTextMessageViaGraph,
   sendTextMessageViaGraphScoped,
   sendTextMessageViaGraphLegacy,

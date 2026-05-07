@@ -279,6 +279,47 @@ function formatMoney(value, currency = 'ARS') {
   }
 }
 
+function buildCatalogProductImageCaption(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const name = String(safeProduct.name || '').trim();
+  const price = Number(safeProduct.price || safeProduct.unitPrice || 0);
+  const currency = String(safeProduct.currency || 'ARS').trim().toUpperCase() || 'ARS';
+  const description = String(safeProduct.description || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+  const shortDescription = description.length > 220 ? `${description.slice(0, 217).trim()}...` : description;
+  const lines = [name || 'Producto'];
+
+  if (Number.isFinite(price) && price > 0) {
+    lines.push(formatMoney(price, currency));
+  }
+  if (shortDescription) {
+    lines.push(shortDescription);
+  }
+
+  return lines.join('\n').slice(0, 1024);
+}
+
+function buildCatalogProductImageMessage(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const image = safeProduct.image && typeof safeProduct.image === 'object' && !Array.isArray(safeProduct.image)
+    ? safeProduct.image
+    : null;
+  const link = String(image && image.url ? image.url : '').trim();
+  if (!link) return null;
+
+  return {
+    type: 'image',
+    image: {
+      link,
+      caption: buildCatalogProductImageCaption(safeProduct)
+    },
+    productId: safeProduct.id || null
+  };
+}
+
 function sanitizeConditions(conditions) {
   return conditions && typeof conditions === 'object' && !Array.isArray(conditions) ? conditions : {};
 }
@@ -390,7 +431,8 @@ async function getMenuProductsPreview(clinicId, { offset = 0, limit = MENU_PRODU
       name: product.name,
       price: Number(product.price || product.unitPrice || 0),
       currency: String(product.currency || 'ARS').toUpperCase() || 'ARS',
-      description: product.description || null
+      description: product.description || null,
+      image: product.image || null
     }));
   const nextOffset = safeOffset + previewItems.length;
   const hasMore = nextOffset < activeProducts.length;
@@ -445,6 +487,7 @@ async function maybeResolvePreviewSelection({ clinicId, flowState, normalizedInb
   return {
     replyText: `Perfecto 👌\n\n${name} está disponible por ${formatMoney(price, currency)}.${description}\n\nSi querés, también podés pedirme el precio de otro producto o escribir "3" para hablar con una persona 👇`,
     replyText: `Perfecto 👌\n\n${name} está disponible por ${formatMoney(price, currency)}${description ? `\n${description.trim()}` : ''}\n\n👉 ¿Querés que te lo reserve o te paso más opciones?`,
+    outboundMedia: [buildCatalogProductImageMessage(fullProduct || previewItem)].filter(Boolean),
     newState: 'READY',
     contextPatch: {
       menuFlowActive: true,
@@ -839,6 +882,7 @@ async function resolveAutomationReplyForInbound({ clinic, conversation, inboundT
     matched,
     contextPatch: decision.contextPatch || null,
     replyText: decision.replyText || null,
+    outboundMedia: Array.isArray(decision.outboundMedia) ? decision.outboundMedia : null,
     source: decision.source || null,
     recentMessagesCount: Array.isArray(recentMessages) ? recentMessages.length : 0
   };
