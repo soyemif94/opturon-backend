@@ -3510,7 +3510,7 @@ async function resolveCommerceCartAddition({
 
   return {
     replyText: isPlanProduct(latestProduct) ? buildPlanSelectionReply(latestProduct) : buildCommerceCartReply(updatedCartItems),
-    outboundMedia: isPlanProduct(latestProduct) ? null : [buildCatalogProductImageMessage(latestProduct)].filter(Boolean),
+    outboundMedia: [buildCatalogProductImageMessage(latestProduct)].filter(Boolean),
     newState: 'WAITING_PRODUCT_SELECTION',
     contextPatch: buildCommerceResetPatch({
       commerceCatalog: catalogFromContext.length
@@ -3758,6 +3758,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     return {
       replyText,
+      outboundMedia: [buildCatalogProductImageMessage(suggestedProduct)].filter(Boolean),
       newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
       contextPatch: buildCommerceResetPatch({
         commerceCatalog: page.items,
@@ -3887,6 +3888,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     return {
       replyText: buildTransferInstructionsWithPlanReply(transferConfig, normalizedPlan),
+      outboundMedia: [buildCatalogProductImageMessage(selectedPlan)].filter(Boolean),
       newState: hasTransferData ? 'PAYMENT_TRANSFER' : 'IDLE',
       newStage: hasTransferData ? 'payment_requested' : 'handoff',
       contextPatch: {
