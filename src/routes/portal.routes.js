@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer');
 const {
   getPortalTenantContext,
   postPortalTenantProvision,
@@ -24,6 +25,7 @@ const {
   getPortalProductCategories,
   getPortalProduct,
   postPortalProduct,
+  postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,
   updatePortalProduct,
@@ -31,6 +33,7 @@ const {
   destroyPortalProductCategory,
   updatePortalProductStatus,
   destroyPortalProduct,
+  getPortalProductImagePublic,
   getPortalContacts,
   getPortalContact,
   postPortalContact,
@@ -126,9 +129,46 @@ const automationsModule = requirePortalModule('automations');
 const salesModule = requirePortalModule('sales');
 const loyaltyModule = requirePortalModule('loyalty');
 const paymentsModule = requirePortalModule('payments');
+const catalogImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 4 * 1024 * 1024,
+    files: 1
+  },
+  fileFilter: (_req, file, callback) => {
+    const mimeType = String(file && file.mimetype ? file.mimetype : '').toLowerCase();
+    if (mimeType === 'image/jpeg' || mimeType === 'image/png' || mimeType === 'image/webp') {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('invalid_product_image_type'));
+  }
+});
+
+function handleCatalogImageUpload(req, res, next) {
+  catalogImageUpload.single('file')(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ success: false, error: 'product_image_too_large' });
+      return;
+    }
+
+    if (error && error.message === 'invalid_product_image_type') {
+      res.status(400).json({ success: false, error: 'invalid_product_image_type' });
+      return;
+    }
+
+    next(error);
+  });
+}
 
 router.use('/tenants/:tenantId', applyPortalActiveTenant);
 
+router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
 router.post('/tenants/:tenantId/provision', requirePortalInternalAuth, postPortalTenantProvision);
 router.get('/tenants/:tenantId/conversations', inboxModule, getPortalConversations);
@@ -152,6 +192,7 @@ router.post('/tenants/:tenantId/orders/:orderId/payment-validation', postPortalO
 router.get('/tenants/:tenantId/products', catalogModule, getPortalProducts);
 router.get('/tenants/:tenantId/product-categories', catalogModule, getPortalProductCategories);
 router.post('/tenants/:tenantId/products', catalogModule, postPortalProduct);
+router.post('/tenants/:tenantId/products/image-upload', requirePortalInternalAuth, catalogModule, handleCatalogImageUpload, postPortalProductImageUpload);
 router.post('/tenants/:tenantId/product-categories', catalogModule, postPortalProductCategory);
 router.post('/tenants/:tenantId/products/bulk', catalogModule, postPortalProductsBulk);
 router.get('/tenants/:tenantId/products/:productId', catalogModule, getPortalProduct);

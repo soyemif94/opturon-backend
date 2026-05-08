@@ -13,6 +13,10 @@ const {
   deleteProductById
 } = require('../repositories/products.repository');
 const {
+  saveUploadedProductImage,
+  readUploadedProductImage
+} = require('./portal-product-images.service');
+const {
   listProductCategoriesByClinicId,
   findProductCategoryById,
   findProductCategoryByName,
@@ -821,6 +825,60 @@ async function deletePortalProduct(tenantId, productId) {
   }
 }
 
+async function uploadPortalProductImage(tenantId, file, options = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  if (!file || !Buffer.isBuffer(file.buffer) || file.buffer.length === 0) {
+    return { ok: false, tenantId: context.tenantId, reason: 'missing_product_image_file' };
+  }
+
+  const upload = await saveUploadedProductImage(context.tenantId, {
+    buffer: file.buffer,
+    mimeType: file.mimetype,
+    origin: options.origin
+  });
+
+  if (!upload.ok) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      reason: upload.reason
+    };
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    image: upload.image
+  };
+}
+
+async function getPortalProductImageAsset(tenantId, fileName) {
+  const safeTenantId = normalizeString(tenantId);
+  if (!safeTenantId) {
+    return { ok: false, tenantId: safeTenantId, reason: 'missing_tenant_id' };
+  }
+
+  const media = await readUploadedProductImage(safeTenantId, fileName);
+  if (!media.ok) {
+    return {
+      ok: false,
+      tenantId: safeTenantId,
+      reason: media.reason
+    };
+  }
+
+  return {
+    ok: true,
+    tenantId: safeTenantId,
+    media: media.media
+  };
+}
+
 module.exports = {
   PRODUCT_STATUSES: Array.from(PRODUCT_STATUSES),
   listPortalProducts,
@@ -833,5 +891,7 @@ module.exports = {
   deletePortalProductCategoryRecord,
   patchPortalProduct,
   patchPortalProductStatus,
-  deletePortalProduct
+  deletePortalProduct,
+  uploadPortalProductImage,
+  getPortalProductImageAsset
 };

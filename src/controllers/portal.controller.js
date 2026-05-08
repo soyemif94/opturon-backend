@@ -48,7 +48,9 @@ const {
   deletePortalProductCategoryRecord,
   patchPortalProduct,
   patchPortalProductStatus,
-  deletePortalProduct
+  deletePortalProduct,
+  uploadPortalProductImage,
+  getPortalProductImageAsset
 } = require('../services/portal-products.service');
 const {
   listPortalUsers,
@@ -152,6 +154,13 @@ const {
 
 function getRequestTenantId(req) {
   return String(req.activeTenantId || req.params.tenantId || '').trim();
+}
+
+function getPublicRequestOrigin(req) {
+  const protocol = String(req.get('x-forwarded-proto') || req.protocol || 'https').trim() || 'https';
+  const host = String(req.get('x-forwarded-host') || req.get('host') || '').trim();
+  if (!host) return null;
+  return `${protocol}://${host}`;
 }
 
 async function getPortalTenantContext(req, res) {
@@ -896,6 +905,43 @@ async function postPortalProduct(req, res) {
   }
 }
 
+async function postPortalProductImageUpload(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await uploadPortalProductImage(tenantId, req.file, {
+      origin: getPublicRequestOrigin(req)
+    });
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_image_file' ||
+        result.reason === 'invalid_product_image_type'
+          ? 400
+          : result.reason === 'product_image_storage_not_configured'
+            ? 503
+          : result.reason === 'missing_product_image_origin'
+            ? 500
+            : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        image: result.image
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_image_upload_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalProductCategory(req, res) {
   const tenantId = getRequestTenantId(req);
 
@@ -1128,6 +1174,35 @@ async function destroyPortalProduct(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_product_delete_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalProductImagePublic(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const fileName = String(req.params.fileName || '').trim();
+
+  try {
+    const result = await getPortalProductImageAsset(tenantId, fileName);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'product_image_storage_not_configured'
+            ? 503
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', result.media.contentType || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader('Content-Disposition', `inline; filename="${result.media.fileName}"`);
+    return res.status(200).send(result.media.buffer);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_image_fetch_failed',
       details: error.message
     });
   }
@@ -3848,6 +3923,7 @@ module.exports = {
   getPortalProductCategories,
   getPortalProduct,
   postPortalProduct,
+  postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,
   updatePortalProduct,
@@ -3855,6 +3931,7 @@ module.exports = {
   destroyPortalProductCategory,
   updatePortalProductStatus,
   destroyPortalProduct,
+  getPortalProductImagePublic,
   getPortalContacts,
   getPortalContact,
   postPortalContact,
