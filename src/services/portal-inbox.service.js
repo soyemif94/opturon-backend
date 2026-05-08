@@ -212,6 +212,35 @@ function parseContext(context) {
   return context && typeof context === 'object' && !Array.isArray(context) ? context : {};
 }
 
+const RESETTABLE_CONTEXT_KEEP_KEYS = new Set([
+  'portalHiddenAt',
+  'portalHiddenByUserId',
+  'portalHiddenByName',
+  'portalLastReadAt',
+  'portalAssignedTo',
+  'portalAssignedToUserId',
+  'portalPriority',
+  'portalBotEnabled',
+  'portalDealStage',
+  'portalNotes',
+  'portalTasks',
+  'botFlowLock',
+  'botDomainOverride'
+]);
+
+function buildResetConversationContext(context) {
+  const safeContext = parseContext(context);
+  const nextContext = {};
+
+  for (const [key, value] of Object.entries(safeContext)) {
+    if (RESETTABLE_CONTEXT_KEEP_KEYS.has(key)) {
+      nextContext[key] = value;
+    }
+  }
+
+  return nextContext;
+}
+
 function defaultQuickReplies() {
   return [
     { intent: 'Seguimiento', text: 'Perfecto. Quedo atento y te respondo por este medio.' },
@@ -956,6 +985,48 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
       clinic: context.clinic,
       channel: toPortalChannel(context.channel),
       reason: 'channel_repaired'
+    };
+  } else if (action === 'reset_conversation') {
+    const resetContext = buildResetConversationContext(currentContext);
+    const resetResult = await query(
+      `UPDATE conversations
+       SET
+         status = 'open',
+         stage = 'new',
+         state = 'NEW',
+         "leadStatus" = 'NEW',
+         "nextActionAt" = NULL,
+         "nextActionNote" = NULL,
+         context = $3::jsonb,
+         "updatedAt" = NOW()
+       WHERE id = $1
+         AND "clinicId" = $2
+       RETURNING id`,
+      [conversation.id, context.clinic.id, JSON.stringify(resetContext)]
+    );
+
+    if (!resetResult.rows[0]) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(context.channel),
+        reason: 'conversation_not_found'
+      };
+    }
+
+    logInfo('portal_conversation_reset', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      conversationId: conversation.id
+    });
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'conversation_reset'
     };
   }
 
