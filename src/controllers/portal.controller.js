@@ -1198,6 +1198,8 @@ async function getPortalProductImagePublic(req, res) {
     res.setHeader('Content-Type', result.media.contentType || 'application/octet-stream');
     res.setHeader('Cache-Control', 'public, max-age=300');
     res.setHeader('Content-Disposition', `inline; filename="${result.media.fileName}"`);
+    // Product images are embedded from the web app domain, so they must be embeddable cross-origin.
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     return res.status(200).send(result.media.buffer);
   } catch (error) {
     return res.status(500).json({
