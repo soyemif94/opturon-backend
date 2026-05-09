@@ -1551,9 +1551,12 @@ async function getPortalInvoicesCsvExport(req, res) {
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
     }
 
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Type',
+      result.contentType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
-    return res.status(200).send(result.csv);
+    return res.status(200).send(result.buffer);
   } catch (error) {
     return res.status(500).json({
       success: false,

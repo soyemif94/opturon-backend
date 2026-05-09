@@ -22,6 +22,7 @@ const {
 } = require('../repositories/payment-allocations.repository');
 const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
 const { calculateInvoiceReceivable } = require('./invoice-balance.service');
+const XLSX = require('xlsx');
 
 const INVOICE_STATUSES = new Set(['draft', 'issued', 'void']);
 const INVOICE_TYPES = new Set(['invoice', 'credit_note']);
@@ -217,6 +218,11 @@ function buildInvoiceCsvFilename() {
   return `opturon-prefacturacion-${stamp}.csv`;
 }
 
+function buildInvoiceSpreadsheetFilename() {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return `opturon-comprobantes-${stamp}.xlsx`;
+}
+
 function buildInvoiceBundleFilename() {
   const stamp = new Date().toISOString().slice(0, 10);
   return `opturon-comprobantes-lote-${stamp}.html`;
@@ -245,13 +251,13 @@ function formatInvoiceFlagLabel(flag) {
   const normalized = normalizeString(flag);
   const labels = {
     missing_customer_tax_id: 'Falta CUIT/DNI cliente',
-    missing_customer_vat_condition: 'Falta condicion IVA cliente',
+    missing_customer_vat_condition: 'Falta condicion fiscal cliente',
     missing_customer_legal_name: 'Falta razon social cliente',
     missing_issuer_legal_name: 'Falta razon social emisor',
     missing_issuer_tax_id: 'Falta CUIT emisor',
-    missing_issuer_vat_condition: 'Falta condicion IVA emisor',
+    missing_issuer_vat_condition: 'Falta condicion fiscal emisor',
     missing_point_of_sale: 'Falta punto de venta',
-    missing_suggested_voucher_type: 'Falta tipo sugerido'
+    missing_suggested_voucher_type: 'Falta comprobante sugerido'
   };
   return labels[normalized] || normalized;
 }
@@ -303,7 +309,7 @@ function buildInvoiceDocumentContent(invoice, clinic) {
         <h1>${escapeHtml(invoice.issuerLegalName || clinic?.name || 'Opturon')}</h1>
         <div class="muted">CUIT/DNI: ${escapeHtml(invoice.issuerTaxId || '-')}</div>
         <div class="muted">Tipo ID: ${escapeHtml(invoice.issuerTaxIdType || 'NONE')}</div>
-        <div class="muted">Condicion IVA: ${escapeHtml(invoice.issuerVatCondition || '-')}</div>
+        <div class="muted">Condicion fiscal: ${escapeHtml(invoice.issuerVatCondition || '-')}</div>
         <div class="muted">IIBB: ${escapeHtml(invoice.issuerGrossIncomeNumber || '-')}</div>
         <div class="muted">Direccion fiscal: ${escapeHtml(invoice.issuerFiscalAddress || businessProfile.address || '-')}</div>
         <div class="muted">Ciudad / Provincia: ${escapeHtml([invoice.issuerCity, invoice.issuerProvince].filter(Boolean).join(' / ') || '-')}</div>
@@ -321,8 +327,8 @@ function buildInvoiceDocumentContent(invoice, clinic) {
       <div class="card">
         <h2>Cliente</h2>
         <div>${escapeHtml(invoice.customerLegalName || invoice.contact?.name || 'Consumidor final')}</div>
-        <div class="muted">Identificacion: ${escapeHtml(invoice.customerTaxId || '-')} (${escapeHtml(invoice.customerTaxIdType || 'NONE')})</div>
-        <div class="muted">Condicion IVA: ${escapeHtml(invoice.customerVatCondition || '-')}</div>
+        <div class="muted">CUIT / DNI: ${escapeHtml(invoice.customerTaxId || '-')} (${escapeHtml(invoice.customerTaxIdType || 'NONE')})</div>
+        <div class="muted">Condicion fiscal: ${escapeHtml(invoice.customerVatCondition || '-')}</div>
       </div>
       <div class="card">
         <h2>Referencia contable</h2>
@@ -502,7 +508,7 @@ function buildInvoicesCsv(invoices) {
     'Numero interno',
     'Cliente',
     'CUIT/DNI',
-    'Condicion IVA cliente',
+    'Condicion fiscal cliente',
     'Emisor',
     'CUIT emisor',
     'Tipo documento',
@@ -545,6 +551,79 @@ function buildInvoicesCsv(invoices) {
     .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(';'))
     .join('\n');
   return `\uFEFFsep=;\n${csv}`;
+}
+
+function buildInvoicesWorkbook(invoices) {
+  const header = [
+    'Fecha',
+    'Comprobante interno',
+    'Numero interno',
+    'Cliente',
+    'CUIT / DNI cliente',
+    'Condicion fiscal cliente',
+    'Emisor',
+    'CUIT emisor',
+    'Tipo de comprobante',
+    'Comprobante sugerido',
+    'Subtotal',
+    'Total',
+    'Estado de cobro',
+    'Estado contable',
+    'Entregado al contador',
+    'Facturado por contador',
+    'Referencia del contador',
+    'Notas para contador',
+    'Datos pendientes'
+  ];
+
+  const rows = (Array.isArray(invoices) ? invoices : []).map((invoice) => [
+    formatDateLabel(invoice.issuedAt || invoice.createdAt),
+    invoice.internalDocumentNumber || '',
+    invoice.invoiceNumber || '',
+    invoice.customerLegalName || invoice.contact?.name || '',
+    invoice.customerTaxId || '',
+    invoice.customerVatCondition || '',
+    invoice.issuerLegalName || '',
+    invoice.issuerTaxId || '',
+    formatInvoiceDocumentKindLabel(invoice.documentKind),
+    normalizeString(invoice.suggestedFiscalVoucherType) || '-',
+    quantizeDecimal(invoice.subtotalAmount || 0, 2, 0),
+    quantizeDecimal(invoice.totalAmount || 0, 2, 0),
+    formatInvoiceReceivableStatusLabel(invoice.receivableStatus),
+    formatInvoiceFiscalStatusLabel(invoice.fiscalStatus),
+    formatDateTimeLabel(invoice.deliveredToAccountantAt),
+    formatDateTimeLabel(invoice.invoicedByAccountantAt),
+    invoice.accountantReferenceNumber || '',
+    (invoice.accountantNotes || '').replace(/\r?\n/g, ' '),
+    (Array.isArray(invoice.missingDataFlags) ? invoice.missingDataFlags : []).map(formatInvoiceFlagLabel).join(' | ')
+  ]);
+
+  const worksheet = XLSX.utils.aoa_to_sheet([header, ...rows]);
+  worksheet['!cols'] = [
+    { wch: 14 },
+    { wch: 22 },
+    { wch: 18 },
+    { wch: 28 },
+    { wch: 20 },
+    { wch: 24 },
+    { wch: 24 },
+    { wch: 18 },
+    { wch: 22 },
+    { wch: 20 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 20 },
+    { wch: 22 },
+    { wch: 22 },
+    { wch: 22 },
+    { wch: 34 },
+    { wch: 40 }
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Comprobantes');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
 function normalizeInitialPaymentMethod(value) {
@@ -1523,8 +1602,9 @@ async function exportPortalInvoicesCsv(tenantId, filters = {}) {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    filename: buildInvoiceCsvFilename(),
-    csv: buildInvoicesCsv(filtered),
+    filename: buildInvoiceSpreadsheetFilename(),
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer: buildInvoicesWorkbook(filtered),
     invoices: filtered
   };
 }
