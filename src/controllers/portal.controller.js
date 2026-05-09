@@ -2416,7 +2416,9 @@ async function postPortalPaymentVoid(req, res) {
       const status =
         result.reason === 'missing_tenant_id' || result.reason === 'missing_payment_id'
           ? 400
-          : result.reason === 'payment_already_void' || result.reason === 'payment_not_voidable_in_current_status'
+          : result.reason === 'payment_already_void' ||
+              result.reason === 'payment_not_voidable_in_current_status' ||
+              result.reason === 'payment_void_credit_note_already_exists'
             ? 409
             : 404;
 

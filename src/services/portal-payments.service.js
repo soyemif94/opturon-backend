@@ -1,7 +1,12 @@
 const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const { findContactByIdAndClinicId } = require('../repositories/contact.repository');
-const { findInvoiceById, lockInvoiceById } = require('../repositories/invoices.repository');
+const {
+  findInvoiceById,
+  lockInvoiceById,
+  listInvoicesByParentInvoiceId,
+  createInvoice
+} = require('../repositories/invoices.repository');
 const {
   listPaymentsByClinicId,
   findPaymentById,
@@ -17,6 +22,7 @@ const {
 } = require('../repositories/payment-allocations.repository');
 const {
   calculateInvoiceReceivable,
+  normalizeInvoiceDocumentImpact,
   normalizePaymentImpact,
   calculatePaymentAllocationSnapshot
 } = require('./invoice-balance.service');
@@ -88,6 +94,127 @@ function buildReceivableForInvoice(invoice, paidByInvoiceId) {
     invoice,
     paidAmount: paidByInvoiceId[invoice.id] || 0
   });
+}
+
+function buildCreditNoteReference(invoice) {
+  return {
+    id: invoice.id,
+    invoiceNumber: invoice.invoiceNumber || invoice.internalDocumentNumber || null,
+    type: invoice.type || 'credit_note',
+    status: invoice.status || 'draft',
+    currency: invoice.currency || 'ARS',
+    totalAmount: quantizeDecimal(invoice.totalAmount || 0, 2, 0),
+    issuedAt: invoice.issuedAt || null,
+    createdAt: invoice.createdAt || null,
+    balanceImpact: normalizeInvoiceDocumentImpact(invoice)
+  };
+}
+
+function isPaymentVoidCreditNote(invoice, paymentId) {
+  const metadata = normalizeMetadata(invoice && invoice.metadata);
+  return normalizeString(metadata.paymentVoid && metadata.paymentVoid.paymentId) === normalizeString(paymentId);
+}
+
+async function resolvePaymentVoidInvoiceTargets(payment, clinicId, client = null) {
+  const allocations = await listAllocationsByPaymentId(payment.id, clinicId, client);
+  if (allocations.length) {
+    const grouped = allocations.reduce((acc, allocation) => {
+      const invoiceId = normalizeString(allocation.invoiceId);
+      if (!invoiceId) return acc;
+      acc[invoiceId] = quantizeDecimal((acc[invoiceId] || 0) + Number(allocation.amount || 0), 2, 0);
+      return acc;
+    }, {});
+
+    return Object.entries(grouped)
+      .filter(([, amount]) => quantizeDecimal(amount, 2, 0) > 0)
+      .map(([invoiceId, amount]) => ({ invoiceId, amount: quantizeDecimal(amount, 2, 0) }));
+  }
+
+  const directInvoiceId = normalizeString(payment.invoiceId);
+  if (!directInvoiceId) {
+    return [];
+  }
+
+  return [
+    {
+      invoiceId: directInvoiceId,
+      amount: quantizeDecimal(payment.amount || 0, 2, 0)
+    }
+  ];
+}
+
+function buildPaymentVoidCreditNoteInput(parentInvoice, payment, amount) {
+  const safeAmount = quantizeDecimal(Math.abs(amount || 0), 2, 0);
+  if (!Number.isFinite(safeAmount) || safeAmount <= 0) {
+    return null;
+  }
+
+  const issuedAt = new Date().toISOString();
+  const parentLabel = parentInvoice.invoiceNumber || parentInvoice.internalDocumentNumber || parentInvoice.id;
+  const paymentLabel = normalizeString(payment.externalReference) || payment.id.slice(0, 8);
+  const descriptionSnapshot = `Anulacion de cobro ${paymentLabel} asociada al comprobante ${parentLabel}`;
+
+  return {
+    clinicId: parentInvoice.clinicId,
+    contactId: parentInvoice.contactId || payment.contactId || null,
+    orderId: parentInvoice.orderId || null,
+    parentInvoiceId: parentInvoice.id,
+    invoiceNumber: null,
+    type: 'credit_note',
+    status: 'issued',
+    documentMode: parentInvoice.documentMode || 'internal_only',
+    providerStatus: null,
+    currency: parentInvoice.currency || payment.currency || 'ARS',
+    subtotalAmount: -safeAmount,
+    taxAmount: 0,
+    totalAmount: -safeAmount,
+    issuedAt,
+    dueAt: null,
+    externalProvider: null,
+    externalReference: null,
+    documentKind: parentInvoice.documentKind || 'internal_invoice',
+    fiscalStatus: 'ready_for_accountant',
+    customerTaxId: parentInvoice.customerTaxId || null,
+    customerTaxIdType: parentInvoice.customerTaxIdType || 'NONE',
+    customerLegalName: parentInvoice.customerLegalName || parentInvoice.contact?.name || null,
+    customerVatCondition: parentInvoice.customerVatCondition || null,
+    issuerLegalName: parentInvoice.issuerLegalName || null,
+    issuerTaxId: parentInvoice.issuerTaxId || null,
+    issuerTaxIdType: parentInvoice.issuerTaxIdType || 'NONE',
+    issuerVatCondition: parentInvoice.issuerVatCondition || null,
+    issuerGrossIncomeNumber: parentInvoice.issuerGrossIncomeNumber || null,
+    issuerFiscalAddress: parentInvoice.issuerFiscalAddress || null,
+    issuerCity: parentInvoice.issuerCity || null,
+    issuerProvince: parentInvoice.issuerProvince || null,
+    pointOfSaleSuggested: parentInvoice.pointOfSaleSuggested || null,
+    suggestedFiscalVoucherType: parentInvoice.suggestedFiscalVoucherType || 'NONE',
+    accountantNotes: 'Generada automaticamente al anular un cobro.',
+    deliveredToAccountantAt: null,
+    invoicedByAccountantAt: null,
+    accountantReferenceNumber: null,
+    metadata: {
+      source: 'payment_void_credit_note',
+      paymentVoid: {
+        paymentId: payment.id,
+        generatedAt: issuedAt,
+        amount: safeAmount,
+        currency: parentInvoice.currency || payment.currency || 'ARS',
+        method: payment.method || null,
+        originalInvoiceId: parentInvoice.id
+      }
+    },
+    items: [
+      {
+        productId: null,
+        descriptionSnapshot,
+        quantity: 1,
+        unitPrice: -safeAmount,
+        taxRate: 0,
+        subtotalAmount: -safeAmount,
+        totalAmount: -safeAmount
+      }
+    ]
+  };
 }
 
 async function listPortalPayments(tenantId) {
@@ -414,6 +541,14 @@ async function voidPortalPayment(tenantId, paymentId, payload = {}) {
   }
 
   if (currentPayment.status === 'void') {
+    const existingCreditNotes = Array.isArray(currentPayment.metadata && currentPayment.metadata.voidCreditNotes)
+      ? currentPayment.metadata.voidCreditNotes
+      : [];
+    if (existingCreditNotes.length) {
+      return buildError(context.tenantId, 'payment_void_credit_note_already_exists', {
+        creditNotes: existingCreditNotes
+      });
+    }
     return buildError(context.tenantId, 'payment_already_void');
   }
 
@@ -421,35 +556,99 @@ async function voidPortalPayment(tenantId, paymentId, payload = {}) {
     return buildError(context.tenantId, 'payment_not_voidable_in_current_status');
   }
 
-  const payment = await withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
+    const paymentLocked = await lockPaymentById(currentPayment.id, context.clinic.id, client);
+    if (!paymentLocked) {
+      return buildError(context.tenantId, 'payment_not_found');
+    }
+
+    const lockedPayment = await findPaymentById(currentPayment.id, context.clinic.id, client);
+    if (!lockedPayment) {
+      return buildError(context.tenantId, 'payment_not_found');
+    }
+
+    const targets = await resolvePaymentVoidInvoiceTargets(lockedPayment, context.clinic.id, client);
+    const creditNotes = [];
+    let createdCreditNotes = 0;
+
+    for (const target of targets) {
+      const invoiceId = normalizeString(target.invoiceId);
+      if (!invoiceId) continue;
+      const targetAmount = quantizeDecimal(target.amount || 0, 2, 0);
+      if (!Number.isFinite(targetAmount) || targetAmount <= 0) continue;
+
+      const invoiceLocked = await lockInvoiceById(invoiceId, context.clinic.id, client);
+      if (!invoiceLocked) continue;
+
+      const parentInvoice = await findInvoiceById(invoiceId, context.clinic.id, client);
+      if (!parentInvoice || parentInvoice.status !== 'issued' || parentInvoice.type !== 'invoice') {
+        continue;
+      }
+
+      const existingCreditNotes = await listInvoicesByParentInvoiceId(parentInvoice.id, context.clinic.id, client);
+      const existingCreditNote = existingCreditNotes.find((invoice) => isPaymentVoidCreditNote(invoice, lockedPayment.id));
+      if (existingCreditNote) {
+        creditNotes.push(buildCreditNoteReference(existingCreditNote));
+        continue;
+      }
+
+      const creditNoteInput = buildPaymentVoidCreditNoteInput(parentInvoice, lockedPayment, targetAmount);
+      if (!creditNoteInput) continue;
+
+      const createdCreditNote = await createInvoice(creditNoteInput, client);
+      creditNotes.push(buildCreditNoteReference(createdCreditNote));
+      createdCreditNotes += 1;
+    }
+
     const voidedPayment = await voidPayment(
-      currentPayment.id,
+      lockedPayment.id,
       context.clinic.id,
       {
-        notes: normalizeString(payload.notes) || currentPayment.notes || null,
-        externalReference: normalizeString(payload.externalReference) || currentPayment.externalReference || null,
+        notes: normalizeString(payload.notes) || lockedPayment.notes || null,
+        externalReference: normalizeString(payload.externalReference) || lockedPayment.externalReference || null,
         metadata: {
-          ...normalizeMetadata(currentPayment.metadata),
+          ...normalizeMetadata(lockedPayment.metadata),
           ...normalizeMetadata(payload.metadata),
           voidFlow: {
             mode: 'explicit_void_action',
             at: new Date().toISOString(),
             reason: normalizeString(payload.reason) || null
-          }
+          },
+          voidCreditNotes: creditNotes
         }
       },
       client
     );
 
-    await reverseLoyaltyPointsForVoidedPayment(context.clinic.id, currentPayment.id, client);
-    return voidedPayment;
+    await reverseLoyaltyPointsForVoidedPayment(context.clinic.id, lockedPayment.id, client);
+    return {
+      ok: true,
+      payment: voidedPayment,
+      relatedCreditNotes: creditNotes,
+      creditNoteStatus:
+        creditNotes.length === 0 ? 'not_applicable' : createdCreditNotes > 0 ? 'generated' : 'already_exists'
+    };
   });
+
+  if (!result.ok) {
+    return result;
+  }
+
+  const withAllocationSummary = await attachAllocationSummaries(context.clinic.id, [result.payment]);
+  const payment = withAllocationSummary[0] || result.payment;
 
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    payment: enrichPaymentView(payment)
+    payment: {
+      ...enrichPaymentView(payment),
+      relatedCreditNotes: result.relatedCreditNotes,
+      voidOutcome: {
+        creditNoteStatus: result.creditNoteStatus,
+        relatedCreditNotes: result.relatedCreditNotes
+      }
+    }
   };
 }
 
