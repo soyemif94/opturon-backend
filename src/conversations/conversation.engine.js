@@ -16,15 +16,48 @@ function normalizeText(text) {
 }
 
 function normalizeCommandText(text) {
-  return normalizeText(text)
+  return applyBasicConversationalNormalizations(
+    normalizeText(text)
     .replace(/[.,!?]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  );
+}
+
+function applyBasicConversationalNormalizations(text) {
+  let normalized = String(text || '').trim().toLowerCase();
+  if (!normalized) return '';
+
+  if (/^hol+a+$/.test(normalized) || /^ola+s*$/.test(normalized) || normalized === 'ols') {
+    return 'hola';
+  }
+
+  if (normalized === 'q tal') return 'que tal';
+
+  return normalized
+    .replace(/\bgrax\b/g, 'gracias')
+    .replace(/\bgrasias\b/g, 'gracias')
+    .replace(/\bgraxias\b/g, 'gracias')
+    .replace(/\bgraciass+\b/g, 'gracias')
+    .replace(/\bpresio(s)?\b/g, 'precio$1')
+    .replace(/\binfoo+\b/g, 'info')
+    .replace(/\bnesecito\b/g, 'necesito')
+    .replace(/\bnesesito\b/g, 'necesito')
+    .replace(/\boki+\b/g, 'ok')
+    .replace(/\bokey\b/g, 'ok')
+    .replace(/\bokei\b/g, 'ok')
+    .replace(/\bokay\b/g, 'ok')
+    .replace(/\bbuenisim[oa]\b/g, 'buenisimo')
+    .replace(/\bbarbaroo+\b/g, 'barbaro')
+    .replace(/\bgenia+l+\b/g, 'genial')
+    .replace(/\bq\s+/g, 'que ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function isAffirmative(text) {
-  const value = normalizeText(text);
-  return ['si', 's', 'confirmo', 'ok', 'dale'].includes(value);
+  const value = normalizeCommandText(text);
+  return ['si', 's', 'confirmo', 'ok', 'dale', 'perfecto', 'genial', 'joya', 'buenisimo', 'barbaro'].includes(value);
 }
 
 function isNegative(text) {
@@ -40,6 +73,24 @@ function isAppointmentIntent(text) {
 function isGlobalCancelMenu(text) {
   const value = normalizeCommandText(text);
   return ['cancelar', 'salir', 'menu', 'volver', 'atras'].includes(value);
+}
+
+function isGreetingIntent(text) {
+  const value = normalizeCommandText(text);
+  return ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'holi', 'que tal'].includes(value);
+}
+
+function isThanksIntent(text) {
+  const value = normalizeCommandText(text);
+  return (
+    ['gracias', 'muchas gracias', 'mil gracias', 'genial gracias', 'joya gracias', 'buenisimo gracias'].includes(value) ||
+    value.endsWith(' gracias')
+  );
+}
+
+function isShortConfirmationIntent(text) {
+  const value = normalizeCommandText(text);
+  return ['ok', 'dale', 'perfecto', 'genial', 'joya', 'buenisimo', 'barbaro', 'listo', 'de una'].includes(value);
 }
 
 function parseTimeWindowOnly(text) {
@@ -58,7 +109,9 @@ function decideReply({ state, context, inboundText }) {
 
   if (currentState === 'NEW') {
     return {
-      replyText: 'Hola. Soy ClinicAI. Para ayudarte, como te llamas?',
+      replyText: isGreetingIntent(text)
+        ? 'Hola, gracias por escribirnos. Para ayudarte mejor, ¿cómo te llamás?'
+        : 'Hola. Soy ClinicAI. Para ayudarte, como te llamas?',
       newState: 'ASKED_NAME',
       contextPatch: null
     };
@@ -81,6 +134,30 @@ function decideReply({ state, context, inboundText }) {
   }
 
   if (currentState === 'READY') {
+    if (isGreetingIntent(text)) {
+      return {
+        replyText: 'Hola, ¿cómo estás? Te ayudo con turnos, precios o dirección.\n\n1) Sacar turno\n2) Precios\n3) Direccion',
+        newState: 'READY',
+        contextPatch: null
+      };
+    }
+
+    if (isThanksIntent(text)) {
+      return {
+        replyText: '¡De nada! Si querés, seguimos por acá.\n\n1) Sacar turno\n2) Precios\n3) Direccion',
+        newState: 'READY',
+        contextPatch: null
+      };
+    }
+
+    if (isShortConfirmationIntent(text)) {
+      return {
+        replyText: 'Perfecto. Contame qué necesitás y te ayudo.\n\n1) Sacar turno\n2) Precios\n3) Direccion',
+        newState: 'READY',
+        contextPatch: null
+      };
+    }
+
     if (safeContext.appointmentStatus === 'reschedule_proposed') {
       if (isAffirmative(text)) {
         return {

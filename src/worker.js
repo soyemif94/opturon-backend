@@ -135,14 +135,49 @@ function normalizeText(input) {
 }
 
 function normalizeCommandText(input) {
-  return String(input || '')
+  return applyBasicConversationalNormalizations(
+    String(input || '')
     .trim()
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .replace(/[.,!?]+$/g, '')
+    .trim()
+  );
+}
+
+function applyBasicConversationalNormalizations(text) {
+  let normalized = String(text || '').trim().toLowerCase();
+  if (!normalized) return '';
+
+  if (/^hol+a+$/.test(normalized) || /^ola+s*$/.test(normalized) || normalized === 'ols') {
+    return 'hola';
+  }
+
+  if (normalized === 'q tal') return 'que tal';
+
+  normalized = normalized
+    .replace(/\bgrax\b/g, 'gracias')
+    .replace(/\bgrasias\b/g, 'gracias')
+    .replace(/\bgraxias\b/g, 'gracias')
+    .replace(/\bgraciass+\b/g, 'gracias')
+    .replace(/\bpresio(s)?\b/g, 'precio$1')
+    .replace(/\binfoo+\b/g, 'info')
+    .replace(/\bnesecito\b/g, 'necesito')
+    .replace(/\bnesesito\b/g, 'necesito')
+    .replace(/\boki+\b/g, 'ok')
+    .replace(/\bokey\b/g, 'ok')
+    .replace(/\bokei\b/g, 'ok')
+    .replace(/\bokay\b/g, 'ok')
+    .replace(/\bbuenisim[oa]\b/g, 'buenisimo')
+    .replace(/\bbarbaroo+\b/g, 'barbaro')
+    .replace(/\bgenia+l+\b/g, 'genial')
+    .replace(/\bq\s+/g, 'que ')
+    .replace(/\s+/g, ' ')
     .trim();
+
+  return normalized;
 }
 
 function normalizeDigitsOnly(value) {
@@ -270,11 +305,11 @@ function shouldBypassCommerceForQa({ contact, channel, contactId, channelId, inb
 }
 
 function detectIntent(rawText) {
-  const text = normalizeText(rawText);
+  const text = normalizeCommandText(rawText);
 
   const appointmentWords = /(turno|cita|agenda|sacar turno|reservar|agendar)/i;
   const urgentWords = /(dolor|urgencia|sangrado|inflamado|se me sali[oó]|me duele mucho)/i;
-  const pricingWords = /(precio|cuanto|cu[aá]nto|valor|costo)/i;
+  const pricingWords = /(precio|cuanto|valor|costo|info)/i;
   const humanWords = /(humano|recepcion|persona|llamar|asesor)/i;
 
   if (urgentWords.test(text)) return 'urgent';
@@ -287,7 +322,7 @@ function detectIntent(rawText) {
 function isGreeting(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
-  return ['hola', 'buenas', 'buen dia', 'buen día', 'hello', 'holi'].includes(text);
+  return ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hello', 'holi', 'que tal'].includes(text);
 }
 
 const BOT_ROUTER_APPOINTMENT_STATES = new Set([
@@ -686,8 +721,10 @@ function isCommerceEntryIntent(rawText) {
     text === 'hola' ||
     text === 'buenas' ||
     text === 'buen dia' ||
+    text === 'buenos dias' ||
     text === 'buenas tardes' ||
     text === 'buenas noches' ||
+    text === 'que tal' ||
     text === 'quiero hacer un pedido' ||
     text === 'quiero comprar' ||
     text === 'productos' ||
@@ -2243,6 +2280,10 @@ function isDemoAdvanceIntent(input) {
     'seguir',
     'ok',
     'dale',
+    'perfecto',
+    'joya',
+    'buenisimo',
+    'barbaro',
     'continuar',
     'siguiente',
     'si',

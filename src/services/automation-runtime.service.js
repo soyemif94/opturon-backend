@@ -201,13 +201,46 @@ if (defaultProductsAutomation) {
 }
 
 function normalizeText(value) {
-  return String(value || '')
+  return applyBasicConversationalNormalizations(
+    String(value || '')
     .trim()
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .replace(/[.,!?]+$/g, '')
+    .trim()
+  );
+}
+
+function applyBasicConversationalNormalizations(text) {
+  let normalized = String(text || '').trim().toLowerCase();
+  if (!normalized) return '';
+
+  if (/^hol+a+$/.test(normalized) || /^ola+s*$/.test(normalized) || normalized === 'ols') {
+    return 'hola';
+  }
+
+  if (normalized === 'q tal') return 'que tal';
+
+  return normalized
+    .replace(/\bgrax\b/g, 'gracias')
+    .replace(/\bgrasias\b/g, 'gracias')
+    .replace(/\bgraxias\b/g, 'gracias')
+    .replace(/\bgraciass+\b/g, 'gracias')
+    .replace(/\bpresio(s)?\b/g, 'precio$1')
+    .replace(/\binfoo+\b/g, 'info')
+    .replace(/\bnesecito\b/g, 'necesito')
+    .replace(/\bnesesito\b/g, 'necesito')
+    .replace(/\boki+\b/g, 'ok')
+    .replace(/\bokey\b/g, 'ok')
+    .replace(/\bokei\b/g, 'ok')
+    .replace(/\bokay\b/g, 'ok')
+    .replace(/\bbuenisim[oa]\b/g, 'buenisimo')
+    .replace(/\bbarbaroo+\b/g, 'barbaro')
+    .replace(/\bgenia+l+\b/g, 'genial')
+    .replace(/\bq\s+/g, 'que ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
@@ -359,12 +392,72 @@ function isGenericGreeting(text) {
     'buenos dias',
     'buenas tardes',
     'buenas noches',
+    'que tal',
     'info',
     'consulta',
     'consulta por favor',
     'informacion',
     'información'
   ].includes(text);
+}
+
+function isShortThanksIntent(text) {
+  if (!text) return false;
+  return (
+    [
+      'gracias',
+      'muchas gracias',
+      'mil gracias',
+      'genial gracias',
+      'joya gracias',
+      'buenisimo gracias'
+    ].includes(text) || text.endsWith(' gracias')
+  );
+}
+
+function isShortConfirmationIntent(text) {
+  if (!text) return false;
+  return [
+    'ok',
+    'dale',
+    'perfecto',
+    'genial',
+    'joya',
+    'buenisimo',
+    'barbaro',
+    'de una',
+    'listo'
+  ].includes(text);
+}
+
+function buildHumanizedShortReply({ flowState, normalizedInboundText }) {
+  if (isShortThanksIntent(normalizedInboundText)) {
+    if (flowState.lastIntent === 'products') {
+      return '¡De nada! Si querés, decime el nombre o el número del producto que te interesó y te paso la info.';
+    }
+    if (flowState.lastIntent === 'pricing') {
+      return '¡De nada! Si querés, decime qué producto o servicio querés cotizar y te ayudo por acá.';
+    }
+    if (flowState.lastIntent === 'human') {
+      return '¡De nada! En breve sigue alguien del equipo por acá para ayudarte mejor.';
+    }
+    return '¡De nada! Si querés, contame qué estás buscando y te doy una mano.';
+  }
+
+  if (isShortConfirmationIntent(normalizedInboundText)) {
+    if (flowState.lastIntent === 'products') {
+      return 'Perfecto 👍 Si querés, decime el nombre o el número del producto que te interesa y seguimos.';
+    }
+    if (flowState.lastIntent === 'pricing') {
+      return 'Dale 👍 Decime qué producto o servicio querés cotizar y te ayudo.';
+    }
+    if (flowState.lastIntent === 'human') {
+      return 'Perfecto 👍 Ya quedó pedido para que te responda una persona del equipo.';
+    }
+    return 'Perfecto 👍 Contame qué estás buscando y seguimos por acá.';
+  }
+
+  return null;
 }
 
 function getActionMessage(automation) {
@@ -793,6 +886,31 @@ async function evaluateConversationAutomation({ clinicId, conversation, contact,
       reason: 'pricing_follow_up'
     });
     return pricingFollowUp;
+  }
+
+  const humanizedShortReply = buildHumanizedShortReply({ flowState, normalizedInboundText });
+  if (humanizedShortReply) {
+    logInfo('automation_runtime_matched', {
+      clinicId,
+      conversationId: conversation && conversation.id ? conversation.id : null,
+      normalizedInboundText,
+      source: 'conversation_humanized_short_reply',
+      reason: 'short_humanized_reply'
+    });
+    return {
+      replyText: humanizedShortReply,
+      newState: 'READY',
+      contextPatch: buildContextPatch({
+        optionKey: flowState.lastIntent || null,
+        productsPreview: flowState.productsPreview.length ? flowState.productsPreview : null,
+        productsOffset: 0,
+        productsNextOffset: flowState.productsNextOffset,
+        productsTotal: flowState.productsTotal,
+        handoffRequested: flowState.lastIntent === 'human'
+      }),
+      source: 'conversation_humanized_short_reply',
+      automation: null
+    };
   }
 
   const keywordAutomations = flowAutomations.filter((automation) => String((automation.trigger && automation.trigger.type) || '').toLowerCase() === 'keyword');
