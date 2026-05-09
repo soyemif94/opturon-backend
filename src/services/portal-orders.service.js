@@ -692,7 +692,7 @@ async function createOrderForContext(context, payload) {
   let seller = null;
   if (sellerUserId) {
     seller = await findPortalUserByIdAndClinicId(sellerUserId, context.clinic.id);
-    if (!seller || seller.role === 'viewer') {
+    if (!seller || seller.role !== 'seller') {
       return buildError(context.tenantId, 'seller_user_not_found');
     }
   }
@@ -1133,7 +1133,7 @@ async function patchOrderForContext(context, orderId, payload) {
         }
 
         seller = await findPortalUserByIdAndClinicId(requestedSellerUserId, context.clinic.id, client);
-        if (!seller || seller.role === 'viewer') {
+        if (!seller || seller.role !== 'seller') {
           return buildError(context.tenantId, 'seller_user_not_found');
         }
       }
