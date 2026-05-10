@@ -3270,9 +3270,10 @@ async function postPortalAuthLogin(req, res) {
 
 async function getPortalAuthUser(req, res) {
   const email = String(req.query.email || '').trim();
+  const tenantId = String(req.query.tenantId || '').trim() || null;
 
   try {
-    const result = await getPortalAuthUserByEmail(email);
+    const result = await getPortalAuthUserByEmail(email, tenantId);
     if (!result.ok) {
       return res.status(400).json({ success: false, error: result.reason });
     }

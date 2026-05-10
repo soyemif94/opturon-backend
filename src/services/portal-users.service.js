@@ -14,6 +14,7 @@ const {
   updatePortalUserRole,
   deletePortalUserById,
   findPortalUserByEmail,
+  findPortalUserByEmailAndTenantId,
   findPortalUserById
 } = require('../repositories/portal-users.repository');
 const {
@@ -773,11 +774,14 @@ async function authenticatePortalUser(email, password) {
   };
 }
 
-async function getPortalAuthUserByEmail(email) {
+async function getPortalAuthUserByEmail(email, tenantId = null) {
   const safeEmail = normalizeEmail(email);
+  const safeTenantId = normalizeString(tenantId);
   if (!safeEmail) return { ok: false, reason: 'invalid_email' };
 
-  const user = await findPortalUserByEmail(safeEmail);
+  const user = safeTenantId
+    ? await findPortalUserByEmailAndTenantId(safeEmail, safeTenantId)
+    : await findPortalUserByEmail(safeEmail);
   if (!user || user.active !== true) {
     return { ok: true, user: null };
   }

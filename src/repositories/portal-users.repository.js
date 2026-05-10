@@ -260,6 +260,33 @@ async function findPortalUserById(userId, client = null) {
   return result.rows[0] || null;
 }
 
+async function findPortalUserByEmailAndTenantId(email, tenantId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT su.id,
+            su."clinicId",
+            su.name,
+            su.email,
+            su."accountRootUserId",
+            CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS role,
+            su.active,
+            su."passwordHash",
+            c."externalTenantId" AS "tenantId"
+     FROM staff_users su
+     INNER JOIN clinics c ON c.id = su."clinicId"
+     WHERE LOWER(su.email) = LOWER($1)
+       AND c."externalTenantId" = $2
+       AND su."accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND su.email IS NOT NULL
+       AND su.active = TRUE
+       AND su.role IN ${PORTAL_ROLE_SQL}
+     LIMIT 1`,
+    [email, tenantId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function findPortalUserByNameAndClinicId(name, clinicId, client = null) {
   const safeName = String(name || '').trim();
   if (!safeName) return null;
@@ -299,6 +326,7 @@ module.exports = {
   updatePortalUserRole,
   deletePortalUserById,
   findPortalUserByEmail,
+  findPortalUserByEmailAndTenantId,
   findPortalUserById,
   findPortalUserByIdAndClinicId,
   findPortalUserByNameAndClinicId
