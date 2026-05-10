@@ -1,7 +1,10 @@
+const { createHash } = require('node:crypto');
 const { withTransaction } = require('../db/client');
 const { quantizeDecimal, sumQuantized } = require('../utils/money');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const { findPortalUserByIdAndClinicId } = require('../repositories/portal-users.repository');
+const { getClinicPortalAccountConfigById } = require('../repositories/tenant.repository');
+const { findPortalActorContext } = require('./portal-active-tenant.service');
 const {
   listPaymentDestinationsByClinicId,
   findPaymentDestinationById
@@ -15,8 +18,19 @@ const {
 } = require('../repositories/cash-sessions.repository');
 const { listCashCountableOrdersByDestinationAndRange } = require('../repositories/orders.repository');
 
+const TRUSTED_CASH_TENANT_ROLES = new Set(['owner', 'manager', 'seller']);
+const TRUSTED_CASH_GLOBAL_ROLES = new Set(['superadmin', 'ops_admin']);
+
 function normalizeString(value) {
   return String(value || '').trim();
+}
+
+function normalizeEmail(value) {
+  return normalizeString(value).toLowerCase();
+}
+
+function normalizeRole(value) {
+  return normalizeString(value).toLowerCase();
 }
 
 function normalizeOptionalAmount(value) {
@@ -35,6 +49,75 @@ function buildError(tenantId, reason, details) {
 
 function isCashBoxDestination(destination) {
   return Boolean(destination && destination.type === 'cash_box');
+}
+
+function buildDeterministicUuid(seed) {
+  const digest = createHash('sha1').update(String(seed || '')).digest('hex').slice(0, 32).split('');
+  digest[12] = '5';
+  digest[16] = ((Number.parseInt(digest[16], 16) & 0x3) | 0x8).toString(16);
+  return `${digest.slice(0, 8).join('')}-${digest.slice(8, 12).join('')}-${digest.slice(12, 16).join('')}-${digest.slice(16, 20).join('')}-${digest.slice(20, 32).join('')}`;
+}
+
+function normalizeTrustedActor(payload = {}) {
+  const name = normalizeString(payload.actorName);
+  const email = normalizeEmail(payload.actorEmail);
+  const globalRole = normalizeRole(payload.actorGlobalRole);
+  const tenantRole = normalizeRole(payload.actorTenantRole);
+
+  return {
+    name: name || null,
+    email: email || null,
+    globalRole: globalRole || null,
+    tenantRole: tenantRole || null
+  };
+}
+
+function canUseTrustedCashActor(actor) {
+  if (!actor) return false;
+  if (TRUSTED_CASH_TENANT_ROLES.has(normalizeRole(actor.tenantRole))) {
+    return true;
+  }
+  return TRUSTED_CASH_GLOBAL_ROLES.has(normalizeRole(actor.globalRole));
+}
+
+async function resolveCashActor(context, actorUserId, payload = {}) {
+  const directActor = await findPortalUserByIdAndClinicId(actorUserId, context.clinic.id);
+  if (directActor && directActor.role !== 'viewer') {
+    return {
+      ok: true,
+      userId: directActor.id,
+      name: directActor.name,
+      source: 'portal_user'
+    };
+  }
+
+  const accountConfig = await getClinicPortalAccountConfigById(context.clinic.id);
+  if (!accountConfig || accountConfig.accountScope !== 'opturon_admin') {
+    return { ok: false };
+  }
+
+  const trustedActor = normalizeTrustedActor(payload);
+  if (!canUseTrustedCashActor(trustedActor)) {
+    return { ok: false };
+  }
+
+  const scopedActor = await findPortalActorContext(actorUserId);
+  if (scopedActor && scopedActor.isAdmin && normalizeRole(scopedActor.role) !== 'viewer') {
+    return {
+      ok: true,
+      userId: scopedActor.id,
+      name: scopedActor.name || trustedActor.name || trustedActor.email || 'Opturon Admin',
+      source: 'admin_actor'
+    };
+  }
+
+  const syntheticSeed = `${context.tenantId}:${trustedActor.email || actorUserId}:${trustedActor.globalRole || trustedActor.tenantRole || 'cash'}`;
+  return {
+    ok: true,
+    userId: buildDeterministicUuid(syntheticSeed),
+    name: trustedActor.name || trustedActor.email || 'Opturon Admin',
+    source: 'trusted_internal_actor'
+  };
 }
 
 async function buildSessionMetrics(session, clinicId, client = null) {
@@ -159,7 +242,7 @@ async function openPortalCashSession(tenantId, payload = {}) {
 
   const [destination, openedBy] = await Promise.all([
     findPaymentDestinationById(paymentDestinationId, context.clinic.id),
-    findPortalUserByIdAndClinicId(openedByUserId, context.clinic.id)
+    resolveCashActor(context, openedByUserId, payload)
   ]);
 
   if (!destination || !isCashBoxDestination(destination)) {
@@ -168,7 +251,7 @@ async function openPortalCashSession(tenantId, payload = {}) {
   if (!destination.isActive) {
     return buildError(context.tenantId, 'cash_box_destination_inactive');
   }
-  if (!openedBy || openedBy.role === 'viewer') {
+  if (!openedBy || openedBy.ok !== true || !openedBy.userId || !openedBy.name) {
     return buildError(context.tenantId, 'cash_open_user_not_found');
   }
 
@@ -183,7 +266,7 @@ async function openPortalCashSession(tenantId, payload = {}) {
         {
           clinicId: context.clinic.id,
           paymentDestinationId,
-          openedByUserId,
+          openedByUserId: openedBy.userId,
           openedByNameSnapshot: openedBy.name,
           openingAmount,
           notes
@@ -241,8 +324,8 @@ async function closePortalCashSession(tenantId, sessionId, payload = {}) {
     return buildError(context.tenantId, 'invalid_cash_counted_amount', 'cash_counted_amount_or_transfer_counted_amount_invalid');
   }
 
-  const closedBy = await findPortalUserByIdAndClinicId(closedByUserId, context.clinic.id);
-  if (!closedBy || closedBy.role === 'viewer') {
+  const closedBy = await resolveCashActor(context, closedByUserId, payload);
+  if (!closedBy || closedBy.ok !== true || !closedBy.userId || !closedBy.name) {
     return buildError(context.tenantId, 'cash_close_user_not_found');
   }
 
@@ -276,7 +359,7 @@ async function closePortalCashSession(tenantId, sessionId, payload = {}) {
       safeSessionId,
       context.clinic.id,
       {
-        closedByUserId,
+        closedByUserId: closedBy.userId,
         closedByNameSnapshot: closedBy.name,
         closedAt,
         cashCountedAmount,

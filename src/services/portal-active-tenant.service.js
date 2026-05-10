@@ -29,6 +29,7 @@ async function findPortalActorContext(actorUserId) {
   const result = await query(
     `SELECT su.id,
             su."clinicId",
+            su.name,
             su.email,
             su.role,
             c."externalTenantId" AS "tenantId",
@@ -59,6 +60,7 @@ async function findPortalActorContext(actorUserId) {
   return {
     id: actor.id,
     clinicId: actor.clinicId,
+    name: actor.name || null,
     email: actor.email || null,
     role: actor.role || null,
     tenantId: actor.tenantId || null,
@@ -151,6 +153,7 @@ async function setActiveTenantForAdmin(actorUserId, tenantId) {
 }
 
 module.exports = {
+  findPortalActorContext,
   resolveActiveTenantForRequest,
   setActiveTenantForAdmin
 };
