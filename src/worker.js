@@ -952,10 +952,112 @@ function formatWholeNumber(value) {
   }
 }
 
+const LOYALTY_FOLLOW_UP_TTL_MS = 10 * 60 * 1000;
+
 function getContactFirstName(contact) {
   const safeName = String((contact && (contact.name || contact.fullName)) || '').trim();
   if (!safeName) return null;
   return safeName.split(/\s+/).filter(Boolean)[0] || safeName;
+}
+
+function buildLoyaltyContextPatch(snapshot, mode = 'offered_summary') {
+  const nextReward = snapshot && snapshot.nextReward && typeof snapshot.nextReward === 'object'
+    ? snapshot.nextReward
+    : null;
+  const availableReward = snapshot && snapshot.availableReward && typeof snapshot.availableReward === 'object'
+    ? snapshot.availableReward
+    : null;
+  const highlightedReward = availableReward || nextReward || null;
+
+  return {
+    loyaltyFollowUpMode: mode,
+    loyaltyFollowUpActiveAt: new Date().toISOString(),
+    loyaltyHighlightedReward: highlightedReward
+      ? {
+        id: highlightedReward.id || null,
+        name: highlightedReward.name || null,
+        pointsCost: Number(highlightedReward.pointsCost || 0)
+      }
+      : null
+  };
+}
+
+function isRecentLoyaltyFollowUpContext(safeContext) {
+  const activeAt = String(safeContext && safeContext.loyaltyFollowUpActiveAt ? safeContext.loyaltyFollowUpActiveAt : '').trim();
+  if (!activeAt) return false;
+  const timestamp = Date.parse(activeAt);
+  if (!Number.isFinite(timestamp)) return false;
+  return Date.now() - timestamp <= LOYALTY_FOLLOW_UP_TTL_MS;
+}
+
+function isLoyaltyFollowUpIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return (
+    [
+      'dale',
+      'si',
+      'sí',
+      'contame',
+      'ok',
+      'joya',
+      'buenisimo',
+      'como funciona',
+      'quiero saber',
+      'explicame'
+    ].includes(text) ||
+    text.includes('como funciona') ||
+    text.includes('quiero saber') ||
+    text.includes('explicame') ||
+    text.includes('contame')
+  );
+}
+
+function normalizeLoyaltyRewardLabel(name) {
+  const safeName = String(name || '').trim();
+  if (!safeName) return 'un beneficio disponible';
+  return safeName.replace(/\s+/g, ' ').replace(/\s*\.\s*$/g, '');
+}
+
+function buildLoyaltyRewardHighlight(snapshot) {
+  const safeSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const availableReward = safeSnapshot.availableReward && typeof safeSnapshot.availableReward === 'object'
+    ? safeSnapshot.availableReward
+    : null;
+  const nextReward = safeSnapshot.nextReward && typeof safeSnapshot.nextReward === 'object'
+    ? safeSnapshot.nextReward
+    : null;
+  const reward = availableReward || nextReward || null;
+  if (!reward) return [];
+
+  const labelPrefix = availableReward ? '🎁 Beneficio disponible ahora:' : '🎁 Primer beneficio disponible:';
+  return [
+    labelPrefix,
+    normalizeLoyaltyRewardLabel(reward.name),
+    `Disponible desde *${formatWholeNumber(reward.pointsCost)} puntos*.`
+  ];
+}
+
+function buildLoyaltyProgramExplanationReply({ contact, snapshot }) {
+  const firstName = getContactFirstName(contact);
+  const greeting = firstName ? `¡Buenísimo, ${firstName}! 😊` : '¡Buenísimo! 😊';
+  const lines = [
+    greeting,
+    '',
+    'Los puntos se acumulan automáticamente con tus compras.',
+    '',
+    '🎁 Cuanto más acumulás, mejores beneficios podés aprovechar.',
+    '💳 Cada compra válida va sumando puntos en tu cuenta.',
+    '🏆 Cuando llegás a los objetivos disponibles, podés canjear recompensas.'
+  ];
+
+  const rewardLines = buildLoyaltyRewardHighlight(snapshot);
+  if (rewardLines.length) {
+    lines.push('', ...rewardLines);
+  }
+
+  lines.push('', 'Si querés, también puedo decirte qué beneficio te conviene alcanzar primero.');
+  return lines.join('\n');
 }
 
 function buildLoyaltyWhatsAppReply({ contact, snapshot }) {
@@ -991,8 +1093,9 @@ function buildLoyaltyWhatsAppReply({ contact, snapshot }) {
       'En tu próxima compra ya podés empezar a sumar puntos y aprovechar beneficios.'
     );
 
-    if (nextReward && Number(nextReward.pointsCost || 0) > 0) {
-      lines.push('', `🎁 El primer beneficio disponible hoy es *${nextReward.name}* desde *${formatWholeNumber(nextReward.pointsCost)} puntos*.`);
+    const rewardLines = buildLoyaltyRewardHighlight(safeSnapshot);
+    if (rewardLines.length) {
+      lines.push('', ...rewardLines);
     }
 
     lines.push('', 'Si querés, también te cuento cómo funciona el programa.');
@@ -1003,7 +1106,7 @@ function buildLoyaltyWhatsAppReply({ contact, snapshot }) {
 
   if (availableReward) {
     lines.push('', '✨ Ya tenés un beneficio disponible para usar.');
-    lines.push(`🎁 Beneficio disponible: *${availableReward.name}*.`);
+    lines.push(...buildLoyaltyRewardHighlight(safeSnapshot));
   } else if (currentPoints > 0) {
     lines.push('', '✨ Seguís sumando puntos en tu cuenta.');
   }
@@ -1045,7 +1148,34 @@ async function resolveLoyaltyDecision({ clinic, conversation, contact, inboundTe
   return {
     replyText: buildLoyaltyWhatsAppReply({ contact, snapshot }),
     newState: nextState,
-    contextPatch: null
+    contextPatch: buildLoyaltyContextPatch(snapshot, 'offered_summary')
+  };
+}
+
+async function resolveLoyaltyFollowUpDecision({ clinic, conversation, contact, inboundText, safeContext }) {
+  if (!clinic || !clinic.id || !contact || !contact.id) {
+    return null;
+  }
+  if (!isRecentLoyaltyFollowUpContext(safeContext)) {
+    return null;
+  }
+  if (!isLoyaltyFollowUpIntent(inboundText)) {
+    return null;
+  }
+  if (
+    isCommerceEntryIntent(inboundText) ||
+    isExplicitCommerceTrigger(inboundText) ||
+    looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) ||
+    parseTransferPaymentIntent(inboundText)
+  ) {
+    return null;
+  }
+
+  const snapshot = await getLoyaltyWhatsAppSnapshotByClinicId(clinic.id, contact.id);
+  return {
+    replyText: buildLoyaltyProgramExplanationReply({ contact, snapshot }),
+    newState: conversation.state || 'READY',
+    contextPatch: buildLoyaltyContextPatch(snapshot, 'explained_program')
   };
 }
 
@@ -7578,6 +7708,20 @@ async function processConversationReplyJob(job) {
   }
 
   if (!decision) {
+    const loyaltyFollowUpDecision = await resolveLoyaltyFollowUpDecision({
+      clinic,
+      conversation,
+      contact,
+      inboundText,
+      safeContext
+    });
+    if (loyaltyFollowUpDecision) {
+      decision = loyaltyFollowUpDecision;
+      decisionSource = 'loyalty_follow_up';
+    }
+  }
+
+  if (!decision) {
     const loyaltyDecision = await resolveLoyaltyDecision({
       clinic,
       conversation,
@@ -8943,6 +9087,9 @@ module.exports = {
     isLoyaltyIntent,
     buildLoyaltyWhatsAppReply,
     resolveLoyaltyDecision,
+    isLoyaltyFollowUpIntent,
+    buildLoyaltyProgramExplanationReply,
+    resolveLoyaltyFollowUpDecision,
     resolveActiveAgendaGuardDecision,
     resolveAgendaTimingDecision,
     createBotReservationFromSuggestion,
