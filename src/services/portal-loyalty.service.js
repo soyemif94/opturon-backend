@@ -419,6 +419,39 @@ async function getLoyaltyContactSnapshotByClinicId(clinicId, contactId) {
   };
 }
 
+async function getLoyaltyWhatsAppSnapshotByClinicId(clinicId, contactId) {
+  const [program, summary, rewards] = await Promise.all([
+    findLoyaltyProgramByClinicId(clinicId),
+    getLoyaltyContactSummary(clinicId, contactId),
+    listLoyaltyRewardsByClinicId(clinicId)
+  ]);
+
+  const activeRewards = Array.isArray(rewards)
+    ? rewards
+      .filter((reward) => reward && reward.active === true)
+      .sort((left, right) => Number(left.pointsCost || 0) - Number(right.pointsCost || 0))
+    : [];
+  const currentPoints = Number(summary && summary.currentPoints ? summary.currentPoints : 0);
+  const availableReward = activeRewards.find((reward) => Number(reward.pointsCost || 0) <= currentPoints) || null;
+  const nextReward = activeRewards.find((reward) => Number(reward.pointsCost || 0) > currentPoints) || null;
+  const enrolled = Boolean(
+    (summary && summary.lastMovementAt) ||
+    Number(summary && summary.currentPoints ? summary.currentPoints : 0) > 0 ||
+    Number(summary && summary.totalEarned ? summary.totalEarned : 0) > 0 ||
+    Number(summary && summary.totalRedeemed ? summary.totalRedeemed : 0) > 0 ||
+    Number(summary && summary.totalAdjusted ? summary.totalAdjusted : 0) > 0
+  );
+
+  return {
+    program,
+    summary,
+    rewards: activeRewards,
+    enrolled,
+    availableReward,
+    nextReward
+  };
+}
+
 async function awardLoyaltyPointsForPayment(clinicId, paymentId, client = null) {
   const payment = await findPaymentById(paymentId, clinicId, client);
   if (!payment) {
@@ -572,6 +605,7 @@ module.exports = {
   getPortalLoyaltyOverview,
   redeemPortalLoyaltyReward,
   getLoyaltyContactSnapshotByClinicId,
+  getLoyaltyWhatsAppSnapshotByClinicId,
   awardLoyaltyPointsForPayment,
   reverseLoyaltyPointsForVoidedPayment
 };

@@ -52,6 +52,7 @@ const {
   suggestClinicAgendaSlots,
   createClinicAgendaBotReservation
 } = require('./services/portal-agenda.service');
+const { getLoyaltyWhatsAppSnapshotByClinicId } = require('./services/portal-loyalty.service');
 const {
   listDueAgendaReminderCandidates,
   claimAgendaItemReminder,
@@ -315,6 +316,7 @@ function detectIntent(rawText) {
   if (urgentWords.test(text)) return 'urgent';
   if (humanWords.test(text)) return 'human';
   if (appointmentWords.test(text)) return 'appointment';
+  if (isLoyaltyIntent(text)) return 'loyalty';
   if (pricingWords.test(text)) return 'pricing';
   return 'unknown';
 }
@@ -323,6 +325,66 @@ function isGreeting(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
   return ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hello', 'holi', 'que tal'].includes(text);
+}
+
+function isLoyaltyIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  if (
+    text === 'puntos' ||
+    text === 'mis puntos' ||
+    text === 'quiero ver mis puntos' ||
+    text === 'estado de fidelizacion' ||
+    text === 'mi cuenta'
+  ) {
+    return true;
+  }
+
+  if (
+    text.includes('cuantos puntos') ||
+    text.includes('cuanto puntos') ||
+    text.includes('tengo puntos') ||
+    text.includes('ver mis puntos') ||
+    text.includes('mis punto') ||
+    text.includes('estado de fidel') ||
+    text.includes('quiero ver puntos') ||
+    text.includes('tengo beneficios') ||
+    text.includes('que beneficios') ||
+    text.includes('que descuento tengo') ||
+    text.includes('que descuent') ||
+    text.includes('tengo premios') ||
+    text.includes('cuanto acumule') ||
+    text.includes('cuanto acumul') ||
+    text.includes('mis beneficios') ||
+    text.includes('programa de beneficios')
+  ) {
+    return true;
+  }
+
+  if (/\bfideli[sz]a?cion\b/.test(text) || /\bfideliza\b/.test(text)) {
+    return true;
+  }
+
+  if (
+    /\bpremi(os?)?\b/.test(text) ||
+    /\bbenefici(os?)?\b/.test(text) ||
+    text.includes('mi descuento') ||
+    text.includes('tengo descuento') ||
+    text.includes('descuento tengo')
+  ) {
+    return true;
+  }
+
+  if (/\bpunts\b/.test(text) || /\bpunto(s)?\b/.test(text)) {
+    return true;
+  }
+
+  if (text.includes('cuanto tengo') && !/(pagar|sale|precio|costo|valor|cuesta)/.test(text)) {
+    return true;
+  }
+
+  return false;
 }
 
 const BOT_ROUTER_APPOINTMENT_STATES = new Set([
@@ -876,6 +938,114 @@ function buildCatalogProductImageMessage(product) {
       caption: buildCatalogProductImageCaption(safeProduct)
     },
     productId: safeProduct.id || safeProduct.productId || null
+  };
+}
+
+function formatWholeNumber(value) {
+  const amount = Number(value || 0);
+  try {
+    return new Intl.NumberFormat('es-AR', {
+      maximumFractionDigits: 0
+    }).format(amount);
+  } catch (error) {
+    return String(Math.round(amount));
+  }
+}
+
+function getContactFirstName(contact) {
+  const safeName = String((contact && (contact.name || contact.fullName)) || '').trim();
+  if (!safeName) return null;
+  return safeName.split(/\s+/).filter(Boolean)[0] || safeName;
+}
+
+function buildLoyaltyWhatsAppReply({ contact, snapshot }) {
+  const safeSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const summary = safeSnapshot.summary && typeof safeSnapshot.summary === 'object' ? safeSnapshot.summary : {};
+  const program = safeSnapshot.program && typeof safeSnapshot.program === 'object' ? safeSnapshot.program : {};
+  const availableReward = safeSnapshot.availableReward && typeof safeSnapshot.availableReward === 'object'
+    ? safeSnapshot.availableReward
+    : null;
+  const nextReward = safeSnapshot.nextReward && typeof safeSnapshot.nextReward === 'object'
+    ? safeSnapshot.nextReward
+    : null;
+  const firstName = getContactFirstName(contact);
+  const greeting = firstName ? `¡Hola ${firstName}! 😊` : '¡Hola! 😊';
+  const currentPoints = Number(summary.currentPoints || 0);
+  const hasProgramEnabled = program.enabled === true;
+  const lines = [greeting];
+
+  if (!hasProgramEnabled) {
+    lines.push(
+      '',
+      'Ahora mismo no veo un programa de beneficios activo para este negocio.',
+      'Si querés, igual te ayudo con productos, precios o con una persona del equipo.'
+    );
+    return lines.join('\n');
+  }
+
+  if (!safeSnapshot.enrolled && currentPoints <= 0) {
+    lines.push(
+      '',
+      'Todavía no registrás puntos acumulados en tu cuenta.',
+      '',
+      'En tu próxima compra ya podés empezar a sumar puntos y aprovechar beneficios.'
+    );
+
+    if (nextReward && Number(nextReward.pointsCost || 0) > 0) {
+      lines.push('', `🎁 El primer beneficio disponible hoy es *${nextReward.name}* desde *${formatWholeNumber(nextReward.pointsCost)} puntos*.`);
+    }
+
+    lines.push('', 'Si querés, también te cuento cómo funciona el programa.');
+    return lines.join('\n');
+  }
+
+  lines.push('', `Tenés actualmente *${formatWholeNumber(currentPoints)} puntos acumulados*.`);
+
+  if (availableReward) {
+    lines.push('', '✨ Ya tenés un beneficio disponible para usar.');
+    lines.push(`🎁 Beneficio disponible: *${availableReward.name}*.`);
+  } else if (currentPoints > 0) {
+    lines.push('', '✨ Seguís sumando puntos en tu cuenta.');
+  }
+
+  if (!availableReward && nextReward) {
+    const missingPoints = Math.max(0, Number(nextReward.pointsCost || 0) - currentPoints);
+    lines.push('', `📈 Te faltan *${formatWholeNumber(missingPoints)} puntos* para canjear *${nextReward.name}*.`);
+  } else if (!availableReward && !nextReward) {
+    lines.push('', 'Por ahora no veo beneficios activos para canjear, pero tus puntos siguen guardados.');
+  }
+
+  lines.push('', '¿Querés que te cuente cómo sumar más puntos?');
+  return lines.join('\n');
+}
+
+async function resolveLoyaltyDecision({ clinic, conversation, contact, inboundText }) {
+  if (!isLoyaltyIntent(inboundText)) {
+    return null;
+  }
+
+  const nextState = conversation && conversation.state && String(conversation.state).toUpperCase() !== 'NEW'
+    ? conversation.state
+    : 'READY';
+
+  if (!clinic || !clinic.id || !contact || !contact.id) {
+    return {
+      replyText: [
+        '¡Hola! 😊',
+        '',
+        'No pude encontrar tu cuenta de beneficios con este número todavía.',
+        'Si querés, en tu próxima compra te ayudamos a empezar a sumar puntos.'
+      ].join('\n'),
+      newState: nextState,
+      contextPatch: null
+    };
+  }
+
+  const snapshot = await getLoyaltyWhatsAppSnapshotByClinicId(clinic.id, contact.id);
+  return {
+    replyText: buildLoyaltyWhatsAppReply({ contact, snapshot }),
+    newState: nextState,
+    contextPatch: null
   };
 }
 
@@ -7407,7 +7577,20 @@ async function processConversationReplyJob(job) {
     decisionSource = normalizeCommandText(inboundText) === 'cancelar' ? 'agenda_flow_cancel' : 'agenda_flow_greeting_reset';
   }
 
-  if (automationRuntime.replyText) {
+  if (!decision) {
+    const loyaltyDecision = await resolveLoyaltyDecision({
+      clinic,
+      conversation,
+      contact,
+      inboundText
+    });
+    if (loyaltyDecision) {
+      decision = loyaltyDecision;
+      decisionSource = 'loyalty';
+    }
+  }
+
+  if (!decision && automationRuntime.replyText) {
     decision = {
       replyText: automationRuntime.replyText,
       outboundMedia: Array.isArray(automationRuntime.outboundMedia) ? automationRuntime.outboundMedia : null,
@@ -8757,6 +8940,9 @@ module.exports = {
     buildDemoLeadSummary,
     buildDemoPaymentReply,
     resolveCommerceDecision,
+    isLoyaltyIntent,
+    buildLoyaltyWhatsAppReply,
+    resolveLoyaltyDecision,
     resolveActiveAgendaGuardDecision,
     resolveAgendaTimingDecision,
     createBotReservationFromSuggestion,
