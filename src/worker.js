@@ -993,23 +993,50 @@ function isRecentLoyaltyFollowUpContext(safeContext) {
 function isLoyaltyFollowUpIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
+
+  const exactMatches = new Set([
+    'dale',
+    'si',
+    'ok',
+    'joya',
+    'buenisimo',
+    'genial',
+    'perfecto',
+    'de una',
+    'mandale',
+    'quiero',
+    'quiero ver',
+    'mostrame',
+    'contame',
+    'segui',
+    'explicame',
+    'decime',
+    'quiero saber',
+    'a ver',
+    'aver',
+    'haber',
+    'como seria',
+    'como funciona',
+    'y despues',
+    'que mas'
+  ]);
+
+  if (exactMatches.has(text)) {
+    return true;
+  }
+
   return (
-    [
-      'dale',
-      'si',
-      'sí',
-      'contame',
-      'ok',
-      'joya',
-      'buenisimo',
-      'como funciona',
-      'quiero saber',
-      'explicame'
-    ].includes(text) ||
-    text.includes('como funciona') ||
-    text.includes('quiero saber') ||
+    text.includes('quiero ver') ||
+    text.includes('mostrame') ||
+    text.includes('contame') ||
+    text.includes('segui') ||
     text.includes('explicame') ||
-    text.includes('contame')
+    text.includes('decime') ||
+    text.includes('quiero saber') ||
+    text.includes('como seria') ||
+    text.includes('como funciona') ||
+    text.includes('que mas') ||
+    text.includes('y despues')
   );
 }
 
