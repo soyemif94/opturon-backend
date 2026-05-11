@@ -322,9 +322,145 @@ function detectIntent(rawText) {
 }
 
 function isGreeting(rawText) {
+  return isGreetingIntent(rawText);
+}
+
+function isAffirmativeIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
-  return ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hello', 'holi', 'que tal'].includes(text);
+
+  if (/^si+i*$/.test(text)) {
+    return true;
+  }
+
+  const exactMatches = new Set([
+    'dale',
+    'de una',
+    'obvio',
+    'claro',
+    'ok',
+    'joya',
+    'genial',
+    'perfecto',
+    'buenisimo',
+    'a ver',
+    'aver',
+    'haber',
+    'quiero',
+    'quiero ver',
+    'mostrame',
+    'contame',
+    'decime',
+    'segui',
+    'explicame',
+    'quiero saber',
+    'que mas',
+    'y despues',
+    'como funciona',
+    'como seria',
+    'mandale'
+  ]);
+
+  if (exactMatches.has(text)) {
+    return true;
+  }
+
+  return (
+    text.includes('quiero ver') ||
+    text.includes('mostrame') ||
+    text.includes('contame') ||
+    text.includes('decime') ||
+    text.includes('segui') ||
+    text.includes('explicame') ||
+    text.includes('quiero saber') ||
+    text.includes('que mas') ||
+    text.includes('y despues') ||
+    text.includes('como funciona') ||
+    text.includes('como seria')
+  );
+}
+
+function isNegativeIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    [
+      'no',
+      'nop',
+      'no gracias',
+      'paso',
+      'ahora no',
+      'despues',
+      'mas tarde',
+      'otro momento',
+      'no quiero',
+      'no me interesa'
+    ].includes(text) ||
+    text.includes('no gracias') ||
+    text.includes('no me interesa') ||
+    text.includes('otro momento')
+  );
+}
+
+function isClarificationIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  const exactMatches = new Set([
+    'cuanto',
+    'cuanto sale',
+    'precio',
+    'que incluye',
+    'que trae',
+    'como es',
+    'como funciona',
+    'como seria',
+    'no entiendo',
+    'no entendi',
+    'explicame'
+  ]);
+
+  if (exactMatches.has(text)) {
+    return true;
+  }
+
+  return (
+    text.includes('cuanto sale') ||
+    text.includes('que incluye') ||
+    text.includes('que trae') ||
+    text.includes('como funciona') ||
+    text.includes('como seria') ||
+    text.includes('no entiendo') ||
+    text.includes('no entendi') ||
+    text.includes('explicame')
+  );
+}
+
+function isGreetingIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    ['hola', 'buen dia', 'buenas', 'que tal', 'como estas', 'holi', 'hello', 'buenos dias', 'buenas tardes', 'buenas noches'].includes(text) ||
+    /^hol+a+$/.test(text)
+  );
+}
+
+function isThanksIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    [
+      'gracias',
+      'mil gracias',
+      'joya gracias',
+      'perfecto gracias',
+      'genial gracias'
+    ].includes(text) ||
+    text.endsWith(' gracias')
+  );
 }
 
 function isLoyaltyIntent(rawText) {
@@ -991,53 +1127,7 @@ function isRecentLoyaltyFollowUpContext(safeContext) {
 }
 
 function isLoyaltyFollowUpIntent(rawText) {
-  const text = normalizeCommandText(rawText);
-  if (!text) return false;
-
-  const exactMatches = new Set([
-    'dale',
-    'si',
-    'ok',
-    'joya',
-    'buenisimo',
-    'genial',
-    'perfecto',
-    'de una',
-    'mandale',
-    'quiero',
-    'quiero ver',
-    'mostrame',
-    'contame',
-    'segui',
-    'explicame',
-    'decime',
-    'quiero saber',
-    'a ver',
-    'aver',
-    'haber',
-    'como seria',
-    'como funciona',
-    'y despues',
-    'que mas'
-  ]);
-
-  if (exactMatches.has(text)) {
-    return true;
-  }
-
-  return (
-    text.includes('quiero ver') ||
-    text.includes('mostrame') ||
-    text.includes('contame') ||
-    text.includes('segui') ||
-    text.includes('explicame') ||
-    text.includes('decime') ||
-    text.includes('quiero saber') ||
-    text.includes('como seria') ||
-    text.includes('como funciona') ||
-    text.includes('que mas') ||
-    text.includes('y despues')
-  );
+  return isAffirmativeIntent(rawText) || isClarificationIntent(rawText);
 }
 
 function normalizeLoyaltyRewardLabel(name) {
@@ -9111,6 +9201,11 @@ module.exports = {
     buildDemoLeadSummary,
     buildDemoPaymentReply,
     resolveCommerceDecision,
+    isAffirmativeIntent,
+    isNegativeIntent,
+    isClarificationIntent,
+    isGreetingIntent,
+    isThanksIntent,
     isLoyaltyIntent,
     buildLoyaltyWhatsAppReply,
     resolveLoyaltyDecision,
