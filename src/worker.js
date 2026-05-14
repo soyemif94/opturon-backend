@@ -1089,6 +1089,7 @@ function formatWholeNumber(value) {
 }
 
 const LOYALTY_FOLLOW_UP_TTL_MS = 10 * 60 * 1000;
+const LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD = 'loyalty_recommend_reward';
 
 function getContactFirstName(contact) {
   const safeName = String((contact && (contact.name || contact.fullName)) || '').trim();
@@ -1096,7 +1097,7 @@ function getContactFirstName(contact) {
   return safeName.split(/\s+/).filter(Boolean)[0] || safeName;
 }
 
-function buildLoyaltyContextPatch(snapshot, mode = 'offered_summary') {
+function buildLoyaltyContextPatch(snapshot, mode = 'offered_summary', pendingOfferedAction = null) {
   const nextReward = snapshot && snapshot.nextReward && typeof snapshot.nextReward === 'object'
     ? snapshot.nextReward
     : null;
@@ -1108,6 +1109,9 @@ function buildLoyaltyContextPatch(snapshot, mode = 'offered_summary') {
   return {
     loyaltyFollowUpMode: mode,
     loyaltyFollowUpActiveAt: new Date().toISOString(),
+    pendingOfferedAction: pendingOfferedAction && typeof pendingOfferedAction === 'object'
+      ? pendingOfferedAction
+      : null,
     loyaltyHighlightedReward: highlightedReward
       ? {
         id: highlightedReward.id || null,
@@ -1128,6 +1132,27 @@ function isRecentLoyaltyFollowUpContext(safeContext) {
 
 function isLoyaltyFollowUpIntent(rawText) {
   return isAffirmativeIntent(rawText) || isClarificationIntent(rawText);
+}
+
+function getPendingLoyaltyOfferedAction(safeContext) {
+  const pending = safeContext && safeContext.pendingOfferedAction && typeof safeContext.pendingOfferedAction === 'object'
+    ? safeContext.pendingOfferedAction
+    : null;
+  if (!pending) return null;
+
+  const type = String(pending.type || '').trim();
+  if (!type) return null;
+
+  const activeAt = String(pending.activeAt || '').trim();
+  const timestamp = Date.parse(activeAt);
+  if (!activeAt || !Number.isFinite(timestamp) || Date.now() - timestamp > LOYALTY_FOLLOW_UP_TTL_MS) {
+    return null;
+  }
+
+  return {
+    type,
+    activeAt
+  };
 }
 
 function normalizeLoyaltyRewardLabel(name) {
@@ -1175,6 +1200,50 @@ function buildLoyaltyProgramExplanationReply({ contact, snapshot }) {
 
   lines.push('', 'Si querés, también puedo decirte qué beneficio te conviene alcanzar primero.');
   return lines.join('\n');
+}
+
+function buildLoyaltyRecommendedRewardReply({ contact, snapshot }) {
+  const safeSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const summary = safeSnapshot.summary && typeof safeSnapshot.summary === 'object' ? safeSnapshot.summary : {};
+  const availableReward = safeSnapshot.availableReward && typeof safeSnapshot.availableReward === 'object'
+    ? safeSnapshot.availableReward
+    : null;
+  const nextReward = safeSnapshot.nextReward && typeof safeSnapshot.nextReward === 'object'
+    ? safeSnapshot.nextReward
+    : null;
+  const currentPoints = Number(summary.currentPoints || 0);
+  const firstName = getContactFirstName(contact);
+  const greeting = firstName ? `Te conviene arrancar por este, ${firstName}:` : 'Te conviene arrancar por este:';
+
+  if (availableReward) {
+    return [
+      greeting,
+      '',
+      `🎁 *${normalizeLoyaltyRewardLabel(availableReward.name)}*`,
+      `Ya lo tenés disponible con tus *${formatWholeNumber(currentPoints)} puntos* actuales.`,
+      '',
+      'Si querés, después también te cuento cómo seguir acumulando más.'
+    ].join('\n');
+  }
+
+  if (nextReward) {
+    const missingPoints = Math.max(0, Number(nextReward.pointsCost || 0) - currentPoints);
+    return [
+      greeting,
+      '',
+      `🎁 *${normalizeLoyaltyRewardLabel(nextReward.name)}*`,
+      `Es el primer beneficio que te queda más cerca y se canjea desde *${formatWholeNumber(nextReward.pointsCost)} puntos*.`,
+      `Hoy te faltan *${formatWholeNumber(missingPoints)} puntos* para alcanzarlo.`,
+      '',
+      'Si querés, también te explico cómo sumar esos puntos más rápido.'
+    ].join('\n');
+  }
+
+  return [
+    firstName ? `Todavía no veo un beneficio claro para recomendarte, ${firstName}.` : 'Todavía no veo un beneficio claro para recomendarte.',
+    '',
+    'Apenas haya recompensas activas o sigas sumando puntos, te puedo orientar con cuál conviene alcanzar primero.'
+  ].join('\n');
 }
 
 function buildLoyaltyWhatsAppReply({ contact, snapshot }) {
@@ -1289,10 +1358,34 @@ async function resolveLoyaltyFollowUpDecision({ clinic, conversation, contact, i
   }
 
   const snapshot = await getLoyaltyWhatsAppSnapshotByClinicId(clinic.id, contact.id);
+  const pendingOfferedAction = getPendingLoyaltyOfferedAction(safeContext);
+  if (
+    pendingOfferedAction &&
+    pendingOfferedAction.type === LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD &&
+    isAffirmativeIntent(inboundText)
+  ) {
+    return {
+      replyText: buildLoyaltyRecommendedRewardReply({ contact, snapshot }),
+      newState: conversation.state || 'READY',
+      contextPatch: buildLoyaltyContextPatch(snapshot, 'offered_action_completed', {
+        type: null,
+        activeAt: null,
+        completedAt: new Date().toISOString()
+      })
+    };
+  }
+
+  if (String(safeContext && safeContext.loyaltyFollowUpMode ? safeContext.loyaltyFollowUpMode : '').trim() !== 'offered_summary') {
+    return null;
+  }
+
   return {
     replyText: buildLoyaltyProgramExplanationReply({ contact, snapshot }),
     newState: conversation.state || 'READY',
-    contextPatch: buildLoyaltyContextPatch(snapshot, 'explained_program')
+    contextPatch: buildLoyaltyContextPatch(snapshot, 'explained_program', {
+      type: LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD,
+      activeAt: new Date().toISOString()
+    })
   };
 }
 
