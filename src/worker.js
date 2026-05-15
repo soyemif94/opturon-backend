@@ -1134,6 +1134,47 @@ function isLoyaltyFollowUpIntent(rawText) {
   return isAffirmativeIntent(rawText) || isClarificationIntent(rawText);
 }
 
+function normalizeLooseIntentText(rawText) {
+  return normalizeCommandText(rawText)
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isPendingOfferedActionIntent(rawText, pendingActionType = null) {
+  const looseText = normalizeLooseIntentText(rawText);
+  if (!looseText) return false;
+  if (isAffirmativeIntent(looseText) || isClarificationIntent(looseText)) {
+    return true;
+  }
+
+  if (pendingActionType !== LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD) {
+    return false;
+  }
+
+  const exactMatches = new Set([
+    'dale a ver',
+    'joya decime',
+    'si mostrame',
+    'ok dale',
+    'decime cual',
+    'cual me conviene',
+    'cual conviene',
+    'quiero ver'
+  ]);
+
+  if (exactMatches.has(looseText)) {
+    return true;
+  }
+
+  return (
+    (looseText.includes('a ver') && (looseText.includes('dale') || looseText.includes('ok') || looseText.includes('joya') || /^si\b/.test(looseText))) ||
+    (looseText.includes('decime') && looseText.includes('cual')) ||
+    (looseText.includes('mostrame') && (looseText.includes('si') || looseText.includes('dale') || looseText.includes('ok'))) ||
+    (looseText.includes('cual') && looseText.includes('conviene'))
+  );
+}
+
 function getPendingLoyaltyOfferedAction(safeContext) {
   const pending = safeContext && safeContext.pendingOfferedAction && typeof safeContext.pendingOfferedAction === 'object'
     ? safeContext.pendingOfferedAction
@@ -1205,6 +1246,9 @@ function buildLoyaltyProgramExplanationReply({ contact, snapshot }) {
 function buildLoyaltyRecommendedRewardReply({ contact, snapshot }) {
   const safeSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {};
   const summary = safeSnapshot.summary && typeof safeSnapshot.summary === 'object' ? safeSnapshot.summary : {};
+  const rewards = Array.isArray(safeSnapshot.rewards)
+    ? safeSnapshot.rewards.filter((reward) => reward && typeof reward === 'object')
+    : [];
   const availableReward = safeSnapshot.availableReward && typeof safeSnapshot.availableReward === 'object'
     ? safeSnapshot.availableReward
     : null;
@@ -1214,6 +1258,14 @@ function buildLoyaltyRecommendedRewardReply({ contact, snapshot }) {
   const currentPoints = Number(summary.currentPoints || 0);
   const firstName = getContactFirstName(contact);
   const greeting = firstName ? `Te conviene arrancar por este, ${firstName}:` : 'Te conviene arrancar por este:';
+
+  if (rewards.length === 1) {
+    const onlyReward = rewards[0];
+    return [
+      `El beneficio mas cercano para alcanzar primero es *${normalizeLoyaltyRewardLabel(onlyReward.name)}*.`,
+      `Disponible desde *${formatWholeNumber(onlyReward.pointsCost)} puntos*.`
+    ].join('\n');
+  }
 
   if (availableReward) {
     return [
@@ -1345,9 +1397,6 @@ async function resolveLoyaltyFollowUpDecision({ clinic, conversation, contact, i
   if (!isRecentLoyaltyFollowUpContext(safeContext)) {
     return null;
   }
-  if (!isLoyaltyFollowUpIntent(inboundText)) {
-    return null;
-  }
   if (
     isCommerceEntryIntent(inboundText) ||
     isExplicitCommerceTrigger(inboundText) ||
@@ -1357,12 +1406,18 @@ async function resolveLoyaltyFollowUpDecision({ clinic, conversation, contact, i
     return null;
   }
 
-  const snapshot = await getLoyaltyWhatsAppSnapshotByClinicId(clinic.id, contact.id);
   const pendingOfferedAction = getPendingLoyaltyOfferedAction(safeContext);
+  const followUpIntentDetected = pendingOfferedAction
+    ? isPendingOfferedActionIntent(inboundText, pendingOfferedAction.type)
+    : isLoyaltyFollowUpIntent(inboundText);
+  if (!followUpIntentDetected) {
+    return null;
+  }
+
+  const snapshot = await getLoyaltyWhatsAppSnapshotByClinicId(clinic.id, contact.id);
   if (
     pendingOfferedAction &&
-    pendingOfferedAction.type === LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD &&
-    isAffirmativeIntent(inboundText)
+    pendingOfferedAction.type === LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD
   ) {
     return {
       replyText: buildLoyaltyRecommendedRewardReply({ contact, snapshot }),
@@ -9301,9 +9356,13 @@ module.exports = {
     isThanksIntent,
     isLoyaltyIntent,
     buildLoyaltyWhatsAppReply,
+    buildLoyaltyContextPatch,
+    getPendingLoyaltyOfferedAction,
     resolveLoyaltyDecision,
     isLoyaltyFollowUpIntent,
+    isPendingOfferedActionIntent,
     buildLoyaltyProgramExplanationReply,
+    buildLoyaltyRecommendedRewardReply,
     resolveLoyaltyFollowUpDecision,
     resolveActiveAgendaGuardDecision,
     resolveAgendaTimingDecision,
