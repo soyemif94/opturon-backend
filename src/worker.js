@@ -307,6 +307,7 @@ function shouldBypassCommerceForQa({ contact, channel, contactId, channelId, inb
 
 function detectIntent(rawText) {
   const text = normalizeCommandText(rawText);
+  const commercialIntent = detectCommercialIntent(text);
 
   const appointmentWords = /(turno|cita|agenda|sacar turno|reservar|agendar)/i;
   const urgentWords = /(dolor|urgencia|sangrado|inflamado|se me sali[oó]|me duele mucho)/i;
@@ -314,6 +315,9 @@ function detectIntent(rawText) {
   const humanWords = /(humano|recepcion|persona|llamar|asesor)/i;
 
   if (urgentWords.test(text)) return 'urgent';
+  if (commercialIntent.type === 'human_handoff') return 'human';
+  if (commercialIntent.type === 'loyalty') return 'loyalty';
+  if (commercialIntent.type === 'prices') return 'pricing';
   if (humanWords.test(text)) return 'human';
   if (appointmentWords.test(text)) return 'appointment';
   if (isLoyaltyIntent(text)) return 'loyalty';
@@ -463,6 +467,121 @@ function isThanksIntent(rawText) {
   );
 }
 
+function normalizeSemanticIntentText(rawText) {
+  return normalizeCommandText(rawText)
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildCommercialIntentSpec({ exact = [], includes = [], patterns = [] }) {
+  return {
+    exact: new Set(exact.map((item) => normalizeSemanticIntentText(item)).filter(Boolean)),
+    includes: includes.map((item) => normalizeSemanticIntentText(item)).filter(Boolean),
+    patterns
+  };
+}
+
+const COMMERCIAL_INTENT_MAP = {
+  products: buildCommercialIntentSpec({
+    exact: [
+      'productos',
+      'catalogo',
+      'que venden',
+      'que tienen',
+      'quiero ver',
+      'mostrame cosas',
+      'mostrar productos',
+      'quiero comprar',
+      'quiero ver opciones'
+    ],
+    includes: [
+      'ver productos',
+      'mostrar productos',
+      'ver opciones',
+      'mostrar opciones',
+      'que venden',
+      'que tienen',
+      'quiero comprar'
+    ]
+  }),
+  prices: buildCommercialIntentSpec({
+    exact: ['precio', 'precios', 'cuanto sale', 'cuanto cuesta', 'cuanto vale', 'tienen precios'],
+    includes: ['precio', 'precios', 'cuanto sale', 'cuanto cuesta', 'cuanto vale']
+  }),
+  location: buildCommercialIntentSpec({
+    exact: ['donde estan', 'ubicacion', 'direccion', 'como llego', 'local', 'donde queda'],
+    includes: ['donde estan', 'ubicacion', 'direccion', 'como llego', 'donde queda', 'andan por', 'estan por']
+  }),
+  hours: buildCommercialIntentSpec({
+    exact: ['horario', 'horarios', 'abren hoy', 'a que hora', 'estan abiertos', 'hasta que hora'],
+    includes: ['horario', 'horarios', 'abren hoy', 'a que hora', 'estan abiertos', 'hasta que hora', 'abren']
+  }),
+  payment: buildCommercialIntentSpec({
+    exact: ['como pago', 'transferencia', 'efectivo', 'tarjeta', 'alias', 'cbu', 'cuotas', 'mercadopago', 'mercado pago'],
+    includes: ['como pago', 'transferencia', 'efectivo', 'tarjeta', 'alias', 'cbu', 'cuotas', 'mercadopago', 'mercado pago'],
+    patterns: [/\bcomo\s+pago\b/, /\bmedios?\s+de\s+pago\b/]
+  }),
+  delivery: buildCommercialIntentSpec({
+    exact: ['hacen envios', 'hacen delivery', 'envian', 'envio', 'mandan', 'reparten'],
+    includes: ['envio', 'envian', 'delivery', 'mandan', 'reparten'],
+    patterns: [/\bhacen\s+(envios|delivery)\b/, /\btienen\s+envios\b/]
+  }),
+  promotions: buildCommercialIntentSpec({
+    exact: ['promos', 'promociones', 'ofertas', 'descuentos'],
+    includes: ['promo', 'promocion', 'oferta', 'descuento']
+  }),
+  human_handoff: buildCommercialIntentSpec({
+    exact: ['quiero hablar con alguien', 'una persona', 'humano', 'asesor', 'vendedor'],
+    includes: ['hablar con alguien', 'una persona', 'humano', 'asesor', 'vendedor', 'hablar con un vendedor']
+  }),
+  recommendation: buildCommercialIntentSpec({
+    exact: ['que recomendas', 'cual me conviene', 'algo mas barato', 'que me sugeris'],
+    includes: ['que recomendas', 'cual me conviene', 'algo mas barato', 'que me sugeris', 'que sugeris', 'recomendame']
+  }),
+  loyalty: buildCommercialIntentSpec({
+    exact: ['puntos', 'beneficios', 'fidelizacion', 'recompensas'],
+    includes: ['puntos', 'beneficios', 'fidelizacion', 'recompensas']
+  })
+};
+
+const COMMERCIAL_INTENT_PRIORITY = [
+  'loyalty',
+  'human_handoff',
+  'payment',
+  'delivery',
+  'promotions',
+  'recommendation',
+  'location',
+  'hours',
+  'prices',
+  'products'
+];
+
+function matchesCommercialIntent(text, spec) {
+  if (!text || !spec) return false;
+  if (spec.exact.has(text)) return true;
+  if (spec.includes.some((item) => text.includes(item))) return true;
+  if (spec.patterns.some((pattern) => pattern.test(text))) return true;
+  return false;
+}
+
+function detectCommercialIntent(rawText) {
+  const text = normalizeSemanticIntentText(rawText);
+  if (!text) {
+    return { type: 'unknown' };
+  }
+
+  for (const type of COMMERCIAL_INTENT_PRIORITY) {
+    if (matchesCommercialIntent(text, COMMERCIAL_INTENT_MAP[type])) {
+      return { type };
+    }
+  }
+
+  return { type: 'unknown' };
+}
+
 function isLoyaltyIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
@@ -599,6 +718,7 @@ function hasDemoContext(safeContext) {
 
 function isExplicitCommerceTrigger(rawText) {
   const text = normalizeCommandText(rawText);
+  const commercialIntent = detectCommercialIntent(text);
   if (!text) return false;
 
   const triggers = [
@@ -617,6 +737,7 @@ function isExplicitCommerceTrigger(rawText) {
   ];
 
   return (
+    ['products', 'prices', 'promotions', 'recommendation'].includes(commercialIntent.type) ||
     triggers.some((trigger) => text.includes(normalizeCommandText(trigger))) ||
     isPlanComparisonIntent(text) ||
     isPlanRecommendationIntent(text) ||
@@ -914,8 +1035,10 @@ function buildActiveBotDomainPatch({ decisionSource, botRoute, currentState, nex
 
 function isCommerceEntryIntent(rawText) {
   const text = normalizeCommandText(rawText);
+  const commercialIntent = detectCommercialIntent(text);
   if (!text) return false;
   return (
+    commercialIntent.type === 'products' ||
     text === 'hola' ||
     text === 'buenas' ||
     text === 'buen dia' ||
@@ -9355,6 +9478,7 @@ module.exports = {
     isGreetingIntent,
     isThanksIntent,
     isLoyaltyIntent,
+    detectCommercialIntent,
     buildLoyaltyWhatsAppReply,
     buildLoyaltyContextPatch,
     getPendingLoyaltyOfferedAction,
