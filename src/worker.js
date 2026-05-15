@@ -2317,8 +2317,8 @@ function buildCommerceUndoReply(cartItems) {
       '',
       'Saque el ultimo producto agregado.',
       '',
-      'Tu carrito quedo vacio.',
-      'Escribi "productos" para ver el catalogo o mandame otro numero para seguir.'
+      'Tu carrito quedó vacío por ahora.',
+      'Si querés, escribí "productos" y te muestro el catálogo de nuevo, o mandame otro número para seguir.'
     ].join('\n');
   }
 
@@ -2382,7 +2382,7 @@ function buildCommerceOrderConfirmation(order, cartItems) {
 }
 
 function buildCommerceEmptyCartReply() {
-  return 'Tu carrito está vacío por ahora. Escribí "productos" para ver el catálogo.';
+  return 'Tu carrito está vacío por ahora. Si querés, escribí "productos" y te muestro el catálogo para seguir.';
 }
 
 function buildCommerceCartSummaryReply(cartItems) {
@@ -2418,12 +2418,12 @@ function buildCommerceCartClearedReply() {
     'Listo 👍',
     'Vacié tu carrito.',
     '',
-    'Escribí "productos" para ver el catálogo y empezar de nuevo.'
+    'Si querés, escribí "productos" y arrancamos de nuevo con el catálogo.'
   ].join('\n');
 }
 
 function buildCommerceAlreadyEmptyCartReply() {
-  return 'Tu carrito ya está vacío. Escribí "productos" para ver el catálogo.';
+  return 'Tu carrito ya está vacío 😊 Si querés, escribí "productos" y te vuelvo a mostrar el catálogo.';
 }
 
 function buildCommerceHelpReply({ currentState, cartItems }) {
@@ -3976,8 +3976,8 @@ function buildCommerceRemovedCartItemReply(cartItems, removedItem) {
       'Listo 👍',
       `Quité ${removedName} de tu carrito.`,
       '',
-      'Tu carrito quedó vacío.',
-      'Escribí "productos" para ver el catálogo y empezar de nuevo.'
+      'Tu carrito quedó vacío por ahora.',
+      'Si querés, te muestro el catálogo de nuevo o te ayudo a buscar otra opción.'
     ].join('\n');
   }
 
@@ -4003,8 +4003,8 @@ async function resolveCommerceCartAddition({
     const products = buildCommerceCatalogPage(await listProductsByClinicId(conversation.clinicId));
     return {
       replyText: products.items.length
-        ? `Ese producto ya no esta disponible.\n\n${buildCommerceCatalogReply(products)}`
-        : 'Ese producto ya no esta disponible y no hay otros productos activos para pedir ahora mismo.',
+        ? `Ese producto ya no está disponible en este momento 🤔\n\nSi querés, te muestro otras opciones del catálogo:\n\n${buildCommerceCatalogReply(products)}`
+        : 'Ese producto ya no está disponible en este momento y no veo otras opciones activas para mostrarte ahora.',
       newState: products.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
       contextPatch: buildCommerceResetPatch({
         commerceCatalog: products.items.length ? products.items : null,
@@ -4039,7 +4039,7 @@ async function resolveCommerceCartAddition({
       }
       : null;
     return {
-      replyText: 'Lo siento, no tenemos suficiente stock de ese producto en este momento.',
+      replyText: 'No me alcanza el stock de ese producto en este momento 🤔 Si querés, probá con otra cantidad o te muestro otras opciones.',
       newState: onStockFailureState,
       contextPatch: stockFailurePatch || {
         commerceCatalog: catalogFromContext,
@@ -4076,7 +4076,7 @@ async function resolveCommerceCartAddition({
       }
       : null;
     return {
-      replyText: 'Lo siento, no tenemos suficiente stock de ese producto en este momento.',
+      replyText: 'No me alcanza el stock de ese producto en este momento 🤔 Si querés, probá con otra cantidad o te muestro otras opciones.',
       newState: onStockFailureState,
       contextPatch: stockFailurePatch || {
         commerceCatalog: catalogFromContext,
@@ -4192,8 +4192,8 @@ async function resolveCommerceMultiCartAddition({
   if (!addedItems.length) {
     return {
       replyText: safeCatalog.length
-        ? 'No pude agregar esos productos. Elegi numeros validos de la lista o escribi "ayuda" si queres ver las opciones.'
-        : 'No hay productos disponibles ahora mismo. Escribi "productos" para intentar de nuevo.',
+          ? 'No pude agregar esos productos así como me los mandaste 🤔 Elegí números válidos de la lista o escribí "ayuda" y te guío.'
+          : 'Ahora mismo no veo productos disponibles para mostrarte. Si querés, probá con "productos" de nuevo en un rato.',
       newState: safeCatalog.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
       contextPatch: buildCommerceResetPatch({
         commerceCatalog: safeCatalog.length ? safeCatalog : null,
@@ -4263,7 +4263,7 @@ async function resolveCommerceCancellation({ conversation, inboundText, currentS
   const lastOrderId = String(safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : '').trim();
   if (!lastOrderId || hasActiveFlow) {
     return {
-      replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+      replyText: "Listo, cancelé este pedido en curso. Si querés, puedo mostrarte el catálogo otra vez o ayudarte a elegir algo distinto.",
       newState: 'IDLE',
       contextPatch: buildCommerceResetPatch({
         commerceCartItems: null,
@@ -4286,7 +4286,7 @@ async function resolveCommerceCancellation({ conversation, inboundText, currentS
   if (!cancelResult.ok) {
     if (cancelResult.reason === 'order_not_found') {
       return {
-        replyText: "No encontre ese pedido para cancelarlo. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+        replyText: "No encontré ese pedido para cancelarlo 🤔 Si querés, te muestro el catálogo otra vez o revisamos otra opción.",
         newState: 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCartItems: null,
@@ -4297,7 +4297,7 @@ async function resolveCommerceCancellation({ conversation, inboundText, currentS
     }
 
     return {
-      replyText: 'No pude cancelar tu pedido en este momento. Intenta nuevamente en unos minutos.',
+      replyText: 'No pude cancelar tu pedido en este momento. Si querés, intentá de nuevo en unos minutos y lo revisamos.',
       newState: 'IDLE',
       contextPatch: buildCommerceResetPatch({
         commerceLastOrderId: lastOrderId,
@@ -4314,7 +4314,7 @@ async function resolveCommerceCancellation({ conversation, inboundText, currentS
   });
 
   return {
-    replyText: "Entendido. Cancele tu pedido y devolvi el stock reservado. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+    replyText: "Listo, cancelé tu pedido y liberé el stock reservado. Si querés, te muestro el catálogo otra vez o buscamos otra opción.",
     newState: 'IDLE',
     contextPatch: buildCommerceResetPatch({
       commerceCartItems: null,
@@ -5455,7 +5455,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     if (removeCartItemIndex > cartItems.length) {
       return {
-        replyText: `No encontré ese ítem en tu carrito. Te muestro cómo quedó:\n\n${buildCommerceCartSummaryReply(cartItems)}`,
+        replyText: `No encontré ese ítem en tu carrito 🤔 Te muestro cómo quedó hasta ahora:\n\n${buildCommerceCartSummaryReply(cartItems)}`,
         newState: 'WAITING_PRODUCT_SELECTION',
         contextPatch: {
           commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
@@ -5504,7 +5504,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   if (isCommerceUndoIntent(inboundText)) {
     if (!cartItems.length || !lastAddedItem || !lastAddedItem.productId || !Number.isInteger(lastAddedItem.quantity) || lastAddedItem.quantity <= 0) {
       return {
-        replyText: 'Todavia no hay productos en tu carrito. Escribi "productos" para ver el catalogo.',
+        replyText: 'Todavía no sumaste productos al carrito. Si querés, escribí "productos" y te muestro el catálogo.',
         newState: catalogFromContext.length || categoriesFromContext.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
         contextPatch: {
           commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
@@ -5592,7 +5592,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     if (!confirmCartItems.length) {
       return {
-        replyText: 'Tu carrito está vacío por ahora. Escribí "productos" para ver el catálogo.',
+        replyText: 'Tu carrito está vacío por ahora. Si querés, escribí "productos" y te muestro el catálogo para seguir.',
         newState: 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCartItems: null
@@ -5654,7 +5654,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         });
         return {
           replyText:
-            'No pude confirmar tu pedido porque uno o mas productos ya no tienen stock suficiente.\n\nEscribi "productos" para ver el catalogo actualizado.',
+            'No pude confirmar tu pedido porque uno o más productos ya no tienen stock suficiente.\n\nSi querés, escribí "productos" y te muestro el catálogo actualizado.',
           newState: 'WAITING_PRODUCT_SELECTION',
           contextPatch: buildCommerceResetPatch({
             commerceCatalog: products.items,
@@ -5667,7 +5667,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       }
 
       return {
-        replyText: 'No pude registrar tu pedido en este momento. Intenta nuevamente en unos minutos.',
+        replyText: 'No pude registrar tu pedido en este momento. Si querés, probá de nuevo en unos minutos y seguimos desde acá.',
         newState: 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCartItems: confirmCartItems
@@ -5789,7 +5789,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const matchedProduct = findProductByName(products, naturalOrder.productName);
     if (!matchedProduct) {
       return {
-        replyText: "No encontré ese producto.\nEscribí 'productos' para ver el catálogo.",
+        replyText: "No encontré ese producto exacto 🤔 Si querés, te muestro el catálogo o te ayudo a buscar algo parecido.",
         newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCatalog: products.length ? products : null,
@@ -5821,8 +5821,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       if (!selectedCategory) {
         return {
           replyText: categories.length
-            ? 'No entendi esa categoria. Elegi un numero o el nombre de la categoria que queres ver.'
-            : 'No hay categorias disponibles ahora mismo. Escribi "productos" para intentar de nuevo.',
+            ? 'Creo que no entendí esa categoría 😅 Podés escribirme el número o el nombre de la categoría que querés ver.'
+            : 'Ahora mismo no veo categorías disponibles para mostrarte. Si querés, probá con "productos" de nuevo.',
           newState: categories.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
           contextPatch: buildCommerceResetPatch({
             commerceCategories: categories.length ? categories : null,
@@ -5885,7 +5885,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     if (isCommerceMoreIntent(inboundText)) {
       if (!catalogNextOffset || catalogNextOffset >= catalogTotal) {
         return {
-          replyText: 'Ya te mostre todos los productos disponibles por ahora 👌\n\nEscribi "productos" para volver al catalogo completo o elegi uno por numero.',
+          replyText: 'Ya te mostré todo lo disponible por ahora 👌\n\nSi querés, escribí "productos" para volver al catálogo completo o elegí uno por número.',
           newState: 'WAITING_PRODUCT_SELECTION',
           contextPatch: {
             commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
@@ -5934,8 +5934,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     if (!selection) {
       return {
         replyText: products.length
-          ? 'No entendí ese producto. Elegí un número de la lista o escribí "ayuda" si querés ver las opciones.'
-          : 'No hay productos disponibles ahora mismo. Escribí "productos" para intentar de nuevo.',
+          ? 'Creo que no entendí cuál producto querés 😅 Podés elegir un número de la lista o escribir "ayuda" y te guío.'
+          : 'Ahora mismo no veo productos disponibles para mostrarte. Si querés, escribí "productos" e intentamos de nuevo.',
         newState: products.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCatalog: products.length ? products : null,
@@ -5952,7 +5952,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const selectedProduct = products[selection - 1] || null;
     if (!selectedProduct) {
       return {
-        replyText: 'No entendí ese producto. Elegí un número de la lista o escribí "ayuda" si querés ver las opciones.',
+        replyText: 'Creo que no entendí cuál producto querés 😅 Podés elegir un número de la lista o escribir "ayuda" y te guío.',
         newState: 'WAITING_PRODUCT_SELECTION',
         contextPatch: buildCommerceResetPatch({
           commerceCatalog: products,
@@ -6040,7 +6040,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const quantity = parseCommerceQuantity(inboundText);
     if (!quantity) {
       return {
-        replyText: 'No entendí esa cantidad. Decime cuántas unidades querés.',
+        replyText: 'Creo que no entendí la cantidad 😅 Decime cuántas unidades querés y seguimos.',
         newState: 'WAITING_QUANTITY',
         contextPatch: {
           commerceCatalog: catalogFromContext,
@@ -8604,7 +8604,7 @@ async function processConversationReplyJob(job) {
 
       if (inboundLooksLikeCommerceCancel) {
         decision = {
-          replyText: "Entendido. Cancele este pedido en curso. Si queres, escribi 'productos' para ver el catalogo otra vez.",
+          replyText: "Listo, cancelé este pedido en curso. Si querés, puedo mostrarte el catálogo otra vez o ayudarte a elegir algo distinto.",
           newState: 'IDLE',
           contextPatch: buildCommerceResetPatch()
         };

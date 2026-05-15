@@ -101,6 +101,17 @@ function parseTimeWindowOnly(text) {
   return null;
 }
 
+function buildReadyHelpReply(prefix) {
+  return [
+    prefix,
+    '',
+    'Puedo ayudarte con estas opciones:',
+    '1) Sacar turno',
+    '2) Consultar precios',
+    '3) Ver direccion'
+  ].join('\n');
+}
+
 function decideReply({ state, context, inboundText }) {
   const currentState = String(state || 'NEW').toUpperCase();
   const safeContext = context && typeof context === 'object' ? context : {};
@@ -111,7 +122,7 @@ function decideReply({ state, context, inboundText }) {
     return {
       replyText: isGreetingIntent(text)
         ? 'Hola, gracias por escribirnos. Para ayudarte mejor, ¿cómo te llamás?'
-        : 'Hola. Soy ClinicAI. Para ayudarte, como te llamas?',
+        : 'Hola, gracias por escribirnos. Para arrancar, como te llamas?',
       newState: 'ASKED_NAME',
       contextPatch: null
     };
@@ -120,7 +131,7 @@ function decideReply({ state, context, inboundText }) {
   if (currentState === 'ASKED_NAME') {
     if (looksLikeName(text)) {
       return {
-        replyText: `Genial, ${text}. Que necesitas?\n\n1) Sacar turno\n2) Precios\n3) Direccion`,
+        replyText: buildReadyHelpReply(`Genial, ${text}. En que te puedo ayudar hoy?`),
         newState: 'READY',
         contextPatch: { name: text }
       };
@@ -136,7 +147,7 @@ function decideReply({ state, context, inboundText }) {
   if (currentState === 'READY') {
     if (isGreetingIntent(text)) {
       return {
-        replyText: 'Hola, ¿cómo estás? Te ayudo con turnos, precios o dirección.\n\n1) Sacar turno\n2) Precios\n3) Direccion',
+        replyText: buildReadyHelpReply('Hola, como estas? Te puedo ayudar con turnos, precios o direccion.'),
         newState: 'READY',
         contextPatch: null
       };
@@ -144,7 +155,7 @@ function decideReply({ state, context, inboundText }) {
 
     if (isThanksIntent(text)) {
       return {
-        replyText: '¡De nada! Si querés, seguimos por acá.\n\n1) Sacar turno\n2) Precios\n3) Direccion',
+        replyText: buildReadyHelpReply('De nada. Si queres, seguimos por aca.'),
         newState: 'READY',
         contextPatch: null
       };
@@ -152,7 +163,7 @@ function decideReply({ state, context, inboundText }) {
 
     if (isShortConfirmationIntent(text)) {
       return {
-        replyText: 'Perfecto. Contame qué necesitás y te ayudo.\n\n1) Sacar turno\n2) Precios\n3) Direccion',
+        replyText: buildReadyHelpReply('Perfecto. Contame que necesitas y te ayudo.'),
         newState: 'READY',
         contextPatch: null
       };
@@ -238,7 +249,7 @@ function decideReply({ state, context, inboundText }) {
     }
 
     return {
-      replyText: 'Te ayudo con:\n1) Sacar turno\n2) Precios\n3) Direccion',
+      replyText: buildReadyHelpReply('Creo que no te entendi del todo.'),
       newState: 'READY',
       contextPatch: null
     };
@@ -247,7 +258,7 @@ function decideReply({ state, context, inboundText }) {
   if (currentState === 'ASKED_APPOINTMENT_DATETIME') {
     if (isGlobalCancelMenu(text)) {
       return {
-        replyText: 'Listo. Volvemos al menu:\n1) Sacar turno\n2) Precios\n3) Direccion',
+        replyText: buildReadyHelpReply('Listo, dejamos este intento de turno hasta aca.'),
         newState: 'READY',
         contextPatch: {
           appointmentCandidate: null
@@ -294,7 +305,7 @@ function decideReply({ state, context, inboundText }) {
   if (currentState === 'ASKED_APPOINTMENT_TIMEWINDOW') {
     if (isGlobalCancelMenu(text)) {
       return {
-        replyText: 'Listo. Volvemos al menu:\n1) Sacar turno\n2) Precios\n3) Direccion',
+        replyText: buildReadyHelpReply('Listo, dejamos este intento de turno hasta aca.'),
         newState: 'READY',
         contextPatch: {
           appointmentCandidate: null
@@ -353,7 +364,7 @@ function decideReply({ state, context, inboundText }) {
   if (currentState === 'SELECT_APPOINTMENT_SLOT') {
     if (isGlobalCancelMenu(text)) {
       return {
-        replyText: 'Listo. Volvemos al menu:\n1) Sacar turno\n2) Precios\n3) Direccion',
+        replyText: buildReadyHelpReply('Listo, dejamos este intento de turno hasta aca.'),
         newState: 'READY',
         contextPatch: {
           appointmentSuggestions: null,
@@ -388,7 +399,7 @@ function decideReply({ state, context, inboundText }) {
 
     if (isGlobalCancelMenu(text)) {
       return {
-        replyText: 'Listo. Volvemos al menu:\n1) Sacar turno\n2) Precios\n3) Direccion',
+        replyText: buildReadyHelpReply('Listo, dejamos este intento de turno hasta aca.'),
         newState: 'READY',
         contextPatch: {
           appointmentCandidate: null
@@ -430,7 +441,7 @@ function decideReply({ state, context, inboundText }) {
   }
 
   return {
-    replyText: 'Te ayudo con:\n1) Sacar turno\n2) Precios\n3) Direccion',
+    replyText: buildReadyHelpReply('Creo que no te entendi del todo.'),
     newState: 'READY',
     contextPatch: safeContext
   };
