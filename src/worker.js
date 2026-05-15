@@ -1211,6 +1211,17 @@ function formatWholeNumber(value) {
   }
 }
 
+function getClinicBusinessProfile(clinic) {
+  const settings = parseClinicSettingsObject(clinic);
+  return settings && settings.businessProfile && typeof settings.businessProfile === 'object'
+    ? settings.businessProfile
+    : {};
+}
+
+function normalizeBusinessProfileText(value) {
+  return String(value || '').trim();
+}
+
 const LOYALTY_FOLLOW_UP_TTL_MS = 10 * 60 * 1000;
 const LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD = 'loyalty_recommend_reward';
 
@@ -3692,6 +3703,91 @@ function getClinicTransferConfig(clinic) {
     : null;
   if (!config || config.enabled !== true) return null;
   return normalizeTransferConfig(config, true);
+}
+
+async function buildSafeCommercialIntentReply({ clinic, conversation, inboundText }) {
+  const commercialIntent = detectCommercialIntent(inboundText);
+  const businessProfile = getClinicBusinessProfile(clinic);
+  const address = normalizeBusinessProfileText(businessProfile.address);
+  const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
+  const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
+
+  if (commercialIntent.type === 'location') {
+    return {
+      type: commercialIntent.type,
+      replyText: address
+        ? `Estamos en ${address}.\n\nSi querés, también te puedo ayudar con productos, precios o pasarte con alguien del equipo.`
+        : 'Todavía no tengo una dirección cargada para este comercio. Si querés, te puedo pasar con alguien del equipo.'
+    };
+  }
+
+  if (commercialIntent.type === 'hours') {
+    return {
+      type: commercialIntent.type,
+      replyText: openingHours
+        ? `Estos son los horarios que tengo cargados:\n${openingHours}\n\nSi querés, también te puedo ayudar con productos, precios o beneficios.`
+        : 'Todavía no tengo horarios cargados. Si querés, te puedo pasar con alguien del equipo para confirmarlo.'
+    };
+  }
+
+  if (commercialIntent.type === 'delivery') {
+    return {
+      type: commercialIntent.type,
+      replyText: deliveryZones
+        ? `Sí, tengo esto cargado sobre envíos:\n${deliveryZones}\n\nSi querés, también puedo mostrarte productos o ayudarte a elegir.`
+        : 'No tengo confirmado si este comercio hace envíos. Si querés, te puedo pasar con alguien del equipo para consultarlo.'
+    };
+  }
+
+  if (commercialIntent.type === 'promotions') {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const promotedProducts = buildCommerceEligibleProducts(clinicProducts)
+      .filter((product) => Number(product && product.discountPercentage ? product.discountPercentage : 0) > 0)
+      .sort((left, right) => Number(right.discountPercentage || 0) - Number(left.discountPercentage || 0))
+      .slice(0, 3);
+
+    return {
+      type: commercialIntent.type,
+      replyText: promotedProducts.length
+        ? [
+            'Estas son las promociones que tengo cargadas ahora:',
+            '',
+            ...promotedProducts.map((product) => `- ${product.name}: ${formatWholeNumber(product.discountPercentage)}% off`),
+            '',
+            'Si querés, también te muestro el catálogo completo.'
+          ].join('\n')
+        : 'Por ahora no tengo promociones cargadas. Si querés, puedo mostrarte el catálogo o avisarte cuando haya novedades.'
+    };
+  }
+
+  if (commercialIntent.type === 'human_handoff') {
+    return {
+      type: commercialIntent.type,
+      replyText: 'Claro 😊 Te paso con alguien del equipo para que te ayude mejor.',
+      triggerHandoff: true
+    };
+  }
+
+  if (commercialIntent.type === 'recommendation') {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const orderedPlans = getOrderedPlanProducts(eligibleProducts);
+
+    if (isPlanCatalog(eligibleProducts) && orderedPlans.length) {
+      const suggestedPlan = findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0];
+      return {
+        type: commercialIntent.type,
+        replyText: buildPlanRecommendationReply(suggestedPlan)
+      };
+    }
+
+    return {
+      type: commercialIntent.type,
+      replyText: 'Puedo ayudarte a elegir 😊 Decime si buscás algo económico, algo puntual o querés ver el catálogo.'
+    };
+  }
+
+  return null;
 }
 
 function parseTransferPaymentIntent(input) {
@@ -7108,7 +7204,7 @@ async function processDueAppointmentReminders() {
   return stats;
 }
 
-async function openHandoffFlow({ clinicId, conversationId, contact, lead, reason, clinicSettings, channel, requestId, messageId }) {
+async function openHandoffFlow({ clinicId, conversationId, contact, lead, reason, clinicSettings, channel, requestId, messageId, customMessage = null }) {
   await withTransaction(async (client) => {
     const handoff = await openHandoff(
       {
@@ -7173,6 +7269,7 @@ async function openHandoffFlow({ clinicId, conversationId, contact, lead, reason
   });
 
   const handoffMessage =
+    String(customMessage || '').trim() ||
     (clinicSettings && clinicSettings.handoffMessage) ||
     'Te derivamos con un humano. En breve te contactamos.';
 
@@ -7514,6 +7611,7 @@ async function processInboundJob(job) {
   }
 
   const intent = detectIntent(inboundText);
+  const commercialIntent = detectCommercialIntent(inboundText);
   const lead = await upsertLeadForConversation({
     clinicId,
     channelId,
@@ -7653,6 +7751,41 @@ async function processInboundJob(job) {
     return;
   }
 
+  const safeCommercialReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation,
+    inboundText
+  });
+  if (safeCommercialReply) {
+    if (safeCommercialReply.triggerHandoff === true || commercialIntent.type === 'human_handoff') {
+      await openHandoffFlow({
+        clinicId,
+        conversationId: conversation.id,
+        contact,
+        lead,
+        reason: 'manual',
+        clinicSettings: clinic.settings,
+        channel,
+        requestId,
+        messageId,
+        customMessage: safeCommercialReply.replyText
+      });
+      return;
+    }
+
+    await updateLeadStatus(lead.id, 'qualifying', `semantic:${safeCommercialReply.type}`);
+    await sendAndPersistReply({
+      clinicId,
+      channel,
+      conversationId: conversation.id,
+      contact,
+      text: safeCommercialReply.replyText,
+      requestId,
+      correlationMessageId: messageId
+    });
+    return;
+  }
+
   await addEvent({
     clinicId,
     conversationId: conversation.id,
@@ -7731,6 +7864,7 @@ async function processConversationReplyJob(job) {
   const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
   const normalizedInboundText = normalizeCommandText(inboundText);
   const intent = detectIntent(inboundText);
+  const commercialIntent = detectCommercialIntent(inboundText);
   const managementIntent = detectTurnManagementIntent(inboundText);
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
@@ -7985,6 +8119,56 @@ async function processConversationReplyJob(job) {
       messageId: waMessageId || inboundMessage.id
     });
     return;
+  }
+
+  if (!shouldPrioritizeAgendaFlow) {
+    const safeCommercialReply = await buildSafeCommercialIntentReply({
+      clinic,
+      conversation,
+      inboundText
+    });
+
+    if (safeCommercialReply) {
+      const routedLead = await upsertLeadForConversation({
+        clinicId: conversation.clinicId,
+        channelId,
+        conversationId: conversation.id,
+        contactId: contact.id,
+        primaryIntent: commercialIntent.type === 'human_handoff'
+          ? 'human'
+          : intent === 'unknown'
+            ? null
+            : intent
+      });
+
+      if (safeCommercialReply.triggerHandoff === true || commercialIntent.type === 'human_handoff') {
+        await openHandoffFlow({
+          clinicId: conversation.clinicId,
+          conversationId: conversation.id,
+          contact,
+          lead: routedLead,
+          reason: 'manual',
+          clinicSettings: clinic.settings,
+          channel,
+          requestId,
+          messageId: waMessageId || inboundMessage.id,
+          customMessage: safeCommercialReply.replyText
+        });
+        return;
+      }
+
+      await updateLeadStatus(routedLead.id, 'qualifying', `semantic:${safeCommercialReply.type}`);
+      await sendAndPersistReply({
+        clinicId: conversation.clinicId,
+        channel,
+        conversationId: conversation.id,
+        contact,
+        text: safeCommercialReply.replyText,
+        requestId,
+        correlationMessageId: waMessageId || inboundMessage.id
+      });
+      return;
+    }
   }
 
   const workerOwnsCommerceFlow =
@@ -9479,6 +9663,7 @@ module.exports = {
     isThanksIntent,
     isLoyaltyIntent,
     detectCommercialIntent,
+    buildSafeCommercialIntentReply,
     buildLoyaltyWhatsAppReply,
     buildLoyaltyContextPatch,
     getPendingLoyaltyOfferedAction,
