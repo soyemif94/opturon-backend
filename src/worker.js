@@ -9,11 +9,10 @@ const { updateClinicBotRuntimeConfigById } = require('./repositories/tenant.repo
 const { findContactById, findContactByIdAndClinicId, updateContact } = require('./repositories/contact.repository');
 const {
   findConversationById,
-  markLastOutbound,
   updateConversationStatus,
   updateConversationStage
 } = require('./repositories/conversation.repository');
-const { insertOutboundMessage, getMessageById } = require('./repositories/message.repository');
+const { getMessageById } = require('./repositories/message.repository');
 const { sendChannelScopedMessage } = require('./whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('./whatsapp/normalize-phone');
 const conversationRepo = require('./conversations/conversation.repo');
@@ -3752,6 +3751,7 @@ function getClinicTransferConfig(clinic) {
 
 async function buildSafeCommercialIntentReply({ clinic, conversation, inboundText }) {
   const commercialIntent = detectCommercialIntent(inboundText);
+  const normalizedText = normalizeCommandText(inboundText);
   const businessProfile = getClinicBusinessProfile(clinic);
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
@@ -3761,16 +3761,21 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     return {
       type: commercialIntent.type,
       replyText: address
-        ? `Estamos en ${address}.\n\nSi querés, también te puedo ayudar con productos, precios o pasarte con alguien del equipo.`
+        ? `Estamos en ${address} 😊\n\nSi querés, también puedo ayudarte con productos, precios o cualquier consulta.`
         : 'Todavía no tengo una dirección cargada para este comercio. Si querés, te puedo pasar con alguien del equipo.'
     };
   }
 
   if (commercialIntent.type === 'hours') {
+    const looksLikeSimpleHoursRange = /^(de\s*)?\d/.test(openingHours.toLowerCase()) && !/(lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)/i.test(openingHours);
     return {
       type: commercialIntent.type,
       replyText: openingHours
-        ? `Estos son los horarios que tengo cargados:\n${openingHours}\n\nSi querés, también te puedo ayudar con productos, precios o beneficios.`
+        ? (
+          normalizedText.includes('hoy') && looksLikeSimpleHoursRange
+            ? `Hoy estamos atendiendo ${openingHours} 😊\n\nSi querés, también puedo ayudarte con productos, precios o cualquier consulta.`
+            : `Nuestros horarios son:\n${openingHours} 😊\n\nSi querés, también puedo ayudarte con productos, precios o cualquier consulta.`
+        )
         : 'Todavía no tengo horarios cargados. Si querés, te puedo pasar con alguien del equipo para confirmarlo.'
     };
   }
@@ -3779,8 +3784,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     return {
       type: commercialIntent.type,
       replyText: deliveryZones
-        ? `Sí, tengo esto cargado sobre envíos:\n${deliveryZones}\n\nSi querés, también puedo mostrarte productos o ayudarte a elegir.`
-        : 'No tengo confirmado si este comercio hace envíos. Si querés, te puedo pasar con alguien del equipo para consultarlo.'
+        ? `Sí 😊 Hacemos envíos.\n\n${deliveryZones}\n\nSi querés, también puedo mostrarte productos o ayudarte a elegir.`
+        : 'No tengo confirmado si este comercio hace envíos. Si querés, te paso con alguien del equipo.'
     };
   }
 
@@ -3795,13 +3800,13 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       type: commercialIntent.type,
       replyText: promotedProducts.length
         ? [
-            'Estas son las promociones que tengo cargadas ahora:',
+            'Tenemos algunas promos disponibles 😊',
             '',
             ...promotedProducts.map((product) => `- ${product.name}: ${formatWholeNumber(product.discountPercentage)}% off`),
             '',
             'Si querés, también te muestro el catálogo completo.'
           ].join('\n')
-        : 'Por ahora no tengo promociones cargadas. Si querés, puedo mostrarte el catálogo o avisarte cuando haya novedades.'
+        : 'Por ahora no veo promociones cargadas, pero puedo mostrarte productos o ayudarte a encontrar algo.'
     };
   }
 
@@ -7044,19 +7049,15 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
     }
   );
 
-  await insertOutboundMessage({
-    clinicId,
-    channelId: channel.id,
+  await conversationRepo.insertOutboundMessage({
     conversationId,
-    providerMessageId: sendResult.messageId,
+    waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
     from: channelCredentials.phoneNumberId,
-    to: contact.waId,
+    to: contact.waId || null,
     type: 'text',
-    body: text,
-    raw: sendResult.raw || {}
+    text,
+    raw: sendResult && sendResult.raw ? sendResult.raw : {}
   });
-
-  await markLastOutbound(conversationId);
 
   logInfo('worker_outbound_sent', {
     requestId,
@@ -7100,21 +7101,15 @@ async function sendAgendaReminderMessage({ clinicId, channel, conversationId, co
     }
   );
 
-  await insertOutboundMessage({
-    clinicId,
-    channelId: channel.id,
+  await conversationRepo.insertOutboundMessage({
     conversationId: conversationId || null,
-    providerMessageId: sendResult.messageId,
+    waMessageId: sendResult.messageId,
     from: channelCredentials.phoneNumberId,
     to: targetWaId,
     type: 'text',
-    body: text,
+    text,
     raw: sendResult.raw || {}
   });
-
-  if (conversationId) {
-    await markLastOutbound(conversationId);
-  }
 
   return { sendResult, targetWaId };
 }
