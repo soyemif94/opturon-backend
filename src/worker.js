@@ -1222,6 +1222,51 @@ function normalizeBusinessProfileText(value) {
   return String(value || '').trim();
 }
 
+const INTELLIGENT_FALLBACK_TTL_MS = 15 * 60 * 1000;
+
+function getIntelligentFallbackState(safeContext) {
+  const count = Number.parseInt(String(safeContext && safeContext.intelligentFallbackCount ? safeContext.intelligentFallbackCount : 0), 10);
+  const activeAt = String(safeContext && safeContext.intelligentFallbackAt ? safeContext.intelligentFallbackAt : '').trim();
+  const timestamp = Date.parse(activeAt);
+  if (!Number.isInteger(count) || count <= 0) {
+    return { count: 0, active: false };
+  }
+  if (!activeAt || !Number.isFinite(timestamp) || Date.now() - timestamp > INTELLIGENT_FALLBACK_TTL_MS) {
+    return { count: 0, active: false };
+  }
+  return { count, active: true };
+}
+
+function buildIntelligentFallbackReply(safeContext) {
+  const fallbackState = getIntelligentFallbackState(safeContext);
+  const nextCount = fallbackState.active ? fallbackState.count + 1 : 1;
+  const softReply = [
+    'Creo que no te entendí del todo 😅',
+    '',
+    'Puedo ayudarte con productos, precios, beneficios, horarios, ubicación o hablar con alguien del equipo.',
+    '',
+    '¿Qué necesitás?'
+  ].join('\n');
+  const guidedReply = [
+    'Todavía no logré entender bien qué necesitás 🤔',
+    '',
+    'Podés decirme algo como:',
+    '- ver productos',
+    '- consultar precios',
+    '- ubicación',
+    '- horarios',
+    '- hablar con alguien'
+  ].join('\n');
+
+  return {
+    replyText: nextCount >= 2 ? guidedReply : softReply,
+    contextPatch: {
+      intelligentFallbackCount: Math.min(nextCount, 2),
+      intelligentFallbackAt: new Date().toISOString()
+    }
+  };
+}
+
 const LOYALTY_FOLLOW_UP_TTL_MS = 10 * 60 * 1000;
 const LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD = 'loyalty_recommend_reward';
 
@@ -7786,6 +7831,31 @@ async function processInboundJob(job) {
     return;
   }
 
+  if (
+    intent === 'unknown' &&
+    commercialIntent.type === 'unknown' &&
+    !isGreetingIntent(inboundText)
+  ) {
+    const intelligentFallback = buildIntelligentFallbackReply(conversation.context);
+    await updateLeadStatus(lead.id, 'qualifying', 'unknown_intent');
+    await updateConversationStage(conversation.id, 'qualifying');
+    await conversationRepo.updateConversationState({
+      conversationId: conversation.id,
+      state: conversation.state || 'READY',
+      contextPatch: intelligentFallback.contextPatch
+    });
+    await sendAndPersistReply({
+      clinicId,
+      channel,
+      conversationId: conversation.id,
+      contact,
+      text: intelligentFallback.replyText,
+      requestId,
+      correlationMessageId: messageId
+    });
+    return;
+  }
+
   await addEvent({
     clinicId,
     conversationId: conversation.id,
@@ -8117,6 +8187,34 @@ async function processConversationReplyJob(job) {
       clinic,
       requestId,
       messageId: waMessageId || inboundMessage.id
+    });
+    return;
+  }
+
+  if (
+    intent === 'unknown' &&
+    commercialIntent.type === 'unknown' &&
+    !shouldPrioritizeAgendaFlow &&
+    !inboundLooksLikeCommerce &&
+    !inboundLooksLikeCommerceCancel &&
+    !parseTransferPaymentIntent(inboundText) &&
+    !isGreetingIntent(inboundText)
+  ) {
+    const intelligentFallback = buildIntelligentFallbackReply(safeContext);
+    await conversationRepo.updateConversationState({
+      conversationId: conversation.id,
+      state: conversation.state || 'READY',
+      contextPatch: intelligentFallback.contextPatch
+    });
+
+    await sendAndPersistReply({
+      clinicId: conversation.clinicId,
+      channel,
+      conversationId: conversation.id,
+      contact,
+      text: intelligentFallback.replyText,
+      requestId,
+      correlationMessageId: waMessageId || inboundMessage.id
     });
     return;
   }
@@ -9664,6 +9762,7 @@ module.exports = {
     isLoyaltyIntent,
     detectCommercialIntent,
     buildSafeCommercialIntentReply,
+    buildIntelligentFallbackReply,
     buildLoyaltyWhatsAppReply,
     buildLoyaltyContextPatch,
     getPendingLoyaltyOfferedAction,
