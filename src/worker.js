@@ -1217,6 +1217,103 @@ function buildCommercialShortMemoryPatch({
   };
 }
 
+function buildBusinessRecommendationContextPatch({
+  businessType = null,
+  teamSize = null,
+  recommendationLevel = null
+} = {}) {
+  return {
+    commercialBusinessContext: {
+      activeAt: new Date().toISOString(),
+      businessType: businessType ? String(businessType).trim().toLowerCase() : null,
+      teamSize: teamSize ? String(teamSize).trim().toLowerCase() : null,
+      recommendationLevel: recommendationLevel ? String(recommendationLevel).trim().toLowerCase() : null
+    }
+  };
+}
+
+function getActiveBusinessRecommendationContext(context) {
+  const safeContext = context && typeof context === 'object' ? context : {};
+  const stored = safeContext.commercialBusinessContext && typeof safeContext.commercialBusinessContext === 'object'
+    ? safeContext.commercialBusinessContext
+    : null;
+  if (!stored) return null;
+
+  const activeAtMs = Date.parse(String(stored.activeAt || ''));
+  if (!Number.isFinite(activeAtMs)) return null;
+  if (Date.now() - activeAtMs > COMMERCIAL_SHORT_MEMORY_TTL_MS) return null;
+
+  const recommendationLevel = String(stored.recommendationLevel || '').trim().toLowerCase();
+  if (!recommendationLevel) return null;
+
+  return {
+    activeAt: new Date(activeAtMs).toISOString(),
+    businessType: stored.businessType ? String(stored.businessType).trim().toLowerCase() : null,
+    teamSize: stored.teamSize ? String(stored.teamSize).trim().toLowerCase() : null,
+    recommendationLevel
+  };
+}
+
+function detectBusinessRecommendationContext(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  const hasEnterpriseSignal =
+    text.includes('distribuidora') ||
+    text.includes('mayorista') ||
+    text.includes('muchos mensajes') ||
+    text.includes('muchas consultas') ||
+    text.includes('alto volumen') ||
+    text.includes('somos varios vendedores') ||
+    text.includes('varios vendedores') ||
+    text.includes('varios asesor') ||
+    text.includes('equipo comercial') ||
+    text.includes('somos varios') ||
+    text.includes('varios atendiendo');
+  if (hasEnterpriseSignal) {
+    return {
+      businessType: text.includes('distribuidora') || text.includes('mayorista') ? 'distribution' : 'high_volume',
+      teamSize: 'team',
+      recommendationLevel: 'enterprise'
+    };
+  }
+
+  const hasGrowthSignal =
+    text.includes('tienda de ropa') ||
+    text.includes('vendo ropa') ||
+    text.includes('local de ropa') ||
+    text.includes('indumentaria') ||
+    text.includes('accesorios') ||
+    text.includes('local chico') ||
+    text.includes('tienda') ||
+    text.includes('local');
+  if (hasGrowthSignal) {
+    return {
+      businessType: text.includes('ropa') ? 'fashion_retail' : (text.includes('accesorios') ? 'accessories_retail' : 'small_store'),
+      teamSize: text.includes('somos varios') ? 'team' : 'small',
+      recommendationLevel: 'growth'
+    };
+  }
+
+  const hasStarterSignal =
+    text.includes('barato') ||
+    text.includes('econom') ||
+    text.includes('arrancar') ||
+    text.includes('empezar') ||
+    text.includes('simple') ||
+    text.includes('pequeno') ||
+    text.includes('pequeño');
+  if (hasStarterSignal) {
+    return {
+      businessType: 'starter',
+      teamSize: 'small',
+      recommendationLevel: 'starter'
+    };
+  }
+
+  return null;
+}
+
 function getActiveCommercialShortMemory(context) {
   const safeContext = context && typeof context === 'object' ? context : {};
   const memory = safeContext.commercialShortMemory && typeof safeContext.commercialShortMemory === 'object'
@@ -2196,6 +2293,42 @@ function buildPlanRecommendationReply(product) {
   ].join('\n');
 }
 
+function buildBusinessContextPlanRecommendationReply(product, businessContext, allPlans = []) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const safeContext = businessContext && typeof businessContext === 'object' ? businessContext : {};
+  const enterprisePlan = findPlanByNeedHint(allPlans, 'enterprise');
+
+  if (safeContext.recommendationLevel === 'enterprise') {
+    return [
+      `Por el volumen que me comentás, probablemente te convenga más el ${safeProduct.name || 'Plan Empresa'} 😊`,
+      '',
+      'Está pensado para equipos, supervisión y operación más intensa.',
+      '',
+      'Si querés, también te cuento la diferencia con los otros planes.'
+    ].join('\n');
+  }
+
+  if (safeContext.recommendationLevel === 'starter') {
+    return [
+      `Si querés arrancar simple y económico, el ${safeProduct.name || 'Plan Inicial'} puede ser una buena opción 😊`,
+      '',
+      'Te deja ordenar WhatsApp y empezar con una base prolija sin irte a algo más grande de entrada.',
+      '',
+      'Si querés, también te cuento cuándo conviene pasar al siguiente plan.'
+    ].join('\n');
+  }
+
+  return [
+    `Por lo que me contás, creo que el ${safeProduct.name || 'Plan Crecimiento'} puede irte muy bien 😊`,
+    '',
+    'Te ayuda a ordenar WhatsApp, responder más rápido y hacer seguimiento de clientes sin perder consultas.',
+    '',
+    enterprisePlan
+      ? `Si querés, también te cuento la diferencia con el ${enterprisePlan.name}.`
+      : 'Si querés, también te cuento la diferencia con el plan más completo.'
+  ].join('\n');
+}
+
 function buildPlanDetailReply(product, { includePrice = true, includeFeatures = true } = {}) {
   const safeProduct = product && typeof product === 'object' ? product : {};
   const profile = resolvePlanProfile(safeProduct);
@@ -3030,6 +3163,12 @@ function parseDemoCommercialCloseOption(input) {
   }
 
   return null;
+}
+
+function findPlanByBusinessRecommendationContext(products, businessContext) {
+  const safeContext = businessContext && typeof businessContext === 'object' ? businessContext : null;
+  if (!safeContext || !safeContext.recommendationLevel) return null;
+  return findPlanByNeedHint(products, safeContext.recommendationLevel);
 }
 
 function isDemoCommercialOnboardingContext(safeContext) {
@@ -3970,6 +4109,9 @@ function getClinicTransferConfig(clinic) {
 async function buildSafeCommercialIntentReply({ clinic, conversation, inboundText }) {
   const commercialIntent = detectCommercialIntent(inboundText);
   const normalizedText = normalizeCommandText(inboundText);
+  const currentBusinessContext = detectBusinessRecommendationContext(inboundText);
+  const storedBusinessContext = getActiveBusinessRecommendationContext(conversation && conversation.context);
+  const effectiveBusinessContext = currentBusinessContext || storedBusinessContext;
   const businessProfile = getClinicBusinessProfile(clinic);
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
@@ -4042,21 +4184,56 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const orderedPlans = getOrderedPlanProducts(eligibleProducts);
 
     if (isPlanCatalog(eligibleProducts) && orderedPlans.length) {
-      const suggestedPlan = findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0];
+      const suggestedPlan = effectiveBusinessContext
+        ? findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext)
+        : (findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0]);
       return {
         type: commercialIntent.type,
-        replyText: buildPlanRecommendationReply(suggestedPlan),
-        contextPatch: buildCommercialShortMemoryPatch({
-          topic: 'plans',
-          lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
-          recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
-        })
+        replyText: effectiveBusinessContext
+          ? buildBusinessContextPlanRecommendationReply(suggestedPlan, effectiveBusinessContext, orderedPlans)
+          : buildPlanRecommendationReply(suggestedPlan),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...(effectiveBusinessContext ? buildBusinessRecommendationContextPatch(effectiveBusinessContext) : null)
+        }
       };
     }
 
     return {
       type: commercialIntent.type,
-      replyText: 'Puedo ayudarte a elegir 😊 Decime si buscás algo económico, algo puntual o querés ver el catálogo.'
+      replyText: 'Contame un poco tu negocio y te recomiendo el plan que mejor te puede servir 😊'
+    };
+  }
+
+  if (effectiveBusinessContext) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const orderedPlans = getOrderedPlanProducts(eligibleProducts);
+    const suggestedPlan = findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext);
+
+    if (suggestedPlan) {
+      return {
+        type: 'recommendation',
+        replyText: buildBusinessContextPlanRecommendationReply(suggestedPlan, effectiveBusinessContext, orderedPlans),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...buildBusinessRecommendationContextPatch(effectiveBusinessContext)
+        }
+      };
+    }
+
+    return {
+      type: 'recommendation',
+      replyText: 'Contame un poco tu negocio y te recomiendo el plan que mejor te puede servir 😊',
+      contextPatch: buildBusinessRecommendationContextPatch(effectiveBusinessContext)
     };
   }
 
@@ -10141,9 +10318,11 @@ module.exports = {
     isThanksIntent,
     isLoyaltyIntent,
     detectCommercialIntent,
+    detectBusinessRecommendationContext,
     buildSafeCommercialIntentReply,
     buildCommercialShortMemoryReply,
     getActiveCommercialShortMemory,
+    getActiveBusinessRecommendationContext,
     resolveCommercialShortMemoryFollowUpType,
     buildIntelligentFallbackReply,
     buildLoyaltyWhatsAppReply,
