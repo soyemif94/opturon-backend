@@ -1258,19 +1258,55 @@ function detectBusinessRecommendationContext(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return null;
 
-  const hasEnterpriseSignal =
-    text.includes('distribuidora') ||
-    text.includes('mayorista') ||
-    text.includes('muchos mensajes') ||
-    text.includes('muchas consultas') ||
-    text.includes('alto volumen') ||
-    text.includes('somos varios vendedores') ||
-    text.includes('varios vendedores') ||
-    text.includes('varios asesor') ||
-    text.includes('equipo comercial') ||
-    text.includes('somos varios') ||
-    text.includes('varios atendiendo');
-  if (hasEnterpriseSignal) {
+  const scoreSignals = (signals) => signals.reduce((total, signal) => total + (text.includes(signal) ? 1 : 0), 0);
+  const enterpriseSignals = [
+    'distribuidora',
+    'mayorista',
+    'muchos mensajes',
+    'muchas consultas',
+    'alto volumen',
+    'somos varios vendedores',
+    'varios vendedores',
+    'varios asesor',
+    'equipo comercial',
+    'somos varios',
+    'varios atendiendo',
+    'que plan conviene',
+    'que me conviene',
+    'que plan me conviene'
+  ];
+  const growthSignals = [
+    'tienda de ropa',
+    'vendo ropa',
+    'local de ropa',
+    'indumentaria',
+    'accesorios',
+    'tienda de accesorios',
+    'local de accesorios',
+    'local chico',
+    'tienda',
+    'local',
+    'negocio'
+  ];
+  const starterSignals = [
+    'barato',
+    'econom',
+    'arrancar',
+    'empezar',
+    'simple',
+    'pequeno',
+    'pequeño',
+    'para arrancar',
+    'quiero algo barato',
+    'algo economico',
+    'algo económico'
+  ];
+
+  const enterpriseScore = scoreSignals(enterpriseSignals);
+  const growthScore = scoreSignals(growthSignals);
+  const starterScore = scoreSignals(starterSignals);
+
+  if (enterpriseScore > 0 && enterpriseScore >= growthScore && enterpriseScore >= starterScore) {
     return {
       businessType: text.includes('distribuidora') || text.includes('mayorista') ? 'distribution' : 'high_volume',
       teamSize: 'team',
@@ -1278,36 +1314,19 @@ function detectBusinessRecommendationContext(rawText) {
     };
   }
 
-  const hasGrowthSignal =
-    text.includes('tienda de ropa') ||
-    text.includes('vendo ropa') ||
-    text.includes('local de ropa') ||
-    text.includes('indumentaria') ||
-    text.includes('accesorios') ||
-    text.includes('local chico') ||
-    text.includes('tienda') ||
-    text.includes('local');
-  if (hasGrowthSignal) {
-    return {
-      businessType: text.includes('ropa') ? 'fashion_retail' : (text.includes('accesorios') ? 'accessories_retail' : 'small_store'),
-      teamSize: text.includes('somos varios') ? 'team' : 'small',
-      recommendationLevel: 'growth'
-    };
-  }
-
-  const hasStarterSignal =
-    text.includes('barato') ||
-    text.includes('econom') ||
-    text.includes('arrancar') ||
-    text.includes('empezar') ||
-    text.includes('simple') ||
-    text.includes('pequeno') ||
-    text.includes('pequeño');
-  if (hasStarterSignal) {
+  if (starterScore > 0 && starterScore >= growthScore) {
     return {
       businessType: 'starter',
       teamSize: 'small',
       recommendationLevel: 'starter'
+    };
+  }
+
+  if (growthScore > 0) {
+    return {
+      businessType: text.includes('ropa') ? 'fashion_retail' : (text.includes('accesorios') ? 'accessories_retail' : 'small_store'),
+      teamSize: text.includes('somos varios') ? 'team' : 'small',
+      recommendationLevel: 'growth'
     };
   }
 
@@ -8748,34 +8767,6 @@ async function processConversationReplyJob(job) {
     return;
   }
 
-  if (
-    intent === 'unknown' &&
-    commercialIntent.type === 'unknown' &&
-    !shouldPrioritizeAgendaFlow &&
-    !inboundLooksLikeCommerce &&
-    !inboundLooksLikeCommerceCancel &&
-    !parseTransferPaymentIntent(inboundText) &&
-    !isGreetingIntent(inboundText)
-  ) {
-    const intelligentFallback = buildIntelligentFallbackReply(safeContext);
-    await conversationRepo.updateConversationState({
-      conversationId: conversation.id,
-      state: conversation.state || 'READY',
-      contextPatch: intelligentFallback.contextPatch
-    });
-
-    await sendAndPersistReply({
-      clinicId: conversation.clinicId,
-      channel,
-      conversationId: conversation.id,
-      contact,
-      text: intelligentFallback.replyText,
-      requestId,
-      correlationMessageId: waMessageId || inboundMessage.id
-    });
-    return;
-  }
-
   if (!shouldPrioritizeAgendaFlow) {
     const safeCommercialReply = await buildSafeCommercialIntentReply({
       clinic,
@@ -8813,6 +8804,13 @@ async function processConversationReplyJob(job) {
       }
 
       await updateLeadStatus(routedLead.id, 'qualifying', `semantic:${safeCommercialReply.type}`);
+      if (safeCommercialReply.contextPatch) {
+        await conversationRepo.updateConversationState({
+          conversationId: conversation.id,
+          state: conversation.state || 'READY',
+          contextPatch: safeCommercialReply.contextPatch
+        });
+      }
       await sendAndPersistReply({
         clinicId: conversation.clinicId,
         channel,
@@ -8824,6 +8822,34 @@ async function processConversationReplyJob(job) {
       });
       return;
     }
+  }
+
+  if (
+    intent === 'unknown' &&
+    commercialIntent.type === 'unknown' &&
+    !shouldPrioritizeAgendaFlow &&
+    !inboundLooksLikeCommerce &&
+    !inboundLooksLikeCommerceCancel &&
+    !parseTransferPaymentIntent(inboundText) &&
+    !isGreetingIntent(inboundText)
+  ) {
+    const intelligentFallback = buildIntelligentFallbackReply(safeContext);
+    await conversationRepo.updateConversationState({
+      conversationId: conversation.id,
+      state: conversation.state || 'READY',
+      contextPatch: intelligentFallback.contextPatch
+    });
+
+    await sendAndPersistReply({
+      clinicId: conversation.clinicId,
+      channel,
+      conversationId: conversation.id,
+      contact,
+      text: intelligentFallback.replyText,
+      requestId,
+      correlationMessageId: waMessageId || inboundMessage.id
+    });
+    return;
   }
 
   const workerOwnsCommerceFlow =
