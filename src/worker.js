@@ -1059,6 +1059,7 @@ const COMMERCE_PRODUCTS_PAGE_SIZE = 10;
 const COMMERCE_MORE_KEYWORDS = new Set(['mas', 'más', 'ver mas', 'ver más', 'mostrar mas', 'mostrar más', 'siguiente']);
 const COMMERCE_UNCATEGORIZED_CATEGORY_ID = '__uncategorized__';
 const COMMERCIAL_SHORT_MEMORY_TTL_MS = 10 * 60 * 1000;
+const PLAN_PENDING_ACTION_COMPARE_RECOMMENDED = 'compare_recommended_plan';
 
 function buildCommerceEligibleProducts(products) {
   return (Array.isArray(products) ? products : []).filter((product) => {
@@ -1681,6 +1682,34 @@ function isPendingOfferedActionIntent(rawText, pendingActionType = null) {
   );
 }
 
+function isPendingPlanComparisonIntent(rawText) {
+  const looseText = normalizeLooseIntentText(rawText);
+  if (!looseText) return false;
+  if (isAffirmativeIntent(looseText) || isClarificationIntent(looseText)) {
+    return true;
+  }
+
+  const exactMatches = new Set([
+    'a ver dale',
+    'joya',
+    'contame',
+    'decime',
+    'si',
+    'quiero ver',
+    'cual es la diferencia'
+  ]);
+  if (exactMatches.has(looseText)) {
+    return true;
+  }
+
+  return (
+    looseText.includes('cual es la diferencia') ||
+    looseText.includes('contame') ||
+    looseText.includes('decime') ||
+    (looseText.includes('quiero') && looseText.includes('ver'))
+  );
+}
+
 function getPendingLoyaltyOfferedAction(safeContext) {
   const pending = safeContext && safeContext.pendingOfferedAction && typeof safeContext.pendingOfferedAction === 'object'
     ? safeContext.pendingOfferedAction
@@ -1688,7 +1717,7 @@ function getPendingLoyaltyOfferedAction(safeContext) {
   if (!pending) return null;
 
   const type = String(pending.type || '').trim();
-  if (!type) return null;
+  if (![LOYALTY_OFFERED_ACTION_EXPLAIN_PROGRAM, LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD].includes(type)) return null;
 
   const activeAt = String(pending.activeAt || '').trim();
   const timestamp = Date.parse(activeAt);
@@ -1699,6 +1728,30 @@ function getPendingLoyaltyOfferedAction(safeContext) {
   return {
     type,
     activeAt
+  };
+}
+
+function getPendingPlanComparisonAction(safeContext) {
+  const pending = safeContext && safeContext.pendingOfferedAction && typeof safeContext.pendingOfferedAction === 'object'
+    ? safeContext.pendingOfferedAction
+    : null;
+  if (!pending) return null;
+
+  const type = String(pending.type || '').trim();
+  if (type !== PLAN_PENDING_ACTION_COMPARE_RECOMMENDED) return null;
+
+  const activeAt = String(pending.activeAt || '').trim();
+  const timestamp = Date.parse(activeAt);
+  if (!activeAt || !Number.isFinite(timestamp) || Date.now() - timestamp > COMMERCIAL_SHORT_MEMORY_TTL_MS) {
+    return null;
+  }
+
+  return {
+    type,
+    activeAt,
+    recommendedPlanId: String(pending.recommendedPlanId || '').trim() || null,
+    comparedPlanId: String(pending.comparedPlanId || '').trim() || null,
+    recommendationLevel: String(pending.recommendationLevel || '').trim().toLowerCase() || null
   };
 }
 
@@ -2345,6 +2398,47 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
     enterprisePlan
       ? `Si querés, también te cuento la diferencia con el ${enterprisePlan.name}.`
       : 'Si querés, también te cuento la diferencia con el plan más completo.'
+  ].join('\n');
+}
+
+function buildPlanComparisonOfferedAction(recommendedPlan, comparedPlan, businessContext) {
+  if (!recommendedPlan || !comparedPlan) return null;
+  return {
+    type: PLAN_PENDING_ACTION_COMPARE_RECOMMENDED,
+    activeAt: new Date().toISOString(),
+    recommendedPlanId: String(recommendedPlan.id || recommendedPlan.productId || '').trim() || null,
+    comparedPlanId: String(comparedPlan.id || comparedPlan.productId || '').trim() || null,
+    recommendationLevel: businessContext && businessContext.recommendationLevel
+      ? String(businessContext.recommendationLevel).trim().toLowerCase()
+      : null
+  };
+}
+
+function findPlanByStoredId(products, storedId) {
+  const safeId = String(storedId || '').trim();
+  if (!safeId) return null;
+  return getOrderedPlanProducts(products).find((product) => String(product.id || product.productId || '').trim() === safeId) || null;
+}
+
+function buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, businessContext) {
+  const recommended = recommendedPlan && typeof recommendedPlan === 'object' ? recommendedPlan : {};
+  const compared = comparedPlan && typeof comparedPlan === 'object' ? comparedPlan : {};
+  const recommendedProfile = resolvePlanProfile(recommended);
+  const comparedProfile = resolvePlanProfile(compared);
+  const recommendationLevel = String(businessContext && businessContext.recommendationLevel ? businessContext.recommendationLevel : '').trim().toLowerCase();
+
+  const closingLine = recommendationLevel === 'growth'
+    ? `Para una tienda de ropa, yo arrancaría con ${recommended.name || 'Plan Crecimiento'}. Si después el equipo crece, podés pasar a ${compared.name || 'Plan Empresa'}.`
+    : `Hoy veo más alineado ${recommended.name || 'este plan'} para lo que me contaste.`;
+
+  return [
+    'Claro 😊',
+    '',
+    `El ${recommended.name || 'plan recomendado'} te sirve si hoy ${recommendedProfile.problemSolved}.`,
+    '',
+    `El ${compared.name || 'otro plan'} conviene más si ${comparedProfile.problemSolved}.`,
+    '',
+    closingLine
   ].join('\n');
 }
 
@@ -4128,13 +4222,52 @@ function getClinicTransferConfig(clinic) {
 async function buildSafeCommercialIntentReply({ clinic, conversation, inboundText }) {
   const commercialIntent = detectCommercialIntent(inboundText);
   const normalizedText = normalizeCommandText(inboundText);
+  const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
+    ? conversation.context
+    : {};
+  const pendingPlanComparison = getPendingPlanComparisonAction(safeContext);
   const currentBusinessContext = detectBusinessRecommendationContext(inboundText);
-  const storedBusinessContext = getActiveBusinessRecommendationContext(conversation && conversation.context);
+  const storedBusinessContext = getActiveBusinessRecommendationContext(safeContext);
   const effectiveBusinessContext = currentBusinessContext || storedBusinessContext;
   const businessProfile = getClinicBusinessProfile(clinic);
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
   const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
+
+  if (
+    pendingPlanComparison &&
+    !isCommerceEntryIntent(inboundText) &&
+    !isExplicitCommerceTrigger(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isPendingPlanComparisonIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const recommendedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.recommendedPlanId);
+    const comparedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.comparedPlanId);
+
+    if (recommendedPlan && comparedPlan) {
+      return {
+        type: 'recommendation',
+        replyText: buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(recommendedPlan, orderedPlans)
+          }),
+          pendingOfferedAction: {
+            type: null,
+            activeAt: null,
+            completedAt: new Date().toISOString()
+          }
+        }
+      };
+    }
+  }
 
   if (commercialIntent.type === 'location') {
     return {
@@ -4203,6 +4336,9 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const orderedPlans = getOrderedPlanProducts(eligibleProducts);
 
     if (isPlanCatalog(eligibleProducts) && orderedPlans.length) {
+      const comparedPlan = effectiveBusinessContext && effectiveBusinessContext.recommendationLevel === 'growth'
+        ? findPlanByNeedHint(orderedPlans, 'enterprise')
+        : null;
       const suggestedPlan = effectiveBusinessContext
         ? findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext)
         : (findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0]);
@@ -4217,6 +4353,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
             recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
           }),
+          pendingOfferedAction: buildPlanComparisonOfferedAction(suggestedPlan, comparedPlan, effectiveBusinessContext),
           ...(effectiveBusinessContext ? buildBusinessRecommendationContextPatch(effectiveBusinessContext) : null)
         }
       };
@@ -4233,6 +4370,9 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
     const orderedPlans = getOrderedPlanProducts(eligibleProducts);
     const suggestedPlan = findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext);
+    const comparedPlan = effectiveBusinessContext.recommendationLevel === 'growth'
+      ? findPlanByNeedHint(orderedPlans, 'enterprise')
+      : null;
 
     if (suggestedPlan) {
       return {
@@ -4244,6 +4384,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
             recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
           }),
+          pendingOfferedAction: buildPlanComparisonOfferedAction(suggestedPlan, comparedPlan, effectiveBusinessContext),
           ...buildBusinessRecommendationContextPatch(effectiveBusinessContext)
         }
       };
@@ -10349,6 +10490,7 @@ module.exports = {
     buildCommercialShortMemoryReply,
     getActiveCommercialShortMemory,
     getActiveBusinessRecommendationContext,
+    getPendingPlanComparisonAction,
     resolveCommercialShortMemoryFollowUpType,
     buildIntelligentFallbackReply,
     buildLoyaltyWhatsAppReply,
