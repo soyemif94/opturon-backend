@@ -4379,7 +4379,6 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (
     activePlanContext &&
     !isCommerceEntryIntent(inboundText) &&
-    !isExplicitCommerceTrigger(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
