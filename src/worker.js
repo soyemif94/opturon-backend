@@ -1058,6 +1058,7 @@ function isCommerceEntryIntent(rawText) {
 const COMMERCE_PRODUCTS_PAGE_SIZE = 10;
 const COMMERCE_MORE_KEYWORDS = new Set(['mas', 'más', 'ver mas', 'ver más', 'mostrar mas', 'mostrar más', 'siguiente']);
 const COMMERCE_UNCATEGORIZED_CATEGORY_ID = '__uncategorized__';
+const COMMERCIAL_SHORT_MEMORY_TTL_MS = 10 * 60 * 1000;
 
 function buildCommerceEligibleProducts(products) {
   return (Array.isArray(products) ? products : []).filter((product) => {
@@ -1197,6 +1198,217 @@ function buildCatalogProductImageMessage(product) {
     },
     productId: safeProduct.id || safeProduct.productId || null
   };
+}
+
+function buildCommercialShortMemoryPatch({
+  topic = 'catalog',
+  categoryId = null,
+  lastSuggestedProductId = null,
+  recommendationType = 'general'
+} = {}) {
+  return {
+    commercialShortMemory: {
+      activeAt: new Date().toISOString(),
+      topic: String(topic || 'catalog').trim().toLowerCase() || 'catalog',
+      categoryId: categoryId ? String(categoryId).trim() : null,
+      lastSuggestedProductId: lastSuggestedProductId ? String(lastSuggestedProductId).trim() : null,
+      recommendationType: String(recommendationType || 'general').trim().toLowerCase() || 'general'
+    }
+  };
+}
+
+function getActiveCommercialShortMemory(context) {
+  const safeContext = context && typeof context === 'object' ? context : {};
+  const memory = safeContext.commercialShortMemory && typeof safeContext.commercialShortMemory === 'object'
+    ? safeContext.commercialShortMemory
+    : null;
+  if (!memory) return null;
+
+  const activeAtMs = Date.parse(String(memory.activeAt || ''));
+  if (!Number.isFinite(activeAtMs)) return null;
+  if (Date.now() - activeAtMs > COMMERCIAL_SHORT_MEMORY_TTL_MS) return null;
+
+  const topic = String(memory.topic || '').trim().toLowerCase();
+  const lastSuggestedProductId = String(memory.lastSuggestedProductId || '').trim();
+  if (!topic || !lastSuggestedProductId) return null;
+
+  return {
+    activeAt: new Date(activeAtMs).toISOString(),
+    topic,
+    categoryId: memory.categoryId ? String(memory.categoryId).trim() : null,
+    lastSuggestedProductId,
+    recommendationType: String(memory.recommendationType || 'general').trim().toLowerCase() || 'general'
+  };
+}
+
+function isCommercialShortMemoryProtectedIntent(input) {
+  const text = normalizeCommandText(input);
+  if (!text) return false;
+
+  const commercialIntent = detectCommercialIntent(text);
+  if (['products', 'prices', 'payment', 'loyalty', 'promotions', 'location', 'hours', 'delivery', 'human_handoff'].includes(commercialIntent.type)) {
+    return true;
+  }
+
+  return (
+    text.includes('turno') ||
+    text.includes('agenda') ||
+    text.includes('transferencia') ||
+    text.includes('comprobante') ||
+    text.includes('factura')
+  );
+}
+
+function resolveCommercialShortMemoryFollowUpType(input) {
+  const text = normalizeCommandText(input);
+  if (!text || isCommercialShortMemoryProtectedIntent(text)) return null;
+
+  if (
+    text === 'a ver' ||
+    text === 'y' ||
+    text === 'y?' ||
+    text === 'otra' ||
+    text === 'otra opcion' ||
+    text === 'otra opción' ||
+    text === 'otra recomendacion' ||
+    text === 'otra recomendación' ||
+    text === 'mostrame otra' ||
+    text === 'mostrame otra opcion' ||
+    text === 'mostrame otra opción' ||
+    text === 'tenes otra' ||
+    text === 'tenés otra'
+  ) {
+    return 'another';
+  }
+
+  if (
+    text.includes('mas barato') ||
+    text.includes('más barato') ||
+    text.includes('mas econom') ||
+    text.includes('más econom') ||
+    text.includes('algo barato')
+  ) {
+    return 'cheaper';
+  }
+
+  if (
+    text.includes('mas premium') ||
+    text.includes('más premium') ||
+    text.includes('algo premium') ||
+    text.includes('algo mejor') ||
+    text.includes('mejorcito') ||
+    text.includes('subir un poco')
+  ) {
+    return 'better';
+  }
+
+  if (text.includes('parecido')) {
+    return 'similar';
+  }
+
+  if (
+    text.includes('cual recomendas') ||
+    text.includes('cuál recomendás') ||
+    text.includes('cual te gusta mas') ||
+    text.includes('cuál te gusta más')
+  ) {
+    return 'recommend';
+  }
+
+  return null;
+}
+
+function normalizeProductRecommendationType(product, orderedProducts = []) {
+  const safeProducts = Array.isArray(orderedProducts) ? orderedProducts : [];
+  const productId = String(product && (product.id || product.productId) ? (product.id || product.productId) : '').trim();
+  const index = safeProducts.findIndex((item) => String(item && (item.id || item.productId) ? (item.id || item.productId) : '').trim() === productId);
+  if (index <= 0) return 'starter';
+  if (index >= safeProducts.length - 1) return 'premium';
+  return 'growth';
+}
+
+function buildCommercialShortMemoryProductReply(product, followUpType) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const priceLine = formatMoney(safeProduct.price, safeProduct.currency);
+  const description = String(safeProduct.description || '').trim();
+  const shortDescription = description.length > 140 ? `${description.slice(0, 137).trim()}...` : description;
+
+  const introByType = {
+    cheaper: 'Si querés algo más económico, esta puede ir muy bien 😊',
+    better: 'Si querés subir un poco, esta opción está muy buena 😊',
+    similar: 'Tengo otra opción parecida que te puede servir 😊',
+    recommend: 'De lo que venimos viendo, esta es de las que más me gusta 😊',
+    another: 'Te muestro otra opción que también te puede servir 😊'
+  };
+
+  return [
+    introByType[followUpType] || introByType.another,
+    '',
+    `${safeProduct.name || 'Este producto'} — ${priceLine}`,
+    shortDescription || null,
+    '',
+    'Si querés, te cuento más o te muestro otra opción.'
+  ].filter(Boolean).join('\n');
+}
+
+function selectPlanFromShortMemory(products, memory, followUpType) {
+  const plans = getOrderedPlanProducts(products);
+  if (!plans.length) return null;
+
+  const currentIndex = Math.max(0, plans.findIndex((product) => String(product.id || product.productId || '').trim() === memory.lastSuggestedProductId));
+  if (followUpType === 'recommend') {
+    return findPlanByNeedHint(plans, 'growth') || plans[currentIndex] || plans[0];
+  }
+  if (followUpType === 'cheaper') {
+    return plans[currentIndex - 1] || null;
+  }
+  if (followUpType === 'better') {
+    return plans[currentIndex + 1] || null;
+  }
+  if (followUpType === 'another' || followUpType === 'similar') {
+    return plans[currentIndex + 1] || plans[currentIndex - 1] || null;
+  }
+  return null;
+}
+
+function selectProductFromShortMemory(products, memory, followUpType) {
+  const filteredProducts = buildCommerceEligibleProducts(products)
+    .filter((product) => {
+      if (!memory.categoryId) return true;
+      if (memory.categoryId === COMMERCE_UNCATEGORIZED_CATEGORY_ID) {
+        return !String(product && product.categoryId ? product.categoryId : '').trim();
+      }
+      return String(product && product.categoryId ? product.categoryId : '').trim() === memory.categoryId;
+    })
+    .sort((left, right) => {
+      const priceDiff = Number(left.price || 0) - Number(right.price || 0);
+      if (priceDiff !== 0) return priceDiff;
+      return String(left.name || '').localeCompare(String(right.name || ''), 'es');
+    });
+
+  if (!filteredProducts.length) return null;
+
+  const currentIndex = filteredProducts.findIndex((product) => String(product.id || product.productId || '').trim() === memory.lastSuggestedProductId);
+  const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+  const currentProduct = filteredProducts[safeIndex] || null;
+
+  if (followUpType === 'recommend') {
+    return filteredProducts[Math.min(1, filteredProducts.length - 1)] || filteredProducts[0];
+  }
+
+  if (followUpType === 'cheaper') {
+    return filteredProducts[safeIndex - 1] || null;
+  }
+
+  if (followUpType === 'better') {
+    return filteredProducts[safeIndex + 1] || null;
+  }
+
+  if (followUpType === 'another' || followUpType === 'similar') {
+    return filteredProducts[safeIndex + 1] || filteredProducts[safeIndex - 1] || filteredProducts.find((product) => String(product.id || product.productId || '').trim() !== memory.lastSuggestedProductId) || null;
+  }
+
+  return currentProduct;
 }
 
 function formatWholeNumber(value) {
@@ -1784,6 +1996,9 @@ function resolvePlanNeedHint(rawText) {
     text.includes('recién empiezo') ||
     text.includes('empezar simple') ||
     text.includes('plan inicial') ||
+    text.includes('econom') ||
+    text.includes('barato') ||
+    text.includes('accesible') ||
     text.includes('basico') ||
     text.includes('básico')
   ) {
@@ -1794,6 +2009,8 @@ function resolvePlanNeedHint(rawText) {
     text.includes('vender mas') ||
     text.includes('vender más') ||
     text.includes('automatizar mejor') ||
+    text.includes('algo mejor') ||
+    text.includes('mejorcito') ||
     text.includes('mas completo') ||
     text.includes('más completo') ||
     text.includes('quiero crecer')
@@ -1802,6 +2019,7 @@ function resolvePlanNeedHint(rawText) {
   }
 
   if (
+    text.includes('premium') ||
     text.includes('empresa') ||
     text.includes('personalizado') ||
     text.includes('integraciones') ||
@@ -3827,7 +4045,12 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       const suggestedPlan = findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0];
       return {
         type: commercialIntent.type,
-        replyText: buildPlanRecommendationReply(suggestedPlan)
+        replyText: buildPlanRecommendationReply(suggestedPlan),
+        contextPatch: buildCommercialShortMemoryPatch({
+          topic: 'plans',
+          lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+          recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+        })
       };
     }
 
@@ -3838,6 +4061,104 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   }
 
   return null;
+}
+
+async function buildCommercialShortMemoryReply({ clinic, conversation, inboundText }) {
+  const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
+    ? conversation.context
+    : {};
+  if (getPendingLoyaltyOfferedAction(safeContext)) return null;
+  const memory = getActiveCommercialShortMemory(safeContext);
+  const followUpType = resolveCommercialShortMemoryFollowUpType(inboundText);
+  if (!memory || !followUpType) return null;
+
+  const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+  const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+  if (!eligibleProducts.length) return null;
+
+  if (memory.topic === 'plans' && isPlanCatalog(eligibleProducts)) {
+    const suggestedPlan = selectPlanFromShortMemory(eligibleProducts, memory, followUpType);
+    if (!suggestedPlan) {
+      return {
+        replyText: followUpType === 'cheaper'
+          ? 'Por ahora no veo un plan más económico dentro de las opciones que veníamos viendo. Si querés, te comparo los planes o te recomiendo el que más te convenga.'
+          : 'Por ahora no veo una alternativa mejor dentro de las opciones que veníamos viendo. Si querés, te comparo los planes o te recomiendo el que más te convenga.',
+        contextPatch: buildCommercialShortMemoryPatch({
+          topic: 'plans',
+          lastSuggestedProductId: memory.lastSuggestedProductId,
+          recommendationType: memory.recommendationType
+        })
+      };
+    }
+
+    const introByType = {
+      cheaper: 'Si querés algo más accesible, mirá esta opción 😊',
+      better: 'Si querés subir un poco, te recomiendo esta 😊',
+      similar: 'Tengo otra opción parecida que te puede servir 😊',
+      recommend: 'De lo que venimos viendo, esta es de las más convenientes 😊',
+      another: 'Te muestro otra opción que también puede ir muy bien 😊'
+    };
+
+    return {
+      replyText: [
+        introByType[followUpType] || introByType.another,
+        '',
+        buildPlanRecommendationReply(suggestedPlan)
+      ].join('\n'),
+      outboundMedia: [buildCatalogProductImageMessage(suggestedPlan)].filter(Boolean),
+      newState: 'WAITING_PRODUCT_SELECTION',
+      contextPatch: {
+        commerceSuggestedProductId: String(suggestedPlan.id || suggestedPlan.productId || '').trim() || null,
+        commerceSuggestedProductName: suggestedPlan.name ? String(suggestedPlan.name) : null,
+        ...buildCommercialShortMemoryPatch({
+          topic: 'plans',
+          lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+          recommendationType: normalizeProductRecommendationType(suggestedPlan, getOrderedPlanProducts(eligibleProducts))
+        })
+      }
+    };
+  }
+
+  const suggestedProduct = selectProductFromShortMemory(eligibleProducts, memory, followUpType);
+  if (!suggestedProduct) {
+    return {
+      replyText: followUpType === 'cheaper'
+        ? 'Por ahora no veo una opción más barata dentro de lo que veníamos viendo. Si querés, te muestro el catálogo o buscamos otra categoría.'
+        : 'Por ahora no encuentro otra opción clara dentro de lo que veníamos viendo. Si querés, te muestro el catálogo o buscamos algo parecido.',
+      contextPatch: buildCommercialShortMemoryPatch({
+        topic: memory.topic,
+        categoryId: memory.categoryId,
+        lastSuggestedProductId: memory.lastSuggestedProductId,
+        recommendationType: memory.recommendationType
+      })
+    };
+  }
+
+  const eligibleOrderedProducts = buildCommerceEligibleProducts(clinicProducts)
+    .filter((product) => {
+      if (!memory.categoryId) return true;
+      if (memory.categoryId === COMMERCE_UNCATEGORIZED_CATEGORY_ID) {
+        return !String(product && product.categoryId ? product.categoryId : '').trim();
+      }
+      return String(product && product.categoryId ? product.categoryId : '').trim() === memory.categoryId;
+    })
+    .sort((left, right) => Number(left.price || 0) - Number(right.price || 0));
+
+  return {
+    replyText: buildCommercialShortMemoryProductReply(suggestedProduct, followUpType),
+    outboundMedia: [buildCatalogProductImageMessage(suggestedProduct)].filter(Boolean),
+    newState: 'WAITING_PRODUCT_SELECTION',
+    contextPatch: {
+      commerceSuggestedProductId: String(suggestedProduct.id || suggestedProduct.productId || '').trim() || null,
+      commerceSuggestedProductName: suggestedProduct.name ? String(suggestedProduct.name) : null,
+      ...buildCommercialShortMemoryPatch({
+        topic: 'catalog',
+        categoryId: suggestedProduct.categoryId || memory.categoryId || null,
+        lastSuggestedProductId: suggestedProduct && (suggestedProduct.id || suggestedProduct.productId),
+        recommendationType: normalizeProductRecommendationType(suggestedProduct, eligibleOrderedProducts)
+      })
+    }
+  };
 }
 
 function parseTransferPaymentIntent(input) {
@@ -4395,7 +4716,21 @@ async function resolveCommerceCartAddition({
       commerceLastAddedItem: {
         productId: String(latestProduct.id || '').trim() || null,
         quantity: effectiveQuantity
-      }
+      },
+      commercialShortMemory: buildCommercialShortMemoryPatch({
+        topic: isPlanProduct(latestProduct) ? 'plans' : 'catalog',
+        categoryId: latestProduct.categoryId || null,
+        lastSuggestedProductId: latestProduct.id || latestProduct.productId,
+        recommendationType: normalizeProductRecommendationType(
+          latestProduct,
+          buildCommerceEligibleProducts(await listProductsByClinicId(conversation.clinicId))
+            .filter((product) => {
+              if (!latestProduct.categoryId) return true;
+              return String(product && product.categoryId ? product.categoryId : '').trim() === String(latestProduct.categoryId).trim();
+            })
+            .sort((left, right) => Number(left.price || 0) - Number(right.price || 0))
+        )
+      }).commercialShortMemory
     })
   };
 }
@@ -4630,6 +4965,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const buildPlanSalesDecision = async (replyText, suggestedProduct = null) => {
     const products = await loadClinicProducts();
     const page = buildCommerceCatalogPage(products);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(products));
 
     return {
       replyText,
@@ -4647,7 +4983,14 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         commerceSuggestedProductId: suggestedProduct && (suggestedProduct.id || suggestedProduct.productId)
           ? String(suggestedProduct.id || suggestedProduct.productId)
           : null,
-        commerceSuggestedProductName: suggestedProduct && suggestedProduct.name ? String(suggestedProduct.name) : null
+        commerceSuggestedProductName: suggestedProduct && suggestedProduct.name ? String(suggestedProduct.name) : null,
+        commercialShortMemory: suggestedProduct
+          ? buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: suggestedProduct.id || suggestedProduct.productId,
+            recommendationType: normalizeProductRecommendationType(suggestedProduct, orderedPlans)
+          }).commercialShortMemory
+          : safeContext.commercialShortMemory || null
       })
     };
   };
@@ -6007,6 +6350,14 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const clinicProducts = await loadClinicProducts();
   const availablePlanProducts = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
   const planSalesActive = isPlanCatalog(availablePlanProducts);
+  const shortMemoryDecision = await buildCommercialShortMemoryReply({
+    clinic,
+    conversation,
+    inboundText
+  });
+  if (shortMemoryDecision) {
+    return shortMemoryDecision;
+  }
 
   if (planSalesActive) {
     const directlyReferencedPlan = findReferencedPlan(availablePlanProducts, inboundText);
@@ -7796,6 +8147,33 @@ async function processInboundJob(job) {
     conversation,
     inboundText
   });
+  const shortMemoryReply = safeCommercialReply
+    ? null
+    : await buildCommercialShortMemoryReply({
+      clinic,
+      conversation,
+      inboundText
+    });
+  if (shortMemoryReply) {
+    await updateLeadStatus(lead.id, 'qualifying', 'commercial_short_memory');
+    if (shortMemoryReply.contextPatch || shortMemoryReply.newState) {
+      await conversationRepo.updateConversationState({
+        conversationId: conversation.id,
+        state: shortMemoryReply.newState || conversation.state || 'READY',
+        contextPatch: shortMemoryReply.contextPatch || null
+      });
+    }
+    await sendAndPersistReply({
+      clinicId,
+      channel,
+      conversationId: conversation.id,
+      contact,
+      text: shortMemoryReply.replyText,
+      requestId,
+      correlationMessageId: messageId
+    });
+    return;
+  }
   if (safeCommercialReply) {
     if (safeCommercialReply.triggerHandoff === true || commercialIntent.type === 'human_handoff') {
       await openHandoffFlow({
@@ -7814,6 +8192,13 @@ async function processInboundJob(job) {
     }
 
     await updateLeadStatus(lead.id, 'qualifying', `semantic:${safeCommercialReply.type}`);
+    if (safeCommercialReply.contextPatch) {
+      await conversationRepo.updateConversationState({
+        conversationId: conversation.id,
+        state: conversation.state || 'READY',
+        contextPatch: safeCommercialReply.contextPatch
+      });
+    }
     await sendAndPersistReply({
       clinicId,
       channel,
@@ -9757,6 +10142,9 @@ module.exports = {
     isLoyaltyIntent,
     detectCommercialIntent,
     buildSafeCommercialIntentReply,
+    buildCommercialShortMemoryReply,
+    getActiveCommercialShortMemory,
+    resolveCommercialShortMemoryFollowUpType,
     buildIntelligentFallbackReply,
     buildLoyaltyWhatsAppReply,
     buildLoyaltyContextPatch,
