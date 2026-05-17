@@ -8118,6 +8118,9 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
     conversationId: conversationId || null,
     requestId
   });
+  const safeOutboundMedia = Array.isArray(outboundMedia)
+    ? outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
+    : [];
   logInfo('worker_whatsapp_send_attempt', {
     requestId,
     clinicId,
@@ -8125,44 +8128,46 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
     conversationId: conversationId || null,
     jobId: null,
     phoneNumberId: channelCredentials.phoneNumberId,
-    hasAccessToken: true
+    hasAccessToken: true,
+    hasOutboundMedia: safeOutboundMedia.length > 0
   });
-  const sendResult = await sendChannelScopedMessage(
-    { to: contact.waId, text },
-    {
-      requestId,
-      credentials: {
-        channelId: channelCredentials.channelId,
-        accessToken: channelCredentials.accessToken,
-        phoneNumberId: channelCredentials.phoneNumberId,
-        clinicId: channelCredentials.clinicId,
-        provider: channelCredentials.provider,
-        status: channelCredentials.status,
-        wabaId: channelCredentials.wabaId
+  if (!safeOutboundMedia.length) {
+    const sendResult = await sendChannelScopedMessage(
+      { to: contact.waId, text },
+      {
+        requestId,
+        credentials: {
+          channelId: channelCredentials.channelId,
+          accessToken: channelCredentials.accessToken,
+          phoneNumberId: channelCredentials.phoneNumberId,
+          clinicId: channelCredentials.clinicId,
+          provider: channelCredentials.provider,
+          status: channelCredentials.status,
+          wabaId: channelCredentials.wabaId
+        }
       }
-    }
-  );
+    );
 
-  await conversationRepo.insertOutboundMessage({
-    conversationId,
-    waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
-    from: channelCredentials.phoneNumberId,
-    to: contact.waId || null,
-    type: 'text',
-    text,
-    raw: sendResult && sendResult.raw ? sendResult.raw : {}
-  });
+    await conversationRepo.insertOutboundMessage({
+      conversationId,
+      waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
+      from: channelCredentials.phoneNumberId,
+      to: contact.waId || null,
+      type: 'text',
+      text,
+      raw: sendResult && sendResult.raw ? sendResult.raw : {}
+    });
+  }
 
-  const safeOutboundMedia = Array.isArray(outboundMedia)
-    ? outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
-    : [];
-  for (const mediaMessage of safeOutboundMedia) {
+  for (let index = 0; index < safeOutboundMedia.length; index += 1) {
+    const mediaMessage = safeOutboundMedia[index];
+    const caption = String(mediaMessage.image.caption || '').trim() || (index === 0 ? String(text || '').trim() : '');
     const mediaSendResult = await sendChannelScopedMessage(
       {
         to: contact.waId,
         image: {
           link: String(mediaMessage.image.link || '').trim(),
-          caption: String(mediaMessage.image.caption || '').trim()
+          caption
         }
       },
       {
@@ -8185,13 +8190,13 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
       from: channelCredentials.phoneNumberId,
       to: contact.waId || null,
       type: 'image',
-      text: mediaMessage.image.caption || null,
+      text: caption || null,
       raw: {
         ...(mediaSendResult && mediaSendResult.raw ? mediaSendResult.raw : {}),
         message: {
           image: {
             link: String(mediaMessage.image.link || '').trim(),
-            caption: String(mediaMessage.image.caption || '').trim()
+            caption
           }
         }
       }
