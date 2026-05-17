@@ -2531,6 +2531,48 @@ function findPlanByStoredId(products, storedId) {
   return getOrderedPlanProducts(products).find((product) => String(product.id || product.productId || '').trim() === safeId) || null;
 }
 
+function findCatalogItemByStoredId(products, storedId) {
+  const safeId = String(storedId || '').trim();
+  if (!safeId) return null;
+  return (Array.isArray(products) ? products : []).find((product) => String(product && (product.id || product.productId) ? (product.id || product.productId) : '').trim() === safeId) || null;
+}
+
+function chooseLogicalComparisonItem(items, currentItem, preferredItemId = null) {
+  const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
+  const currentId = String(currentItem && (currentItem.id || currentItem.productId) ? (currentItem.id || currentItem.productId) : '').trim();
+  if (!currentId || !safeItems.length) return null;
+
+  const preferred = preferredItemId ? findCatalogItemByStoredId(safeItems, preferredItemId) : null;
+  if (preferred && String(preferred.id || preferred.productId || '').trim() !== currentId) {
+    return preferred;
+  }
+
+  if (isPlanProduct(currentItem)) {
+    const orderedPlans = getOrderedPlanProducts(safeItems);
+    const currentName = normalizeCommandText(currentItem.name || '');
+    if (currentName.includes('inicial')) {
+      return findPlanByNeedHint(orderedPlans, 'growth');
+    }
+    if (currentName.includes('empresa')) {
+      return findPlanByNeedHint(orderedPlans, 'growth') || findPlanByNeedHint(orderedPlans, 'starter');
+    }
+    if (currentName.includes('crecimiento')) {
+      return findPlanByNeedHint(orderedPlans, 'enterprise') || findPlanByNeedHint(orderedPlans, 'starter');
+    }
+  }
+
+  const currentCategoryId = String(currentItem && currentItem.categoryId ? currentItem.categoryId : '').trim();
+  const sameCategory = safeItems.find((item) => {
+    const itemId = String(item && (item.id || item.productId) ? (item.id || item.productId) : '').trim();
+    if (!itemId || itemId === currentId) return false;
+    if (!currentCategoryId) return false;
+    return String(item && item.categoryId ? item.categoryId : '').trim() === currentCategoryId;
+  });
+  if (sameCategory) return sameCategory;
+
+  return safeItems.find((item) => String(item && (item.id || item.productId) ? (item.id || item.productId) : '').trim() !== currentId) || null;
+}
+
 function buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, businessContext) {
   const recommended = recommendedPlan && typeof recommendedPlan === 'object' ? recommendedPlan : {};
   const compared = comparedPlan && typeof comparedPlan === 'object' ? comparedPlan : {};
@@ -2586,21 +2628,55 @@ function buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, business
 }
 
 function buildSafeContextualPlanReply(product, contextPlan = null) {
-  const safeProduct = product && typeof product === 'object' ? product : {};
-  const profile = resolvePlanProfile(safeProduct);
-  const comparedProduct = contextPlan && typeof contextPlan === 'object' ? contextPlan : null;
+  return buildCatalogItemDetailReply(product, contextPlan);
+}
 
-  return [
-    `El ${safeProduct.name || 'plan'} está pensado para ${profile.shortDescription.toLowerCase()} 😊`,
-    '',
-    `Te conviene si hoy ${profile.problemSolved}.`,
-    '',
-    `Con este plan podés ${profile.result}.`,
-    '',
-    comparedProduct
-      ? `Si querés, también puedo contarte la diferencia puntual con ${comparedProduct.name || 'el otro plan'}.`
-      : 'Si querés, también puedo contarte la diferencia puntual con otro plan.'
-  ].join('\n');
+function isCatalogItemDetailIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('que tiene') ||
+    text.includes('qué tiene') ||
+    text.includes('que incluye') ||
+    text.includes('qué incluye') ||
+    text.includes('que ofrece') ||
+    text.includes('qué ofrece') ||
+    text.includes('que trae') ||
+    text.includes('qué trae') ||
+    text.includes('quiero saber') ||
+    text.includes('detalle')
+  );
+}
+
+function buildCatalogItemDetailReply(item, comparedItem = null) {
+  const safeItem = item && typeof item === 'object' ? item : {};
+  const safeComparedItem = comparedItem && typeof comparedItem === 'object' ? comparedItem : null;
+  const name = String(safeItem.name || '').trim() || 'Este producto';
+  const description = String(safeItem.description || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+  const summary = description.length > 320 ? `${description.slice(0, 317).trim()}...` : description;
+  const lines = [`${name}${Number(safeItem.price || 0) > 0 ? ` — ${formatMoney(safeItem.price, safeItem.currency)}` : ''}`];
+
+  if (summary) {
+    lines.push('', summary);
+  } else if (isPlanProduct(safeItem)) {
+    const profile = resolvePlanProfile(safeItem);
+    lines.push('', profile.shortDescription, '', `Te conviene si hoy ${profile.problemSolved}.`);
+  }
+
+  if (
+    safeComparedItem &&
+    String(safeComparedItem.id || safeComparedItem.productId || '').trim() &&
+    String(safeComparedItem.id || safeComparedItem.productId || '').trim() !== String(safeItem.id || safeItem.productId || '').trim()
+  ) {
+    lines.push('', `Si querés, también puedo contarte la diferencia puntual con ${safeComparedItem.name || 'otro producto'}.`);
+  }
+
+  return lines.join('\n');
 }
 
 function buildPlanDetailReply(product, { includePrice = true, includeFeatures = true } = {}) {
@@ -4507,12 +4583,15 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const comparedPlan = findPlanByStoredId(orderedPlans, activePlanContext.lastComparedPlanId);
 
     if (discussedPlan) {
-      const nextComparedPlan = comparedPlan && String(comparedPlan.id || comparedPlan.productId || '').trim() !== String(discussedPlan.id || discussedPlan.productId || '').trim()
-        ? comparedPlan
-        : findPlanByStoredId(orderedPlans, activePlanContext.lastDiscussedPlanId);
+      const nextComparedPlan = chooseLogicalComparisonItem(
+        orderedPlans,
+        discussedPlan,
+        activePlanContext.lastComparedPlanId || activePlanContext.lastDiscussedPlanId
+      );
       return {
         type: 'recommendation',
         replyText: buildSafeContextualPlanReply(discussedPlan, nextComparedPlan),
+        outboundMedia: [buildCatalogProductImageMessage(discussedPlan)].filter(Boolean),
         contextPatch: {
           ...buildCommercialShortMemoryPatch({
             topic: 'plans',
@@ -4635,6 +4714,48 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       type: commercialIntent.type,
       replyText: 'Contame un poco tu negocio y te recomiendo el plan que mejor te puede servir 😊'
     };
+  }
+
+  if (
+    !effectiveBusinessContext &&
+    !activePlanContext &&
+    isCatalogItemDetailIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const matchedItem = findReferencedPlan(eligibleProducts, inboundText) || findProductByName(eligibleProducts, inboundText);
+
+    if (matchedItem) {
+      const comparedItem = chooseLogicalComparisonItem(eligibleProducts, matchedItem, null);
+      return {
+        type: 'products',
+        replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
+        outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: isPlanProduct(matchedItem) ? 'plans' : 'catalog',
+            categoryId: matchedItem.categoryId || null,
+            lastSuggestedProductId: matchedItem && (matchedItem.id || matchedItem.productId),
+            recommendationType: isPlanProduct(matchedItem) ? normalizeProductRecommendationType(matchedItem, getOrderedPlanProducts(eligibleProducts)) : 'general'
+          }),
+          ...(isPlanProduct(matchedItem)
+            ? {
+              ...buildCommercialPlanContextPatch({
+                topic: 'plan_detail',
+                lastDiscussedPlanId: matchedItem && (matchedItem.id || matchedItem.productId),
+                lastComparedPlanId: comparedItem && (comparedItem.id || comparedItem.productId),
+                recommendationType: normalizeProductRecommendationType(matchedItem, getOrderedPlanProducts(eligibleProducts))
+              }),
+              pendingOfferedAction: buildCurrentPlanComparisonOfferedAction(
+                matchedItem,
+                comparedItem,
+                normalizeProductRecommendationType(matchedItem, getOrderedPlanProducts(eligibleProducts))
+              )
+            }
+            : null)
+        }
+      };
+    }
   }
 
   if (effectiveBusinessContext) {
@@ -7992,7 +8113,7 @@ function normalizeChannelSendContext(channel, meta = {}) {
   };
 }
 
-async function sendAndPersistReply({ clinicId, channel, conversationId, contact, text, requestId, correlationMessageId }) {
+async function sendAndPersistReply({ clinicId, channel, conversationId, contact, text, requestId, correlationMessageId, outboundMedia = null }) {
   const channelCredentials = normalizeChannelSendContext(channel, {
     conversationId: conversationId || null,
     requestId
@@ -8031,6 +8152,51 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
     text,
     raw: sendResult && sendResult.raw ? sendResult.raw : {}
   });
+
+  const safeOutboundMedia = Array.isArray(outboundMedia)
+    ? outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
+    : [];
+  for (const mediaMessage of safeOutboundMedia) {
+    const mediaSendResult = await sendChannelScopedMessage(
+      {
+        to: contact.waId,
+        image: {
+          link: String(mediaMessage.image.link || '').trim(),
+          caption: String(mediaMessage.image.caption || '').trim()
+        }
+      },
+      {
+        requestId,
+        credentials: {
+          channelId: channelCredentials.channelId,
+          accessToken: channelCredentials.accessToken,
+          phoneNumberId: channelCredentials.phoneNumberId,
+          clinicId: channelCredentials.clinicId,
+          provider: channelCredentials.provider,
+          status: channelCredentials.status,
+          wabaId: channelCredentials.wabaId
+        }
+      }
+    );
+
+    await conversationRepo.insertOutboundMessage({
+      conversationId,
+      waMessageId: mediaSendResult && mediaSendResult.messageId ? mediaSendResult.messageId : null,
+      from: channelCredentials.phoneNumberId,
+      to: contact.waId || null,
+      type: 'image',
+      text: mediaMessage.image.caption || null,
+      raw: {
+        ...(mediaSendResult && mediaSendResult.raw ? mediaSendResult.raw : {}),
+        message: {
+          image: {
+            link: String(mediaMessage.image.link || '').trim(),
+            caption: String(mediaMessage.image.caption || '').trim()
+          }
+        }
+      }
+    });
+  }
 
   logInfo('worker_outbound_sent', {
     requestId,
@@ -8791,6 +8957,7 @@ async function processInboundJob(job) {
       conversationId: conversation.id,
       contact,
       text: shortMemoryReply.replyText,
+      outboundMedia: shortMemoryReply.outboundMedia || null,
       requestId,
       correlationMessageId: messageId
     });
@@ -8827,6 +8994,7 @@ async function processInboundJob(job) {
       conversationId: conversation.id,
       contact,
       text: safeCommercialReply.replyText,
+      outboundMedia: safeCommercialReply.outboundMedia || null,
       requestId,
       correlationMessageId: messageId
     });
@@ -9243,6 +9411,7 @@ async function processConversationReplyJob(job) {
         conversationId: conversation.id,
         contact,
         text: safeCommercialReply.replyText,
+        outboundMedia: safeCommercialReply.outboundMedia || null,
         requestId,
         correlationMessageId: waMessageId || inboundMessage.id
       });
