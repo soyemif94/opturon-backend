@@ -1060,6 +1060,7 @@ const COMMERCE_MORE_KEYWORDS = new Set(['mas', 'más', 'ver mas', 'ver más', 'm
 const COMMERCE_UNCATEGORIZED_CATEGORY_ID = '__uncategorized__';
 const COMMERCIAL_SHORT_MEMORY_TTL_MS = 10 * 60 * 1000;
 const PLAN_PENDING_ACTION_COMPARE_RECOMMENDED = 'compare_recommended_plan';
+const PLAN_PENDING_ACTION_COMPARE_CURRENT = 'compare_current_plan_with_plan';
 
 function buildCommerceEligibleProducts(products) {
   return (Array.isArray(products) ? products : []).filter((product) => {
@@ -1736,7 +1737,8 @@ function isPendingPlanComparisonIntent(rawText) {
     'decime',
     'si',
     'quiero ver',
-    'cual es la diferencia'
+    'cual es la diferencia',
+    'comparalos'
   ]);
   if (exactMatches.has(looseText)) {
     return true;
@@ -1744,6 +1746,7 @@ function isPendingPlanComparisonIntent(rawText) {
 
   return (
     looseText.includes('cual es la diferencia') ||
+    looseText.includes('comparalos') ||
     looseText.includes('contame') ||
     looseText.includes('decime') ||
     (looseText.includes('quiero') && looseText.includes('ver'))
@@ -1778,7 +1781,7 @@ function getPendingPlanComparisonAction(safeContext) {
   if (!pending) return null;
 
   const type = String(pending.type || '').trim();
-  if (type !== PLAN_PENDING_ACTION_COMPARE_RECOMMENDED) return null;
+  if (![PLAN_PENDING_ACTION_COMPARE_RECOMMENDED, PLAN_PENDING_ACTION_COMPARE_CURRENT].includes(type)) return null;
 
   const activeAt = String(pending.activeAt || '').trim();
   const timestamp = Date.parse(activeAt);
@@ -1789,6 +1792,8 @@ function getPendingPlanComparisonAction(safeContext) {
   return {
     type,
     activeAt,
+    currentPlanId: String(pending.currentPlanId || '').trim() || null,
+    comparisonPlanId: String(pending.comparisonPlanId || '').trim() || null,
     recommendedPlanId: String(pending.recommendedPlanId || '').trim() || null,
     comparedPlanId: String(pending.comparedPlanId || '').trim() || null,
     recommendationLevel: String(pending.recommendationLevel || '').trim().toLowerCase() || null
@@ -2313,6 +2318,18 @@ function findReferencedPlan(products, rawText) {
   return namedTokens.find((entry) => entry.remainder && text.includes(entry.remainder))?.product || null;
 }
 
+function findReferencedPlans(products, rawText) {
+  const orderedPlans = getOrderedPlanProducts(products);
+  const text = normalizeCommandText(rawText);
+  if (!text) return [];
+
+  return orderedPlans.filter((product) => {
+    const normalizedName = normalizeCommandText(product.name || '');
+    const remainder = normalizedName.replace(/\bplan\b/g, '').trim();
+    return text.includes(normalizedName) || (remainder && text.includes(remainder));
+  });
+}
+
 function isContextualPlanReferenceIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
@@ -2368,6 +2385,23 @@ function isContextualPlanQuestionIntent(rawText) {
     text.includes('qué cambia') ||
     text.includes('que diferencia hay') ||
     text.includes('qué diferencia hay')
+  );
+}
+
+function isPlanVsPlanIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes(' y no ') ||
+    text.includes(' mejor que ') ||
+    text.includes(' diferencia hay entre ') ||
+    text.includes(' cual me conviene mas') ||
+    text.includes(' cuál me conviene más') ||
+    text.includes(' con mi negocio cual elegirias') ||
+    text.includes(' con mi negocio cuál elegirías') ||
+    text.includes(' empresa es mejor que crecimiento') ||
+    text.includes(' crecimiento es mejor que inicial')
   );
 }
 
@@ -2480,6 +2514,17 @@ function buildPlanComparisonOfferedAction(recommendedPlan, comparedPlan, busines
   };
 }
 
+function buildCurrentPlanComparisonOfferedAction(currentPlan, comparisonPlan, recommendationType = null) {
+  if (!currentPlan || !comparisonPlan) return null;
+  return {
+    type: PLAN_PENDING_ACTION_COMPARE_CURRENT,
+    activeAt: new Date().toISOString(),
+    currentPlanId: String(currentPlan.id || currentPlan.productId || '').trim() || null,
+    comparisonPlanId: String(comparisonPlan.id || comparisonPlan.productId || '').trim() || null,
+    recommendationType: recommendationType ? String(recommendationType).trim().toLowerCase() : null
+  };
+}
+
 function findPlanByStoredId(products, storedId) {
   const safeId = String(storedId || '').trim();
   if (!safeId) return null;
@@ -2503,6 +2548,38 @@ function buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, busi
     `El ${recommended.name || 'plan recomendado'} te sirve si hoy ${recommendedProfile.problemSolved}.`,
     '',
     `El ${compared.name || 'otro plan'} conviene más si ${comparedProfile.problemSolved}.`,
+    '',
+    closingLine
+  ].join('\n');
+}
+
+function buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, businessContext = null) {
+  const primary = primaryPlan && typeof primaryPlan === 'object' ? primaryPlan : {};
+  const secondary = secondaryPlan && typeof secondaryPlan === 'object' ? secondaryPlan : {};
+  const primaryProfile = resolvePlanProfile(primary);
+  const secondaryProfile = resolvePlanProfile(secondary);
+  const recommendationLevel = String(businessContext && businessContext.recommendationLevel ? businessContext.recommendationLevel : '').trim().toLowerCase();
+
+  const closingLine = (
+    recommendationLevel === 'growth' &&
+    normalizeCommandText(primary.name || '').includes('crecimiento') &&
+    normalizeCommandText(secondary.name || '').includes('inicial')
+  )
+    ? `Para una tienda de ropa, yo elegiría ${primary.name || 'Crecimiento'} antes que ${secondary.name || 'Inicial'} si ya recibís consultas por WhatsApp y querés hacer seguimiento real de clientes 😊`
+    : (
+      recommendationLevel === 'growth' &&
+      normalizeCommandText(primary.name || '').includes('empresa') &&
+      normalizeCommandText(secondary.name || '').includes('crecimiento')
+    )
+      ? `${primary.name || 'Empresa'} tiene más sentido si ya tenés varios vendedores, mucho volumen o necesitás más supervisión. ${secondary.name || 'Crecimiento'} está muy bien para empezar a ordenar la operación diaria sin irte directo al plan más grande.`
+      : `Hoy veo más alineado ${primary.name || 'este plan'} si tu foco principal es ${primaryProfile.result}.`;
+
+  return [
+    'Claro 😊',
+    '',
+    `${secondary.name || 'El otro plan'} sirve si hoy ${secondaryProfile.problemSolved}.`,
+    '',
+    `${primary.name || 'Este plan'} conviene más cuando querés ${primaryProfile.result}.`,
     '',
     closingLine
   ].join('\n');
@@ -4338,7 +4415,6 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (
     pendingPlanComparison &&
     !isCommerceEntryIntent(inboundText) &&
-    !isExplicitCommerceTrigger(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -4347,13 +4423,15 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
-    const recommendedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.recommendedPlanId);
-    const comparedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.comparedPlanId);
+    const recommendedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.currentPlanId || pendingPlanComparison.recommendedPlanId);
+    const comparedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.comparisonPlanId || pendingPlanComparison.comparedPlanId);
 
     if (recommendedPlan && comparedPlan) {
       return {
         type: 'recommendation',
-        replyText: buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison),
+        replyText: pendingPlanComparison.type === PLAN_PENDING_ACTION_COMPARE_CURRENT
+          ? buildContextualPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison)
+          : buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison),
         contextPatch: {
           ...buildCommercialShortMemoryPatch({
             topic: 'plans',
@@ -4371,6 +4449,44 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             activeAt: null,
             completedAt: new Date().toISOString()
           }
+        }
+      };
+    }
+  }
+
+  if (
+    activePlanContext &&
+    !isCommerceEntryIntent(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isPlanVsPlanIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const referencedPlans = findReferencedPlans(orderedPlans, inboundText);
+    const primaryPlan = referencedPlans[0] || findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText);
+    const secondaryPlan = referencedPlans[1]
+      || findPlanByStoredId(orderedPlans, activePlanContext.lastComparedPlanId)
+      || findPlanByNeedHint(orderedPlans, 'starter');
+
+    if (primaryPlan && secondaryPlan && String(primaryPlan.id || primaryPlan.productId || '').trim() !== String(secondaryPlan.id || secondaryPlan.productId || '').trim()) {
+      return {
+        type: 'recommendation',
+        replyText: buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, effectiveBusinessContext || activePlanContext),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: primaryPlan && (primaryPlan.id || primaryPlan.productId),
+            recommendationType: normalizeProductRecommendationType(primaryPlan, orderedPlans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_comparison',
+            lastDiscussedPlanId: primaryPlan && (primaryPlan.id || primaryPlan.productId),
+            lastComparedPlanId: secondaryPlan && (secondaryPlan.id || secondaryPlan.productId),
+            recommendationType: normalizeProductRecommendationType(primaryPlan, orderedPlans)
+          })
         }
       };
     }
@@ -4408,7 +4524,12 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             lastDiscussedPlanId: discussedPlan && (discussedPlan.id || discussedPlan.productId),
             lastComparedPlanId: nextComparedPlan && (nextComparedPlan.id || nextComparedPlan.productId),
             recommendationType: activePlanContext.recommendationType
-          })
+          }),
+          pendingOfferedAction: buildCurrentPlanComparisonOfferedAction(
+            discussedPlan,
+            nextComparedPlan,
+            activePlanContext.recommendationType
+          )
         }
       };
     }
