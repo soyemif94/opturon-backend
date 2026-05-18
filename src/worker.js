@@ -2651,7 +2651,6 @@ function isCatalogItemDetailIntent(rawText) {
 
 function buildCatalogItemDetailReply(item, comparedItem = null) {
   const safeItem = item && typeof item === 'object' ? item : {};
-  const safeComparedItem = comparedItem && typeof comparedItem === 'object' ? comparedItem : null;
   const name = String(safeItem.name || '').trim() || 'Este producto';
   const description = String(safeItem.description || '')
     .split('\n')
@@ -2666,14 +2665,6 @@ function buildCatalogItemDetailReply(item, comparedItem = null) {
   } else if (isPlanProduct(safeItem)) {
     const profile = resolvePlanProfile(safeItem);
     lines.push('', profile.shortDescription, '', `Te conviene si hoy ${profile.problemSolved}.`);
-  }
-
-  if (
-    safeComparedItem &&
-    String(safeComparedItem.id || safeComparedItem.productId || '').trim() &&
-    String(safeComparedItem.id || safeComparedItem.productId || '').trim() !== String(safeItem.id || safeItem.productId || '').trim()
-  ) {
-    lines.push('', `Si querés, también puedo contarte la diferencia puntual con ${safeComparedItem.name || 'otro producto'}.`);
   }
 
   return lines.join('\n');
@@ -4535,6 +4526,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         type: 'products',
         replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
         outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
+        sendTextWithMedia: false,
         contextPatch: buildCatalogItemDetailContextPatch(matchedItem, comparedItem, eligibleProducts)
       };
     }
@@ -7121,6 +7113,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       return {
         replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
         outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
+        sendTextWithMedia: false,
         newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCatalog: page.items,
@@ -8179,8 +8172,10 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
     hasAccessToken: true,
     hasOutboundMedia: safeOutboundMedia.length > 0
   });
+  let primarySendResult = null;
+  let firstMediaSendResult = null;
   if (!safeOutboundMedia.length) {
-    const sendResult = await sendChannelScopedMessage(
+    primarySendResult = await sendChannelScopedMessage(
       { to: contact.waId, text },
       {
         requestId,
@@ -8198,12 +8193,12 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
 
     await conversationRepo.insertOutboundMessage({
       conversationId,
-      waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
+      waMessageId: primarySendResult && primarySendResult.messageId ? primarySendResult.messageId : null,
       from: channelCredentials.phoneNumberId,
       to: contact.waId || null,
       type: 'text',
       text,
-      raw: sendResult && sendResult.raw ? sendResult.raw : {}
+      raw: primarySendResult && primarySendResult.raw ? primarySendResult.raw : {}
     });
   }
 
@@ -8231,6 +8226,9 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
         }
       }
     );
+    if (!firstMediaSendResult) {
+      firstMediaSendResult = mediaSendResult;
+    }
 
     await conversationRepo.insertOutboundMessage({
       conversationId,
@@ -8258,10 +8256,14 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
     conversationId,
     contactId: contact.id,
     messageId: correlationMessageId || null,
-    outboundMessageId: sendResult.messageId || null
+    outboundMessageId: (
+      (primarySendResult && primarySendResult.messageId) ||
+      (firstMediaSendResult && firstMediaSendResult.messageId) ||
+      null
+    )
   });
 
-  return sendResult;
+  return primarySendResult || firstMediaSendResult || null;
 }
 
 async function sendAgendaReminderMessage({ clinicId, channel, conversationId, contact, text, requestId, agendaItemId }) {
@@ -10338,6 +10340,10 @@ async function processConversationReplyJob(job) {
   let aiUsage = null;
   let aiAttempted = false;
   let aiSkipReason = null;
+  const outboundMedia = Array.isArray(decision && decision.outboundMedia)
+    ? decision.outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
+    : [];
+  const shouldSendTextWithMedia = outboundMedia.length === 0 || decision.sendTextWithMedia !== false;
 
   const aiEnabled = env.aiEnabled === true;
   const hasAiKey = !!String(env.openaiApiKey || '').trim();
@@ -10350,7 +10356,9 @@ async function processConversationReplyJob(job) {
     channelId: conversation.channelId || channelId || null
   });
 
-  if (decisionSource === 'automation') {
+  if (!shouldSendTextWithMedia) {
+    aiSkipReason = 'media_caption_only';
+  } else if (decisionSource === 'automation') {
     aiSkipReason = 'automation_matched';
   } else if (aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok) {
     const budget = reserveAiBudget(conversation.id);
@@ -10464,10 +10472,6 @@ async function processConversationReplyJob(job) {
     hasAccessToken: true
   });
 
-  const outboundMedia = Array.isArray(decision && decision.outboundMedia)
-    ? decision.outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
-    : [];
-
   for (const mediaMessage of outboundMedia) {
     try {
       const mediaSendResult = await sendChannelScopedMessage(
@@ -10535,50 +10539,53 @@ async function processConversationReplyJob(job) {
     }
   }
 
-  const sendResult = await sendChannelScopedMessage(
-    { to: contact.waId, text: replyText },
-    {
-      requestId,
-      credentials: {
-        ...replyChannelCredentials
+  let sendResult = null;
+  if (shouldSendTextWithMedia) {
+    sendResult = await sendChannelScopedMessage(
+      { to: contact.waId, text: replyText },
+      {
+        requestId,
+        credentials: {
+          ...replyChannelCredentials
+        }
       }
-    }
-  );
+    );
 
-  const outboundWrite = await conversationRepo.insertOutboundMessage({
-    conversationId: conversation.id,
-    waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
-    from: replyChannelCredentials.phoneNumberId,
-    to: contact.waId || null,
-    type: 'text',
-    text: replyText,
-    raw: {
-      ...(sendResult && sendResult.raw ? sendResult.raw : {}),
-      automation: {
-        inboundMessageId: inboundMessage.id,
-        inboundWaMessageId: waMessageId,
-        source: decisionSource || null,
-        jobId: job.id
-      },
-      ai: {
-        enabled: aiEnabled && hasAiKey,
-        attempted: aiAttempted,
-        used: aiUsed,
-        model: aiModel,
-        usage: aiUsage,
-        fallbackUsed: aiFallbackUsed,
-        skipReason: aiSkipReason
-      }
-    }
-  });
-
-  if (outboundWrite && outboundWrite.inserted === false) {
-    logWarn('outbound_duplicate_waMessageId_skipped', {
-      requestId,
-      jobId: job.id,
+    const outboundWrite = await conversationRepo.insertOutboundMessage({
       conversationId: conversation.id,
-      waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null
+      waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
+      from: replyChannelCredentials.phoneNumberId,
+      to: contact.waId || null,
+      type: 'text',
+      text: replyText,
+      raw: {
+        ...(sendResult && sendResult.raw ? sendResult.raw : {}),
+        automation: {
+          inboundMessageId: inboundMessage.id,
+          inboundWaMessageId: waMessageId,
+          source: decisionSource || null,
+          jobId: job.id
+        },
+        ai: {
+          enabled: aiEnabled && hasAiKey,
+          attempted: aiAttempted,
+          used: aiUsed,
+          model: aiModel,
+          usage: aiUsage,
+          fallbackUsed: aiFallbackUsed,
+          skipReason: aiSkipReason
+        }
+      }
     });
+
+    if (outboundWrite && outboundWrite.inserted === false) {
+      logWarn('outbound_duplicate_waMessageId_skipped', {
+        requestId,
+        jobId: job.id,
+        conversationId: conversation.id,
+        waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null
+      });
+    }
   }
 
   logInfo('conversation_reply_processed', {
