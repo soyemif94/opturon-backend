@@ -2679,6 +2679,39 @@ function buildCatalogItemDetailReply(item, comparedItem = null) {
   return lines.join('\n');
 }
 
+function buildCatalogItemDetailContextPatch(item, comparedItem, eligibleProducts) {
+  const safeItem = item && typeof item === 'object' ? item : null;
+  if (!safeItem) return null;
+
+  const safeEligibleProducts = Array.isArray(eligibleProducts) ? eligibleProducts.filter(Boolean) : [];
+  const orderedPlans = getOrderedPlanProducts(safeEligibleProducts);
+  const itemId = safeItem.id || safeItem.productId || null;
+
+  return {
+    ...buildCommercialShortMemoryPatch({
+      topic: isPlanProduct(safeItem) ? 'plans' : 'catalog',
+      categoryId: safeItem.categoryId || null,
+      lastSuggestedProductId: itemId,
+      recommendationType: isPlanProduct(safeItem) ? normalizeProductRecommendationType(safeItem, orderedPlans) : 'general'
+    }),
+    ...(isPlanProduct(safeItem)
+      ? {
+        ...buildCommercialPlanContextPatch({
+          topic: 'plan_detail',
+          lastDiscussedPlanId: itemId,
+          lastComparedPlanId: comparedItem && (comparedItem.id || comparedItem.productId),
+          recommendationType: normalizeProductRecommendationType(safeItem, orderedPlans)
+        }),
+        pendingOfferedAction: buildCurrentPlanComparisonOfferedAction(
+          safeItem,
+          comparedItem,
+          normalizeProductRecommendationType(safeItem, orderedPlans)
+        )
+      }
+      : null)
+  };
+}
+
 function buildPlanDetailReply(product, { includePrice = true, includeFeatures = true } = {}) {
   const safeProduct = product && typeof product === 'object' ? product : {};
   const profile = resolvePlanProfile(safeProduct);
@@ -4488,6 +4521,25 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
   const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
 
+  if (isCatalogItemDetailIntent(inboundText)) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const matchedItem = findReferencedPlan(eligibleProducts, inboundText) || findProductByName(eligibleProducts, inboundText);
+
+    if (matchedItem) {
+      const preferredComparedItemId = activePlanContext && activePlanContext.lastComparedPlanId
+        ? activePlanContext.lastComparedPlanId
+        : null;
+      const comparedItem = chooseLogicalComparisonItem(eligibleProducts, matchedItem, preferredComparedItemId);
+      return {
+        type: 'products',
+        replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
+        outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
+        contextPatch: buildCatalogItemDetailContextPatch(matchedItem, comparedItem, eligibleProducts)
+      };
+    }
+  }
+
   if (
     pendingPlanComparison &&
     !isCommerceEntryIntent(inboundText) &&
@@ -4714,48 +4766,6 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       type: commercialIntent.type,
       replyText: 'Contame un poco tu negocio y te recomiendo el plan que mejor te puede servir 😊'
     };
-  }
-
-  if (
-    !effectiveBusinessContext &&
-    !activePlanContext &&
-    isCatalogItemDetailIntent(inboundText)
-  ) {
-    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
-    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
-    const matchedItem = findReferencedPlan(eligibleProducts, inboundText) || findProductByName(eligibleProducts, inboundText);
-
-    if (matchedItem) {
-      const comparedItem = chooseLogicalComparisonItem(eligibleProducts, matchedItem, null);
-      return {
-        type: 'products',
-        replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
-        outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
-        contextPatch: {
-          ...buildCommercialShortMemoryPatch({
-            topic: isPlanProduct(matchedItem) ? 'plans' : 'catalog',
-            categoryId: matchedItem.categoryId || null,
-            lastSuggestedProductId: matchedItem && (matchedItem.id || matchedItem.productId),
-            recommendationType: isPlanProduct(matchedItem) ? normalizeProductRecommendationType(matchedItem, getOrderedPlanProducts(eligibleProducts)) : 'general'
-          }),
-          ...(isPlanProduct(matchedItem)
-            ? {
-              ...buildCommercialPlanContextPatch({
-                topic: 'plan_detail',
-                lastDiscussedPlanId: matchedItem && (matchedItem.id || matchedItem.productId),
-                lastComparedPlanId: comparedItem && (comparedItem.id || comparedItem.productId),
-                recommendationType: normalizeProductRecommendationType(matchedItem, getOrderedPlanProducts(eligibleProducts))
-              }),
-              pendingOfferedAction: buildCurrentPlanComparisonOfferedAction(
-                matchedItem,
-                comparedItem,
-                normalizeProductRecommendationType(matchedItem, getOrderedPlanProducts(eligibleProducts))
-              )
-            }
-            : null)
-        }
-      };
-    }
   }
 
   if (effectiveBusinessContext) {
@@ -7093,6 +7103,44 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const clinicProducts = await loadClinicProducts();
   const availablePlanProducts = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
   const planSalesActive = isPlanCatalog(availablePlanProducts);
+
+  if (isCatalogItemDetailIntent(inboundText)) {
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const matchedItem = findReferencedPlan(eligibleProducts, inboundText) || findProductByName(eligibleProducts, inboundText);
+
+    if (matchedItem) {
+      const page = buildCommerceCatalogPage(clinicProducts);
+      const preferredComparedItemId = safeContext &&
+        safeContext.commercialPlanContext &&
+        typeof safeContext.commercialPlanContext === 'object' &&
+        safeContext.commercialPlanContext.lastComparedPlanId
+        ? safeContext.commercialPlanContext.lastComparedPlanId
+        : null;
+      const comparedItem = chooseLogicalComparisonItem(eligibleProducts, matchedItem, preferredComparedItemId);
+
+      return {
+        replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
+        outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
+        newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: buildCommerceResetPatch({
+          commerceCatalog: page.items,
+          commerceCatalogOffset: page.offset,
+          commerceCatalogNextOffset: page.nextOffset,
+          commerceCatalogTotal: page.total,
+          commerceCartItems: cartItems.length ? cartItems : null,
+          commerceLastAddedItem: lastAddedItem,
+          commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
+          commerceSuggestedProductId: matchedItem && (matchedItem.id || matchedItem.productId)
+            ? String(matchedItem.id || matchedItem.productId)
+            : null,
+          commerceSuggestedProductName: matchedItem && matchedItem.name ? String(matchedItem.name) : null,
+          ...buildCatalogItemDetailContextPatch(matchedItem, comparedItem, eligibleProducts)
+        })
+      };
+    }
+  }
+
   const shortMemoryDecision = await buildCommercialShortMemoryReply({
     clinic,
     conversation,
