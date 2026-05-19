@@ -1005,6 +1005,21 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
       [conversation.id, context.clinic.id, JSON.stringify(resetContext)]
     );
 
+    const cancelledReplyJobsResult = await query(
+      `UPDATE jobs
+       SET
+         status = 'failed',
+         "lastError" = 'conversation_reset_invalidated_pending_reply',
+         "lockedAt" = NULL,
+         "lockedBy" = NULL,
+         "updatedAt" = NOW()
+       WHERE type = 'conversation_reply'
+         AND payload->>'conversationId' = $1
+         AND status IN ('queued', 'processing')
+       RETURNING id`,
+      [conversation.id]
+    );
+
     if (!resetResult.rows[0]) {
       return {
         ok: false,
@@ -1018,7 +1033,8 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     logInfo('portal_conversation_reset', {
       tenantId: context.tenantId,
       clinicId: context.clinic.id,
-      conversationId: conversation.id
+      conversationId: conversation.id,
+      invalidatedConversationReplyJobs: cancelledReplyJobsResult.rowCount || 0
     });
 
     return {
@@ -1045,12 +1061,39 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     context: nextContext
   });
 
+  let invalidatedConversationReplyJobs = 0;
+  if (action === 'toggle_bot' && nextContext.portalBotEnabled === false) {
+    const cancelledReplyJobsResult = await query(
+      `UPDATE jobs
+       SET
+         status = 'failed',
+         "lastError" = 'bot_paused_invalidated_pending_reply',
+         "lockedAt" = NULL,
+         "lockedBy" = NULL,
+         "updatedAt" = NOW()
+       WHERE type = 'conversation_reply'
+         AND payload->>'conversationId' = $1
+         AND status IN ('queued', 'processing')
+       RETURNING id`,
+      [conversation.id]
+    );
+    invalidatedConversationReplyJobs = cancelledReplyJobsResult.rowCount || 0;
+
+    logInfo('portal_conversation_bot_paused', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      invalidatedConversationReplyJobs
+    });
+  }
+
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
     channel: toPortalChannel(context.channel),
-    reason: 'updated'
+    reason: 'updated',
+    invalidatedConversationReplyJobs
   };
 }
 

@@ -2667,7 +2667,48 @@ function buildCatalogItemDetailReply(item, comparedItem = null) {
     lines.push('', profile.shortDescription, '', `Te conviene si hoy ${profile.problemSolved}.`);
   }
 
+  logInfo('catalog_item_detail_reply_built', {
+    itemId: safeItem.id || safeItem.productId || null,
+    itemName: name,
+    isPlanProduct: isPlanProduct(safeItem),
+    hasComparedItem: Boolean(comparedItem && (comparedItem.id || comparedItem.productId)),
+    comparedItemId: comparedItem && (comparedItem.id || comparedItem.productId) ? (comparedItem.id || comparedItem.productId) : null,
+    recommendationTrigger: false,
+    compareTriggerCandidate: Boolean(comparedItem && (comparedItem.id || comparedItem.productId)),
+    pendingOfferedActionWillBeSet: isPlanProduct(safeItem)
+  });
+
   return lines.join('\n');
+}
+
+function summarizePendingOfferedActionForLog(value) {
+  const safeValue = value && typeof value === 'object' ? value : null;
+  if (!safeValue) return null;
+
+  return {
+    type: safeValue.type || null,
+    currentPlanId: safeValue.currentPlanId || safeValue.recommendedPlanId || null,
+    comparisonPlanId: safeValue.comparisonPlanId || safeValue.comparedPlanId || null,
+    activeAt: safeValue.activeAt || null,
+    completedAt: safeValue.completedAt || null
+  };
+}
+
+function summarizeVisibleReplyForLog({ replyText = '', outboundMedia = null, sendTextWithMedia = true }) {
+  const safeReplyText = String(replyText || '').trim();
+  const safeOutboundMedia = Array.isArray(outboundMedia) ? outboundMedia.filter(Boolean) : [];
+  const safeSendTextWithMedia = sendTextWithMedia !== false;
+  const visibleReplyCount = safeOutboundMedia.length > 0
+    ? (safeSendTextWithMedia ? safeOutboundMedia.length + (safeReplyText ? 1 : 0) : safeOutboundMedia.length)
+    : (safeReplyText ? 1 : 0);
+
+  return {
+    visibleReplyCount,
+    hasMedia: safeOutboundMedia.length > 0,
+    mediaCount: safeOutboundMedia.length,
+    sendTextWithMedia: safeSendTextWithMedia,
+    hasReplyText: Boolean(safeReplyText)
+  };
 }
 
 function buildCatalogItemDetailContextPatch(item, comparedItem, eligibleProducts) {
@@ -4511,6 +4552,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
   const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
+  const pendingBeforeLog = summarizePendingOfferedActionForLog(safeContext.pendingOfferedAction);
 
   if (isCatalogItemDetailIntent(inboundText)) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
@@ -4522,18 +4564,29 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         ? activePlanContext.lastComparedPlanId
         : null;
       const comparedItem = chooseLogicalComparisonItem(eligibleProducts, matchedItem, preferredComparedItemId);
-      return {
+      const result = {
         type: 'products',
         replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
         outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
         sendTextWithMedia: false,
         contextPatch: buildCatalogItemDetailContextPatch(matchedItem, comparedItem, eligibleProducts)
       };
+      logInfo('commercial_reply_trace', {
+        stage: 'catalog_item_detail',
+        inboundText: normalizedText,
+        matchedIntent: commercialIntent.type,
+        matchedItemId: matchedItem.id || matchedItem.productId || null,
+        pendingOfferedActionBefore: pendingBeforeLog,
+        pendingOfferedActionAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
     }
   }
 
   if (
     pendingPlanComparison &&
+    !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntryIntent(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
@@ -4547,7 +4600,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const comparedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.comparisonPlanId || pendingPlanComparison.comparedPlanId);
 
     if (recommendedPlan && comparedPlan) {
-      return {
+      const result = {
         type: 'recommendation',
         replyText: pendingPlanComparison.type === PLAN_PENDING_ACTION_COMPARE_CURRENT
           ? buildContextualPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison)
@@ -4571,11 +4624,21 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
           }
         }
       };
+      logInfo('commercial_reply_trace', {
+        stage: 'pending_plan_comparison',
+        inboundText: normalizedText,
+        matchedIntent: commercialIntent.type,
+        pendingOfferedActionBefore: pendingBeforeLog,
+        pendingOfferedActionAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
     }
   }
 
   if (
     activePlanContext &&
+    !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntryIntent(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
@@ -4592,7 +4655,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       || findPlanByNeedHint(orderedPlans, 'starter');
 
     if (primaryPlan && secondaryPlan && String(primaryPlan.id || primaryPlan.productId || '').trim() !== String(secondaryPlan.id || secondaryPlan.productId || '').trim()) {
-      return {
+      const result = {
         type: 'recommendation',
         replyText: buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, effectiveBusinessContext || activePlanContext),
         contextPatch: {
@@ -4606,14 +4669,30 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             lastDiscussedPlanId: primaryPlan && (primaryPlan.id || primaryPlan.productId),
             lastComparedPlanId: secondaryPlan && (secondaryPlan.id || secondaryPlan.productId),
             recommendationType: normalizeProductRecommendationType(primaryPlan, orderedPlans)
-          })
+          }),
+          pendingOfferedAction: {
+            type: null,
+            activeAt: null,
+            completedAt: new Date().toISOString()
+          }
         }
       };
+      logInfo('commercial_plan_vs_plan_trace', {
+        inboundText: normalizedText,
+        whyEntered: 'active_plan_context_and_plan_vs_plan_intent',
+        primaryPlanId: primaryPlan.id || primaryPlan.productId || null,
+        secondaryPlanId: secondaryPlan.id || secondaryPlan.productId || null,
+        pendingBefore: pendingBeforeLog,
+        pendingAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
     }
   }
 
   if (
     activePlanContext &&
+    !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntryIntent(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
@@ -4632,7 +4711,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         discussedPlan,
         activePlanContext.lastComparedPlanId || activePlanContext.lastDiscussedPlanId
       );
-      return {
+      const result = {
         type: 'recommendation',
         replyText: buildSafeContextualPlanReply(discussedPlan, nextComparedPlan),
         outboundMedia: [buildCatalogProductImageMessage(discussedPlan)].filter(Boolean),
@@ -4655,6 +4734,15 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
           )
         }
       };
+      logInfo('commercial_reply_trace', {
+        stage: 'contextual_plan_question',
+        inboundText: normalizedText,
+        matchedIntent: commercialIntent.type,
+        pendingOfferedActionBefore: pendingBeforeLog,
+        pendingOfferedActionAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
     }
   }
 
@@ -8154,14 +8242,34 @@ function normalizeChannelSendContext(channel, meta = {}) {
   };
 }
 
-async function sendAndPersistReply({ clinicId, channel, conversationId, contact, text, requestId, correlationMessageId, outboundMedia = null }) {
+async function sendAndPersistReply({
+  clinicId,
+  channel,
+  conversationId,
+  contact,
+  text,
+  requestId,
+  correlationMessageId,
+  outboundMedia = null,
+  automation = null
+}) {
   const channelCredentials = normalizeChannelSendContext(channel, {
     conversationId: conversationId || null,
     requestId
   });
+  const safeAutomation = automation && typeof automation === 'object' ? automation : null;
+  const automationPayload = safeAutomation
+    ? {
+        inboundMessageId: safeAutomation.inboundMessageId || null,
+        inboundWaMessageId: safeAutomation.inboundWaMessageId || null,
+        source: safeAutomation.source || null,
+        jobId: safeAutomation.jobId || null
+      }
+    : null;
   const safeOutboundMedia = Array.isArray(outboundMedia)
     ? outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
     : [];
+  const sendSequence = [];
   logInfo('worker_whatsapp_send_attempt', {
     requestId,
     clinicId,
@@ -8175,6 +8283,19 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
   let primarySendResult = null;
   let firstMediaSendResult = null;
   if (!safeOutboundMedia.length) {
+    sendSequence.push({
+      order: sendSequence.length + 1,
+      payloadType: 'text',
+      textPreview: String(text || '').slice(0, 160)
+    });
+    logInfo('conversation_reply_send_step', {
+      requestId,
+      conversationId: conversationId || null,
+      order: sendSequence.length,
+      payloadType: 'text',
+      hasMedia: false,
+      textPreview: String(text || '').slice(0, 160)
+    });
     primarySendResult = await sendChannelScopedMessage(
       { to: contact.waId, text },
       {
@@ -8198,13 +8319,32 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
       to: contact.waId || null,
       type: 'text',
       text,
-      raw: primarySendResult && primarySendResult.raw ? primarySendResult.raw : {}
+      raw: {
+        ...(primarySendResult && primarySendResult.raw ? primarySendResult.raw : {}),
+        ...(automationPayload ? { automation: automationPayload } : {})
+      }
     });
   }
 
   for (let index = 0; index < safeOutboundMedia.length; index += 1) {
     const mediaMessage = safeOutboundMedia[index];
     const caption = String(mediaMessage.image.caption || '').trim() || (index === 0 ? String(text || '').trim() : '');
+    sendSequence.push({
+      order: sendSequence.length + 1,
+      payloadType: 'image',
+      hasCaption: Boolean(caption),
+      captionPreview: caption.slice(0, 160),
+      productId: mediaMessage.productId || null
+    });
+    logInfo('conversation_reply_send_step', {
+      requestId,
+      conversationId: conversationId || null,
+      order: sendSequence.length,
+      payloadType: 'image',
+      hasCaption: Boolean(caption),
+      captionPreview: caption.slice(0, 160),
+      productId: mediaMessage.productId || null
+    });
     const mediaSendResult = await sendChannelScopedMessage(
       {
         to: contact.waId,
@@ -8239,6 +8379,7 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
       text: caption || null,
       raw: {
         ...(mediaSendResult && mediaSendResult.raw ? mediaSendResult.raw : {}),
+        ...(automationPayload ? { automation: automationPayload } : {}),
         message: {
           image: {
             link: String(mediaMessage.image.link || '').trim(),
@@ -8260,7 +8401,9 @@ async function sendAndPersistReply({ clinicId, channel, conversationId, contact,
       (primarySendResult && primarySendResult.messageId) ||
       (firstMediaSendResult && firstMediaSendResult.messageId) ||
       null
-    )
+    ),
+    sendCount: sendSequence.length,
+    sendOrder: sendSequence
   });
 
   return primarySendResult || firstMediaSendResult || null;
@@ -8438,7 +8581,19 @@ async function processDueAppointmentReminders() {
   return stats;
 }
 
-async function openHandoffFlow({ clinicId, conversationId, contact, lead, reason, clinicSettings, channel, requestId, messageId, customMessage = null }) {
+async function openHandoffFlow({
+  clinicId,
+  conversationId,
+  contact,
+  lead,
+  reason,
+  clinicSettings,
+  channel,
+  requestId,
+  messageId,
+  customMessage = null,
+  automation = null
+}) {
   await withTransaction(async (client) => {
     const handoff = await openHandoff(
       {
@@ -8513,12 +8668,25 @@ async function openHandoffFlow({ clinicId, conversationId, contact, lead, reason
     conversationId,
     contact,
     text: handoffMessage,
+    automation,
     requestId,
     correlationMessageId: messageId
   });
 }
 
-async function tryAppointmentSelection({ clinicId, conversationId, contact, lead, rawText, channel, clinic, timezone, requestId, messageId }) {
+async function tryAppointmentSelection({
+  clinicId,
+  conversationId,
+  contact,
+  lead,
+  rawText,
+  channel,
+  clinic,
+  timezone,
+  requestId,
+  messageId,
+  automation = null
+}) {
   const selection = extractSelection(rawText);
   if (!selection) {
     return false;
@@ -8593,6 +8761,7 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
         conversationId,
         contact,
         text: reply,
+        automation,
         requestId,
         correlationMessageId: messageId
       });
@@ -8608,6 +8777,7 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
       conversationId,
       contact,
       text: confirmation,
+      automation,
       requestId,
       correlationMessageId: messageId
     });
@@ -8670,6 +8840,7 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
       conversationId,
       contact,
       text: reply,
+      automation,
       requestId,
       correlationMessageId: messageId
     });
@@ -8685,6 +8856,7 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
     conversationId,
     contact,
     text: confirmation,
+    automation,
     requestId,
     correlationMessageId: messageId
   });
@@ -8692,7 +8864,17 @@ async function tryAppointmentSelection({ clinicId, conversationId, contact, lead
   return true;
 }
 
-async function processAppointmentIntent({ clinicId, conversationId, contact, lead, channel, clinic, requestId, messageId }) {
+async function processAppointmentIntent({
+  clinicId,
+  conversationId,
+  contact,
+  lead,
+  channel,
+  clinic,
+  requestId,
+  messageId,
+  automation = null
+}) {
   const rules = await getOrCreateCalendarRules(clinicId);
   const nowUtc = DateTime.utc();
   const fromUtc = nowUtc.plus({ minutes: Number(rules.leadTimeMinutes || 60) });
@@ -8733,7 +8915,8 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
       clinicSettings: clinic.settings,
       channel,
       requestId,
-      messageId
+      messageId,
+      automation
     });
     return;
   }
@@ -8749,6 +8932,7 @@ async function processAppointmentIntent({ clinicId, conversationId, contact, lea
     conversationId,
     contact,
     text: lines.join('\n'),
+    automation,
     requestId,
     correlationMessageId: messageId
   });
@@ -8814,6 +8998,13 @@ async function processInboundJob(job) {
   const dbMessageId = payload.dbMessageId || null;
   const inboundMessage = dbMessageId ? await getMessageById(dbMessageId) : null;
   const inboundText = inboundMessage && inboundMessage.body ? inboundMessage.body : '';
+  const inboundAutomationMeta = inboundMessage
+    ? {
+      inboundMessageId: inboundMessage.id,
+      inboundWaMessageId: messageId || null,
+      jobId: job.id
+    }
+    : null;
 
   const meta = {
     requestId,
@@ -8889,6 +9080,9 @@ async function processInboundJob(job) {
         conversationId: conversation.id,
         contact,
         text: 'Tu turno fue cancelado. Si queres, te puedo ofrecer nuevas opciones.',
+        automation: inboundAutomationMeta
+          ? { ...inboundAutomationMeta, source: 'appointment_cancellation' }
+          : null,
         requestId,
         correlationMessageId: messageId
       });
@@ -8913,6 +9107,9 @@ async function processInboundJob(job) {
         conversationId: conversation.id,
         contact,
         text: 'Tu turno fue cancelado. Si querés, te puedo ofrecer nuevas opciones.',
+        automation: inboundAutomationMeta
+          ? { ...inboundAutomationMeta, source: 'appointment_cancellation' }
+          : null,
         requestId,
         correlationMessageId: messageId
       });
@@ -8930,7 +9127,10 @@ async function processInboundJob(job) {
     clinic,
     timezone: clinic.timezone || 'America/Argentina/Buenos_Aires',
     requestId,
-    messageId
+    messageId,
+    automation: inboundAutomationMeta
+      ? { ...inboundAutomationMeta, source: 'appointment_selection' }
+      : null
   });
   if (handledSelection) {
     return;
@@ -8946,7 +9146,10 @@ async function processInboundJob(job) {
       clinicSettings: clinic.settings,
       channel,
       requestId,
-      messageId
+      messageId,
+      automation: inboundAutomationMeta
+        ? { ...inboundAutomationMeta, source: intent === 'urgent' ? 'urgent_handoff' : 'manual_handoff' }
+        : null
     });
     return;
   }
@@ -8961,7 +9164,10 @@ async function processInboundJob(job) {
       channel,
       clinic,
       requestId,
-      messageId
+      messageId,
+      automation: inboundAutomationMeta
+        ? { ...inboundAutomationMeta, source: 'appointment_intent' }
+        : null
     });
     return;
   }
@@ -8979,6 +9185,9 @@ async function processInboundJob(job) {
       conversationId: conversation.id,
       contact,
       text: pricingMessage,
+      automation: inboundAutomationMeta
+        ? { ...inboundAutomationMeta, source: 'pricing_reply' }
+        : null,
       requestId,
       correlationMessageId: messageId
     });
@@ -9013,6 +9222,9 @@ async function processInboundJob(job) {
       contact,
       text: shortMemoryReply.replyText,
       outboundMedia: shortMemoryReply.outboundMedia || null,
+      automation: inboundAutomationMeta
+        ? { ...inboundAutomationMeta, source: 'commercial_short_memory' }
+        : null,
       requestId,
       correlationMessageId: messageId
     });
@@ -9030,7 +9242,10 @@ async function processInboundJob(job) {
         channel,
         requestId,
         messageId,
-        customMessage: safeCommercialReply.replyText
+        customMessage: safeCommercialReply.replyText,
+        automation: inboundAutomationMeta
+          ? { ...inboundAutomationMeta, source: 'safe_commercial_handoff' }
+          : null
       });
       return;
     }
@@ -9050,6 +9265,9 @@ async function processInboundJob(job) {
       contact,
       text: safeCommercialReply.replyText,
       outboundMedia: safeCommercialReply.outboundMedia || null,
+      automation: inboundAutomationMeta
+        ? { ...inboundAutomationMeta, source: 'safe_commercial_reply' }
+        : null,
       requestId,
       correlationMessageId: messageId
     });
@@ -9075,6 +9293,9 @@ async function processInboundJob(job) {
       conversationId: conversation.id,
       contact,
       text: intelligentFallback.replyText,
+      automation: inboundAutomationMeta
+        ? { ...inboundAutomationMeta, source: 'intelligent_fallback' }
+        : null,
       requestId,
       correlationMessageId: messageId
     });
@@ -9112,6 +9333,9 @@ async function processInboundJob(job) {
     conversationId: conversation.id,
     contact,
     text: 'Gracias por escribirnos. Puedo ayudarte con turnos, urgencias o consultas de precios. Contame que necesitas.',
+    automation: inboundAutomationMeta
+      ? { ...inboundAutomationMeta, source: 'unknown_fallback' }
+      : null,
     requestId,
     correlationMessageId: messageId
   });
@@ -9174,6 +9398,11 @@ async function processConversationReplyJob(job) {
     channelId,
     inboundText
   });
+  const replyAutomationMeta = {
+    inboundMessageId,
+    inboundWaMessageId: waMessageId,
+    jobId: job.id
+  };
   const hasNewerInbound = await conversationRepo.hasNewerInboundMessage(conversation.id, inboundMessage.id);
   const recentMessages = await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5);
 
@@ -9183,6 +9412,17 @@ async function processConversationReplyJob(job) {
     clinicId: conversation.clinicId,
     conversationId: conversation.id,
     messageCount: Array.isArray(recentMessages) ? recentMessages.length : 0
+  });
+  logInfo('conversation_reply_job_trace', {
+    stage: 'job_loaded',
+    requestId,
+    jobId: job.id,
+    inboundMessageId,
+    waMessageId,
+    attempts: Number(job.attempts || 0),
+    currentState,
+    inboundText: normalizedInboundText,
+    pendingOfferedActionAtLoad: summarizePendingOfferedActionForLog(safeContext.pendingOfferedAction)
   });
 
   if (isInAgendaFlow) {
@@ -9397,6 +9637,10 @@ async function processConversationReplyJob(job) {
         conversationId: conversation.id,
         contact,
         text: timingDecision.replyText,
+        automation: {
+          ...replyAutomationMeta,
+          source: 'agenda_timing_decision'
+        },
         requestId,
         correlationMessageId: waMessageId || inboundMessage.id
       });
@@ -9411,7 +9655,11 @@ async function processConversationReplyJob(job) {
       channel,
       clinic,
       requestId,
-      messageId: waMessageId || inboundMessage.id
+      messageId: waMessageId || inboundMessage.id,
+      automation: {
+        ...replyAutomationMeta,
+        source: 'appointment_intent'
+      }
     });
     return;
   }
@@ -9444,11 +9692,15 @@ async function processConversationReplyJob(job) {
           lead: routedLead,
           reason: 'manual',
           clinicSettings: clinic.settings,
-          channel,
-          requestId,
-          messageId: waMessageId || inboundMessage.id,
-          customMessage: safeCommercialReply.replyText
-        });
+        channel,
+        requestId,
+        messageId: waMessageId || inboundMessage.id,
+        customMessage: safeCommercialReply.replyText,
+        automation: {
+          ...replyAutomationMeta,
+          source: 'safe_commercial_handoff'
+        }
+      });
         return;
       }
 
@@ -9460,6 +9712,17 @@ async function processConversationReplyJob(job) {
           contextPatch: safeCommercialReply.contextPatch
         });
       }
+      logInfo('conversation_reply_job_trace', {
+        stage: 'safe_commercial_reply_selected',
+        requestId,
+        jobId: job.id,
+        inboundMessageId: inboundMessage.id,
+        source: 'safe_commercial_reply',
+        replyType: safeCommercialReply.type || null,
+        pendingOfferedActionBefore: summarizePendingOfferedActionForLog(safeContext.pendingOfferedAction),
+        pendingOfferedActionAfter: summarizePendingOfferedActionForLog(safeCommercialReply.contextPatch && safeCommercialReply.contextPatch.pendingOfferedAction),
+        ...summarizeVisibleReplyForLog(safeCommercialReply)
+      });
       await sendAndPersistReply({
         clinicId: conversation.clinicId,
         channel,
@@ -9467,6 +9730,10 @@ async function processConversationReplyJob(job) {
         contact,
         text: safeCommercialReply.replyText,
         outboundMedia: safeCommercialReply.outboundMedia || null,
+        automation: {
+          ...replyAutomationMeta,
+          source: 'safe_commercial_reply'
+        },
         requestId,
         correlationMessageId: waMessageId || inboundMessage.id
       });
@@ -9496,6 +9763,10 @@ async function processConversationReplyJob(job) {
       conversationId: conversation.id,
       contact,
       text: intelligentFallback.replyText,
+      automation: {
+        ...replyAutomationMeta,
+        source: 'intelligent_fallback'
+      },
       requestId,
       correlationMessageId: waMessageId || inboundMessage.id
     });
@@ -10344,6 +10615,21 @@ async function processConversationReplyJob(job) {
     ? decision.outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
     : [];
   const shouldSendTextWithMedia = outboundMedia.length === 0 || decision.sendTextWithMedia !== false;
+  logInfo('conversation_reply_job_trace', {
+    stage: 'decision_selected',
+    requestId,
+    jobId: job.id,
+    inboundMessageId: inboundMessage.id,
+    source: decisionSource || 'unknown',
+    replyType: decision && decision.type ? decision.type : null,
+    pendingOfferedActionBefore: summarizePendingOfferedActionForLog(safeContext.pendingOfferedAction),
+    pendingOfferedActionAfter: summarizePendingOfferedActionForLog(decision && decision.contextPatch && decision.contextPatch.pendingOfferedAction),
+    ...summarizeVisibleReplyForLog({
+      replyText: deterministicReplyText,
+      outboundMedia,
+      sendTextWithMedia: decision && decision.sendTextWithMedia
+    })
+  });
 
   const aiEnabled = env.aiEnabled === true;
   const hasAiKey = !!String(env.openaiApiKey || '').trim();
@@ -10472,6 +10758,7 @@ async function processConversationReplyJob(job) {
     hasAccessToken: true
   });
 
+  let firstMediaSendResult = null;
   for (const mediaMessage of outboundMedia) {
     try {
       const mediaSendResult = await sendChannelScopedMessage(
@@ -10489,6 +10776,9 @@ async function processConversationReplyJob(job) {
           }
         }
       );
+      if (!firstMediaSendResult) {
+        firstMediaSendResult = mediaSendResult;
+      }
 
       const mediaOutboundWrite = await conversationRepo.insertOutboundMessage({
         conversationId: conversation.id,
@@ -10587,6 +10877,7 @@ async function processConversationReplyJob(job) {
       });
     }
   }
+  const effectiveSendResult = sendResult || firstMediaSendResult || null;
 
   logInfo('conversation_reply_processed', {
     requestId,
@@ -10596,8 +10887,8 @@ async function processConversationReplyJob(job) {
     conversationId: conversation.id,
     contactId: contact.id,
     waMessageId,
-    graphStatus: sendResult && sendResult.status ? sendResult.status : null,
-    outboundMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null
+    graphStatus: effectiveSendResult && effectiveSendResult.status ? effectiveSendResult.status : null,
+    outboundMessageId: effectiveSendResult && effectiveSendResult.messageId ? effectiveSendResult.messageId : null
   });
 }
 
@@ -10786,6 +11077,7 @@ async function processJob(job) {
     logWarn('worker_job_failed', {
       requestId: `worker:${job.id}`,
       jobId: job.id,
+      attemptsAtFailure: Number(job.attempts || 0),
       clinicId: job.clinicId,
       channelId: job.channelId,
       type: job.type,
