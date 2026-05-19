@@ -1234,6 +1234,29 @@ function buildBusinessRecommendationContextPatch({
   };
 }
 
+function buildCommercialSalesContextPatch({
+  businessType = null,
+  whatsappVolume = null,
+  teamSizeSignal = null,
+  painPoints = [],
+  lastRecommendedPlan = null,
+  lastRecommendationReason = null
+} = {}) {
+  return {
+    commercialSalesContext: {
+      updatedAt: new Date().toISOString(),
+      businessType: businessType ? String(businessType).trim().toLowerCase() : null,
+      whatsappVolume: whatsappVolume ? String(whatsappVolume).trim().toLowerCase() : null,
+      teamSizeSignal: teamSizeSignal ? String(teamSizeSignal).trim().toLowerCase() : null,
+      painPoints: Array.isArray(painPoints)
+        ? [...new Set(painPoints.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 6)
+        : [],
+      lastRecommendedPlan: lastRecommendedPlan ? String(lastRecommendedPlan).trim() : null,
+      lastRecommendationReason: lastRecommendationReason ? String(lastRecommendationReason).trim() : null
+    }
+  };
+}
+
 function buildCommercialPlanContextPatch({
   topic = 'plan_discussion',
   lastDiscussedPlanId = null,
@@ -1293,6 +1316,41 @@ function getActiveBusinessRecommendationContext(context) {
     businessType: stored.businessType ? String(stored.businessType).trim().toLowerCase() : null,
     teamSize: stored.teamSize ? String(stored.teamSize).trim().toLowerCase() : null,
     recommendationLevel
+  };
+}
+
+function getActiveCommercialSalesContext(context) {
+  const safeContext = context && typeof context === 'object' ? context : {};
+  const stored = safeContext.commercialSalesContext && typeof safeContext.commercialSalesContext === 'object'
+    ? safeContext.commercialSalesContext
+    : null;
+  if (!stored) return null;
+
+  const updatedAtMs = Date.parse(String(stored.updatedAt || ''));
+  if (!Number.isFinite(updatedAtMs)) return null;
+  if (Date.now() - updatedAtMs > COMMERCIAL_SHORT_MEMORY_TTL_MS) return null;
+
+  const painPoints = Array.isArray(stored.painPoints)
+    ? [...new Set(stored.painPoints.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))]
+    : [];
+  const businessType = String(stored.businessType || '').trim().toLowerCase() || null;
+  const whatsappVolume = String(stored.whatsappVolume || '').trim().toLowerCase() || null;
+  const teamSizeSignal = String(stored.teamSizeSignal || '').trim().toLowerCase() || null;
+  const lastRecommendedPlan = String(stored.lastRecommendedPlan || '').trim() || null;
+  const lastRecommendationReason = String(stored.lastRecommendationReason || '').trim() || null;
+
+  if (!businessType && !whatsappVolume && !teamSizeSignal && !painPoints.length && !lastRecommendedPlan) {
+    return null;
+  }
+
+  return {
+    updatedAt: new Date(updatedAtMs).toISOString(),
+    businessType,
+    whatsappVolume,
+    teamSizeSignal,
+    painPoints,
+    lastRecommendedPlan,
+    lastRecommendationReason
   };
 }
 
@@ -1373,6 +1431,132 @@ function detectBusinessRecommendationContext(rawText) {
   }
 
   return null;
+}
+
+function detectCommercialSalesContext(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  const findMatch = (groups) => {
+    for (const [value, phrases] of groups) {
+      if (phrases.some((phrase) => text.includes(phrase))) {
+        return value;
+      }
+    }
+    return null;
+  };
+
+  const businessType = findMatch([
+    ['fashion_retail', ['tienda de ropa', 'vendo ropa', 'local de ropa', 'indumentaria', 'boutique']],
+    ['accessories_retail', ['accesorios', 'bijou', 'bijouterie']],
+    ['food_business', ['pastas', 'comida', 'resto', 'restaurant', 'gastronomi', 'cocina']],
+    ['beauty_business', ['estetica', 'estética', 'belleza', 'peluquer', 'unas', 'uñas', 'salon', 'salón']],
+    ['distribution', ['distribuidora', 'mayorista']],
+    ['services', ['servicios', 'agencia', 'consultora', 'estudio', 'studio']]
+  ]);
+
+  const whatsappVolume = findMatch([
+    ['high', ['vendo mucho', 'muchas consultas', 'mucho por whatsapp', 'mucho movimiento', 'me escriben bastante', 'alto volumen', 'muchos mensajes']],
+    ['low', ['recien arranco', 'recién arranco', 'estoy arrancando', 'pocos mensajes', 'poquitas consultas', 'arrancando de a poco']]
+  ]);
+
+  const teamSizeSignal = findMatch([
+    ['multi_branch', ['varias sucursales', 'tengo sucursales', 'mas de una sucursal', 'más de una sucursal']],
+    ['team', ['tengo vendedores', 'tengo equipo', 'somos varios', 'varios vendedores', 'equipo vendiendo', 'tengo asesores']],
+    ['solo', ['soy yo solo', 'soy yo sola', 'atiendo yo', 'estoy solo', 'estoy sola']]
+  ]);
+
+  const painSignals = [
+    ['lead_loss', ['se me pierden consultas', 'pierdo consultas', 'se me escapan consultas', 'se me pasan consultas']],
+    ['follow_up', ['no hago seguimiento', 'me falta seguimiento', 'seguir conversaciones', 'retomar consultas']],
+    ['response_delay', ['respondo tarde', 'contestamos tarde', 'responder tarde']],
+    ['sales_organization', ['ordenar ventas', 'ordenar whatsapp', 'ordenar consultas', 'ordenar la operacion', 'ordenar la operación']]
+  ];
+  const painPoints = painSignals
+    .filter(([, phrases]) => phrases.some((phrase) => text.includes(phrase)))
+    .map(([key]) => key);
+
+  if (!businessType && !whatsappVolume && !teamSizeSignal && !painPoints.length) {
+    return null;
+  }
+
+  return {
+    businessType,
+    whatsappVolume,
+    teamSizeSignal,
+    painPoints
+  };
+}
+
+function mergeCommercialSalesContext(baseContext, incomingContext = null) {
+  const base = baseContext && typeof baseContext === 'object' ? baseContext : {};
+  const incoming = incomingContext && typeof incomingContext === 'object' ? incomingContext : {};
+
+  return {
+    businessType: incoming.businessType || base.businessType || null,
+    whatsappVolume: incoming.whatsappVolume || base.whatsappVolume || null,
+    teamSizeSignal: incoming.teamSizeSignal || base.teamSizeSignal || null,
+    painPoints: [...new Set([...(Array.isArray(base.painPoints) ? base.painPoints : []), ...(Array.isArray(incoming.painPoints) ? incoming.painPoints : [])])],
+    lastRecommendedPlan: incoming.lastRecommendedPlan || base.lastRecommendedPlan || null,
+    lastRecommendationReason: incoming.lastRecommendationReason || base.lastRecommendationReason || null
+  };
+}
+
+function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : null;
+  if (!safeContext) return null;
+
+  const painPoints = Array.isArray(safeContext.painPoints) ? safeContext.painPoints : [];
+  const isHighVolume = safeContext.whatsappVolume === 'high';
+  const isLowVolume = safeContext.whatsappVolume === 'low';
+  const hasTeam = safeContext.teamSizeSignal === 'team' || safeContext.teamSizeSignal === 'multi_branch';
+  const isMultiBranch = safeContext.teamSizeSignal === 'multi_branch';
+  const isDistribution = safeContext.businessType === 'distribution';
+
+  if (isMultiBranch || isDistribution || (isHighVolume && hasTeam)) {
+    return {
+      businessType: safeContext.businessType || (isDistribution ? 'distribution' : 'high_volume'),
+      teamSize: hasTeam ? 'team' : 'small',
+      recommendationLevel: 'enterprise'
+    };
+  }
+
+  if (isLowVolume && safeContext.teamSizeSignal === 'solo' && !painPoints.length) {
+    return {
+      businessType: safeContext.businessType || 'starter',
+      teamSize: 'small',
+      recommendationLevel: 'starter'
+    };
+  }
+
+  if (safeContext.businessType || isHighVolume || painPoints.length || hasTeam) {
+    return {
+      businessType: safeContext.businessType || 'small_store',
+      teamSize: hasTeam ? 'team' : 'small',
+      recommendationLevel: 'growth'
+    };
+  }
+
+  return null;
+}
+
+function hasMinimumSalesContextForRecommendation(salesContext) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : null;
+  if (!safeContext) return false;
+
+  const signalCount = [
+    safeContext.businessType,
+    safeContext.whatsappVolume,
+    safeContext.teamSizeSignal,
+    Array.isArray(safeContext.painPoints) && safeContext.painPoints.length ? 'pain' : null
+  ].filter(Boolean).length;
+
+  return (
+    signalCount >= 2 ||
+    safeContext.whatsappVolume === 'high' ||
+    safeContext.teamSizeSignal === 'team' ||
+    safeContext.teamSizeSignal === 'multi_branch'
+  );
 }
 
 function getActiveCommercialShortMemory(context) {
@@ -2389,6 +2573,28 @@ function isContextualPlanQuestionIntent(rawText) {
   );
 }
 
+function isPlanWorthItIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return text.includes('vale la pena');
+}
+
+function isRecommendationWhyFollowUpIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('por que me recomendarias eso') ||
+    text.includes('por qué me recomendarías eso') ||
+    text.includes('por que me recomendarias ese') ||
+    text.includes('por qué me recomendarías ese') ||
+    text.includes('por que me recomendaste eso') ||
+    text.includes('por qué me recomendaste eso') ||
+    text.includes('por que eso') ||
+    text.includes('por qué eso')
+  );
+}
+
 function hasPlanComparisonSemanticCue(rawText) {
   const text = normalizeLooseIntentText(rawText);
   if (!text) return false;
@@ -2530,6 +2736,194 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
   ].join('\n');
 }
 
+function buildSalesDiscoveryQuestion() {
+  return 'Depende un poco de tu operación 😊 ¿Hoy estás arrancando, ya recibís muchas consultas por WhatsApp o tenés un equipo vendiendo?';
+}
+
+function describeSalesContextShort(salesContext) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const parts = [];
+
+  if (safeContext.businessType === 'fashion_retail') parts.push('tu tienda de ropa');
+  if (safeContext.businessType === 'accessories_retail') parts.push('tu negocio de accesorios');
+  if (safeContext.businessType === 'food_business') parts.push('tu negocio de comida');
+  if (safeContext.businessType === 'beauty_business') parts.push('tu negocio de estética');
+  if (safeContext.businessType === 'distribution') parts.push('tu distribuidora');
+  if (safeContext.businessType === 'services') parts.push('tu negocio de servicios');
+  if (safeContext.whatsappVolume === 'high') parts.push('ya tenés bastante movimiento por WhatsApp');
+  if (safeContext.whatsappVolume === 'low') parts.push('todavía estás arrancando con poco volumen');
+  if (safeContext.teamSizeSignal === 'solo') parts.push('hoy lo manejás vos');
+  if (safeContext.teamSizeSignal === 'team') parts.push('ya tenés equipo vendiendo');
+  if (safeContext.teamSizeSignal === 'multi_branch') parts.push('ya manejás varias sucursales o más de un frente');
+
+  return parts.slice(0, 2).join(' y ');
+}
+
+function buildSalesContextMomentLine(salesContext) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const businessLabel = (
+    safeContext.businessType === 'fashion_retail' ? 'tenés una tienda de ropa' :
+      safeContext.businessType === 'accessories_retail' ? 'tenés un negocio de accesorios' :
+        safeContext.businessType === 'food_business' ? 'tenés un negocio de comida' :
+          safeContext.businessType === 'beauty_business' ? 'tenés un negocio de estética' :
+            safeContext.businessType === 'distribution' ? 'manejás una distribuidora' :
+              safeContext.businessType === 'services' ? 'tenés un negocio de servicios' :
+                null
+  );
+  const volumeLabel = (
+    safeContext.whatsappVolume === 'high' ? 'ya hay bastante movimiento por WhatsApp' :
+      safeContext.whatsappVolume === 'low' ? 'todavía estás arrancando con poco volumen' :
+        null
+  );
+
+  if (businessLabel && volumeLabel) return `${businessLabel} y ${volumeLabel}`;
+  return businessLabel || volumeLabel || null;
+}
+
+function buildRecommendationReasonSummary(product, salesContext, allPlans = []) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const normalizedName = normalizeCommandText(safeProduct.name || '');
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const painPoints = Array.isArray(safeContext.painPoints) ? safeContext.painPoints : [];
+  const enterprisePlan = findPlanByNeedHint(allPlans, 'enterprise');
+
+  if (normalizedName.includes('inicial')) {
+    return 'te alcanza para empezar a ordenar WhatsApp sin irte a una operación más grande de entrada';
+  }
+
+  if (normalizedName.includes('empresa')) {
+    return safeContext.teamSizeSignal === 'multi_branch' || safeContext.teamSizeSignal === 'team'
+      ? 'ya necesitás más control, más equipo y una operación más acompañada'
+      : 'solo vale la pena cuando ya tenés más equipo, más volumen o necesitás algo más personalizado';
+  }
+
+  if (painPoints.includes('lead_loss') || painPoints.includes('follow_up')) {
+    return 'ordenás seguimiento y evitás que se pierdan consultas u oportunidades';
+  }
+
+  if (safeContext.whatsappVolume === 'high') {
+    return 'ordenás seguimiento y no te quedás solo en responder mensajes cuando ya hay bastante movimiento por WhatsApp';
+  }
+
+  if (enterprisePlan && String(enterprisePlan.id || enterprisePlan.productId || '') === String(safeProduct.id || safeProduct.productId || '')) {
+    return 'ya estás en un momento donde más control, soporte y personalización empiezan a pesar de verdad';
+  }
+
+  return 'te da una operación comercial más ordenada sin irte directo al plan más grande';
+}
+
+function buildHumanSalesRecommendationReply(product, salesContext, allPlans = []) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const contextLead = buildSalesContextMomentLine(safeContext);
+  const normalizedName = normalizeCommandText(safeProduct.name || '');
+  const enterprisePlan = findPlanByNeedHint(allPlans, 'enterprise');
+  const starterPlan = findPlanByNeedHint(allPlans, 'starter');
+
+  if (normalizedName.includes('inicial')) {
+    return [
+      `Por lo que me contás, yo arrancaría por ${safeProduct.name || 'Plan Inicial'} 😊`,
+      '',
+      'Si hoy estás empezando o todavía tenés poco movimiento, lo más importante es ordenar WhatsApp sin meter complejidad de más.',
+      '',
+      'Después, cuando empieces a tener más seguimiento o más volumen, ahí sí tiene sentido mirar el plan que sigue.'
+    ].join('\n');
+  }
+
+  if (normalizedName.includes('empresa')) {
+    return [
+      `Por lo que me contás, yo miraría ${safeProduct.name || 'Plan Empresa'} 😊`,
+      '',
+      'Ahí el valor ya no pasa solo por responder mensajes, sino por tener más control, más soporte y una operación mejor acompañada.',
+      '',
+      starterPlan
+        ? `Si todavía no estás en ese punto, probablemente ${starterPlan.name} o el plan del medio te rindan mejor.`
+        : 'Si todavía no estás en ese punto, probablemente un plan más chico te rinda mejor.'
+    ].join('\n');
+  }
+
+  return [
+    `Por lo que me contás, yo arrancaría mirando ${safeProduct.name || 'Plan Crecimiento'} 😊`,
+    '',
+    contextLead
+      ? `Si hoy ${contextLead}, lo más importante no es solo responder, sino no perder seguimiento de consultas y oportunidades.`
+      : 'Si ya tenés algo de movimiento por WhatsApp, lo más importante no es solo responder, sino no perder seguimiento de consultas y oportunidades.',
+    '',
+    'Plan Inicial te puede quedar corto si ya hay movimiento.',
+    '',
+    enterprisePlan
+      ? `Plan ${normalizeCommandText(enterprisePlan.name || '').includes('empresa') ? 'Empresa' : enterprisePlan.name} lo dejaría para cuando tengas más equipo, más control o necesites algo más personalizado.`
+      : 'El plan más grande lo dejaría para cuando tengas más equipo, más control o necesites algo más personalizado.'
+  ].join('\n');
+}
+
+function buildRecommendationWhyReply(product, salesContext, allPlans = []) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const savedReason = String(safeContext.lastRecommendationReason || '').trim();
+
+  return [
+    `Te lo recomendaría por lo que me contaste${savedReason ? `: ${savedReason}.` : '.'}`,
+    '',
+    `${safeProduct.name || 'Ese plan'} tiene más sentido porque ${buildRecommendationReasonSummary(safeProduct, safeContext, allPlans)}.`
+  ].join('\n');
+}
+
+function buildPlanWorthItReply(product, salesContext, allPlans = []) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const orderedPlans = getOrderedPlanProducts(allPlans);
+  const recommendedPlan = deriveBusinessRecommendationContextFromSalesContext(safeContext)
+    ? findPlanByBusinessRecommendationContext(orderedPlans, deriveBusinessRecommendationContextFromSalesContext(safeContext))
+    : null;
+  const currentIndex = orderedPlans.findIndex((item) => String(item.id || item.productId || '') === String(safeProduct.id || safeProduct.productId || ''));
+  const recommendedIndex = recommendedPlan
+    ? orderedPlans.findIndex((item) => String(item.id || item.productId || '') === String(recommendedPlan.id || recommendedPlan.productId || ''))
+    : -1;
+
+  if (recommendedPlan && currentIndex === recommendedIndex) {
+    return [
+      `Sí, para tu caso ${safeProduct.name || 'ese plan'} puede valer la pena 😊`,
+      '',
+      `El valor está en que ${buildRecommendationReasonSummary(safeProduct, safeContext, orderedPlans)}.`
+    ].join('\n');
+  }
+
+  if (recommendedPlan && currentIndex < recommendedIndex) {
+    return [
+      `${safeProduct.name || 'Ese plan'} puede servirte, pero ojo: para tu momento quizá se te quede corto.`,
+      '',
+      `Si ya ${describeSalesContextShort(safeContext) || 'tenés movimiento por WhatsApp'}, yo miraría más ${recommendedPlan.name || 'el plan siguiente'} por seguimiento y orden comercial.`
+    ].join('\n');
+  }
+
+  if (recommendedPlan && currentIndex > recommendedIndex) {
+    return [
+      `Puede valer la pena más adelante, pero no lo pondría como primer paso.`,
+      '',
+      `${safeProduct.name || 'Ese plan'} tiene sentido cuando ya necesitás más control o más personalización. Para tu momento, veo más lógico ${recommendedPlan.name || 'un plan más intermedio'}.`
+    ].join('\n');
+  }
+
+  return [
+    `Sí, ${safeProduct.name || 'ese plan'} puede valer la pena si hoy el objetivo es ${resolvePlanProfile(safeProduct).result}.`,
+    '',
+    'Si querés, te digo rápido en qué caso elegiría ese y en cuál me iría por otro.'
+  ].join('\n');
+}
+
+function buildComparisonLead(primaryPlan, secondaryPlan) {
+  const options = [
+    'Te cuento la diferencia simple 😊',
+    'Para verlo fácil 😊',
+    'Depende de tu momento 😊',
+    'En criollo 😊'
+  ];
+  const seed = `${primaryPlan && primaryPlan.name ? primaryPlan.name : ''}|${secondaryPlan && secondaryPlan.name ? secondaryPlan.name : ''}`;
+  const score = seed.split('').reduce((total, char) => total + char.charCodeAt(0), 0);
+  return options[score % options.length];
+}
+
 function buildPlanComparisonOfferedAction(recommendedPlan, comparedPlan, businessContext) {
   if (!recommendedPlan || !comparedPlan) return null;
   return {
@@ -2602,53 +2996,59 @@ function chooseLogicalComparisonItem(items, currentItem, preferredItemId = null)
   return safeItems.find((item) => String(item && (item.id || item.productId) ? (item.id || item.productId) : '').trim() !== currentId) || null;
 }
 
-function buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, businessContext) {
+function buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, businessContext, salesContext = null) {
   const recommended = recommendedPlan && typeof recommendedPlan === 'object' ? recommendedPlan : {};
   const compared = comparedPlan && typeof comparedPlan === 'object' ? comparedPlan : {};
   const recommendedProfile = resolvePlanProfile(recommended);
   const comparedProfile = resolvePlanProfile(compared);
   const recommendationLevel = String(businessContext && businessContext.recommendationLevel ? businessContext.recommendationLevel : '').trim().toLowerCase();
+  const contextLead = buildSalesContextMomentLine(salesContext);
 
   const closingLine = recommendationLevel === 'growth'
-    ? `Para una tienda de ropa, yo arrancaría con ${recommended.name || 'Plan Crecimiento'}. Si después el equipo crece, podés pasar a ${compared.name || 'Plan Empresa'}.`
+    ? `Yo arrancaría con ${recommended.name || 'Plan Crecimiento'}. ${compared.name || 'El otro plan'} lo dejaría para cuando ya necesites más equipo o más control.`
     : `Hoy veo más alineado ${recommended.name || 'este plan'} para lo que me contaste.`;
 
   return [
-    'Claro 😊',
+    buildComparisonLead(recommended, compared),
     '',
-    `El ${recommended.name || 'plan recomendado'} te sirve si hoy ${recommendedProfile.problemSolved}.`,
+    contextLead
+      ? `${recommended.name || 'El plan recomendado'} te sirve más si hoy ${contextLead}.`
+      : `El ${recommended.name || 'plan recomendado'} te sirve si hoy ${recommendedProfile.problemSolved}.`,
     '',
-    `El ${compared.name || 'otro plan'} conviene más si ${comparedProfile.problemSolved}.`,
+    `${compared.name || 'El otro plan'} conviene más si ${comparedProfile.problemSolved}.`,
     '',
     closingLine
   ].join('\n');
 }
 
-function buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, businessContext = null) {
+function buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, businessContext = null, salesContext = null) {
   const primary = primaryPlan && typeof primaryPlan === 'object' ? primaryPlan : {};
   const secondary = secondaryPlan && typeof secondaryPlan === 'object' ? secondaryPlan : {};
   const primaryProfile = resolvePlanProfile(primary);
   const secondaryProfile = resolvePlanProfile(secondary);
   const recommendationLevel = String(businessContext && businessContext.recommendationLevel ? businessContext.recommendationLevel : '').trim().toLowerCase();
+  const contextLead = buildSalesContextMomentLine(salesContext);
 
   const closingLine = (
     recommendationLevel === 'growth' &&
     normalizeCommandText(primary.name || '').includes('crecimiento') &&
     normalizeCommandText(secondary.name || '').includes('inicial')
   )
-    ? `Para una tienda de ropa, yo elegiría ${primary.name || 'Crecimiento'} antes que ${secondary.name || 'Inicial'} si ya recibís consultas por WhatsApp y querés hacer seguimiento real de clientes 😊`
+    ? `Si ya hay movimiento por WhatsApp, yo sí pondría antes ${primary.name || 'Crecimiento'} que ${secondary.name || 'Inicial'}.`
     : (
       recommendationLevel === 'growth' &&
       normalizeCommandText(primary.name || '').includes('empresa') &&
       normalizeCommandText(secondary.name || '').includes('crecimiento')
     )
-      ? `${primary.name || 'Empresa'} tiene más sentido si ya tenés varios vendedores, mucho volumen o necesitás más supervisión. ${secondary.name || 'Crecimiento'} está muy bien para empezar a ordenar la operación diaria sin irte directo al plan más grande.`
+      ? `${primary.name || 'Empresa'} tiene más sentido cuando ya necesitás más equipo, más control o una operación bastante más personalizada. ${secondary.name || 'Crecimiento'} está muy bien si todavía querés ordenar la operación sin irte directo al plan más grande.`
       : `Hoy veo más alineado ${primary.name || 'este plan'} si tu foco principal es ${primaryProfile.result}.`;
 
   return [
-    'Claro 😊',
+    buildComparisonLead(primary, secondary),
     '',
-    `${secondary.name || 'El otro plan'} sirve si hoy ${secondaryProfile.problemSolved}.`,
+    contextLead
+      ? `${secondary.name || 'El otro plan'} sirve más si hoy ${contextLead}, pero todavía no necesitás dar el salto siguiente.`
+      : `${secondary.name || 'El otro plan'} sirve si hoy ${secondaryProfile.problemSolved}.`,
     '',
     `${primary.name || 'Este plan'} conviene más cuando querés ${primaryProfile.result}.`,
     '',
@@ -4576,8 +4976,14 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const pendingPlanComparison = getPendingPlanComparisonAction(safeContext);
   const activePlanContext = getActiveCommercialPlanContext(safeContext);
   const currentBusinessContext = detectBusinessRecommendationContext(inboundText);
+  const activeSalesContext = getActiveCommercialSalesContext(safeContext);
+  const detectedSalesContext = detectCommercialSalesContext(inboundText);
+  const effectiveSalesContext = mergeCommercialSalesContext(activeSalesContext, detectedSalesContext);
   const storedBusinessContext = getActiveBusinessRecommendationContext(safeContext);
-  const effectiveBusinessContext = currentBusinessContext || storedBusinessContext;
+  const effectiveBusinessContext =
+    currentBusinessContext ||
+    deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) ||
+    storedBusinessContext;
   const businessProfile = getClinicBusinessProfile(clinic);
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
@@ -4615,6 +5021,43 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   }
 
   if (
+    activePlanContext &&
+    effectiveSalesContext &&
+    !isCatalogItemDetailIntent(inboundText) &&
+    !isCommerceEntryIntent(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isPlanWorthItIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const discussedPlan = findReferencedPlan(orderedPlans, inboundText) || findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText);
+
+    if (discussedPlan) {
+      return {
+        type: 'recommendation',
+        replyText: buildPlanWorthItReply(discussedPlan, effectiveSalesContext, orderedPlans),
+        contextPatch: {
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_value',
+            lastDiscussedPlanId: discussedPlan && (discussedPlan.id || discussedPlan.productId),
+            lastComparedPlanId: activePlanContext.lastComparedPlanId,
+            recommendationType: normalizeProductRecommendationType(discussedPlan, orderedPlans)
+          }),
+          ...buildCommercialSalesContextPatch(effectiveSalesContext),
+          pendingOfferedAction: {
+            type: null,
+            activeAt: null,
+            completedAt: new Date().toISOString()
+          }
+        }
+      };
+    }
+  }
+
+  if (
     pendingPlanComparison &&
     !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntryIntent(inboundText) &&
@@ -4644,8 +5087,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       const result = {
         type: 'recommendation',
         replyText: pendingPlanComparison.type === PLAN_PENDING_ACTION_COMPARE_CURRENT
-          ? buildContextualPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison)
-          : buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison),
+          ? buildContextualPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison, effectiveSalesContext)
+          : buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, effectiveBusinessContext || pendingPlanComparison, effectiveSalesContext),
         contextPatch: {
           ...buildCommercialShortMemoryPatch({
             topic: 'plans',
@@ -4658,6 +5101,13 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             lastComparedPlanId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
             recommendationType: normalizeProductRecommendationType(recommendedPlan, orderedPlans)
           }),
+          ...(effectiveSalesContext && hasMinimumSalesContextForRecommendation(effectiveSalesContext)
+            ? buildCommercialSalesContextPatch({
+              ...effectiveSalesContext,
+              lastRecommendedPlan: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
+              lastRecommendationReason: buildRecommendationReasonSummary(recommendedPlan, effectiveSalesContext, orderedPlans)
+            })
+            : null),
           pendingOfferedAction: {
             type: null,
             activeAt: null,
@@ -4695,27 +5145,34 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       || findPlanByStoredId(orderedPlans, activePlanContext.lastComparedPlanId)
       || findPlanByNeedHint(orderedPlans, 'starter');
 
-    if (primaryPlan && secondaryPlan && String(primaryPlan.id || primaryPlan.productId || '').trim() !== String(secondaryPlan.id || secondaryPlan.productId || '').trim()) {
-      const result = {
-        type: 'recommendation',
-        replyText: buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, effectiveBusinessContext || activePlanContext),
-        contextPatch: {
-          ...buildCommercialShortMemoryPatch({
-            topic: 'plans',
-            lastSuggestedProductId: primaryPlan && (primaryPlan.id || primaryPlan.productId),
-            recommendationType: normalizeProductRecommendationType(primaryPlan, orderedPlans)
+      if (primaryPlan && secondaryPlan && String(primaryPlan.id || primaryPlan.productId || '').trim() !== String(secondaryPlan.id || secondaryPlan.productId || '').trim()) {
+        const result = {
+          type: 'recommendation',
+          replyText: buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, effectiveBusinessContext || activePlanContext, effectiveSalesContext),
+          contextPatch: {
+            ...buildCommercialShortMemoryPatch({
+              topic: 'plans',
+              lastSuggestedProductId: primaryPlan && (primaryPlan.id || primaryPlan.productId),
+              recommendationType: normalizeProductRecommendationType(primaryPlan, orderedPlans)
           }),
-          ...buildCommercialPlanContextPatch({
-            topic: 'plan_comparison',
-            lastDiscussedPlanId: primaryPlan && (primaryPlan.id || primaryPlan.productId),
-            lastComparedPlanId: secondaryPlan && (secondaryPlan.id || secondaryPlan.productId),
-            recommendationType: normalizeProductRecommendationType(primaryPlan, orderedPlans)
-          }),
-          pendingOfferedAction: {
-            type: null,
-            activeAt: null,
-            completedAt: new Date().toISOString()
-          }
+            ...buildCommercialPlanContextPatch({
+              topic: 'plan_comparison',
+              lastDiscussedPlanId: primaryPlan && (primaryPlan.id || primaryPlan.productId),
+              lastComparedPlanId: secondaryPlan && (secondaryPlan.id || secondaryPlan.productId),
+              recommendationType: normalizeProductRecommendationType(primaryPlan, orderedPlans)
+            }),
+            ...(effectiveSalesContext && hasMinimumSalesContextForRecommendation(effectiveSalesContext)
+              ? buildCommercialSalesContextPatch({
+                ...effectiveSalesContext,
+                lastRecommendedPlan: primaryPlan && (primaryPlan.id || primaryPlan.productId),
+                lastRecommendationReason: buildRecommendationReasonSummary(primaryPlan, effectiveSalesContext, orderedPlans)
+              })
+              : null),
+            pendingOfferedAction: {
+              type: null,
+              activeAt: null,
+              completedAt: new Date().toISOString()
+            }
         }
       };
       logInfo('commercial_plan_vs_plan_trace', {
@@ -4787,6 +5244,30 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     }
   }
 
+  if (
+    effectiveSalesContext &&
+    effectiveSalesContext.lastRecommendedPlan &&
+    !isCatalogItemDetailIntent(inboundText) &&
+    !isCommerceEntryIntent(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isRecommendationWhyFollowUpIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const recommendedPlan = findPlanByStoredId(orderedPlans, effectiveSalesContext.lastRecommendedPlan);
+
+    if (recommendedPlan) {
+      return {
+        type: 'recommendation',
+        replyText: buildRecommendationWhyReply(recommendedPlan, effectiveSalesContext, orderedPlans),
+        contextPatch: buildCommercialSalesContextPatch(effectiveSalesContext)
+      };
+    }
+  }
+
   if (commercialIntent.type === 'location') {
     return {
       type: commercialIntent.type,
@@ -4854,16 +5335,25 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const orderedPlans = getOrderedPlanProducts(eligibleProducts);
 
     if (isPlanCatalog(eligibleProducts) && orderedPlans.length) {
+      if (!effectiveBusinessContext && !hasMinimumSalesContextForRecommendation(effectiveSalesContext)) {
+        return {
+          type: commercialIntent.type,
+          replyText: buildSalesDiscoveryQuestion(),
+          contextPatch: detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null
+        };
+      }
+
       const comparedPlan = effectiveBusinessContext && effectiveBusinessContext.recommendationLevel === 'growth'
         ? findPlanByNeedHint(orderedPlans, 'enterprise')
         : null;
       const suggestedPlan = effectiveBusinessContext
         ? findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext)
         : (findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0]);
+      const recommendationReason = buildRecommendationReasonSummary(suggestedPlan, effectiveSalesContext, orderedPlans);
       return {
         type: commercialIntent.type,
         replyText: effectiveBusinessContext
-          ? buildBusinessContextPlanRecommendationReply(suggestedPlan, effectiveBusinessContext, orderedPlans)
+          ? buildHumanSalesRecommendationReply(suggestedPlan, effectiveSalesContext, orderedPlans)
           : buildPlanRecommendationReply(suggestedPlan),
         contextPatch: {
           ...buildCommercialShortMemoryPatch({
@@ -4876,6 +5366,11 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             lastDiscussedPlanId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
             lastComparedPlanId: comparedPlan && (comparedPlan.id || comparedPlan.productId),
             recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...buildCommercialSalesContextPatch({
+            ...effectiveSalesContext,
+            lastRecommendedPlan: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            lastRecommendationReason: recommendationReason
           }),
           pendingOfferedAction: buildPlanComparisonOfferedAction(suggestedPlan, comparedPlan, effectiveBusinessContext),
           ...(effectiveBusinessContext ? buildBusinessRecommendationContextPatch(effectiveBusinessContext) : null)
@@ -4899,9 +5394,10 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       : null;
 
     if (suggestedPlan) {
+      const recommendationReason = buildRecommendationReasonSummary(suggestedPlan, effectiveSalesContext, orderedPlans);
       return {
         type: 'recommendation',
-        replyText: buildBusinessContextPlanRecommendationReply(suggestedPlan, effectiveBusinessContext, orderedPlans),
+        replyText: buildHumanSalesRecommendationReply(suggestedPlan, effectiveSalesContext, orderedPlans),
         contextPatch: {
           ...buildCommercialShortMemoryPatch({
             topic: 'plans',
@@ -4913,6 +5409,11 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             lastDiscussedPlanId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
             lastComparedPlanId: comparedPlan && (comparedPlan.id || comparedPlan.productId),
             recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...buildCommercialSalesContextPatch({
+            ...effectiveSalesContext,
+            lastRecommendedPlan: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            lastRecommendationReason: recommendationReason
           }),
           pendingOfferedAction: buildPlanComparisonOfferedAction(suggestedPlan, comparedPlan, effectiveBusinessContext),
           ...buildBusinessRecommendationContextPatch(effectiveBusinessContext)
