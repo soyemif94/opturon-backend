@@ -1749,6 +1749,7 @@ function isPendingPlanComparisonIntent(rawText) {
     looseText.includes('comparalos') ||
     looseText.includes('contame') ||
     looseText.includes('decime') ||
+    hasPlanComparisonSemanticCue(looseText) ||
     (looseText.includes('quiero') && looseText.includes('ver'))
   );
 }
@@ -2388,6 +2389,33 @@ function isContextualPlanQuestionIntent(rawText) {
   );
 }
 
+function hasPlanComparisonSemanticCue(rawText) {
+  const text = normalizeLooseIntentText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('diferenc') ||
+    text.includes('compar') ||
+    text.includes(' versus ') ||
+    text.includes(' vs ') ||
+    text.startsWith('vs ') ||
+    text.endsWith(' vs') ||
+    text.includes(' contra ') ||
+    text.includes(' entre ') ||
+    text.includes(' uno y otro ') ||
+    text.endsWith(' uno y otro') ||
+    text.includes('cual me conviene') ||
+    text.includes('cual conviene') ||
+    text.includes('conviene mas') ||
+    text.includes('vale la pena') ||
+    text.includes('que cambia') ||
+    text.includes('que gana') ||
+    text.includes('que gano') ||
+    (text.includes('que tiene') && text.includes('que no tenga')) ||
+    (text.includes('me explic') && text.includes('diferenc'))
+  );
+}
+
 function isPlanVsPlanIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
@@ -2401,7 +2429,8 @@ function isPlanVsPlanIntent(rawText) {
     text.includes(' con mi negocio cual elegirias') ||
     text.includes(' con mi negocio cuál elegirías') ||
     text.includes(' empresa es mejor que crecimiento') ||
-    text.includes(' crecimiento es mejor que inicial')
+    text.includes(' crecimiento es mejor que inicial') ||
+    hasPlanComparisonSemanticCue(text)
   );
 }
 
@@ -2634,6 +2663,7 @@ function buildSafeContextualPlanReply(product, contextPlan = null) {
 function isCatalogItemDetailIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
+  if (hasPlanComparisonSemanticCue(text)) return false;
 
   return (
     text.includes('que tiene') ||
@@ -4596,8 +4626,19 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
-    const recommendedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.currentPlanId || pendingPlanComparison.recommendedPlanId);
-    const comparedPlan = findPlanByStoredId(orderedPlans, pendingPlanComparison.comparisonPlanId || pendingPlanComparison.comparedPlanId);
+    const referencedPlans = hasPlanComparisonSemanticCue(inboundText)
+      ? findReferencedPlans(orderedPlans, inboundText)
+      : [];
+    const defaultRecommendedPlan = findPlanByStoredId(
+      orderedPlans,
+      pendingPlanComparison.currentPlanId || pendingPlanComparison.recommendedPlanId
+    );
+    const defaultComparedPlan = findPlanByStoredId(
+      orderedPlans,
+      pendingPlanComparison.comparisonPlanId || pendingPlanComparison.comparedPlanId
+    );
+    const recommendedPlan = referencedPlans[0] || defaultRecommendedPlan;
+    const comparedPlan = referencedPlans[1] || (referencedPlans[0] ? defaultRecommendedPlan : defaultComparedPlan);
 
     if (recommendedPlan && comparedPlan) {
       const result = {
