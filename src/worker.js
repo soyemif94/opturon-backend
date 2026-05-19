@@ -531,10 +531,10 @@ const COMMERCIAL_INTENT_MAP = {
     exact: ['promos', 'promociones', 'ofertas', 'descuentos'],
     includes: ['promo', 'promocion', 'oferta', 'descuento']
   }),
-  human_handoff: buildCommercialIntentSpec({
-    exact: ['quiero hablar con alguien', 'una persona', 'humano', 'asesor', 'vendedor'],
-    includes: ['hablar con alguien', 'una persona', 'humano', 'asesor', 'vendedor', 'hablar con un vendedor']
-  }),
+    human_handoff: buildCommercialIntentSpec({
+      exact: ['quiero hablar con alguien', 'una persona', 'humano', 'quiero un asesor', 'quiero un vendedor'],
+      includes: ['hablar con alguien', 'una persona', 'humano', 'hablar con un asesor', 'hablar con un vendedor', 'pasame con un asesor', 'pasame con un vendedor']
+    }),
   recommendation: buildCommercialIntentSpec({
     exact: ['que recomendas', 'cual me conviene', 'algo mas barato', 'que me sugeris'],
     includes: ['que recomendas', 'cual me conviene', 'algo mas barato', 'que me sugeris', 'que sugeris', 'recomendame']
@@ -1362,18 +1362,21 @@ function detectBusinessRecommendationContext(rawText) {
   const enterpriseSignals = [
     'distribuidora',
     'mayorista',
-    'muchos mensajes',
-    'muchas consultas',
-    'alto volumen',
     'somos varios vendedores',
     'varios vendedores',
     'varios asesor',
     'equipo comercial',
     'somos varios',
     'varios atendiendo',
-    'que plan conviene',
-    'que me conviene',
-    'que plan me conviene'
+    'varias sucursales',
+    'mas de una sucursal',
+    'más de una sucursal',
+    'supervision',
+    'supervisión',
+    'permisos',
+    'roles',
+    'personalizacion',
+    'personalización'
   ];
   const growthSignals = [
     'tienda de ropa',
@@ -1406,7 +1409,7 @@ function detectBusinessRecommendationContext(rawText) {
   const growthScore = scoreSignals(growthSignals);
   const starterScore = scoreSignals(starterSignals);
 
-  if (enterpriseScore > 0 && enterpriseScore >= growthScore && enterpriseScore >= starterScore) {
+  if (enterpriseScore >= 2 && enterpriseScore > growthScore && enterpriseScore >= starterScore) {
     return {
       businessType: text.includes('distribuidora') || text.includes('mayorista') ? 'distribution' : 'high_volume',
       teamSize: 'team',
@@ -1457,20 +1460,22 @@ function detectCommercialSalesContext(rawText) {
 
   const whatsappVolume = findMatch([
     ['high', ['vendo mucho', 'muchas consultas', 'mucho por whatsapp', 'mucho movimiento', 'me escriben bastante', 'alto volumen', 'muchos mensajes']],
-    ['low', ['recien arranco', 'recién arranco', 'estoy arrancando', 'pocos mensajes', 'poquitas consultas', 'arrancando de a poco']]
+    ['low', ['recien arranco', 'recién arranco', 'estoy arrancando', 'pocos mensajes', 'poquitas consultas', 'arrancando de a poco', 'recien empezando', 'recién empezando']]
   ]);
 
   const teamSizeSignal = findMatch([
     ['multi_branch', ['varias sucursales', 'tengo sucursales', 'mas de una sucursal', 'más de una sucursal']],
-    ['team', ['tengo vendedores', 'tengo equipo', 'somos varios', 'varios vendedores', 'equipo vendiendo', 'tengo asesores']],
-    ['solo', ['soy yo solo', 'soy yo sola', 'atiendo yo', 'estoy solo', 'estoy sola']]
+    ['solo', ['soy yo solo', 'soy yo sola', 'atiendo yo', 'estoy solo', 'estoy sola', 'no tengo vendedores', 'sin vendedores', 'no tengo equipo', 'estoy yo solo']],
+    ['team', ['tengo vendedores', 'tengo equipo', 'somos varios', 'varios vendedores', 'equipo vendiendo', 'tengo asesores', 'tenemos vendedores', 'tenemos equipo']]
   ]);
 
   const painSignals = [
     ['lead_loss', ['se me pierden consultas', 'pierdo consultas', 'se me escapan consultas', 'se me pasan consultas']],
-    ['follow_up', ['no hago seguimiento', 'me falta seguimiento', 'seguir conversaciones', 'retomar consultas']],
-    ['response_delay', ['respondo tarde', 'contestamos tarde', 'responder tarde']],
-    ['sales_organization', ['ordenar ventas', 'ordenar whatsapp', 'ordenar consultas', 'ordenar la operacion', 'ordenar la operación']]
+    ['follow_up', ['no hago seguimiento', 'me falta seguimiento', 'seguir conversaciones', 'retomar consultas', 'me cuesta seguir consultas', 'me cuesta seguir las consultas', 'seguir consultas']],
+    ['response_delay', ['respondo tarde', 'contestamos tarde', 'responder tarde', 'tardo en atender consultas', 'tardo en responder', 'atiendo tarde']],
+    ['sales_organization', ['ordenar ventas', 'ordenar whatsapp', 'ordenar consultas', 'ordenar la operacion', 'ordenar la operación', 'mala administracion por whatsapp', 'mala administración por whatsapp', 'caos por whatsapp']],
+    ['team_control', ['supervision', 'supervisión', 'control del equipo', 'permisos', 'roles', 'sucursales']],
+    ['complex_operation', ['personalizacion', 'personalización', 'integraciones', 'operacion compleja', 'operación compleja']]
   ];
   const painPoints = painSignals
     .filter(([, phrases]) => phrases.some((phrase) => text.includes(phrase)))
@@ -1511,9 +1516,32 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
   const isLowVolume = safeContext.whatsappVolume === 'low';
   const hasTeam = safeContext.teamSizeSignal === 'team' || safeContext.teamSizeSignal === 'multi_branch';
   const isMultiBranch = safeContext.teamSizeSignal === 'multi_branch';
+  const isSolo = safeContext.teamSizeSignal === 'solo';
   const isDistribution = safeContext.businessType === 'distribution';
+  const hasControlSignals = painPoints.includes('team_control') || painPoints.includes('complex_operation');
+  const hasGrowthPains = painPoints.includes('lead_loss') || painPoints.includes('follow_up') || painPoints.includes('response_delay') || painPoints.includes('sales_organization');
 
-  if (isMultiBranch || isDistribution || (isHighVolume && hasTeam)) {
+  let starterScore = 0;
+  let growthScore = 0;
+  let enterpriseScore = 0;
+
+  if (isLowVolume) starterScore += 2;
+  if (isSolo) starterScore += 1;
+  if (!painPoints.length) starterScore += 1;
+
+  if (safeContext.businessType && safeContext.businessType !== 'distribution') growthScore += 1;
+  if (isHighVolume) growthScore += 2;
+  if (hasGrowthPains) growthScore += 3;
+  if (isSolo) growthScore += 1;
+  if (hasTeam) growthScore += 1;
+
+  if (isDistribution) enterpriseScore += 4;
+  if (isMultiBranch) enterpriseScore += 4;
+  if (safeContext.teamSizeSignal === 'team') enterpriseScore += 2;
+  if (hasControlSignals) enterpriseScore += 3;
+  if (isHighVolume && hasTeam) enterpriseScore += 1;
+
+  if (enterpriseScore >= 5 && enterpriseScore > growthScore) {
     return {
       businessType: safeContext.businessType || (isDistribution ? 'distribution' : 'high_volume'),
       teamSize: hasTeam ? 'team' : 'small',
@@ -1521,7 +1549,7 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
     };
   }
 
-  if (isLowVolume && safeContext.teamSizeSignal === 'solo' && !painPoints.length) {
+  if (starterScore >= 3 && starterScore >= growthScore && enterpriseScore === 0) {
     return {
       businessType: safeContext.businessType || 'starter',
       teamSize: 'small',
@@ -1529,7 +1557,7 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
     };
   }
 
-  if (safeContext.businessType || isHighVolume || painPoints.length || hasTeam) {
+  if (growthScore > 0 || safeContext.businessType || painPoints.length || hasTeam) {
     return {
       businessType: safeContext.businessType || 'small_store',
       teamSize: hasTeam ? 'team' : 'small',
@@ -2588,10 +2616,26 @@ function isRecommendationWhyFollowUpIntent(rawText) {
     text.includes('por qué me recomendarías eso') ||
     text.includes('por que me recomendarias ese') ||
     text.includes('por qué me recomendarías ese') ||
-    text.includes('por que me recomendaste eso') ||
-    text.includes('por qué me recomendaste eso') ||
-    text.includes('por que eso') ||
-    text.includes('por qué eso')
+      text.includes('por que me recomendaste eso') ||
+      text.includes('por qué me recomendaste eso') ||
+      text.includes('por que me recomendarias') ||
+      text.includes('por qué me recomendarías') ||
+      text.includes('por que ese plan') ||
+      text.includes('por qué ese plan') ||
+      text.includes('por que crecimiento') ||
+      text.includes('por qué crecimiento') ||
+      text.includes('por que empresa') ||
+      text.includes('por qué empresa') ||
+      text.includes('por que eso') ||
+      text.includes('por qué eso') ||
+      text === 'y eso' ||
+      text === 'y eso?' ||
+      text === 'por' ||
+      text === 'por?' ||
+      text.includes('como llegaste a eso') ||
+      text.includes('como llegaste a esa recomendacion') ||
+      text.includes('cómo llegaste a eso') ||
+      text.includes('cómo llegaste a esa recomendación')
   );
 }
 
@@ -4981,8 +5025,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const effectiveSalesContext = mergeCommercialSalesContext(activeSalesContext, detectedSalesContext);
   const storedBusinessContext = getActiveBusinessRecommendationContext(safeContext);
   const effectiveBusinessContext =
-    currentBusinessContext ||
     deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) ||
+    currentBusinessContext ||
     storedBusinessContext;
   const businessProfile = getClinicBusinessProfile(clinic);
   const address = normalizeBusinessProfileText(businessProfile.address);
@@ -5052,6 +5096,62 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             activeAt: null,
             completedAt: new Date().toISOString()
           }
+        }
+      };
+    }
+  }
+
+  if (
+    (activeSalesContext || activePlanContext) &&
+    detectedSalesContext &&
+    !hasPlanComparisonSemanticCue(inboundText) &&
+    !isPlanWorthItIntent(inboundText) &&
+    !isRecommendationWhyFollowUpIntent(inboundText) &&
+    !isCatalogItemDetailIntent(inboundText) &&
+    !isCommerceEntryIntent(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    effectiveBusinessContext &&
+    hasMinimumSalesContextForRecommendation(effectiveSalesContext)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const orderedPlans = getOrderedPlanProducts(eligibleProducts);
+    const suggestedPlan = findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext);
+    const comparedPlan = effectiveBusinessContext.recommendationLevel === 'growth'
+      ? findPlanByNeedHint(orderedPlans, 'enterprise')
+      : null;
+
+    if (suggestedPlan) {
+      const recommendationReason = buildRecommendationReasonSummary(suggestedPlan, effectiveSalesContext, orderedPlans);
+      return {
+        type: 'recommendation',
+        replyText: [
+          'Ahí me queda más claro 😊',
+          '',
+          buildHumanSalesRecommendationReply(suggestedPlan, effectiveSalesContext, orderedPlans)
+        ].join('\n'),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_recommendation',
+            lastDiscussedPlanId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            lastComparedPlanId: comparedPlan && (comparedPlan.id || comparedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...buildCommercialSalesContextPatch({
+            ...effectiveSalesContext,
+            lastRecommendedPlan: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            lastRecommendationReason: recommendationReason
+          }),
+          pendingOfferedAction: buildPlanComparisonOfferedAction(suggestedPlan, comparedPlan, effectiveBusinessContext),
+          ...buildBusinessRecommendationContextPatch(effectiveBusinessContext)
         }
       };
     }
