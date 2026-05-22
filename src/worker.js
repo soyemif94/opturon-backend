@@ -4336,13 +4336,24 @@ function isPublicDemoExperienceIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
 
-  return [
+  const legacyMatch = [
     'quiero una demo guiada por whatsapp',
     'vengo desde la demo web',
     'quiero una demo guiada',
     'demo guiada por whatsapp',
     'vengo desde la demo'
   ].some((pattern) => text.includes(pattern));
+  if (legacyMatch) return true;
+
+  const asksToTrySystem = text.includes('quiero probar el sistema');
+  const mentionsWhatsApp = text.includes('whatsapp');
+  const mentionsGuidedDemoContext =
+    text.includes('flujo real') ||
+    text.includes('verlo en accion') ||
+    text.includes('verlo en acc') ||
+    text.includes('ver como funciona');
+
+  return asksToTrySystem && mentionsWhatsApp && mentionsGuidedDemoContext;
 }
 
 function getOnboardingStageKey(step) {
