@@ -10236,6 +10236,12 @@ async function processConversationReplyJob(job) {
       botRoute.agendaIntent
     ) &&
     !BOT_ROUTER_APPOINTMENT_STATES.has(currentState);
+  const transferPaymentIntent = parseTransferPaymentIntent(inboundText);
+  const shouldShortCircuitToDemoSourceOfTruth =
+    botRoute.domain === 'demo' &&
+    !shouldPrioritizeAgendaFlow &&
+    currentState !== 'PAYMENT_TRANSFER' &&
+    !transferPaymentIntent;
 
   if (
     shouldRouteDirectToAgenda
@@ -10317,7 +10323,7 @@ async function processConversationReplyJob(job) {
     return;
   }
 
-  if (!shouldPrioritizeAgendaFlow) {
+  if (!shouldPrioritizeAgendaFlow && !shouldShortCircuitToDemoSourceOfTruth) {
     const safeCommercialReply = await buildSafeCommercialIntentReply({
       clinic,
       conversation,
@@ -10398,9 +10404,10 @@ async function processConversationReplyJob(job) {
     intent === 'unknown' &&
     commercialIntent.type === 'unknown' &&
     !shouldPrioritizeAgendaFlow &&
+    !shouldShortCircuitToDemoSourceOfTruth &&
     !inboundLooksLikeCommerce &&
     !inboundLooksLikeCommerceCancel &&
-    !parseTransferPaymentIntent(inboundText) &&
+    !transferPaymentIntent &&
     !isGreetingIntent(inboundText)
   ) {
     const intelligentFallback = buildIntelligentFallbackReply(safeContext);
