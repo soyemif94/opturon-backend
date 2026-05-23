@@ -4283,6 +4283,8 @@ function isDemoAdvanceIntent(input) {
 
   return [
     'seguir',
+    'segui',
+    'sigo',
     'ok',
     'dale',
     'perfecto',
@@ -4290,13 +4292,15 @@ function isDemoAdvanceIntent(input) {
     'buenisimo',
     'barbaro',
     'continuar',
+    'continua',
     'siguiente',
     'si',
     'genial',
     'mostrame',
     'mostrame mas',
     'vamos',
-    'avanza'
+    'avanza',
+    'avanzar'
   ].includes(normalized);
 }
 
@@ -4307,7 +4311,6 @@ function isDemoActivateIntent(input) {
     'activar ahora',
     'quiero activar',
     'lo activamos',
-    'avanzar',
     'seguir con la activacion'
   ].includes(normalized);
 }
