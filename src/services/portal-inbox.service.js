@@ -15,6 +15,7 @@ const graphClient = require('../whatsapp/whatsapp-graph.client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const env = require('../config/env');
 const { logInfo, logWarn } = require('../utils/logger');
+const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -1124,7 +1125,7 @@ async function assignPortalConversationSeller(tenantId, conversationId, payload 
   }
 
   const seller = await findPortalUserByIdAndClinicId(sellerUserId, context.clinic.id);
-  if (!seller || seller.role === 'viewer') {
+  if (!seller || !isOperationalPortalAssigneeRole(seller.role)) {
     return {
       ok: false,
       tenantId: context.tenantId,

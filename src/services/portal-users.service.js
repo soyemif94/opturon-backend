@@ -21,6 +21,10 @@ const {
   createPortalUserAuditEvent,
   listPortalUserAuditEventsByClinicId
 } = require('../repositories/portal-user-audit.repository');
+const {
+  normalizePortalUserRole,
+  isOperationalPortalAssigneeRole
+} = require('../utils/portal-users');
 
 const ALLOWED_ROLES = new Set(['owner', 'manager', 'seller', 'viewer']);
 const PORTAL_USERS_LIMIT_KEY = 'tenant_portal_users';
@@ -34,8 +38,7 @@ function normalizeEmail(value) {
 }
 
 function normalizeRole(value) {
-  const normalized = normalizeString(value).toLowerCase();
-  if (normalized === 'editor') return 'seller';
+  const normalized = normalizePortalUserRole(value);
   return ALLOWED_ROLES.has(normalized) ? normalized : null;
 }
 
@@ -95,14 +98,16 @@ function normalizePortalUserRecord(user, primaryPortalUserId) {
   const safePrimaryId = String(primaryPortalUserId || '').trim();
   return {
     ...user,
-    accountKind: safePrimaryId && String(user.id) === safePrimaryId ? 'primary' : 'subaccount'
+    accountKind: safePrimaryId && String(user.id) === safePrimaryId ? 'primary' : 'subaccount',
+    isOperationalAssignee: isOperationalPortalAssigneeRole(user.role)
   };
 }
 
 function normalizeAdminPortalUserRecord(user) {
   return {
     ...user,
-    accountKind: String(user.role || '').toLowerCase() === 'owner' ? 'primary' : 'subaccount'
+    accountKind: String(user.role || '').toLowerCase() === 'owner' ? 'primary' : 'subaccount',
+    isOperationalAssignee: isOperationalPortalAssigneeRole(user.role)
   };
 }
 
@@ -113,9 +118,16 @@ function filterClientScopedPortalUsers(users, accountConfig) {
   }
 
   const rootId = String(accountConfig.primaryPortalUserId);
-  return currentUsers.filter((user) => {
+  const scopedUsers = currentUsers.filter((user) => {
     return normalizeString(user.accountRootUserId) === rootId;
   });
+
+  if (scopedUsers.length > 0) {
+    return scopedUsers;
+  }
+
+  // Keep client-scoped workspaces operable if legacy root pointers became orphaned.
+  return currentUsers;
 }
 
 function assertRootBelongsToClinic(users, accountConfig, clinicId) {
@@ -806,5 +818,6 @@ module.exports = {
   updatePortalUser,
   deletePortalUser,
   authenticatePortalUser,
-  getPortalAuthUserByEmail
+  getPortalAuthUserByEmail,
+  isOperationalPortalAssigneeRole
 };

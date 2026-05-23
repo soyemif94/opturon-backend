@@ -30,6 +30,7 @@ const { updateConversationStage } = require('../repositories/conversation.reposi
 const conversationStateRepo = require('../conversations/conversation.repo');
 const { sendPortalMessage } = require('./portal-inbox.service');
 const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
+const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 
 const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
 const LEGACY_ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
@@ -692,7 +693,7 @@ async function createOrderForContext(context, payload) {
   let seller = null;
   if (sellerUserId) {
     seller = await findPortalUserByIdAndClinicId(sellerUserId, context.clinic.id);
-    if (!seller || seller.role !== 'seller') {
+    if (!seller || !isOperationalPortalAssigneeRole(seller.role)) {
       return buildError(context.tenantId, 'seller_user_not_found');
     }
   }
@@ -1133,7 +1134,7 @@ async function patchOrderForContext(context, orderId, payload) {
         }
 
         seller = await findPortalUserByIdAndClinicId(requestedSellerUserId, context.clinic.id, client);
-        if (!seller || seller.role !== 'seller') {
+        if (!seller || !isOperationalPortalAssigneeRole(seller.role)) {
           return buildError(context.tenantId, 'seller_user_not_found');
         }
       }
