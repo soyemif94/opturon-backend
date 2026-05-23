@@ -2771,6 +2771,10 @@ function detectCommercialPlanObjection(rawText) {
     text.includes('es caro') ||
     text.includes('muy caro') ||
     text.includes('medio caro') ||
+    text.includes('se me va') ||
+    text.includes('no me da') ||
+    text.includes('mas barato') ||
+    text.includes('más barato') ||
     text === 'caro'
   ) {
     return 'price';
@@ -5268,7 +5272,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
-    const recommendedPlan = resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
+    const referencedPlan = findReferencedPlan(orderedPlans, inboundText);
+    const recommendedPlan = referencedPlan || resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
 
     if (recommendedPlan) {
       const objectionReply = buildCommercialPlanObjectionReply(planObjectionType, recommendedPlan, effectiveSalesContext || {}, orderedPlans);
@@ -5609,9 +5614,29 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
 
     if (orderedPlans.length) {
+      const suggestedPlan = findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0];
+      const comparedPlan = findPlanByNeedHint(orderedPlans, 'enterprise');
       return {
         type: 'recommendation',
-        replyText: buildPlanComparisonReply(orderedPlans)
+        replyText: buildPlanComparisonReply(orderedPlans),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_comparison',
+            lastDiscussedPlanId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            lastComparedPlanId: comparedPlan && (comparedPlan.id || comparedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          pendingOfferedAction: buildCurrentPlanComparisonOfferedAction(
+            suggestedPlan,
+            comparedPlan,
+            normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          )
+        }
       };
     }
   }
