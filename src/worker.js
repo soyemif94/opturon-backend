@@ -3102,6 +3102,17 @@ function resolveRecommendedPlanForCommercialFollowUp(products, salesContext, pla
   return findPlanByStoredId(orderedPlans, planContext && planContext.lastDiscussedPlanId);
 }
 
+function resolvePlanFromCommercialShortMemory(products, memory) {
+  if (!memory || String(memory.topic || '').trim().toLowerCase() !== 'plans') return null;
+  return findPlanByStoredId(products, memory.lastSuggestedProductId);
+}
+
+function resolveRecentCommercialPlan(products, salesContext, planContext = null, shortMemory = null) {
+  const fromFollowUp = resolveRecommendedPlanForCommercialFollowUp(products, salesContext, planContext);
+  if (fromFollowUp) return fromFollowUp;
+  return resolvePlanFromCommercialShortMemory(products, shortMemory);
+}
+
 function findPlanByStoredId(products, storedId) {
   const safeId = String(storedId || '').trim();
   if (!safeId) return null;
@@ -5141,6 +5152,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
     ? conversation.context
     : {};
+  const activeShortMemory = getActiveCommercialShortMemory(safeContext);
   const pendingPlanComparison = getPendingPlanComparisonAction(safeContext);
   const activePlanContext = getActiveCommercialPlanContext(safeContext);
   const currentBusinessContext = detectBusinessRecommendationContext(inboundText);
@@ -5153,6 +5165,16 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     currentBusinessContext ||
     storedBusinessContext;
   const planObjectionType = detectCommercialPlanObjection(inboundText);
+  const hasEffectiveSalesSignals = Boolean(
+    effectiveSalesContext && (
+      effectiveSalesContext.businessType ||
+      effectiveSalesContext.whatsappVolume ||
+      effectiveSalesContext.teamSizeSignal ||
+      (Array.isArray(effectiveSalesContext.painPoints) && effectiveSalesContext.painPoints.length) ||
+      effectiveSalesContext.lastRecommendedPlan ||
+      effectiveSalesContext.lastRecommendationReason
+    )
+  );
   const businessProfile = getClinicBusinessProfile(clinic);
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
@@ -5190,8 +5212,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   }
 
   if (
-    activePlanContext &&
-    effectiveSalesContext &&
+    (activePlanContext || (activeShortMemory && activeShortMemory.topic === 'plans')) &&
     !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntryIntent(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
@@ -5202,20 +5223,29 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
-    const discussedPlan = findReferencedPlan(orderedPlans, inboundText) || findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText);
+    const discussedPlan = findReferencedPlan(orderedPlans, inboundText) ||
+      findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText) ||
+      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
 
     if (discussedPlan) {
       return {
         type: 'recommendation',
-        replyText: buildPlanWorthItReply(discussedPlan, effectiveSalesContext, orderedPlans),
+        replyText: buildPlanWorthItReply(discussedPlan, effectiveSalesContext || {}, orderedPlans),
         contextPatch: {
           ...buildCommercialPlanContextPatch({
             topic: 'plan_value',
             lastDiscussedPlanId: discussedPlan && (discussedPlan.id || discussedPlan.productId),
-            lastComparedPlanId: activePlanContext.lastComparedPlanId,
+            lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
             recommendationType: normalizeProductRecommendationType(discussedPlan, orderedPlans)
           }),
-          ...buildCommercialSalesContextPatch(effectiveSalesContext),
+          ...(hasEffectiveSalesSignals ? buildCommercialSalesContextPatch(effectiveSalesContext) : {}),
+          ...(activeShortMemory && activeShortMemory.topic === 'plans'
+            ? buildCommercialShortMemoryPatch({
+              topic: 'plans',
+              lastSuggestedProductId: discussedPlan && (discussedPlan.id || discussedPlan.productId),
+              recommendationType: normalizeProductRecommendationType(discussedPlan, orderedPlans)
+            })
+            : {}),
           pendingOfferedAction: {
             type: null,
             activeAt: null,
@@ -5228,8 +5258,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
 
   if (
     planObjectionType &&
-    effectiveSalesContext &&
-    (effectiveSalesContext.lastRecommendedPlan || (activePlanContext && activePlanContext.lastDiscussedPlanId)) &&
+    (effectiveSalesContext || activePlanContext || (activeShortMemory && activeShortMemory.topic === 'plans')) &&
     !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntryIntent(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
@@ -5239,15 +5268,30 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
-    const recommendedPlan = resolveRecommendedPlanForCommercialFollowUp(orderedPlans, effectiveSalesContext, activePlanContext);
+    const recommendedPlan = resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
 
     if (recommendedPlan) {
-      const objectionReply = buildCommercialPlanObjectionReply(planObjectionType, recommendedPlan, effectiveSalesContext, orderedPlans);
+      const objectionReply = buildCommercialPlanObjectionReply(planObjectionType, recommendedPlan, effectiveSalesContext || {}, orderedPlans);
       if (objectionReply) {
         return {
           type: 'recommendation',
           replyText: objectionReply,
-          contextPatch: buildCommercialSalesContextPatch(effectiveSalesContext)
+          contextPatch: {
+            ...(hasEffectiveSalesSignals ? buildCommercialSalesContextPatch(effectiveSalesContext) : {}),
+            ...buildCommercialPlanContextPatch({
+              topic: 'plan_objection',
+              lastDiscussedPlanId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
+              lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+              recommendationType: normalizeProductRecommendationType(recommendedPlan, orderedPlans)
+            }),
+            ...(activeShortMemory && activeShortMemory.topic === 'plans'
+              ? buildCommercialShortMemoryPatch({
+                topic: 'plans',
+                lastSuggestedProductId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
+                recommendationType: normalizeProductRecommendationType(recommendedPlan, orderedPlans)
+              })
+              : {})
+          }
         };
       }
     }
