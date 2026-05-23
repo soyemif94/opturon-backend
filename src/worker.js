@@ -3037,16 +3037,56 @@ function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, sales
   const orderedPlans = getOrderedPlanProducts(allPlans);
   const lowerPlan = findLowerPlan(orderedPlans, safePlan);
   const starterPlan = findPlanByNeedHint(orderedPlans, 'starter');
+  const growthPlan = findPlanByNeedHint(orderedPlans, 'growth');
   const reason = buildRecommendationReasonSummary(safePlan, salesContext, orderedPlans);
+  const normalizedName = normalizeCommandText(safePlan.name || '');
 
   if (objectionType === 'price') {
+    if (normalizedName.includes('empresa')) {
+      return [
+        'Sí, Empresa es para cuando ya necesitás más equipo, control o personalización.',
+        '',
+        growthPlan
+          ? `Si querés algo más equilibrado, miraría ${growthPlan.name}; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
+          : `Si querés algo más equilibrado, miraría un plan intermedio; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
+      ].join('\n');
+    }
+
+    if (normalizedName.includes('crecimiento')) {
+      return [
+        'Te entiendo 😊',
+        '',
+        starterPlan
+          ? `Si hoy querés cuidar inversión, arrancaría con ${starterPlan.name}.`
+          : 'Si hoy querés cuidar inversión, arrancaría por el plan más simple.',
+        `Te ordena WhatsApp sin irte a un plan más grande.`,
+        '',
+        'Después, si empezás a perder consultas o necesitás seguimiento, ahí sí subís a Crecimiento.'
+      ].join('\n');
+    }
+
+    if (starterPlan && String(safePlan.id || safePlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()) {
+      return [
+        'Te entiendo 😊',
+        '',
+        `${starterPlan.name} ya es la opción más económica para empezar a ordenar WhatsApp.`,
+        'Si incluso así hoy no te cierra, probablemente te convenga esperar a tener un poco más de movimiento antes de sumar una herramienta así.'
+      ].join('\n');
+    }
+
     return [
-      'Te entiendo.',
+      'Te entiendo 😊',
       '',
-      `Yo te lo marqué por ${reason}.`,
+      lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
+        ? `Si hoy querés cuidar inversión, arrancaría con ${lowerPlan.name || 'Plan Inicial'}.`
+        : `Si hoy querés cuidar inversión, podés bajar a ${lowerPlan ? (lowerPlan.name || 'un plan más chico') : 'un plan más simple'}.`,
+      lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
+        ? 'Te ordena WhatsApp sin irte a un plan más grande.'
+        : `La idea es no pasarte de estructura antes de que realmente lo necesites.`,
+      '',
       lowerPlan
-        ? `Si hoy querés cuidar inversión, podés arrancar con ${lowerPlan.name || 'un plan más chico'} y después subir.`
-        : `Si hoy querés ir a algo más liviano, conviene arrancar simple y no sobredimensionarte.`
+        ? `Después, cuando ya tenga sentido por seguimiento, volumen o equipo, subís desde ahí.`
+        : `Si más adelante necesitás más seguimiento, más control o más volumen, ahí sí tiene sentido subir.`
     ].join('\n');
   }
 
