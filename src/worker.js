@@ -536,8 +536,8 @@ const COMMERCIAL_INTENT_MAP = {
       includes: ['hablar con alguien', 'una persona', 'humano', 'hablar con un asesor', 'hablar con un vendedor', 'pasame con un asesor', 'pasame con un vendedor']
     }),
   recommendation: buildCommercialIntentSpec({
-    exact: ['que recomendas', 'cual me conviene', 'algo mas barato', 'que me sugeris'],
-    includes: ['que recomendas', 'cual me conviene', 'algo mas barato', 'que me sugeris', 'que sugeris', 'recomendame']
+    exact: ['que recomendas', 'cual me conviene', 'que plan me conviene', 'algo mas barato', 'que me sugeris'],
+    includes: ['que recomendas', 'cual me conviene', 'que plan me conviene', 'algo mas barato', 'que me sugeris', 'que sugeris', 'recomendame']
   }),
   loyalty: buildCommercialIntentSpec({
     exact: ['puntos', 'beneficios', 'fidelizacion', 'recompensas'],
@@ -2399,6 +2399,8 @@ function isPlanComparisonIntent(rawText) {
   return [
     'cual me conviene',
     'cuál me conviene',
+    'que plan me conviene',
+    'qué plan me conviene',
     'cual recomendas',
     'cuál recomendás',
     'cual recomiendan',
@@ -2466,6 +2468,8 @@ function isPlanRecommendationIntent(rawText) {
   return Boolean(resolvePlanNeedHint(text)) || [
     'cual me conviene',
     'cuál me conviene',
+    'que plan me conviene',
+    'qué plan me conviene',
     'cual recomendas',
     'cuál recomendás',
     'cual recomiendan',
@@ -2636,6 +2640,10 @@ function isRecommendationWhyFollowUpIntent(rawText) {
       text.includes('por qué crecimiento') ||
       text.includes('por que empresa') ||
       text.includes('por qué empresa') ||
+      text.includes('por que crecimiento y no inicial') ||
+      text.includes('por qué crecimiento y no inicial') ||
+      text.includes('por que empresa y no crecimiento') ||
+      text.includes('por qué empresa y no crecimiento') ||
       text.includes('por que eso') ||
       text.includes('por qué eso') ||
       text === 'y eso' ||
@@ -3085,6 +3093,13 @@ function buildCurrentPlanComparisonOfferedAction(currentPlan, comparisonPlan, re
     comparisonPlanId: String(comparisonPlan.id || comparisonPlan.productId || '').trim() || null,
     recommendationType: recommendationType ? String(recommendationType).trim().toLowerCase() : null
   };
+}
+
+function resolveRecommendedPlanForCommercialFollowUp(products, salesContext, planContext = null) {
+  const orderedPlans = getOrderedPlanProducts(products);
+  const fromSales = findPlanByStoredId(orderedPlans, salesContext && salesContext.lastRecommendedPlan);
+  if (fromSales) return fromSales;
+  return findPlanByStoredId(orderedPlans, planContext && planContext.lastDiscussedPlanId);
 }
 
 function findPlanByStoredId(products, storedId) {
@@ -5214,7 +5229,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (
     planObjectionType &&
     effectiveSalesContext &&
-    effectiveSalesContext.lastRecommendedPlan &&
+    (effectiveSalesContext.lastRecommendedPlan || (activePlanContext && activePlanContext.lastDiscussedPlanId)) &&
     !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntryIntent(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
@@ -5224,7 +5239,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
-    const recommendedPlan = findPlanByStoredId(orderedPlans, effectiveSalesContext.lastRecommendedPlan);
+    const recommendedPlan = resolveRecommendedPlanForCommercialFollowUp(orderedPlans, effectiveSalesContext, activePlanContext);
 
     if (recommendedPlan) {
       const objectionReply = buildCommercialPlanObjectionReply(planObjectionType, recommendedPlan, effectiveSalesContext, orderedPlans);
@@ -5483,7 +5498,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
 
   if (
     effectiveSalesContext &&
-    effectiveSalesContext.lastRecommendedPlan &&
+    (effectiveSalesContext.lastRecommendedPlan || (activePlanContext && activePlanContext.lastDiscussedPlanId)) &&
     !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntryIntent(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
@@ -5494,13 +5509,43 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
-    const recommendedPlan = findPlanByStoredId(orderedPlans, effectiveSalesContext.lastRecommendedPlan);
+    const recommendedPlan = resolveRecommendedPlanForCommercialFollowUp(orderedPlans, effectiveSalesContext, activePlanContext);
 
     if (recommendedPlan) {
       return {
         type: 'recommendation',
         replyText: buildRecommendationWhyReply(recommendedPlan, effectiveSalesContext, orderedPlans),
         contextPatch: buildCommercialSalesContextPatch(effectiveSalesContext)
+      };
+    }
+  }
+
+  if (
+    !activePlanContext &&
+    !pendingPlanComparison &&
+    !isCatalogItemDetailIntent(inboundText) &&
+    !isCommerceEntryIntent(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isPlanVsPlanIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+
+    const referencedPlans = findReferencedPlans(orderedPlans, inboundText);
+    const primaryPlan = referencedPlans[0] || null;
+    const secondaryPlan = referencedPlans[1] || null;
+
+    if (
+      primaryPlan &&
+      secondaryPlan &&
+      String(primaryPlan.id || primaryPlan.productId || '').trim() !== String(secondaryPlan.id || secondaryPlan.productId || '').trim()
+    ) {
+      return {
+        type: 'recommendation',
+        replyText: buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, null, effectiveSalesContext)
       };
     }
   }
