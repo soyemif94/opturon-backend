@@ -1,4 +1,5 @@
 const { createHash } = require('node:crypto');
+const { DateTime } = require('luxon');
 const { withTransaction } = require('../db/client');
 const { quantizeDecimal, sumQuantized } = require('../utils/money');
 const { resolvePortalTenantContext } = require('./portal-context.service');
@@ -16,10 +17,17 @@ const {
   createCashSession,
   closeCashSession
 } = require('../repositories/cash-sessions.repository');
+const {
+  listCashSessionMovementsBySessionId,
+  createCashSessionMovement
+} = require('../repositories/cash-session-movements.repository');
 const { listCashCountableOrdersByDestinationAndRange } = require('../repositories/orders.repository');
 
 const TRUSTED_CASH_TENANT_ROLES = new Set(['owner', 'manager', 'seller']);
 const TRUSTED_CASH_GLOBAL_ROLES = new Set(['superadmin', 'ops_admin']);
+const CASH_MOVEMENT_TYPES = new Set(['manual_in', 'manual_out']);
+const CASH_MOVEMENT_METHODS = new Set(['cash', 'transfer', 'card', 'other']);
+const CASH_TIMEZONE = 'America/Argentina/Buenos_Aires';
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -36,6 +44,23 @@ function normalizeRole(value) {
 function normalizeOptionalAmount(value) {
   const normalized = quantizeDecimal(value, 2, NaN);
   return Number.isFinite(normalized) ? normalized : null;
+}
+
+function normalizeCashMovementType(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  return CASH_MOVEMENT_TYPES.has(normalized) ? normalized : null;
+}
+
+function normalizeCashMovementMethod(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  return CASH_MOVEMENT_METHODS.has(normalized) ? normalized : null;
+}
+
+function isSameCashDay(value) {
+  if (!value) return false;
+  const target = DateTime.fromISO(String(value), { zone: CASH_TIMEZONE });
+  if (!target.isValid) return false;
+  return target.hasSame(DateTime.now().setZone(CASH_TIMEZONE), 'day');
 }
 
 function buildError(tenantId, reason, details) {
@@ -121,23 +146,54 @@ async function resolveCashActor(context, actorUserId, payload = {}) {
 }
 
 async function buildSessionMetrics(session, clinicId, client = null) {
-  const orders = await listCashCountableOrdersByDestinationAndRange(
-    clinicId,
-    session.paymentDestinationId,
-    session.openedAt,
-    session.closedAt || null,
-    client
+  const [orders, manualMovements] = await Promise.all([
+    listCashCountableOrdersByDestinationAndRange(
+      clinicId,
+      session.paymentDestinationId,
+      session.openedAt,
+      session.closedAt || null,
+      client
+    ),
+    listCashSessionMovementsBySessionId(session.id, clinicId, client)
+  ]);
+
+  const manualInAmount = sumQuantized(
+    manualMovements.filter((movement) => movement.type === 'manual_in').map((movement) => Number(movement.amount || 0)),
+    2
+  );
+  const manualOutAmount = sumQuantized(
+    manualMovements.filter((movement) => movement.type === 'manual_out').map((movement) => Number(movement.amount || 0)),
+    2
+  );
+  const manualNetAmount = sumQuantized([manualInAmount, -manualOutAmount], 2);
+  const manualInAmountToday = sumQuantized(
+    manualMovements
+      .filter((movement) => movement.type === 'manual_in' && isSameCashDay(movement.createdAt))
+      .map((movement) => Number(movement.amount || 0)),
+    2
+  );
+  const manualOutAmountToday = sumQuantized(
+    manualMovements
+      .filter((movement) => movement.type === 'manual_out' && isSameCashDay(movement.createdAt))
+      .map((movement) => Number(movement.amount || 0)),
+    2
   );
 
   const salesAmount = sumQuantized(
     orders.map((order) => Number(order.totalAmount ?? order.total ?? 0)),
     2
   );
-  const expectedAmountCurrent = quantizeDecimal(Number(session.openingAmount || 0) + salesAmount, 2, 0);
+  const expectedAmountCurrent = quantizeDecimal(Number(session.openingAmount || 0) + salesAmount + manualNetAmount, 2, 0);
 
   return {
     ordersCount: orders.length,
     salesAmount,
+    manualInAmount,
+    manualOutAmount,
+    manualNetAmount,
+    manualInAmountToday,
+    manualOutAmountToday,
+    manualMovementsCount: manualMovements.length,
     expectedAmountCurrent,
     recentOrders: orders.slice(0, 8).map((order) => ({
       id: order.id,
@@ -152,6 +208,15 @@ async function buildSessionMetrics(session, clinicId, client = null) {
         (order.seller && order.seller.name) ||
         order.sellerNameSnapshot ||
         (order.source === 'bot' ? 'Bot' : 'Sin asignar')
+    })),
+    recentMovements: manualMovements.slice(0, 12).map((movement) => ({
+      id: movement.id,
+      type: movement.type,
+      method: movement.method,
+      amount: movement.amount,
+      reason: movement.reason,
+      createdByNameSnapshot: movement.createdByNameSnapshot,
+      createdAt: movement.createdAt
     }))
   };
 }
@@ -394,8 +459,91 @@ async function closePortalCashSession(tenantId, sessionId, payload = {}) {
   };
 }
 
+async function createPortalCashSessionMovementEntry(tenantId, sessionId, payload = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const safeSessionId = normalizeString(sessionId);
+  const createdByUserId = normalizeString(payload.createdByUserId);
+  const type = normalizeCashMovementType(payload.type);
+  const method = normalizeCashMovementMethod(payload.method);
+  const amount = normalizeOptionalAmount(payload.amount);
+  const reason = normalizeString(payload.reason) || normalizeString(payload.note) || null;
+
+  if (!safeSessionId) {
+    return buildError(context.tenantId, 'missing_cash_session_id');
+  }
+  if (!createdByUserId) {
+    return buildError(context.tenantId, 'missing_cash_movement_user_id');
+  }
+  if (!type) {
+    return buildError(context.tenantId, 'invalid_cash_movement_type');
+  }
+  if (!method) {
+    return buildError(context.tenantId, 'invalid_cash_movement_method');
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return buildError(context.tenantId, 'invalid_cash_movement_amount');
+  }
+
+  const createdBy = await resolveCashActor(context, createdByUserId, payload);
+  if (!createdBy || createdBy.ok !== true || !createdBy.userId || !createdBy.name) {
+    return buildError(context.tenantId, 'cash_movement_user_not_found');
+  }
+
+  const result = await withTransaction(async (client) => {
+    const currentSession = await findCashSessionById(safeSessionId, context.clinic.id, client);
+    if (!currentSession) {
+      return buildError(context.tenantId, 'cash_session_not_found');
+    }
+    if (currentSession.status !== 'open') {
+      return buildError(context.tenantId, 'cash_session_not_open');
+    }
+
+    const destination = await findPaymentDestinationById(currentSession.paymentDestinationId, context.clinic.id, client);
+    if (!destination || !isCashBoxDestination(destination)) {
+      return buildError(context.tenantId, 'cash_box_destination_not_found');
+    }
+
+    const movement = await createCashSessionMovement(
+      {
+        clinicId: context.clinic.id,
+        cashSessionId: currentSession.id,
+        type,
+        amount,
+        method,
+        reason,
+        createdByUserId: createdBy.userId,
+        createdByNameSnapshot: createdBy.name
+      },
+      client
+    );
+
+    return {
+      ok: true,
+      movement,
+      session: await enrichSession(currentSession, destination, context.clinic.id, client)
+    };
+  });
+
+  if (!result.ok) {
+    return result;
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    movement: result.movement,
+    session: result.session
+  };
+}
+
 module.exports = {
   listPortalCashOverview,
   openPortalCashSession,
-  closePortalCashSession
+  closePortalCashSession,
+  createPortalCashSessionMovementEntry
 };

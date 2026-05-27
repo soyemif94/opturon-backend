@@ -77,7 +77,8 @@ const {
 const {
   listPortalCashOverview,
   openPortalCashSession,
-  closePortalCashSession
+  closePortalCashSession,
+  createPortalCashSessionMovementEntry
 } = require('../services/portal-cash.service');
 const {
   listPortalAgendaItems,
@@ -2052,6 +2053,55 @@ async function postPortalCashSessionClose(req, res) {
   }
 }
 
+async function postPortalCashSessionMovement(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const sessionId = String(req.params.sessionId || '').trim();
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
+  const payload = {
+    ...(req.body || {}),
+    createdByUserId: actorUserId || String(req.body?.createdByUserId || '').trim() || undefined
+  };
+
+  try {
+    const result = await createPortalCashSessionMovementEntry(tenantId, sessionId, payload);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_cash_session_id' ||
+        result.reason === 'missing_cash_movement_user_id' ||
+        result.reason === 'invalid_cash_movement_type' ||
+        result.reason === 'invalid_cash_movement_method' ||
+        result.reason === 'invalid_cash_movement_amount' ||
+        result.reason === 'cash_movement_user_not_found'
+          ? 400
+          : result.reason === 'cash_session_not_open'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        movement: result.movement,
+        session: result.session
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_cash_session_movement_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalAgenda(req, res) {
   const tenantId = getRequestTenantId(req);
 
@@ -3969,6 +4019,7 @@ module.exports = {
   getPortalPaymentAllocations,
   postPortalCashSession,
   postPortalCashSessionClose,
+  postPortalCashSessionMovement,
   postPortalAgenda,
   postPortalAgendaReservation,
   postPortalPayment,

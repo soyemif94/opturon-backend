@@ -63,6 +63,7 @@ const {
   getPortalPaymentAllocations,
   postPortalCashSession,
   postPortalCashSessionClose,
+  postPortalCashSessionMovement,
   postPortalAgenda,
   postPortalAgendaReservation,
   postPortalPayment,
@@ -229,6 +230,7 @@ router.patch('/tenants/:tenantId/payment-destinations/:destinationId', paymentsM
 router.get('/tenants/:tenantId/cash-sessions', getPortalCashOverview);
 router.post('/tenants/:tenantId/cash-sessions', postPortalCashSession);
 router.post('/tenants/:tenantId/cash-sessions/:sessionId/close', postPortalCashSessionClose);
+router.post('/tenants/:tenantId/cash-sessions/:sessionId/movements', postPortalCashSessionMovement);
 router.get('/tenants/:tenantId/agenda', requirePortalInternalAuth, agendaModule, getPortalAgenda);
 router.get('/tenants/:tenantId/agenda/availability', requirePortalInternalAuth, agendaModule, getPortalAgendaAvailabilityController);
 router.post('/tenants/:tenantId/agenda', requirePortalInternalAuth, agendaModule, postPortalAgenda);
