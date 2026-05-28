@@ -518,9 +518,75 @@ const COMMERCIAL_INTENT_MAP = {
     includes: ['horario', 'horarios', 'abren hoy', 'a que hora', 'estan abiertos', 'hasta que hora', 'abren']
   }),
   payment: buildCommercialIntentSpec({
-    exact: ['como pago', 'transferencia', 'efectivo', 'tarjeta', 'alias', 'cbu', 'cuotas', 'mercadopago', 'mercado pago'],
-    includes: ['como pago', 'transferencia', 'efectivo', 'tarjeta', 'alias', 'cbu', 'cuotas', 'mercadopago', 'mercado pago'],
-    patterns: [/\bcomo\s+pago\b/, /\bmedios?\s+de\s+pago\b/]
+    exact: [
+      'como pago',
+      'transferencia',
+      'efectivo',
+      'tarjeta',
+      'alias',
+      'cbu',
+      'cuotas',
+      'mercadopago',
+      'mercado pago',
+      'formas de pago',
+      'medios de pago',
+      'como te transfiero',
+      'donde te transfiero',
+      'como abono',
+      'pasame alias',
+      'pasame cbu',
+      'me pasas alias',
+      'me pasas cbu',
+      'aceptan transferencia'
+    ],
+    includes: [
+      'como pago',
+      'transferencia',
+      'efectivo',
+      'tarjeta',
+      'alias',
+      'cbu',
+      'cuotas',
+      'mercadopago',
+      'mercado pago',
+      'formas de pago',
+      'medios de pago',
+      'como te transfiero',
+      'te puedo transferir',
+      'puedo transferirte',
+      'como hago para pagarte',
+      'como abono',
+      'donde te transfiero',
+      'pasame alias',
+      'pasame cbu',
+      'me pasas alias',
+      'me pasas cbu',
+      'aceptan transferencia',
+      'aceptan transferecnia',
+      'pagar por transferencia',
+      'pagar en transferencia',
+      'te mando comprobante',
+      'te envio comprobante',
+      'ya transferi',
+      'ya pague'
+    ],
+    patterns: [
+      /\bcomo\s+pago\b/,
+      /\bformas?\s+de\s+pago\b/,
+      /\bmedios?\s+de\s+pago\b/,
+      /\bcomo\s+te\s+transfier[oa]\b/,
+      /\bte\s+puedo\s+transferir\b/,
+      /\bpuedo\s+transferirte\b/,
+      /\bcomo\s+hago\s+para\s+pagarte\b/,
+      /\bcomo\s+abono\b/,
+      /\bdonde\s+te\s+transfier[oa]\b/,
+      /\bme\s+pasas\s+(alias|cbu)\b/,
+      /\bpasame\s+(alias|cbu)\b/,
+      /\bacepta(?:n|s)\s+transf(?:erencia|erecnia)\b/,
+      /\bpagar\s+(?:por|en)\s+transf(?:erencia|erecnia)\b/,
+      /\b(?:te\s+)?(?:mando|mande|envio|envie)\s+(?:el\s+)?comprobante\b/,
+      /\bya\s+(?:transferi|pague)\b/
+    ]
   }),
   delivery: buildCommercialIntentSpec({
     exact: ['hacen envios', 'hacen delivery', 'envian', 'envio', 'mandan', 'reparten'],
@@ -796,6 +862,8 @@ function resolveBotDomainRoute({
   safeContext,
   inboundText,
   intent,
+  commercialIntentType,
+  transferPaymentIntent,
   managementIntent,
   inboundLooksLikeCommerce,
   inboundLooksLikeCommerceCancel
@@ -808,6 +876,7 @@ function resolveBotDomainRoute({
   const demoIntent = isPublicDemoExperienceIntent(inboundText);
   const demoContextActive = activeDomain === 'demo';
   const agendaIntent = looksLikeAgendaIntent({ inboundText, intent, managementIntent });
+  const paymentCommerceIntent = String(commercialIntentType || '').trim().toLowerCase() === 'payment';
   const runtimeConfiguredCommerceIntent =
     configuredBotActive &&
     (
@@ -815,11 +884,13 @@ function resolveBotDomainRoute({
       isConfiguredBotOfferIntent(inboundText) ||
       isConfiguredBotRecommendationIntent(inboundText) ||
       Boolean(parseActiveBotRuntimeEditIntent(inboundText)) ||
-      Boolean(parseTransferPaymentIntent(inboundText))
+      Boolean(transferPaymentIntent)
     );
   const explicitCommerceIntent =
     inboundLooksLikeCommerce ||
     inboundLooksLikeCommerceCancel ||
+    paymentCommerceIntent ||
+    Boolean(transferPaymentIntent) ||
     intent === 'pricing' ||
     isExplicitCommerceTrigger(inboundText) ||
     runtimeConfiguredCommerceIntent;
@@ -897,6 +968,20 @@ function resolveBotDomainRoute({
       overrideDomain,
       botFlowLock,
       reason: 'conversation_override_commerce'
+    };
+  }
+
+  if (paymentCommerceIntent || transferPaymentIntent) {
+    return {
+      botMode,
+      domain: 'commerce',
+      allowCommerce: true,
+      agendaIntent,
+      explicitCommerceIntent,
+      activeDomain,
+      overrideDomain,
+      botFlowLock,
+      reason: 'hybrid_payment_intent'
     };
   }
 
@@ -5946,49 +6031,72 @@ function parseTransferPaymentIntent(input) {
   const text = normalizeCommandText(input);
   if (!text) return null;
 
-  if (
-    text.includes('ya pague') ||
-    text.includes('ya pagué') ||
-    text.includes('ya transferi') ||
-    text.includes('ya transferí') ||
-    text.includes('hice la transferencia') ||
-    text.includes('hice una transferencia') ||
-    text.includes('listo pagado') ||
-    text.includes('listo, pagado') ||
-    text.includes('listo transferido') ||
-    text.includes('listo, transferido') ||
-    text === 'pagado' ||
-    text.includes('te mando el comprobante') ||
-    text.includes('te mande el comprobante') ||
-    text.includes('te envio el comprobante') ||
-    text.includes('te envié el comprobante') ||
-    text.includes('mando comprobante') ||
-    text.includes('mande comprobante') ||
-    text.includes('envio comprobante') ||
-    text.includes('envié comprobante')
-  ) {
+  const proofNoticePatterns = [
+    /\bya\s+pague\b/,
+    /\bya\s+transferi\b/,
+    /\bhice\s+(?:la\s+)?transferencia\b/,
+    /\blisto(?:,\s*)?\s+pagado\b/,
+    /\blisto(?:,\s*)?\s+transferido\b/,
+    /\bpagado\b/,
+    /\b(?:te\s+)?(?:mando|mande|envio|envie)\s+(?:el\s+)?comprobante\b/
+  ];
+  if (proofNoticePatterns.some((pattern) => pattern.test(text))) {
     return 'proof_notice';
   }
 
-  if (
-    text.includes('quiero pagar') ||
-    text.includes('avanzar con el pago') ||
-    text.includes('pasar al pago') ||
-    text.includes('seguir con el pago') ||
-    text.includes('contratar') ||
-    text.includes('quiero contratar') ||
-    text.includes('te transfiero') ||
-    text.includes('pasame alias') ||
-    text.includes('pasame cbu') ||
-    text.includes('como hago el pago') ||
-    text.includes('cómo hago el pago') ||
-    text.includes('pagar por transferencia') ||
-    text.includes('transferencia')
-  ) {
+  const transferRequestPatterns = [
+    /\bquiero\s+pagar\b/,
+    /\bavanzar\s+con\s+el\s+pago\b/,
+    /\bpasar\s+al\s+pago\b/,
+    /\bseguir\s+con\s+el\s+pago\b/,
+    /\bcontratar\b/,
+    /\bquiero\s+contratar\b/,
+    /\bcomo\s+te\s+transfier[oa]\b/,
+    /\bte\s+puedo\s+transferir\b/,
+    /\bpuedo\s+transferirte\b/,
+    /\bcomo\s+hago\s+para\s+pagarte\b/,
+    /\bcomo\s+abono\b/,
+    /\bdonde\s+te\s+transfier[oa]\b/,
+    /\bme\s+pasas\s+(cbu|alias)\b/,
+    /\bpasame\s+(cbu|alias)\b/,
+    /\bcomo\s+hago\s+el\s+pago\b/,
+    /\bcomo\s+pago\b/,
+    /\bformas?\s+de\s+pago\b/,
+    /\bmedios?\s+de\s+pago\b/,
+    /\bacepta(?:n|s)\s+transf(?:erencia|erecnia)\b/,
+    /\bpuedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
+    /\blo\s+puedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
+    /\bpagar\s+(?:por|en)\s+transf(?:erencia|erecnia)\b/,
+    /\btransferencia\b/,
+    /\btransferecnia\b/
+  ];
+  if (transferRequestPatterns.some((pattern) => pattern.test(text))) {
     return 'request';
   }
 
   return null;
+}
+
+function isTransferInstructionsRequestIntent(input) {
+  const text = normalizeCommandText(input);
+  if (!text) return false;
+
+  return [
+    /\bcomo\s+te\s+transfier[oa]\b/,
+    /\bte\s+puedo\s+transferir\b/,
+    /\bpuedo\s+transferirte\b/,
+    /\bcomo\s+hago\s+para\s+pagarte\b/,
+    /\bcomo\s+abono\b/,
+    /\bdonde\s+te\s+transfier[oa]\b/,
+    /\bme\s+pasas\s+(cbu|alias)\b/,
+    /\bpasame\s+(cbu|alias)\b/,
+    /\bacepta(?:n|s)\s+transf(?:erencia|erecnia)\b/,
+    /\bpuedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
+    /\blo\s+puedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
+    /\bcomo\s+pago\b/,
+    /\bformas?\s+de\s+pago\b/,
+    /\bmedios?\s+de\s+pago\b/
+  ].some((pattern) => pattern.test(text));
 }
 
 function buildPaymentPlanCatalogReply(planProducts) {
@@ -7060,7 +7168,44 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
   if (transferIntent === 'request' || transferIntent === 'proof_notice') {
     if (transferIntent === 'proof_notice') {
-      return null;
+      const isAlreadyPendingValidation =
+        transferContext &&
+        (
+          transferContext.status === 'payment_pending_validation' ||
+          transferContext.status === 'payment_reported'
+        );
+
+      if (isAlreadyPendingValidation) {
+        return {
+          replyText: buildTransferPendingStatusReply(),
+          newState: 'PAYMENT_TRANSFER',
+          newStage: 'payment_pending_validation',
+          contextPatch: {
+            activeBotDomain: 'commerce',
+            transferPayment: transferContext
+          }
+        };
+      }
+
+      return {
+        replyText: buildTransferProofRequestReply(),
+        newState: 'PAYMENT_TRANSFER',
+        newStage: 'payment_requested',
+        contextPatch: {
+          activeBotDomain: 'commerce',
+          commerceLastOrderId: transferOrderId,
+          commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : new Date().toISOString(),
+          transferPayment: {
+            orderId: transferOrderId,
+            status: transferContext && transferContext.status ? transferContext.status : 'payment_requested',
+            paymentMethod: 'bank_transfer',
+            source: transferContext && transferContext.source ? transferContext.source : 'whatsapp_payment',
+            selectedPlan: transferContext && transferContext.selectedPlan ? transferContext.selectedPlan : null,
+            destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
+            requestedAt: transferContext && transferContext.requestedAt ? transferContext.requestedAt : new Date().toISOString()
+          }
+        }
+      };
     }
 
     if (!transferOrderId) {
@@ -7072,6 +7217,13 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       if (selectedPlan) {
         return buildPaymentInstructionsDecision({
           selectedPlan,
+          source: 'whatsapp_payment'
+        });
+      }
+
+      if (isTransferInstructionsRequestIntent(inboundText)) {
+        return buildPaymentInstructionsDecision({
+          selectedPlan: null,
           source: 'whatsapp_payment'
         });
       }
@@ -10339,6 +10491,7 @@ async function processConversationReplyJob(job) {
   const normalizedInboundText = normalizeCommandText(inboundText);
   const intent = detectIntent(inboundText);
   const commercialIntent = detectCommercialIntent(inboundText);
+  const transferPaymentIntent = parseTransferPaymentIntent(inboundText);
   const managementIntent = detectTurnManagementIntent(inboundText);
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
@@ -10470,6 +10623,8 @@ async function processConversationReplyJob(job) {
     safeContext,
     inboundText,
     intent,
+    commercialIntentType: commercialIntent.type,
+    transferPaymentIntent,
     managementIntent,
     inboundLooksLikeCommerce,
     inboundLooksLikeCommerceCancel
@@ -10538,7 +10693,6 @@ async function processConversationReplyJob(job) {
       botRoute.agendaIntent
     ) &&
     !BOT_ROUTER_APPOINTMENT_STATES.has(currentState);
-  const transferPaymentIntent = parseTransferPaymentIntent(inboundText);
   const shouldShortCircuitToDemoSourceOfTruth =
     botRoute.domain === 'demo' &&
     !shouldPrioritizeAgendaFlow &&
