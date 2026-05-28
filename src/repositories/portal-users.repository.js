@@ -218,6 +218,31 @@ async function findPortalUserByEmail(email, client = null) {
   return result.rows[0] || null;
 }
 
+async function updatePortalUserProfileById(payload, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE staff_users
+     SET name = $3,
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND role IN ${PORTAL_ROLE_SQL}
+     RETURNING id,
+               "clinicId",
+               name,
+               email,
+               "accountRootUserId",
+               CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+               active,
+               "createdAt",
+               "updatedAt"`,
+    [payload.userId, payload.clinicId, payload.name]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function findPortalUserByIdAndClinicId(userId, clinicId, client = null) {
   if (!isUuid(userId)) {
     return null;
@@ -346,6 +371,7 @@ module.exports = {
   createPortalUser,
   updatePortalUserAccountRootById,
   updatePortalUserRole,
+  updatePortalUserProfileById,
   deletePortalUserById,
   findPortalUserByEmail,
   findPortalUserByEmailAndTenantId,

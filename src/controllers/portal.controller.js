@@ -3235,7 +3235,9 @@ async function patchPortalUser(req, res) {
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ||
-        result.reason === 'invalid_role'
+        result.reason === 'invalid_role' ||
+        result.reason === 'invalid_name' ||
+        result.reason === 'missing_user_patch'
           ? 400
           : result.reason === 'cannot_delete_last_owner'
             ? 409

@@ -11,6 +11,7 @@ const {
   listPortalUsersForOpturonAdmin,
   createPortalUser,
   updatePortalUserAccountRootById,
+  updatePortalUserProfileById,
   updatePortalUserRole,
   deletePortalUserById,
   findPortalUserByEmail,
@@ -457,47 +458,95 @@ async function updatePortalUser(tenantId, userId, payload) {
     return context;
   }
 
+  const name = normalizeString(payload && payload.name);
   const role = normalizeRole(payload && payload.role);
   const actorUserId = normalizeAuditActorId(payload && payload.actorUserId);
-  if (!role) return { ok: false, tenantId: context.tenantId, reason: 'invalid_role' };
+  if (!name && !role) return { ok: false, tenantId: context.tenantId, reason: 'missing_user_patch' };
+  if (payload && Object.prototype.hasOwnProperty.call(payload, 'name') && (!name || name.length < 2)) {
+    return { ok: false, tenantId: context.tenantId, reason: 'invalid_name' };
+  }
+  if (payload && Object.prototype.hasOwnProperty.call(payload, 'role') && !role) {
+    return { ok: false, tenantId: context.tenantId, reason: 'invalid_role' };
+  }
 
   const user = await withTransaction(async (client) => {
     const current = await listPortalUsersByClinicId(context.clinic.id, client);
     const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, current, client);
 
     if (accountConfig.accountScope === 'opturon_admin') {
+      const visibleUsers = await listPortalUsersForOpturonAdmin(client);
+      const visibleTarget = visibleUsers.find((item) => String(item.id) === String(userId)) || null;
+      if (!visibleTarget) return null;
+
       const target = await findPortalUserById(userId, client);
       if (!target) return null;
       if (role === 'owner' && String(target.role || '').toLowerCase() !== 'owner') {
         return { error: 'invalid_role_for_opturon_admin' };
       }
       const previousRole = target.role;
-      const updatedUser = await updatePortalUserRole(
-        {
-          userId,
-          clinicId: target.clinicId,
-          role
-        },
-        client
-      );
-      if (updatedUser) {
-        await createPortalUserAuditEvent(
+      const previousName = target.name;
+      let updatedUser = target;
+
+      if (name && name !== String(target.name || '').trim()) {
+        updatedUser = await updatePortalUserProfileById(
           {
-            tenantId: context.tenantId,
+            userId,
             clinicId: target.clinicId,
-            actorUserId,
-            targetUserId: updatedUser.id,
-            action: 'tenant_portal_user_role_updated',
-            payload: {
-              targetUserId: updatedUser.id,
-              name: updatedUser.name,
-              previousRole,
-              nextRole: updatedUser.role,
-              managedFrom: 'opturon_admin'
-            }
+            name
           },
           client
-        );
+        ) || updatedUser;
+      }
+
+      if (role && role !== String(updatedUser.role || '').toLowerCase()) {
+        updatedUser = await updatePortalUserRole(
+          {
+            userId,
+            clinicId: target.clinicId,
+            role
+          },
+          client
+        ) || updatedUser;
+      }
+
+      if (updatedUser) {
+        if (name && name !== previousName) {
+          await createPortalUserAuditEvent(
+            {
+              tenantId: context.tenantId,
+              clinicId: target.clinicId,
+              actorUserId,
+              targetUserId: updatedUser.id,
+              action: 'tenant_portal_user_profile_updated',
+              payload: {
+                targetUserId: updatedUser.id,
+                previousName,
+                nextName: updatedUser.name,
+                managedFrom: 'opturon_admin'
+              }
+            },
+            client
+          );
+        }
+        if (role && role !== String(previousRole || '').toLowerCase()) {
+          await createPortalUserAuditEvent(
+            {
+              tenantId: context.tenantId,
+              clinicId: target.clinicId,
+              actorUserId,
+              targetUserId: updatedUser.id,
+              action: 'tenant_portal_user_role_updated',
+              payload: {
+                targetUserId: updatedUser.id,
+                name: updatedUser.name,
+                previousRole,
+                nextRole: updatedUser.role,
+                managedFrom: 'opturon_admin'
+              }
+            },
+            client
+          );
+        }
       }
       return updatedUser;
     }
@@ -507,8 +556,9 @@ async function updatePortalUser(tenantId, userId, payload) {
     const target = scopedCurrent.find((item) => String(item.id) === String(userId));
     if (!target) return null;
     const previousRole = target.role;
+    const previousName = target.name;
 
-    if (target.role === 'owner' && role !== 'owner') {
+    if (role && target.role === 'owner' && role !== 'owner') {
       if (countOwners(scopedCurrent) <= 1) {
         const error = new Error('cannot_delete_last_owner');
         error.code = 'LAST_OWNER_ROLE_CHANGE';
@@ -516,31 +566,63 @@ async function updatePortalUser(tenantId, userId, payload) {
       }
     }
 
-    const updatedUser = await updatePortalUserRole(
-      {
-        userId,
-        clinicId: context.clinic.id,
-        role
-      },
-      client
-    );
-    if (updatedUser) {
-      await createPortalUserAuditEvent(
+    let updatedUser = target;
+    if (name && name !== String(target.name || '').trim()) {
+      updatedUser = await updatePortalUserProfileById(
         {
-          tenantId: context.tenantId,
+          userId,
           clinicId: context.clinic.id,
-          actorUserId,
-          targetUserId: updatedUser.id,
-          action: 'tenant_portal_user_role_updated',
-          payload: {
-            targetUserId: updatedUser.id,
-            name: updatedUser.name,
-            previousRole,
-            nextRole: updatedUser.role
-          }
+          name
         },
         client
-      );
+      ) || updatedUser;
+    }
+    if (role && role !== String(updatedUser.role || '').toLowerCase()) {
+      updatedUser = await updatePortalUserRole(
+        {
+          userId,
+          clinicId: context.clinic.id,
+          role
+        },
+        client
+      ) || updatedUser;
+    }
+    if (updatedUser) {
+      if (name && name !== previousName) {
+        await createPortalUserAuditEvent(
+          {
+            tenantId: context.tenantId,
+            clinicId: context.clinic.id,
+            actorUserId,
+            targetUserId: updatedUser.id,
+            action: 'tenant_portal_user_profile_updated',
+            payload: {
+              targetUserId: updatedUser.id,
+              previousName,
+              nextName: updatedUser.name
+            }
+          },
+          client
+        );
+      }
+      if (role && role !== String(previousRole || '').toLowerCase()) {
+        await createPortalUserAuditEvent(
+          {
+            tenantId: context.tenantId,
+            clinicId: context.clinic.id,
+            actorUserId,
+            targetUserId: updatedUser.id,
+            action: 'tenant_portal_user_role_updated',
+            payload: {
+              targetUserId: updatedUser.id,
+              name: updatedUser.name,
+              previousRole,
+              nextRole: updatedUser.role
+            }
+          },
+          client
+        );
+      }
     }
     return updatedUser;
   }).catch((error) => {
