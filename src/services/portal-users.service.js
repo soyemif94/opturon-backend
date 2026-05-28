@@ -42,6 +42,10 @@ function normalizeRole(value) {
   return ALLOWED_ROLES.has(normalized) ? normalized : null;
 }
 
+function normalizeAccountScope(value) {
+  return String(value || '').trim().toLowerCase() === 'opturon_admin' ? 'opturon_admin' : 'client';
+}
+
 function normalizeAuditActorId(value) {
   const safeValue = normalizeString(value);
   return safeValue || null;
@@ -464,6 +468,9 @@ async function updatePortalUser(tenantId, userId, payload) {
     if (accountConfig.accountScope === 'opturon_admin') {
       const target = await findPortalUserById(userId, client);
       if (!target) return null;
+      if (role === 'owner' && String(target.role || '').toLowerCase() !== 'owner') {
+        return { error: 'invalid_role_for_opturon_admin' };
+      }
       const previousRole = target.role;
       const updatedUser = await updatePortalUserRole(
         {
@@ -773,6 +780,10 @@ async function authenticatePortalUser(email, password) {
     return { ok: false, reason: 'invalid_credentials' };
   }
 
+  if (normalizeAccountScope(user.accountScope) === 'opturon_admin') {
+    return { ok: false, reason: 'portal_admin_scope_requires_staff' };
+  }
+
   return {
     ok: true,
     user: {
@@ -781,7 +792,8 @@ async function authenticatePortalUser(email, password) {
       name: user.name,
       tenantId: user.tenantId,
       tenantRole: user.role,
-      globalRole: 'client'
+      globalRole: 'client',
+      accountScope: normalizeAccountScope(user.accountScope)
     }
   };
 }
@@ -797,6 +809,10 @@ async function getPortalAuthUserByEmail(email, tenantId = null) {
     return { ok: true, user: null };
   }
 
+  if (normalizeAccountScope(user.accountScope) === 'opturon_admin') {
+    return { ok: true, user: null };
+  }
+
   return {
     ok: true,
     user: {
@@ -805,7 +821,8 @@ async function getPortalAuthUserByEmail(email, tenantId = null) {
       name: user.name,
       tenantId: user.tenantId,
       tenantRole: user.role,
-      globalRole: 'client'
+      globalRole: 'client',
+      accountScope: normalizeAccountScope(user.accountScope)
     }
   };
 }

@@ -186,7 +186,12 @@ async function findPortalUserByEmail(email, client = null) {
             CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS role,
             su.active,
             su."passwordHash",
-            c."externalTenantId" AS "tenantId"
+            c."externalTenantId" AS "tenantId",
+            COALESCE(
+              c.settings #>> '{portal,accountScope}',
+              c.settings #>> '{accountScope}',
+              'client'
+            ) AS "accountScope"
      FROM staff_users su
      INNER JOIN clinics c ON c.id = su."clinicId"
      WHERE LOWER(su.email) = LOWER($1)
@@ -271,7 +276,12 @@ async function findPortalUserByEmailAndTenantId(email, tenantId, client = null) 
             CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS role,
             su.active,
             su."passwordHash",
-            c."externalTenantId" AS "tenantId"
+            c."externalTenantId" AS "tenantId",
+            COALESCE(
+              c.settings #>> '{portal,accountScope}',
+              c.settings #>> '{accountScope}',
+              'client'
+            ) AS "accountScope"
      FROM staff_users su
      INNER JOIN clinics c ON c.id = su."clinicId"
      WHERE LOWER(su.email) = LOWER($1)
