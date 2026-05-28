@@ -496,6 +496,23 @@ function normalizeSemanticIntentText(rawText) {
     .trim();
 }
 
+const COMMERCIAL_OFFER_PATTERNS = [
+  /\b(?:quiero|qiero)\s+saber\s+que\s+planes\s+tienen\b/,
+  /\bque\s+planes\s+tienen\b/,
+  /\bcuales\s+son\s+los\s+planes\b/,
+  /\bque\s+ofrecen\b/,
+  /\bque\s+incluye\b/,
+  /\bque\s+trae\b/,
+  /\bcomo\s+funciona\b/,
+  /\bcomo\s+trabajan\b/,
+  /\bquiero\s+informacion\b/,
+  /\bquiero\s+info\b/,
+  /\bcontame\s+un\s+poco\b/,
+  /\bcontame\s+mas\b/,
+  /\bquiero\s+saber\s+mas\b/,
+  /\bme\s+contas\b/
+];
+
 function buildCommercialIntentSpec({ exact = [], includes = [], patterns = [] }) {
   return {
     exact: new Set(exact.map((item) => normalizeSemanticIntentText(item)).filter(Boolean)),
@@ -509,15 +526,42 @@ const COMMERCIAL_INTENT_MAP = {
     exact: [
       'productos',
       'catalogo',
+      'planes',
+      'que planes tienen',
+      'cuales son los planes',
+      'que ofrecen',
+      'que incluye',
+      'que trae',
+      'como funciona',
+      'como trabajan',
+      'quiero informacion',
+      'quiero info',
+      'contame un poco',
+      'contame mas',
+      'quiero saber mas',
       'que venden',
       'que tienen',
       'quiero ver',
+      'quiero saber que planes tienen',
       'mostrame cosas',
       'mostrar productos',
       'quiero comprar',
       'quiero ver opciones'
     ],
     includes: [
+      'planes',
+      'que planes tienen',
+      'cuales son los planes',
+      'que ofrecen',
+      'que incluye',
+      'que trae',
+      'como funciona',
+      'como trabajan',
+      'quiero informacion',
+      'quiero info',
+      'contame un poco',
+      'contame mas',
+      'quiero saber mas',
       'ver productos',
       'mostrar productos',
       'ver opciones',
@@ -525,11 +569,12 @@ const COMMERCIAL_INTENT_MAP = {
       'que venden',
       'que tienen',
       'quiero comprar'
-    ]
+    ],
+    patterns: COMMERCIAL_OFFER_PATTERNS
   }),
   prices: buildCommercialIntentSpec({
-    exact: ['precio', 'precios', 'cuanto sale', 'cuanto cuesta', 'cuanto vale', 'tienen precios'],
-    includes: ['precio', 'precios', 'cuanto sale', 'cuanto cuesta', 'cuanto vale']
+    exact: ['precio', 'precios', 'cuanto sale', 'cuanto cuesta', 'cuanto vale', 'tienen precios', 'costos', 'valor', 'planes y precios'],
+    includes: ['precio', 'precios', 'cuanto sale', 'cuanto cuesta', 'cuanto vale', 'costos', 'valor', 'planes y precios']
   }),
   location: buildCommercialIntentSpec({
     exact: ['donde estan', 'ubicacion', 'direccion', 'como llego', 'local', 'donde queda'],
@@ -627,6 +672,7 @@ const COMMERCIAL_INTENT_MAP = {
     exact: [
       'que recomendas',
       'que me recomendas',
+      'cual recomendas',
       'cual me conviene',
       'me conviene',
       'que plan me conviene',
@@ -640,6 +686,7 @@ const COMMERCIAL_INTENT_MAP = {
     includes: [
       'que recomendas',
       'que me recomendas',
+      'cual recomendas',
       'cual me conviene',
       'me conviene',
       'que plan me conviene',
@@ -858,11 +905,20 @@ function isExplicitCommerceTrigger(rawText) {
 
   return (
     ['products', 'prices', 'promotions', 'recommendation'].includes(commercialIntent.type) ||
+    Boolean(detectBusinessRecommendationContext(text)) ||
+    Boolean(detectCommercialSalesContext(text)) ||
     triggers.some((trigger) => text.includes(normalizeCommandText(trigger))) ||
     isPlanComparisonIntent(text) ||
     isPlanRecommendationIntent(text) ||
     isPlanPricingIntent(text)
   );
+}
+
+function isCommercialOfferIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return COMMERCIAL_OFFER_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 function looksLikeAgendaIntent({ inboundText, intent, managementIntent }) {
@@ -1178,6 +1234,8 @@ function isCommerceEntryIntent(rawText) {
   if (!text) return false;
   return (
     commercialIntent.type === 'products' ||
+    commercialIntent.type === 'prices' ||
+    isCommercialOfferIntent(text) ||
     text === 'hola' ||
     text === 'buenas' ||
     text === 'buen dia' ||
@@ -1188,6 +1246,7 @@ function isCommerceEntryIntent(rawText) {
     text === 'quiero hacer un pedido' ||
     text === 'quiero comprar' ||
     text === 'productos' ||
+    text === 'planes' ||
     text === 'catalogo' ||
     text === 'comprar' ||
     text === 'pedido' ||
@@ -1537,8 +1596,10 @@ function detectBusinessRecommendationContext(rawText) {
     'arrancar',
     'empezar',
     'simple',
+    'chico',
     'pequeno',
     'pequeño',
+    'emprendimiento',
     'para arrancar',
     'quiero algo barato',
     'algo economico',
@@ -1595,6 +1656,7 @@ function detectCommercialSalesContext(rawText) {
     ['food_business', ['pastas', 'comida', 'resto', 'restaurant', 'gastronomi', 'cocina']],
     ['beauty_business', ['estetica', 'estética', 'belleza', 'peluquer', 'unas', 'uñas', 'salon', 'salón']],
     ['distribution', ['distribuidora', 'mayorista']],
+    ['small_store', ['negocio chico', 'tengo un local', 'tengo una tienda', 'tengo un emprendimiento', 'mi emprendimiento']],
     ['services', ['servicios', 'agencia', 'consultora', 'estudio', 'studio']]
   ]);
 
@@ -2566,6 +2628,21 @@ function buildPlanSalesCta(text = 'Si querés, te recomiendo uno según lo que b
   return text;
 }
 
+function buildPlanOfferReply(products) {
+  const orderedPlans = getOrderedPlanProducts(products);
+  if (!orderedPlans.length) {
+    return 'Puedo ayudarte con los planes de Opturon, pero ahora mismo no encuentro planes activos para mostrarte.';
+  }
+
+  return [
+    '¡Sí! Te cuento 😊',
+    '',
+    ...orderedPlans.slice(0, 3).map((product) => buildPlanCatalogLine(product)),
+    '',
+    'Si querés, también te paso precios más en detalle o te recomiendo cuál miraría yo para tu negocio.'
+  ].join('\n');
+}
+
 function isPlanComparisonIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
@@ -2664,6 +2741,8 @@ function isPlanPricingIntent(rawText) {
     text.includes('cuánto sale') ||
     text.includes('precio') ||
     text.includes('precios') ||
+    text.includes('planes y precios') ||
+    text.includes('costos') ||
     text.includes('valor') ||
     text.includes('costo') ||
     text.includes('que incluye') ||
@@ -6069,6 +6148,45 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             comparedPlan,
             normalizeProductRecommendationType(suggestedPlan, orderedPlans)
           )
+        }
+      };
+    }
+  }
+
+  if (commercialIntent.type === 'products' || commercialIntent.type === 'prices') {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const orderedPlans = getOrderedPlanProducts(eligibleProducts);
+
+    if (isPlanCatalog(eligibleProducts) && orderedPlans.length) {
+      const suggestedPlan = findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0];
+      const comparedPlan = findPlanByNeedHint(orderedPlans, 'enterprise');
+      return {
+        type: commercialIntent.type,
+        replyText: commercialIntent.type === 'prices'
+          ? buildPlanComparisonReply(orderedPlans)
+          : buildPlanOfferReply(orderedPlans),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: commercialIntent.type === 'prices' ? 'plan_comparison' : 'plan_catalog',
+            lastDiscussedPlanId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+            lastComparedPlanId: comparedPlan && (comparedPlan.id || comparedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+          }),
+          ...(comparedPlan
+            ? {
+              pendingOfferedAction: buildCurrentPlanComparisonOfferedAction(
+                suggestedPlan,
+                comparedPlan,
+                normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+              )
+            }
+            : null)
         }
       };
     }
@@ -12713,7 +12831,10 @@ module.exports = {
     isClarificationIntent,
     isGreetingIntent,
     isThanksIntent,
+    isCommerceEntryIntent,
+    isCommercialOfferIntent,
     isPlanRecommendationIntent,
+    isPlanPricingIntent,
     isPlanWorthItIntent,
     isCommercialSoftFollowUpIntent,
     isLoyaltyIntent,
