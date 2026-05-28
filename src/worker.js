@@ -158,11 +158,18 @@ function applyBasicConversationalNormalizations(text) {
   if (normalized === 'q tal') return 'que tal';
 
   normalized = normalized
+    .replace(/\bholis+\b/g, 'hola')
+    .replace(/\bbuenass+\b/g, 'buenas')
     .replace(/\bgrax\b/g, 'gracias')
     .replace(/\bgrasias\b/g, 'gracias')
     .replace(/\bgraxias\b/g, 'gracias')
     .replace(/\bgraciass+\b/g, 'gracias')
     .replace(/\bpresio(s)?\b/g, 'precio$1')
+    .replace(/\btransferecnia\b/g, 'transferencia')
+    .replace(/\baseptan\b/g, 'aceptan')
+    .replace(/\bqiero\b/g, 'quiero')
+    .replace(/\bq\s*onda\b/g, 'que onda')
+    .replace(/\bcuant\b/g, 'cuanto')
     .replace(/\binfoo+\b/g, 'info')
     .replace(/\bnesecito\b/g, 'necesito')
     .replace(/\bnesesito\b/g, 'necesito')
@@ -445,7 +452,22 @@ function isGreetingIntent(rawText) {
   if (!text) return false;
 
   return (
-    ['hola', 'buen dia', 'buenas', 'que tal', 'como estas', 'holi', 'hello', 'buenos dias', 'buenas tardes', 'buenas noches'].includes(text) ||
+    [
+      'hola',
+      'buen dia',
+      'buenas',
+      'que tal',
+      'como estas',
+      'como andas',
+      'holi',
+      'holis',
+      'hello',
+      'buenos dias',
+      'buenas tardes',
+      'buenas noches',
+      'que onda',
+      'todo bien'
+    ].includes(text) ||
     /^hol+a+$/.test(text)
   );
 }
@@ -602,8 +624,41 @@ const COMMERCIAL_INTENT_MAP = {
       includes: ['hablar con alguien', 'una persona', 'humano', 'hablar con un asesor', 'hablar con un vendedor', 'pasame con un asesor', 'pasame con un vendedor']
     }),
   recommendation: buildCommercialIntentSpec({
-    exact: ['que recomendas', 'cual me conviene', 'que plan me conviene', 'algo mas barato', 'que me sugeris'],
-    includes: ['que recomendas', 'cual me conviene', 'que plan me conviene', 'algo mas barato', 'que me sugeris', 'que sugeris', 'recomendame']
+    exact: [
+      'que recomendas',
+      'que me recomendas',
+      'cual me conviene',
+      'me conviene',
+      'que plan me conviene',
+      'cual me sirve',
+      'que plan me sirve',
+      'algo mas barato',
+      'algo mas economico',
+      'algo mas accesible',
+      'que me sugeris'
+    ],
+    includes: [
+      'que recomendas',
+      'que me recomendas',
+      'cual me conviene',
+      'me conviene',
+      'que plan me conviene',
+      'cual me sirve',
+      'que plan me sirve',
+      'algo mas barato',
+      'algo mas economico',
+      'algo mas accesible',
+      'que me sugeris',
+      'que sugeris',
+      'recomendame'
+    ],
+    patterns: [
+      /\bque\s+me\s+recomendas\b/,
+      /\bcual\s+me\s+sirve\b/,
+      /\bque\s+plan\s+me\s+sirve\b/,
+      /\bme\s+conviene\b/,
+      /\balgo\s+mas\s+(economico|accesible|barato)\b/
+    ]
   }),
   loyalty: buildCommercialIntentSpec({
     exact: ['puntos', 'beneficios', 'fidelizacion', 'recompensas'],
@@ -1906,23 +1961,57 @@ function getIntelligentFallbackState(safeContext) {
 function buildIntelligentFallbackReply(safeContext) {
   const fallbackState = getIntelligentFallbackState(safeContext);
   const nextCount = fallbackState.active ? fallbackState.count + 1 : 1;
-  const softReply = [
-    'Creo que no te entendí del todo 😅',
-    '',
-    'Puedo ayudarte con productos, precios, beneficios, horarios, ubicación o hablar con alguien del equipo.',
-    '',
-    '¿Qué necesitás?'
-  ].join('\n');
-  const guidedReply = [
-    'Todavía no logré entender bien qué necesitás 🤔',
-    '',
-    'Podés decirme algo como:',
-    '- ver productos',
-    '- consultar precios',
-    '- ubicación',
-    '- horarios',
-    '- hablar con alguien'
-  ].join('\n');
+  const inboundText = arguments.length > 1 ? arguments[1] : '';
+  const looksCommercial = hasWeakCommercialSignal(inboundText) ||
+    String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase() === 'commerce' ||
+    Boolean(getActiveCommercialShortMemory(safeContext)) ||
+    Boolean(getActiveCommercialPlanContext(safeContext)) ||
+    Boolean(getPendingPlanComparisonAction(safeContext));
+  const softLead = pickTextVariant(`fallback_soft:${normalizeCommandText(inboundText)}`, looksCommercial
+    ? [
+      'No estoy seguro de haberte entendido del todo 😅',
+      'Se me mezcló un poco lo último 😅',
+      'No terminé de agarrar bien la idea 😅'
+    ]
+    : [
+      'Creo que no te entendí del todo 😅',
+      'Se me mezcló un poco lo último 😅',
+      'No terminé de agarrar bien la idea 😅'
+    ]);
+  const softReply = looksCommercial
+    ? [
+      softLead,
+      '',
+      'Si querés, puedo ayudarte con planes, precios, pagos o recomendarte algo según tu negocio.',
+      '',
+      'Contame qué necesitás y seguimos.'
+    ].join('\n')
+    : [
+      softLead,
+      '',
+      'Puedo ayudarte con productos, precios, beneficios, horarios, pagos o hablar con alguien del equipo.',
+      '',
+      'Decime qué necesitás y te doy una mano.'
+    ].join('\n');
+  const guidedReply = looksCommercial
+    ? [
+      'Vamos de nuevo y lo saco rápido 😊',
+      '',
+      'Podés decirme algo como:',
+      '- ver planes o productos',
+      '- consultar precios',
+      '- recomendarme una opción',
+      '- hablar con una persona'
+    ].join('\n')
+    : [
+      'Todavía no logré entender bien qué necesitás 🤔',
+      '',
+      'Podés decirme algo como:',
+      '- ver productos',
+      '- consultar precios',
+      '- horarios o ubicación',
+      '- hablar con alguien'
+    ].join('\n');
 
   return {
     replyText: nextCount >= 2 ? guidedReply : softReply,
@@ -2553,11 +2642,14 @@ function isPlanRecommendationIntent(rawText) {
   return Boolean(resolvePlanNeedHint(text)) || [
     'cual me conviene',
     'cuál me conviene',
+    'me conviene',
     'que plan me conviene',
     'qué plan me conviene',
     'cual recomendas',
+    'que me recomendas',
     'cuál recomendás',
     'cual recomiendan',
+    'cual me sirve',
     'que plan me sirve',
     'qué plan me sirve'
   ].some((pattern) => text.includes(normalizeCommandText(pattern)));
@@ -2703,7 +2795,12 @@ function isContextualPlanQuestionIntent(rawText) {
 function isPlanWorthItIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
-  return text.includes('vale la pena');
+  return (
+    text.includes('vale la pena') ||
+    text === 'me conviene' ||
+    text.includes('me sirve') ||
+    text.includes('sirve para mi')
+  );
 }
 
 function isRecommendationWhyFollowUpIntent(rawText) {
@@ -2853,13 +2950,20 @@ function detectCommercialPlanObjection(rawText) {
   if (!text) return null;
 
   if (
+    text.includes('ta caro') ||
     text.includes('es caro') ||
     text.includes('muy caro') ||
     text.includes('medio caro') ||
+    text.includes('mmm caro') ||
+    text.includes('sale mucho') ||
     text.includes('se me va') ||
     text.includes('no me da') ||
     text.includes('mas barato') ||
     text.includes('más barato') ||
+    text.includes('mas economico') ||
+    text.includes('más económico') ||
+    text.includes('mas accesible') ||
+    text.includes('más accesible') ||
     text === 'caro'
   ) {
     return 'price';
@@ -2924,6 +3028,110 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
 
 function buildSalesDiscoveryQuestion() {
   return 'Depende un poco de tu operación 😊 ¿Hoy estás arrancando, ya recibís muchas consultas por WhatsApp o tenés un equipo vendiendo?';
+}
+
+function pickTextVariant(seed, options) {
+  const safeOptions = Array.isArray(options) ? options.filter(Boolean) : [];
+  if (!safeOptions.length) return '';
+  const safeSeed = String(seed || '').trim();
+  const score = safeSeed.split('').reduce((total, char) => total + char.charCodeAt(0), 0);
+  return safeOptions[Math.abs(score) % safeOptions.length];
+}
+
+function hasWeakCommercialSignal(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    detectCommercialIntent(text).type !== 'unknown' ||
+    Boolean(parseTransferPaymentIntent(text)) ||
+    Boolean(detectCommercialPlanObjection(text)) ||
+    isPlanRecommendationIntent(text) ||
+    isPlanComparisonIntent(text) ||
+    isPlanWorthItIntent(text) ||
+    /\b(plan|planes|precio|precios|producto|productos|negocio|vender|ventas|whatsapp|servicio|catalogo|pago|pagarte|abono|comprobante|aceptan|presupuesto|recomendacion)\b/.test(text) ||
+    (text.includes('quiero') && (text.includes('saber') || text.includes('ver')))
+  );
+}
+
+function isCommercialSoftFollowUpIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return [
+    'dale',
+    'joya',
+    'ok',
+    'buenisimo',
+    'de una',
+    'piola',
+    'copado',
+    'contame',
+    'explicame',
+    'decime'
+  ].includes(text);
+}
+
+function detectCommercialIndecisionIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  if (
+    text === 'no se' ||
+    text.includes('estoy viendo') ||
+    text.includes('lo voy a pensar') ||
+    text.includes('dejame verlo') ||
+    text.includes('dejame pensarlo')
+  ) {
+    return 'indecision';
+  }
+
+  return null;
+}
+
+function buildCommercialGreetingReply(safeContext, rawText = '') {
+  const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
+  const hasOngoingCommercialFlow = Boolean(
+    getActiveCommercialPlanContext(context) ||
+    getPendingPlanComparisonAction(context) ||
+    getActiveCommercialShortMemory(context) ||
+    (context.activeBotDomain && String(context.activeBotDomain).trim().toLowerCase() === 'commerce')
+  );
+  const greeting = pickTextVariant(`commercial_greeting:${context.activeBotDomain || 'neutral'}:${normalizeCommandText(rawText)}`, [
+    '¡Hola! 😊',
+    '¡Buenas! 👋',
+    '¡Qué tal! 😊'
+  ]);
+
+  return hasOngoingCommercialFlow
+    ? [
+      greeting,
+      'Seguimos con eso si querés. Te puedo recomendar una opción, comparar planes o pasarte precios.'
+    ].join('\n')
+    : [
+      greeting,
+      'Contame qué estás buscando y te doy una mano.'
+    ].join('\n');
+}
+
+function buildCommercialIndecisionReply(safeContext, rawText = '') {
+  const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
+  const hasPlanContext = Boolean(getActiveCommercialPlanContext(context) || getPendingPlanComparisonAction(context));
+  const lead = pickTextVariant(`commercial_indecision:${context.activeBotDomain || 'neutral'}:${normalizeCommandText(rawText)}`, [
+    'Tranqui 😊',
+    'Obvio, está bien pensarlo 😊',
+    'Dale, miralo con calma 😊'
+  ]);
+
+  return hasPlanContext
+    ? [
+      lead,
+      'Si querés, te lo bajo simple: te digo cuál te conviene más y en qué caso elegiría una opción más liviana.'
+    ].join('\n')
+    : [
+      lead,
+      'Si querés, te ayudo a bajar la decisión: te puedo mostrar precios, recomendarte algo simple o comparar opciones.'
+    ].join('\n');
 }
 
 function describeSalesContextShort(salesContext) {
@@ -3115,7 +3323,7 @@ function buildPlanWorthItReply(product, salesContext, allPlans = []) {
   ].join('\n');
 }
 
-function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, salesContext, allPlans = []) {
+function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, salesContext, allPlans = [], rawText = '') {
   const safePlan = recommendedPlan && typeof recommendedPlan === 'object' ? recommendedPlan : null;
   if (!safePlan) return null;
 
@@ -3125,11 +3333,23 @@ function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, sales
   const growthPlan = findPlanByNeedHint(orderedPlans, 'growth');
   const reason = buildRecommendationReasonSummary(safePlan, salesContext, orderedPlans);
   const normalizedName = normalizeCommandText(safePlan.name || '');
+  const priceLead = pickTextVariant(`commercial_price_objection:${safePlan.name || 'plan'}:${normalizeCommandText(rawText)}`, [
+    'Te entiendo 😊',
+    'Sí, puede sentirse alto si hoy querés arrancar más liviano 😊',
+    'Obvio, si hoy querés cuidar inversión hay que mirarlo fino 😊'
+  ]);
+  const contextLead = pickTextVariant(`commercial_context_objection:${safePlan.name || 'plan'}:${normalizeCommandText(rawText)}`, [
+    'Perfecto, con ese contexto yo lo bajaría un cambio.',
+    'Sí, con ese punto cambia bastante la recomendación.',
+    'Bien, ahí ya lo pensaría más simple.'
+  ]);
 
   if (objectionType === 'price') {
     if (normalizedName.includes('empresa')) {
       return [
-        'Sí, Empresa es para cuando ya necesitás más equipo, control o personalización.',
+        priceLead,
+        '',
+        'Empresa es para cuando ya necesitás más equipo, control o personalización.',
         '',
         growthPlan
           ? `Si querés algo más equilibrado, miraría ${growthPlan.name}; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
@@ -3139,7 +3359,7 @@ function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, sales
 
     if (normalizedName.includes('crecimiento')) {
       return [
-        'Te entiendo 😊',
+        priceLead,
         '',
         starterPlan
           ? `Si hoy querés cuidar inversión, arrancaría con ${starterPlan.name}.`
@@ -3152,7 +3372,7 @@ function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, sales
 
     if (starterPlan && String(safePlan.id || safePlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()) {
       return [
-        'Te entiendo 😊',
+        priceLead,
         '',
         `${starterPlan.name} ya es la opción más económica para empezar a ordenar WhatsApp.`,
         'Si incluso así hoy no te cierra, probablemente te convenga esperar a tener un poco más de movimiento antes de sumar una herramienta así.'
@@ -3160,7 +3380,7 @@ function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, sales
     }
 
     return [
-      'Te entiendo 😊',
+      priceLead,
       '',
       lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
         ? `Si hoy querés cuidar inversión, arrancaría con ${lowerPlan.name || 'Plan Inicial'}.`
@@ -3178,7 +3398,7 @@ function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, sales
   if (objectionType === 'starting' || objectionType === 'order_whatsapp') {
     const targetPlan = starterPlan || lowerPlan || safePlan;
     return [
-      'Perfecto, con ese contexto yo lo bajaría un cambio.',
+      contextLead,
       '',
       `Si hoy la idea es ${objectionType === 'order_whatsapp' ? 'ordenar WhatsApp' : 'arrancar simple'}, miraría primero ${targetPlan.name || 'el plan inicial'}.`,
       `Después, cuando ya necesites más seguimiento o más volumen, ahí sí pasaría al plan siguiente.`
@@ -5278,6 +5498,7 @@ function getClinicTransferConfig(clinic) {
 async function buildSafeCommercialIntentReply({ clinic, conversation, inboundText }) {
   const commercialIntent = detectCommercialIntent(inboundText);
   const normalizedText = normalizeCommandText(inboundText);
+  const transferPaymentIntent = parseTransferPaymentIntent(inboundText);
   const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
     ? conversation.context
     : {};
@@ -5294,6 +5515,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     currentBusinessContext ||
     storedBusinessContext;
   const planObjectionType = detectCommercialPlanObjection(inboundText);
+  const indecisionIntent = detectCommercialIndecisionIntent(inboundText);
   const hasEffectiveSalesSignals = Boolean(
     effectiveSalesContext && (
       effectiveSalesContext.businessType ||
@@ -5309,6 +5531,35 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
   const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
   const pendingBeforeLog = summarizePendingOfferedActionForLog(safeContext.pendingOfferedAction);
+  const isAgendaLike = looksLikeAgendaIntent({
+    inboundText,
+    intent: detectIntent(inboundText),
+    managementIntent: detectTurnManagementIntent(inboundText)
+  });
+
+  if (
+    isGreetingIntent(inboundText) &&
+    !transferPaymentIntent &&
+    !isLoyaltyIntent(inboundText) &&
+    !isAgendaLike
+  ) {
+    return {
+      type: 'greeting',
+      replyText: buildCommercialGreetingReply(safeContext, inboundText)
+    };
+  }
+
+  if (
+    indecisionIntent &&
+    !transferPaymentIntent &&
+    !isLoyaltyIntent(inboundText) &&
+    !isAgendaLike
+  ) {
+    return {
+      type: 'recommendation',
+      replyText: buildCommercialIndecisionReply(safeContext, inboundText)
+    };
+  }
 
   if (isCatalogItemDetailIntent(inboundText)) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
@@ -5401,7 +5652,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const recommendedPlan = referencedPlan || resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
 
     if (recommendedPlan) {
-      const objectionReply = buildCommercialPlanObjectionReply(planObjectionType, recommendedPlan, effectiveSalesContext || {}, orderedPlans);
+      const objectionReply = buildCommercialPlanObjectionReply(planObjectionType, recommendedPlan, effectiveSalesContext || {}, orderedPlans, inboundText);
       if (objectionReply) {
         return {
           type: 'recommendation',
@@ -5550,6 +5801,63 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         ...summarizeVisibleReplyForLog(result)
       });
       return result;
+    }
+  }
+
+  if (
+    (activePlanContext || (activeShortMemory && activeShortMemory.topic === 'plans') || hasEffectiveSalesSignals) &&
+    !isCatalogItemDetailIntent(inboundText) &&
+    !isCommerceEntryIntent(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isCommercialSoftFollowUpIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const discussedPlan =
+      findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText) ||
+      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
+    const comparedPlan = activePlanContext
+      ? findPlanByStoredId(orderedPlans, activePlanContext.lastComparedPlanId)
+      : null;
+
+    if (discussedPlan) {
+      return {
+        type: 'recommendation',
+        replyText: [
+          pickTextVariant(`commercial_follow_up:${normalizedText}`, [
+            'Dale 😊',
+            'Obvio 😊',
+            'Buenísimo 😊'
+          ]),
+          '',
+          buildSafeContextualPlanReply(discussedPlan, comparedPlan)
+        ].join('\n'),
+        outboundMedia: [buildCatalogProductImageMessage(discussedPlan)].filter(Boolean),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: discussedPlan && (discussedPlan.id || discussedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(discussedPlan, orderedPlans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_detail',
+            lastDiscussedPlanId: discussedPlan && (discussedPlan.id || discussedPlan.productId),
+            lastComparedPlanId: comparedPlan && (comparedPlan.id || comparedPlan.productId),
+            recommendationType: activePlanContext && activePlanContext.recommendationType
+          })
+        }
+      };
+    }
+
+    if (!hasMinimumSalesContextForRecommendation(effectiveSalesContext)) {
+      return {
+        type: 'recommendation',
+        replyText: buildSalesDiscoveryQuestion(),
+        contextPatch: detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null
+      };
     }
   }
 
@@ -10386,7 +10694,7 @@ async function processInboundJob(job) {
     commercialIntent.type === 'unknown' &&
     !isGreetingIntent(inboundText)
   ) {
-    const intelligentFallback = buildIntelligentFallbackReply(conversation.context);
+    const intelligentFallback = buildIntelligentFallbackReply(conversation.context, inboundText);
     await updateLeadStatus(lead.id, 'qualifying', 'unknown_intent');
     await updateConversationStage(conversation.id, 'qualifying');
     await conversationRepo.updateConversationState({
@@ -10866,7 +11174,7 @@ async function processConversationReplyJob(job) {
     !transferPaymentIntent &&
     !isGreetingIntent(inboundText)
   ) {
-    const intelligentFallback = buildIntelligentFallbackReply(safeContext);
+    const intelligentFallback = buildIntelligentFallbackReply(safeContext, inboundText);
     await conversationRepo.updateConversationState({
       conversationId: conversation.id,
       state: conversation.state || 'READY',
@@ -12405,9 +12713,16 @@ module.exports = {
     isClarificationIntent,
     isGreetingIntent,
     isThanksIntent,
+    isPlanRecommendationIntent,
+    isPlanWorthItIntent,
+    isCommercialSoftFollowUpIntent,
     isLoyaltyIntent,
     detectCommercialIntent,
+    detectCommercialPlanObjection,
+    detectCommercialIndecisionIntent,
     detectBusinessRecommendationContext,
+    parseTransferPaymentIntent,
+    buildCommercialPlanObjectionReply,
     buildSafeCommercialIntentReply,
     buildCommercialShortMemoryReply,
     getActiveCommercialShortMemory,
@@ -12416,6 +12731,9 @@ module.exports = {
     getPendingPlanComparisonAction,
     resolveCommercialShortMemoryFollowUpType,
     buildIntelligentFallbackReply,
+    buildCommercialGreetingReply,
+    buildCommercialIndecisionReply,
+    hasWeakCommercialSignal,
     buildLoyaltyWhatsAppReply,
     buildLoyaltyContextPatch,
     getPendingLoyaltyOfferedAction,
