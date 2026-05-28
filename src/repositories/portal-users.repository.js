@@ -61,6 +61,18 @@ async function listPortalUsersForOpturonAdmin(client = null) {
        AND su.email IS NOT NULL
        AND su.active = TRUE
        AND su.role IN ${PORTAL_ROLE_SQL}
+       AND (
+         COALESCE(
+           c.settings #>> '{portal,accountScope}',
+           c.settings #>> '{accountScope}',
+           'client'
+         ) = 'opturon_admin'
+         OR su.id::text = COALESCE(NULLIF(c.settings #>> '{portal,primaryPortalUserId}', ''), '__missing__')
+         OR (
+           NULLIF(c.settings #>> '{portal,primaryPortalUserId}', '') IS NULL
+           AND su.role = 'owner'
+         )
+       )
      ORDER BY c.name ASC NULLS LAST, su."createdAt" ASC`
   );
 
