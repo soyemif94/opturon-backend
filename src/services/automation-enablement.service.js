@@ -58,9 +58,29 @@ async function buildResolvedCapabilities({ clinic, capabilitiesHint = [] }) {
   const businessProfile = clinic && clinic.businessProfile && typeof clinic.businessProfile === 'object' ? clinic.businessProfile : {};
   const policy = buildTenantPolicyFromSettings(clinic && clinic.settings);
   const resolved = new Set(normalizeCapabilities(policy.capabilities.length ? policy.capabilities : businessProfile.capabilities));
+  const enabledModules = policy && policy.enabledModules && typeof policy.enabledModules === 'object' ? policy.enabledModules : {};
 
   for (const capability of normalizeCapabilities(capabilitiesHint)) {
     resolved.add(capability);
+  }
+
+  if (enabledModules.agenda === true) {
+    resolved.add('agenda');
+  }
+  if (enabledModules.catalog === true) {
+    resolved.add('catalog');
+  }
+  if (enabledModules.payments === true) {
+    resolved.add('payments');
+  }
+  if (enabledModules.automations === true) {
+    resolved.add('automations');
+  }
+  if (enabledModules.sales === true) {
+    resolved.add('sales');
+  }
+  if (enabledModules.loyalty === true) {
+    resolved.add('loyalty');
   }
 
   resolved.add('contacts');

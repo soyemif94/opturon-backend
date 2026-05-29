@@ -1,4 +1,5 @@
 const { provisionCleanClinicForExternalTenant } = require('../repositories/tenant.repository');
+const { ensurePortalAutomationFoundation } = require('./portal-automations.service');
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -30,6 +31,8 @@ async function provisionPortalTenant(tenantId, payload = {}) {
       tenantId: safeTenantId
     });
   }
+
+  await ensurePortalAutomationFoundation(safeTenantId);
 
   return {
     ok: true,

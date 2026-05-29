@@ -1006,10 +1006,17 @@ async function resolveAutomationReplyForInbound({ clinic, conversation, inboundT
   };
 }
 
-async function ensureClinicConversationFlowAutomations({ clinicId, externalTenantId = null }) {
+async function ensureClinicConversationFlowAutomations({ clinicId, externalTenantId = null, names = null }) {
   const ensured = [];
+  const allowedNames = Array.isArray(names)
+    ? new Set(names.map((item) => String(item || '').trim()).filter(Boolean))
+    : null;
 
   for (const automationInput of DEFAULT_AUTOMATIONS) {
+    if (allowedNames && !allowedNames.has(String(automationInput.name || '').trim())) {
+      continue;
+    }
+
     const existing = await findAutomationByClinicIdAndName(clinicId, automationInput.name);
     if (!existing) {
       const created = await createAutomation({

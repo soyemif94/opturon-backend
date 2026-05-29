@@ -3197,6 +3197,8 @@ async function destroyPortalAutomation(req, res) {
         result.reason === 'missing_tenant_id' ||
         result.reason === 'missing_automation_id'
           ? 400
+          : result.reason === 'protected_automation_cannot_be_deleted'
+            ? 409
           : 404;
 
       return res.status(status).json({
