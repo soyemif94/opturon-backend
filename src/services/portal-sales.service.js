@@ -94,6 +94,15 @@ function normalizeString(value) {
   return String(value || '').trim();
 }
 
+function normalizeSalesVisibility(value) {
+  return String(value || '').trim().toLowerCase() === 'archived' ? 'archived' : 'active';
+}
+
+function isConversationArchived(source) {
+  const context = parseContext(source && source.context);
+  return Boolean(normalizeString(context.portalHiddenAt));
+}
+
 function deriveConversationCommercialStage(conversation) {
   const context = parseContext(conversation.context);
   const stage = normalizeString(context.portalDealStage).toLowerCase();
@@ -276,7 +285,8 @@ function mapSalesRow(order, conversationSnapshot = null) {
     lastActivityAt: order.updatedAt || order.createdAt || null,
     source: order.source || null,
     responsible: buildResponsible(conversationContext),
-    conversationId: order.conversationId || null
+    conversationId: order.conversationId || null,
+    archived: isConversationArchived(conversationSnapshot)
   };
 }
 
@@ -302,7 +312,8 @@ function mapConversationOpportunity(conversation) {
     lastActivityAt: conversation.lastInboundAt || conversation.lastOutboundAt || conversation.updatedAt || null,
     source: 'inbox',
     responsible,
-    conversationId: conversation.id
+    conversationId: conversation.id,
+    archived: isConversationArchived(conversation)
   };
 }
 
@@ -371,7 +382,16 @@ function consolidateActiveOpportunities(opportunities) {
   return [...mergeOpenOpportunities(open), ...closed];
 }
 
-async function buildUnifiedSalesOpportunities(clinicId) {
+function matchesOpportunityVisibility(opportunity, visibility) {
+  if (visibility === 'archived') {
+    return Boolean(opportunity.archived);
+  }
+
+  return !opportunity.archived;
+}
+
+async function buildUnifiedSalesOpportunities(clinicId, options = {}) {
+  const visibility = normalizeSalesVisibility(options.visibility);
   const [orders, conversations] = await Promise.all([
     listOrdersByClinicId(clinicId),
     listConversationSalesCandidates(clinicId)
@@ -393,7 +413,9 @@ async function buildUnifiedSalesOpportunities(clinicId) {
     .filter((conversation) => hasCommercialConversationSignal(conversation))
     .map(mapConversationOpportunity);
 
-  return consolidateActiveOpportunities([...orderOpportunities, ...conversationOpportunities]).sort((a, b) => {
+  return consolidateActiveOpportunities(
+    [...orderOpportunities, ...conversationOpportunities].filter((item) => matchesOpportunityVisibility(item, visibility))
+  ).sort((a, b) => {
     const aTime = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
     const bTime = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
     return bTime - aTime;
@@ -471,7 +493,7 @@ async function getSalesSummary(tenantId) {
   const [orders, payments, opportunities] = await Promise.all([
     listOrdersByClinicId(context.clinic.id),
     listPaymentsByClinicId(context.clinic.id),
-    buildUnifiedSalesOpportunities(context.clinic.id)
+    buildUnifiedSalesOpportunities(context.clinic.id, { visibility: 'active' })
   ]);
 
   const timezone = context.clinic.timezone || 'UTC';
@@ -516,7 +538,7 @@ async function getSalesMetrics(tenantId) {
 
   const [orders, opportunities, responseMetricsByConversationId] = await Promise.all([
     listOrdersByClinicId(context.clinic.id),
-    buildUnifiedSalesOpportunities(context.clinic.id),
+    buildUnifiedSalesOpportunities(context.clinic.id, { visibility: 'active' }),
     listConversationResponseMetrics(context.clinic.id)
   ]);
 
@@ -559,17 +581,19 @@ async function getSalesMetrics(tenantId) {
   };
 }
 
-async function listSalesOpportunities(tenantId) {
+async function listSalesOpportunities(tenantId, options = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
 
-  const opportunities = await buildUnifiedSalesOpportunities(context.clinic.id);
+  const visibility = normalizeSalesVisibility(options.visibility);
+  const opportunities = await buildUnifiedSalesOpportunities(context.clinic.id, { visibility });
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
+    visibility,
     opportunities
   };
 }

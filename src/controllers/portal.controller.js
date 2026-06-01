@@ -2547,9 +2547,10 @@ async function getPortalSalesMetrics(req, res) {
 
 async function getPortalSalesOpportunities(req, res) {
   const tenantId = getRequestTenantId(req);
+  const visibility = String(req.query?.visibility || '').trim().toLowerCase() === 'archived' ? 'archived' : 'active';
 
   try {
-    const result = await listSalesOpportunities(tenantId);
+    const result = await listSalesOpportunities(tenantId, { visibility });
     if (!result.ok) {
       const status = result.reason === 'missing_tenant_id' ? 400 : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
@@ -2559,7 +2560,8 @@ async function getPortalSalesOpportunities(req, res) {
       success: true,
       data: {
         tenantId: result.tenantId,
-        opportunities: result.opportunities
+        opportunities: result.opportunities,
+        visibility: result.visibility
       }
     });
   } catch (error) {
