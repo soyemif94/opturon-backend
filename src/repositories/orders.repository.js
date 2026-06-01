@@ -98,6 +98,9 @@ function normalizeOrder(row) {
     status,
     orderStatus: row.orderStatus || legacyOrderStatusFromBillingStatus(status),
     paymentStatus: row.paymentStatus || null,
+    portalHiddenAt: row.portalHiddenAt || null,
+    portalHiddenByUserId: row.portalHiddenByUserId || null,
+    portalHiddenByName: row.portalHiddenByName || null,
     currency: row.currency,
     notes: row.notes || null,
     conversationId: row.conversationId || null,
@@ -162,6 +165,9 @@ async function listOrdersByClinicId(clinicId, client = null) {
        o."totalAmount",
        o.currency,
        o."paymentStatus",
+       o."portalHiddenAt",
+       o."portalHiddenByUserId",
+       o."portalHiddenByName",
        o."orderStatus",
        o."conversationId",
        o."createdAt",
@@ -236,6 +242,9 @@ async function findOrderById(orderId, clinicId, client = null) {
        o."totalAmount",
        o.currency,
        o."paymentStatus",
+       o."portalHiddenAt",
+       o."portalHiddenByUserId",
+       o."portalHiddenByName",
        o."orderStatus",
        o."conversationId",
        o."createdAt",
@@ -542,6 +551,43 @@ async function updateOrder(orderId, clinicId, payload = {}, client = null) {
   return findOrderById(orderId, clinicId, client);
 }
 
+async function updateOrderPortalVisibility(orderId, clinicId, payload = {}, client = null) {
+  const shouldArchive = String(payload.salesVisibility || '').trim().toLowerCase() === 'archived';
+  const shouldRestore = String(payload.salesVisibility || '').trim().toLowerCase() === 'active';
+  const hiddenAt = shouldArchive ? payload.portalHiddenAt || new Date().toISOString() : null;
+  const hiddenByUserId = shouldArchive ? payload.portalHiddenByUserId || null : null;
+  const hiddenByName = shouldArchive ? payload.portalHiddenByName || null : null;
+
+  const result = await dbQuery(
+    client,
+    `UPDATE orders
+     SET
+       "portalHiddenAt" = CASE
+         WHEN $3::boolean THEN $4::timestamptz
+         WHEN $5::boolean THEN NULL
+         ELSE "portalHiddenAt"
+       END,
+       "portalHiddenByUserId" = CASE
+         WHEN $3::boolean THEN $6::text
+         WHEN $5::boolean THEN NULL
+         ELSE "portalHiddenByUserId"
+       END,
+       "portalHiddenByName" = CASE
+         WHEN $3::boolean THEN $7::text
+         WHEN $5::boolean THEN NULL
+         ELSE "portalHiddenByName"
+       END,
+       "updatedAt" = NOW()
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+     RETURNING id`,
+    [orderId, clinicId, shouldArchive, hiddenAt, shouldRestore, hiddenByUserId, hiddenByName]
+  );
+
+  if (!result.rows[0]) return null;
+  return findOrderById(orderId, clinicId, client);
+}
+
 async function listCashCountableOrdersByDestinationAndRange(clinicId, paymentDestinationId, openedAt, closedAt = null, client = null) {
   const result = await dbQuery(
     client,
@@ -605,5 +651,6 @@ module.exports = {
   createOrder,
   updateOrderStatus,
   updateOrder,
+  updateOrderPortalVisibility,
   listCashCountableOrdersByDestinationAndRange
 };

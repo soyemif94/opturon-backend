@@ -103,6 +103,10 @@ function isConversationArchived(source) {
   return Boolean(normalizeString(context.portalHiddenAt));
 }
 
+function isOrderArchived(order) {
+  return Boolean(normalizeString(order && order.portalHiddenAt));
+}
+
 function deriveConversationCommercialStage(conversation) {
   const context = parseContext(conversation.context);
   const stage = normalizeString(context.portalDealStage).toLowerCase();
@@ -286,7 +290,7 @@ function mapSalesRow(order, conversationSnapshot = null) {
     source: order.source || null,
     responsible: buildResponsible(conversationContext),
     conversationId: order.conversationId || null,
-    archived: isConversationArchived(conversationSnapshot)
+    archived: isOrderArchived(order) || isConversationArchived(conversationSnapshot)
   };
 }
 

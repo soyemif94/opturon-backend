@@ -7,7 +7,8 @@ const {
   findOrderById,
   createOrder,
   updateOrderStatus,
-  updateOrder
+  updateOrder,
+  updateOrderPortalVisibility
 } = require('../repositories/orders.repository');
 const {
   findContactByIdAndClinicId
@@ -45,6 +46,13 @@ function normalizeString(value) {
 function normalizeActor(value) {
   const safe = normalizeString(value);
   return safe || null;
+}
+
+function normalizeSalesVisibility(value) {
+  const safe = normalizeString(value).toLowerCase();
+  if (safe === 'archived') return 'archived';
+  if (safe === 'active') return 'active';
+  return null;
 }
 
 function normalizeCurrency(value, fallback = 'ARS') {
@@ -1097,7 +1105,7 @@ async function patchOrderStatusForContext(context, orderId, payload) {
   };
 }
 
-async function patchOrderForContext(context, orderId, payload) {
+async function patchOrderForContext(context, orderId, payload, actor = {}) {
   const safeOrderId = normalizeString(orderId);
   if (!safeOrderId) {
     return buildError(context.tenantId, 'missing_order_id');
@@ -1109,6 +1117,8 @@ async function patchOrderForContext(context, orderId, payload) {
     : null;
   const shouldUpdateSeller = Boolean(payload && Object.prototype.hasOwnProperty.call(payload, 'sellerUserId'));
   const requestedSellerUserId = shouldUpdateSeller ? normalizeString(payload && payload.sellerUserId) || null : null;
+  const requestedSalesVisibility = normalizeSalesVisibility(payload && payload.salesVisibility);
+  const shouldUpdateSalesVisibility = requestedSalesVisibility !== null;
   try {
     const result = await withTransaction(async (client) => {
       const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client);
@@ -1139,27 +1149,50 @@ async function patchOrderForContext(context, orderId, payload) {
         }
       }
 
-      const order = await updateOrder(
-        safeOrderId,
-        context.clinic.id,
-        {
-          ...(shouldUpdatePaymentDestination
-            ? {
-                paymentDestinationId: paymentDestination ? paymentDestination.id : null,
-                paymentDestinationNameSnapshot: paymentDestination ? paymentDestination.name : null,
-                paymentDestinationTypeSnapshot: paymentDestination ? paymentDestination.type : null
-              }
-            : {}),
-          ...(shouldUpdateSeller
-            ? {
-                sellerUserId: seller.id,
-                sellerNameSnapshot: seller.name
-              }
-            : {}),
-          notes: currentOrder.notes
-        },
-        client
-      );
+      const needsGeneralUpdate = shouldUpdatePaymentDestination || shouldUpdateSeller;
+      let order = currentOrder;
+
+      if (needsGeneralUpdate) {
+        order = await updateOrder(
+          safeOrderId,
+          context.clinic.id,
+          {
+            ...(shouldUpdatePaymentDestination
+              ? {
+                  paymentDestinationId: paymentDestination ? paymentDestination.id : null,
+                  paymentDestinationNameSnapshot: paymentDestination ? paymentDestination.name : null,
+                  paymentDestinationTypeSnapshot: paymentDestination ? paymentDestination.type : null
+                }
+              : {}),
+            ...(shouldUpdateSeller
+              ? {
+                  sellerUserId: seller.id,
+                  sellerNameSnapshot: seller.name
+                }
+              : {}),
+            notes: currentOrder.notes
+          },
+          client
+        );
+      }
+
+      if (!order) {
+        return buildError(context.tenantId, 'order_not_found');
+      }
+
+      if (shouldUpdateSalesVisibility) {
+        order = await updateOrderPortalVisibility(
+          safeOrderId,
+          context.clinic.id,
+          {
+            salesVisibility: requestedSalesVisibility,
+            portalHiddenAt: requestedSalesVisibility === 'archived' ? new Date().toISOString() : null,
+            portalHiddenByUserId: requestedSalesVisibility === 'archived' ? normalizeActor(actor.actorId || actor.userId) : null,
+            portalHiddenByName: requestedSalesVisibility === 'archived' ? normalizeActor(actor.actorName) : null
+          },
+          client
+        );
+      }
 
       if (!order) {
         return buildError(context.tenantId, 'order_not_found');
@@ -1220,13 +1253,13 @@ async function patchOrderStatusForClinic(clinicId, orderId, payload) {
   );
 }
 
-async function patchPortalOrder(tenantId, orderId, payload) {
+async function patchPortalOrder(tenantId, orderId, payload, actor = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
 
-  return patchOrderForContext(context, orderId, payload);
+  return patchOrderForContext(context, orderId, payload, actor);
 }
 
 async function validatePortalOrderTransferPayment(tenantId, orderId, payload = {}, actor = {}) {

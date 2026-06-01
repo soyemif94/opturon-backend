@@ -837,9 +837,11 @@ async function postPortalOrderPaymentValidation(req, res) {
 async function patchPortalOrderController(req, res) {
   const tenantId = getRequestTenantId(req);
   const orderId = String(req.params.orderId || '').trim();
+  const actorId = String(req.get('x-portal-actor-id') || '').trim() || null;
+  const actorName = String(req.get('x-portal-actor-name') || '').trim() || null;
 
   try {
-    const result = await patchPortalOrder(tenantId, orderId, req.body || {});
+    const result = await patchPortalOrder(tenantId, orderId, req.body || {}, { actorId, actorName });
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ||
