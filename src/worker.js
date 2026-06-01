@@ -479,6 +479,7 @@ function isThanksIntent(rawText) {
   return (
     [
       'gracias',
+      'muchas gracias',
       'mil gracias',
       'joya gracias',
       'perfecto gracias',
@@ -510,7 +511,10 @@ const COMMERCIAL_OFFER_PATTERNS = [
   /\bcontame\s+un\s+poco\b/,
   /\bcontame\s+mas\b/,
   /\bquiero\s+saber\s+mas\b/,
-  /\bme\s+contas\b/
+  /\bme\s+contas\b/,
+  /\bque\s+manejan\b/,
+  /\bquiero\s+ver\s+productos\b/,
+  /\bquiero\s+ver\s+planes\b/
 ];
 
 function buildCommercialIntentSpec({ exact = [], includes = [], patterns = [] }) {
@@ -660,6 +664,11 @@ const COMMERCIAL_INTENT_MAP = {
     includes: ['envio', 'envian', 'delivery', 'mandan', 'reparten'],
     patterns: [/\bhacen\s+(envios|delivery)\b/, /\btienen\s+envios\b/]
   }),
+  stock: buildCommercialIntentSpec({
+    exact: ['stock', 'tienen stock', 'hay stock', 'disponibilidad', 'disponible', 'tienen disponible'],
+    includes: ['stock', 'disponibilidad', 'disponible'],
+    patterns: [/\b(tienen|hay)\s+stock\b/, /\bhay\s+disponibilidad\b/, /\besta\s+disponible\b/]
+  }),
   promotions: buildCommercialIntentSpec({
     exact: ['promos', 'promociones', 'ofertas', 'descuentos'],
     includes: ['promo', 'promocion', 'oferta', 'descuento']
@@ -718,6 +727,7 @@ const COMMERCIAL_INTENT_PRIORITY = [
   'human_handoff',
   'payment',
   'delivery',
+  'stock',
   'promotions',
   'recommendation',
   'location',
@@ -988,6 +998,20 @@ function resolveBotDomainRoute({
   const demoContextActive = activeDomain === 'demo';
   const agendaIntent = looksLikeAgendaIntent({ inboundText, intent, managementIntent });
   const paymentCommerceIntent = String(commercialIntentType || '').trim().toLowerCase() === 'payment';
+  const commercialContextContinuation = Boolean(
+    getActiveCommercialPlanContext(safeContext) ||
+    getPendingPlanComparisonAction(safeContext) ||
+    getActiveCommercialShortMemory(safeContext) ||
+    getActiveBusinessRecommendationContext(safeContext) ||
+    getActiveCommercialSalesContext(safeContext)
+  );
+  const followUpCommerceIntent =
+    commercialContextContinuation &&
+    (
+      isCommercialSoftFollowUpIntent(inboundText) ||
+      detectCommercialNextStepIntent(inboundText) ||
+      isClarificationIntent(inboundText)
+    );
   const runtimeConfiguredCommerceIntent =
     configuredBotActive &&
     (
@@ -1002,6 +1026,7 @@ function resolveBotDomainRoute({
     inboundLooksLikeCommerceCancel ||
     paymentCommerceIntent ||
     Boolean(transferPaymentIntent) ||
+    followUpCommerceIntent ||
     intent === 'pricing' ||
     isExplicitCommerceTrigger(inboundText) ||
     runtimeConfiguredCommerceIntent;
@@ -3069,6 +3094,42 @@ function detectCommercialPlanObjection(rawText) {
   return null;
 }
 
+function detectCommercialNextStepIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  if (
+    text === 'me interesa' ||
+    text === 'quiero contratar' ||
+    text === 'quiero comprar' ||
+    text === 'quiero arrancar' ||
+    text === 'quiero ese plan' ||
+    text === 'me convenciste' ||
+    text === 'avancemos' ||
+    text === 'como sigo' ||
+    text === 'como hago' ||
+    text === 'como hago para contratar'
+  ) {
+    return 'advance';
+  }
+
+  if (
+    text.includes('me interesa') ||
+    text.includes('quiero contratar') ||
+    text.includes('quiero comprar') ||
+    text.includes('quiero arrancar') ||
+    text.includes('quiero ese plan') ||
+    text.includes('me convenciste') ||
+    text.includes('avancemos') ||
+    text.includes('como sigo') ||
+    text.includes('como hago para contratar')
+  ) {
+    return 'advance';
+  }
+
+  return null;
+}
+
 function buildBusinessContextPlanRecommendationReply(product, businessContext, allPlans = []) {
   const safeProduct = product && typeof product === 'object' ? product : {};
   const safeContext = businessContext && typeof businessContext === 'object' ? businessContext : {};
@@ -3141,13 +3202,17 @@ function isCommercialSoftFollowUpIntent(rawText) {
     'dale',
     'joya',
     'ok',
+    'perfecto',
     'buenisimo',
     'de una',
     'piola',
     'copado',
+    'a ver',
     'contame',
     'explicame',
-    'decime'
+    'decime',
+    'segui',
+    'seguir'
   ].includes(text);
 }
 
@@ -3185,11 +3250,11 @@ function buildCommercialGreetingReply(safeContext, rawText = '') {
   return hasOngoingCommercialFlow
     ? [
       greeting,
-      'Seguimos con eso si querés. Te puedo recomendar una opción, comparar planes o pasarte precios.'
+      'Seguimos con eso si querés. Te puedo recomendar una opción, comparar planes o dejarte el siguiente paso para avanzar.'
     ].join('\n')
     : [
       greeting,
-      'Contame qué estás buscando y te doy una mano.'
+      'Contame qué estás buscando y te doy una mano. Si querés, también te muestro planes, precios o te recomiendo una opción.'
     ].join('\n');
 }
 
@@ -3211,6 +3276,58 @@ function buildCommercialIndecisionReply(safeContext, rawText = '') {
       lead,
       'Si querés, te ayudo a bajar la decisión: te puedo mostrar precios, recomendarte algo simple o comparar opciones.'
     ].join('\n');
+}
+
+function buildCommercialThanksReply(safeContext) {
+  const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
+  const hasOngoingCommercialFlow = Boolean(
+    getActiveCommercialPlanContext(context) ||
+    getPendingPlanComparisonAction(context) ||
+    getActiveCommercialShortMemory(context) ||
+    getActiveBusinessRecommendationContext(context) ||
+    getActiveCommercialSalesContext(context)
+  );
+
+  return hasOngoingCommercialFlow
+    ? '¡De nada! Si querés, seguimos por acá y te ayudo a avanzar con la opción que veníamos viendo.'
+    : '¡De nada! Si querés, seguí por acá cuando quieras y te doy una mano.';
+}
+
+function buildPaymentMethodsReply({ paymentMethods, transferConfig, activePlanName = null }) {
+  const safePaymentMethods = String(paymentMethods || '').trim();
+  const lines = [];
+
+  if (safePaymentMethods) {
+    lines.push(`Formas de pago: ${safePaymentMethods}.`);
+  }
+
+  if (hasConfiguredTransferData(transferConfig)) {
+    lines.push(
+      activePlanName
+        ? `Si querés avanzar con ${activePlanName}, también te puedo pasar los datos de transferencia por acá.`
+        : 'Si querés avanzar, también te puedo pasar los datos de transferencia por acá.'
+    );
+  }
+
+  if (!lines.length) {
+    return 'Todavía no tengo medios de pago cargados para mostrarte por acá. Si querés, te paso con alguien del equipo.';
+  }
+
+  return lines.join('\n\n');
+}
+
+function buildStockAvailabilityReply(product) {
+  const safeProduct = product && typeof product === 'object' ? product : null;
+  if (!safeProduct) {
+    return 'Puedo revisar stock real desde el catálogo. Decime cuál producto o plan querés consultar y te digo la disponibilidad.';
+  }
+
+  const stock = Number(safeProduct.stock || 0);
+  if (stock > 0) {
+    return `${safeProduct.name} tiene stock disponible ahora mismo 😊`;
+  }
+
+  return `${safeProduct.name} no tiene stock disponible en este momento. Si querés, te muestro otra opción.`;
 }
 
 function describeSalesContextShort(salesContext) {
@@ -5578,6 +5695,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const commercialIntent = detectCommercialIntent(inboundText);
   const normalizedText = normalizeCommandText(inboundText);
   const transferPaymentIntent = parseTransferPaymentIntent(inboundText);
+  const nextStepIntent = detectCommercialNextStepIntent(inboundText);
   const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
     ? conversation.context
     : {};
@@ -5609,6 +5727,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
   const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
+  const paymentMethods = normalizeBusinessProfileText(businessProfile.paymentMethods);
+  const transferConfig = getClinicTransferConfig(clinic);
   const pendingBeforeLog = summarizePendingOfferedActionForLog(safeContext.pendingOfferedAction);
   const isAgendaLike = looksLikeAgendaIntent({
     inboundText,
@@ -5637,6 +5757,18 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     return {
       type: 'recommendation',
       replyText: buildCommercialIndecisionReply(safeContext, inboundText)
+    };
+  }
+
+  if (
+    isThanksIntent(inboundText) &&
+    !transferPaymentIntent &&
+    !isLoyaltyIntent(inboundText) &&
+    !isAgendaLike
+  ) {
+    return {
+      type: 'thanks',
+      replyText: buildCommercialThanksReply(safeContext)
     };
   }
 
@@ -6192,6 +6324,39 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     }
   }
 
+  if (commercialIntent.type === 'payment' && !transferPaymentIntent) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const contextualPlan =
+      resolveExistingPaymentPlan(safeContext, orderedPlans) ||
+      findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText) ||
+      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
+
+    return {
+      type: commercialIntent.type,
+      replyText: buildPaymentMethodsReply({
+        paymentMethods,
+        transferConfig,
+        activePlanName: contextualPlan && contextualPlan.name ? contextualPlan.name : null
+      }),
+      contextPatch: contextualPlan
+        ? {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: contextualPlan.id || contextualPlan.productId,
+            recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: nextStepIntent ? 'plan_checkout' : 'payment_methods',
+            lastDiscussedPlanId: contextualPlan.id || contextualPlan.productId,
+            lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+            recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans)
+          })
+        }
+        : null
+    };
+  }
+
   if (commercialIntent.type === 'location') {
     return {
       type: commercialIntent.type,
@@ -6221,6 +6386,21 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       replyText: deliveryZones
         ? `Sí 😊 Hacemos envíos.\n\n${deliveryZones}\n\nSi querés, también puedo mostrarte productos o ayudarte a elegir.`
         : 'No tengo confirmado si este comercio hace envíos. Si querés, te paso con alguien del equipo.'
+    };
+  }
+
+  if (commercialIntent.type === 'stock') {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const referencedProduct =
+      findReferencedPlan(eligibleProducts, inboundText) ||
+      findProductByName(eligibleProducts, inboundText) ||
+      findCatalogItemByStoredId(eligibleProducts, safeContext && safeContext.commerceSuggestedProductId) ||
+      resolvePlanFromCommercialShortMemory(eligibleProducts, activeShortMemory);
+
+    return {
+      type: commercialIntent.type,
+      replyText: buildStockAvailabilityReply(referencedProduct)
     };
   }
 
@@ -7499,6 +7679,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
   const transferConfig = getClinicTransferConfig(clinic);
   const transferIntent = parseTransferPaymentIntent(inboundText);
+  const nextStepIntent = detectCommercialNextStepIntent(inboundText);
   const transferContext = safeContext.transferPayment && typeof safeContext.transferPayment === 'object'
     ? safeContext.transferPayment
     : null;
@@ -7527,6 +7708,34 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     const patchResult = await patchOrderStatusForClinic(conversation.clinicId, transferOrderId, patchPayload);
     return patchResult && patchResult.ok ? patchResult.order : null;
   };
+
+  if (nextStepIntent && currentState !== 'PAYMENT_TRANSFER') {
+    const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
+    const contextualPlan =
+      resolveExistingPaymentPlan(safeContext, plans) ||
+      parsePaymentPlanSelection(inboundText, plans) ||
+      findPlanByCommercialPlanContext(plans, safeContext, inboundText) ||
+      resolveRecentCommercialPlan(
+        plans,
+        getActiveCommercialSalesContext(safeContext),
+        getActiveCommercialPlanContext(safeContext),
+        getActiveCommercialShortMemory(safeContext)
+      ) ||
+      findPlanByBusinessRecommendationContext(plans, getActiveBusinessRecommendationContext(safeContext));
+
+    if (contextualPlan) {
+      return buildPaymentInstructionsDecision({
+        selectedPlan: contextualPlan,
+        source: 'whatsapp_payment'
+      });
+    }
+
+    if (plans.length) {
+      return buildPaymentPlanSelectionDecision({
+        source: 'whatsapp_payment'
+      });
+    }
+  }
 
   if (transferContext && transferContext.status === 'awaiting_plan_selection') {
     const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
@@ -12826,6 +13035,7 @@ module.exports = {
     buildDemoLeadSummary,
     buildDemoPaymentReply,
     resolveCommerceDecision,
+    detectIntent,
     isAffirmativeIntent,
     isNegativeIntent,
     isClarificationIntent,
@@ -12841,6 +13051,7 @@ module.exports = {
     detectCommercialIntent,
     detectCommercialPlanObjection,
     detectCommercialIndecisionIntent,
+    detectCommercialNextStepIntent,
     detectBusinessRecommendationContext,
     parseTransferPaymentIntent,
     buildCommercialPlanObjectionReply,
