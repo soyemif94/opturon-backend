@@ -19,7 +19,7 @@ const {
   findInvoiceByOrderId,
   createInvoice
 } = require('../repositories/invoices.repository');
-const { createPayment } = require('../repositories/payments.repository');
+const { createPayment, listPaymentsByClinicId } = require('../repositories/payments.repository');
 const { sumRecordedAllocatedAmountsByInvoiceIds } = require('../repositories/payment-allocations.repository');
 const {
   findProductById,
@@ -36,6 +36,7 @@ const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
 const LEGACY_ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
 const PAYMENT_STATUSES = new Set(['unpaid', 'pending', 'paid', 'refunded', 'cancelled']);
+const ORDER_PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'mercado_pago', 'other']);
 const ORDER_SOURCES = new Set(['manual', 'inbox', 'automation', 'api', 'bot']);
 const ORDER_CUSTOMER_TYPES = new Set(['registered_contact', 'final_consumer']);
 
@@ -130,6 +131,36 @@ function derivePaymentMethodFromDestination(destination) {
   return 'other';
 }
 
+function normalizeOrderPaymentMethod(value, destination = null) {
+  const requested = normalizeString(value).toLowerCase();
+  if (ORDER_PAYMENT_METHODS.has(requested)) {
+    return requested;
+  }
+  return derivePaymentMethodFromDestination(destination);
+}
+
+function paymentRecordMethodForStorage(value, destination = null) {
+  const normalized = normalizeOrderPaymentMethod(value, destination);
+  if (normalized === 'mercado_pago') return 'other';
+  return normalized;
+}
+
+function paymentMethodLabel(value, destination = null) {
+  const normalized = normalizeOrderPaymentMethod(value, destination);
+  switch (normalized) {
+    case 'cash':
+      return 'Efectivo';
+    case 'bank_transfer':
+      return 'Transferencia';
+    case 'card':
+      return 'Tarjeta';
+    case 'mercado_pago':
+      return 'Mercado Pago';
+    default:
+      return 'Otro';
+  }
+}
+
 function getTransferPaymentContext(conversation, orderId = null) {
   if (!conversation || typeof conversation !== 'object') return null;
   const context = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
@@ -210,12 +241,47 @@ function buildConversationPreview(conversation, messages = []) {
   };
 }
 
-function buildOrderDetailPayload(order, conversation, conversationMessages = []) {
+function buildOrderDetailPayload(order, conversation, conversationMessages = [], paymentRecord = null) {
   return {
     ...order,
+    paymentRecord,
     transferPayment: summarizeTransferPayment(order, conversation),
     conversationPreview: buildConversationPreview(conversation, conversationMessages)
   };
+}
+
+function summarizeOrderPaymentRecord(payment, order = null) {
+  if (!payment || typeof payment !== 'object') return null;
+  const metadata = payment.metadata && typeof payment.metadata === 'object' ? payment.metadata : {};
+  const destinationName =
+    normalizeString(metadata.destinationName) ||
+    normalizeString(metadata.destinationLabel) ||
+    normalizeString(order && (order.paymentDestinationNameSnapshot || (order.paymentDestination && order.paymentDestination.name))) ||
+    null;
+
+  return {
+    id: payment.id || null,
+    status: normalizeString(payment.status) || null,
+    method: normalizeString(payment.method) || null,
+    methodLabel: normalizeString(metadata.paymentMethodLabel) || paymentMethodLabel(payment.method),
+    paidAt: payment.paidAt || null,
+    destinationId: normalizeString(metadata.destinationId) || (order && order.paymentDestinationId) || null,
+    destinationName
+  };
+}
+
+function buildOrderPaymentRecordMap(payments, orders = []) {
+  const orderById = new Map((Array.isArray(orders) ? orders : []).map((order) => [order.id, order]));
+  const map = new Map();
+
+  (Array.isArray(payments) ? payments : []).forEach((payment) => {
+    const metadata = payment && payment.metadata && typeof payment.metadata === 'object' ? payment.metadata : {};
+    const orderId = normalizeString(metadata.orderId);
+    if (!orderId || map.has(orderId) || normalizeString(payment.status).toLowerCase() === 'void') return;
+    map.set(orderId, summarizeOrderPaymentRecord(payment, orderById.get(orderId) || null));
+  });
+
+  return map;
 }
 
 function buildTransferValidationApprovalReply() {
@@ -324,7 +390,7 @@ function buildInternalInvoiceDraft(order, clinicRecord, contact) {
   };
 }
 
-async function syncOrderPaidArtifacts({ context, order, paymentDestination, client }) {
+async function syncOrderPaidArtifacts({ context, order, paymentDestination, paymentMethod = null, paidAt = null, client }) {
   if (!paymentDestination) {
     return buildError(context.tenantId, 'missing_payment_destination_for_paid_order');
   }
@@ -359,9 +425,9 @@ async function syncOrderPaidArtifacts({ context, order, paymentDestination, clie
       invoiceId: invoice.id,
       amount: remainingAmount,
       currency: normalizeCurrency(order.currency, 'ARS'),
-      method: derivePaymentMethodFromDestination(paymentDestination),
+      method: paymentRecordMethodForStorage(paymentMethod, paymentDestination),
       status: 'recorded',
-      paidAt: new Date().toISOString(),
+      paidAt: paidAt || new Date().toISOString(),
       externalReference: null,
       notes: normalizeString(order.notes) || null,
       metadata: {
@@ -369,7 +435,9 @@ async function syncOrderPaidArtifacts({ context, order, paymentDestination, clie
         orderId: order.id,
         destinationId: paymentDestination.id,
         destinationName: paymentDestination.name,
-        destinationType: paymentDestination.type
+        destinationType: paymentDestination.type,
+        paymentMethodLabel: paymentMethodLabel(paymentMethod, paymentDestination),
+        paymentMethodRaw: normalizeOrderPaymentMethod(paymentMethod, paymentDestination)
       }
     },
     client
@@ -450,6 +518,8 @@ async function listPortalOrders(tenantId) {
   }
 
   const orders = await listOrdersByClinicId(context.clinic.id);
+  const payments = await listPaymentsByClinicId(context.clinic.id);
+  const paymentRecordByOrderId = buildOrderPaymentRecordMap(payments, orders);
   const conversationIds = Array.from(new Set(orders.map((order) => order.conversationId).filter(Boolean)));
   const conversations = conversationIds.length
     ? await conversationStateRepo.listConversationsByIds(conversationIds)
@@ -464,7 +534,9 @@ async function listPortalOrders(tenantId) {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    orders: orders.map((order) => buildOrderDetailPayload(order, conversationById.get(order.conversationId || '') || null))
+    orders: orders.map((order) =>
+      buildOrderDetailPayload(order, conversationById.get(order.conversationId || '') || null, [], paymentRecordByOrderId.get(order.id) || null)
+    )
   };
 }
 
@@ -654,6 +726,7 @@ async function getPortalOrderDetail(tenantId, orderId) {
     order.conversationId
       ? await conversationStateRepo.getConversationById(order.conversationId)
       : null;
+  const paymentRecordByOrderId = buildOrderPaymentRecordMap(await listPaymentsByClinicId(context.clinic.id), [order]);
 
   return {
     ok: true,
@@ -664,7 +737,8 @@ async function getPortalOrderDetail(tenantId, orderId) {
       conversation && conversation.clinicId === context.clinic.id ? conversation : null,
       conversation && conversation.clinicId === context.clinic.id && order.conversationId
         ? await conversationStateRepo.listConversationMessagesByClinicId(order.conversationId, context.clinic.id, 5)
-        : []
+        : [],
+      paymentRecordByOrderId.get(order.id) || null
     )
   };
 }
@@ -680,6 +754,8 @@ async function createOrderForContext(context, payload) {
   const requestedCustomerType = normalizeCustomerType(payload && payload.customerType);
   const sellerUserId = normalizeString(payload && payload.sellerUserId) || null;
   const paymentDestinationId = normalizeString(payload && payload.paymentDestinationId) || null;
+  const paymentMethod = normalizeOrderPaymentMethod(payload && payload.paymentMethod);
+  const paidAt = normalizeString(payload && payload.paidAt) || null;
   const notes = normalizeString(payload && payload.notes) || null;
   const itemsInput = Array.isArray(payload && payload.items) ? payload.items : [];
 
@@ -744,6 +820,9 @@ async function createOrderForContext(context, payload) {
 
   if (source === 'manual' && !sellerUserId) {
     return buildError(context.tenantId, 'missing_seller_user_id');
+  }
+  if (paymentStatus === 'paid' && !paymentDestinationId) {
+    return buildError(context.tenantId, 'missing_payment_destination_for_paid_order');
   }
 
   const rawItems = itemsInput.map((item) => normalizeItemDraft(item || {}, requestedCurrency));
@@ -906,6 +985,19 @@ async function createOrderForContext(context, payload) {
     return transactionResult;
   }
 
+  if (paymentStatus === 'paid') {
+    const paymentSyncResult = await syncOrderPaidArtifacts({
+      context,
+      order: transactionResult.order,
+      paymentDestination,
+      paymentMethod,
+      paidAt
+    });
+    if (!paymentSyncResult.ok) {
+      return paymentSyncResult;
+    }
+  }
+
   return {
     ok: true,
     tenantId: context.tenantId,
@@ -1054,6 +1146,8 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
       context,
       order: orderWithDestination,
       paymentDestination,
+      paymentMethod: payload && payload.paymentMethod,
+      paidAt: normalizeString(payload && payload.paidAt) || null,
       client
     });
     if (!paymentSyncResult.ok) {
