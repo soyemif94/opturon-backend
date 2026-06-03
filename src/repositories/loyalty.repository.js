@@ -50,6 +50,8 @@ function normalizeReward(row) {
     name: row.name,
     description: row.description || null,
     pointsCost: Number(row.pointsCost || 0),
+    stockQty: Number(row.stockQty || 0),
+    image: row.image && typeof row.image === 'object' && !Array.isArray(row.image) ? row.image : null,
     active: row.active === true,
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null
@@ -178,6 +180,8 @@ async function listLoyaltyRewardsByClinicId(clinicId, client = null) {
        name,
        description,
        "pointsCost" AS "pointsCost",
+       "stockQty" AS "stockQty",
+       image,
        active,
        "createdAt" AS "createdAt",
        "updatedAt" AS "updatedAt"
@@ -199,6 +203,8 @@ async function findLoyaltyRewardById(rewardId, clinicId, client = null) {
        name,
        description,
        "pointsCost" AS "pointsCost",
+       "stockQty" AS "stockQty",
+       image,
        active,
        "createdAt" AS "createdAt",
        "updatedAt" AS "updatedAt"
@@ -220,12 +226,22 @@ async function createLoyaltyReward(input, client = null) {
        name,
        description,
        "pointsCost",
+       "stockQty",
+       image,
        active,
        "updatedAt"
      )
-     VALUES ($1::uuid, $2, $3, $4, $5, NOW())
+     VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, NOW())
      RETURNING id`,
-    [input.clinicId, input.name, input.description || null, input.pointsCost, input.active !== false]
+    [
+      input.clinicId,
+      input.name,
+      input.description || null,
+      input.pointsCost,
+      input.stockQty || 0,
+      JSON.stringify(input.image || null),
+      input.active !== false
+    ]
   );
 
   return findLoyaltyRewardById(result.rows[0].id, input.clinicId, client);
@@ -239,12 +255,23 @@ async function updateLoyaltyReward(rewardId, clinicId, input, client = null) {
        name = $3,
        description = $4,
        "pointsCost" = $5,
-       active = $6,
+       "stockQty" = $6,
+       image = $7::jsonb,
+       active = $8,
        "updatedAt" = NOW()
      WHERE id = $1::uuid
        AND "clinicId" = $2::uuid
      RETURNING id`,
-    [rewardId, clinicId, input.name, input.description || null, input.pointsCost, input.active !== false]
+    [
+      rewardId,
+      clinicId,
+      input.name,
+      input.description || null,
+      input.pointsCost,
+      input.stockQty || 0,
+      JSON.stringify(input.image || null),
+      input.active !== false
+    ]
   );
 
   if (!result.rows[0]) return null;

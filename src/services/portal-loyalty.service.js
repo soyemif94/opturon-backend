@@ -17,6 +17,10 @@ const {
   getLoyaltyContactSummary,
   getLoyaltyOverview
 } = require('../repositories/loyalty.repository');
+const {
+  saveUploadedLoyaltyRewardImage,
+  readUploadedLoyaltyRewardImage
+} = require('./portal-loyalty-images.service');
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -49,11 +53,38 @@ function normalizeProgramPayload(payload = {}, fallback = {}) {
   };
 }
 
+function normalizeRewardImage(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '__invalid__';
+
+  const rawUrl = normalizeString(value.url);
+  if (!rawUrl) return null;
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '__invalid__';
+    }
+
+    return {
+      url: parsed.toString(),
+      alt: normalizeString(value.alt) || null,
+      source: normalizeString(value.source) || 'external_url'
+    };
+  } catch (error) {
+    return '__invalid__';
+  }
+}
+
 function normalizeRewardPayload(payload = {}, fallback = {}) {
+  const stockQty = Number.parseInt(String(payload.stockQty ?? fallback.stockQty ?? 0), 10);
   return {
     name: normalizeString(payload.name ?? fallback.name),
     description: normalizeString(payload.description ?? fallback.description) || null,
     pointsCost: Number(payload.pointsCost ?? fallback.pointsCost),
+    stockQty,
+    image: normalizeRewardImage(payload.image !== undefined ? payload.image : fallback.image),
     active: payload.active !== undefined ? payload.active === true : fallback.active !== false
   };
 }
@@ -194,6 +225,12 @@ async function createPortalLoyaltyReward(tenantId, payload = {}) {
   if (!Number.isInteger(rewardPayload.pointsCost) || rewardPayload.pointsCost <= 0) {
     return buildError(context.tenantId, 'invalid_loyalty_reward_points_cost');
   }
+  if (!Number.isInteger(rewardPayload.stockQty) || rewardPayload.stockQty < 0) {
+    return buildError(context.tenantId, 'invalid_loyalty_reward_stock_qty');
+  }
+  if (rewardPayload.image === '__invalid__') {
+    return buildError(context.tenantId, 'invalid_loyalty_reward_image');
+  }
 
   const reward = await createLoyaltyReward({
     clinicId: context.clinic.id,
@@ -231,6 +268,12 @@ async function updatePortalLoyaltyReward(tenantId, rewardId, payload = {}) {
   if (!Number.isInteger(rewardPayload.pointsCost) || rewardPayload.pointsCost <= 0) {
     return buildError(context.tenantId, 'invalid_loyalty_reward_points_cost');
   }
+  if (!Number.isInteger(rewardPayload.stockQty) || rewardPayload.stockQty < 0) {
+    return buildError(context.tenantId, 'invalid_loyalty_reward_stock_qty');
+  }
+  if (rewardPayload.image === '__invalid__') {
+    return buildError(context.tenantId, 'invalid_loyalty_reward_image');
+  }
 
   const reward = await updateLoyaltyReward(safeRewardId, context.clinic.id, rewardPayload);
   return {
@@ -238,6 +281,60 @@ async function updatePortalLoyaltyReward(tenantId, rewardId, payload = {}) {
     tenantId: context.tenantId,
     clinic: context.clinic,
     reward
+  };
+}
+
+async function uploadPortalLoyaltyRewardImage(tenantId, file, options = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  if (!file || !Buffer.isBuffer(file.buffer) || file.buffer.length === 0) {
+    return { ok: false, tenantId: context.tenantId, reason: 'missing_loyalty_reward_image_file' };
+  }
+
+  const upload = await saveUploadedLoyaltyRewardImage(context.tenantId, {
+    buffer: file.buffer,
+    mimeType: file.mimetype,
+    origin: options.origin
+  });
+
+  if (!upload.ok) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      reason: upload.reason
+    };
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    image: upload.image
+  };
+}
+
+async function getPortalLoyaltyRewardImageAsset(tenantId, fileName) {
+  const safeTenantId = normalizeString(tenantId);
+  if (!safeTenantId) {
+    return { ok: false, tenantId: safeTenantId, reason: 'missing_tenant_id' };
+  }
+
+  const media = await readUploadedLoyaltyRewardImage(safeTenantId, fileName);
+  if (!media.ok) {
+    return {
+      ok: false,
+      tenantId: safeTenantId,
+      reason: media.reason
+    };
+  }
+
+  return {
+    ok: true,
+    tenantId: safeTenantId,
+    media: media.media
   };
 }
 
@@ -601,6 +698,8 @@ module.exports = {
   listPortalLoyaltyRewards,
   createPortalLoyaltyReward,
   updatePortalLoyaltyReward,
+  uploadPortalLoyaltyRewardImage,
+  getPortalLoyaltyRewardImageAsset,
   getPortalLoyaltyContactDetail,
   getPortalLoyaltyOverview,
   redeemPortalLoyaltyReward,

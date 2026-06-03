@@ -108,6 +108,8 @@ const {
   listPortalLoyaltyRewards,
   createPortalLoyaltyReward,
   updatePortalLoyaltyReward,
+  uploadPortalLoyaltyRewardImage,
+  getPortalLoyaltyRewardImageAsset,
   getPortalLoyaltyContactDetail,
   getPortalLoyaltyOverview,
   redeemPortalLoyaltyReward
@@ -2663,13 +2665,15 @@ async function postPortalLoyaltyRewardController(req, res) {
 
   try {
     const result = await createPortalLoyaltyReward(tenantId, req.body || {});
-    if (!result.ok) {
-      const status =
-        result.reason === 'missing_tenant_id' ||
-        result.reason === 'missing_loyalty_reward_name' ||
-        result.reason === 'invalid_loyalty_reward_points_cost'
-          ? 400
-          : 404;
+      if (!result.ok) {
+        const status =
+          result.reason === 'missing_tenant_id' ||
+          result.reason === 'missing_loyalty_reward_name' ||
+          result.reason === 'invalid_loyalty_reward_points_cost' ||
+          result.reason === 'invalid_loyalty_reward_stock_qty' ||
+          result.reason === 'invalid_loyalty_reward_image'
+            ? 400
+            : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
     }
 
@@ -2695,16 +2699,18 @@ async function patchPortalLoyaltyRewardController(req, res) {
 
   try {
     const result = await updatePortalLoyaltyReward(tenantId, rewardId, req.body || {});
-    if (!result.ok) {
-      const status =
-        result.reason === 'missing_tenant_id' ||
-        result.reason === 'missing_loyalty_reward_id' ||
-        result.reason === 'missing_loyalty_reward_name' ||
-        result.reason === 'invalid_loyalty_reward_points_cost'
-          ? 400
-          : result.reason === 'loyalty_reward_not_found'
-            ? 404
-            : 409;
+      if (!result.ok) {
+        const status =
+          result.reason === 'missing_tenant_id' ||
+          result.reason === 'missing_loyalty_reward_id' ||
+          result.reason === 'missing_loyalty_reward_name' ||
+          result.reason === 'invalid_loyalty_reward_points_cost' ||
+          result.reason === 'invalid_loyalty_reward_stock_qty' ||
+          result.reason === 'invalid_loyalty_reward_image'
+            ? 400
+            : result.reason === 'loyalty_reward_not_found'
+              ? 404
+              : 409;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
     }
 
@@ -2719,6 +2725,73 @@ async function patchPortalLoyaltyRewardController(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_loyalty_reward_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalLoyaltyRewardImageUpload(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await uploadPortalLoyaltyRewardImage(tenantId, req.file, {
+      origin: getPublicRequestOrigin(req)
+    });
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_loyalty_reward_image_file' ||
+        result.reason === 'invalid_loyalty_reward_image_type'
+          ? 400
+          : result.reason === 'loyalty_reward_image_storage_not_configured'
+            ? 503
+            : result.reason === 'missing_loyalty_reward_image_origin'
+              ? 500
+              : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        image: result.image
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_reward_image_upload_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalLoyaltyRewardImagePublic(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const fileName = String(req.params.fileName || '').trim();
+
+  try {
+    const result = await getPortalLoyaltyRewardImageAsset(tenantId, fileName);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'loyalty_reward_image_storage_not_configured'
+            ? 503
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    res.setHeader('Content-Type', result.media.contentType || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader('Content-Disposition', `inline; filename="${result.media.fileName}"`);
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    return res.status(200).send(result.media.buffer);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_loyalty_reward_image_fetch_failed',
       details: error.message
     });
   }
@@ -4043,6 +4116,8 @@ module.exports = {
   getPortalLoyaltyRewardsController,
   postPortalLoyaltyRewardController,
   patchPortalLoyaltyRewardController,
+  postPortalLoyaltyRewardImageUpload,
+  getPortalLoyaltyRewardImagePublic,
   getPortalLoyaltyContactController,
   getPortalLoyaltyOverviewController,
   postPortalLoyaltyRedeemController,

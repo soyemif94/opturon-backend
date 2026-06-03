@@ -79,6 +79,8 @@ const {
   getPortalLoyaltyRewardsController,
   postPortalLoyaltyRewardController,
   patchPortalLoyaltyRewardController,
+  postPortalLoyaltyRewardImageUpload,
+  getPortalLoyaltyRewardImagePublic,
   getPortalLoyaltyContactController,
   getPortalLoyaltyOverviewController,
   postPortalLoyaltyRedeemController,
@@ -167,9 +169,47 @@ function handleCatalogImageUpload(req, res, next) {
   });
 }
 
+const loyaltyRewardImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 4 * 1024 * 1024,
+    files: 1
+  },
+  fileFilter: (_req, file, callback) => {
+    const mimeType = String(file && file.mimetype ? file.mimetype : '').toLowerCase();
+    if (mimeType === 'image/jpeg' || mimeType === 'image/png' || mimeType === 'image/webp') {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('invalid_loyalty_reward_image_type'));
+  }
+});
+
+function handleLoyaltyRewardImageUpload(req, res, next) {
+  loyaltyRewardImageUpload.single('file')(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ success: false, error: 'loyalty_reward_image_too_large' });
+      return;
+    }
+
+    if (error && error.message === 'invalid_loyalty_reward_image_type') {
+      res.status(400).json({ success: false, error: 'invalid_loyalty_reward_image_type' });
+      return;
+    }
+
+    next(error);
+  });
+}
+
 router.use('/tenants/:tenantId', applyPortalActiveTenant);
 
 router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
+router.get('/loyalty-reward-images/:tenantId/:fileName', getPortalLoyaltyRewardImagePublic);
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
 router.post('/tenants/:tenantId/provision', requirePortalInternalAuth, postPortalTenantProvision);
 router.get('/tenants/:tenantId/conversations', inboxModule, getPortalConversations);
@@ -249,6 +289,13 @@ router.patch('/tenants/:tenantId/loyalty/program', requirePortalInternalAuth, lo
 router.get('/tenants/:tenantId/loyalty/rewards', requirePortalInternalAuth, loyaltyModule, getPortalLoyaltyRewardsController);
 router.post('/tenants/:tenantId/loyalty/rewards', requirePortalInternalAuth, loyaltyModule, postPortalLoyaltyRewardController);
 router.patch('/tenants/:tenantId/loyalty/rewards/:rewardId', requirePortalInternalAuth, loyaltyModule, patchPortalLoyaltyRewardController);
+router.post(
+  '/tenants/:tenantId/loyalty/rewards/image-upload',
+  requirePortalInternalAuth,
+  loyaltyModule,
+  handleLoyaltyRewardImageUpload,
+  postPortalLoyaltyRewardImageUpload
+);
 router.get('/tenants/:tenantId/loyalty/contacts/:contactId', requirePortalInternalAuth, loyaltyModule, getPortalLoyaltyContactController);
 router.get('/tenants/:tenantId/loyalty/overview', requirePortalInternalAuth, loyaltyModule, getPortalLoyaltyOverviewController);
 router.post('/tenants/:tenantId/loyalty/redemptions', requirePortalInternalAuth, loyaltyModule, postPortalLoyaltyRedeemController);
