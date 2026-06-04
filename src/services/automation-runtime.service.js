@@ -224,6 +224,8 @@ function applyBasicConversationalNormalizations(text) {
   if (normalized === 'q tal') return 'que tal';
 
   return normalized
+    .replace(/\bholis+\b/g, 'hola')
+    .replace(/\bbuenass+\b/g, 'buenas')
     .replace(/\bgrax\b/g, 'gracias')
     .replace(/\bgrasias\b/g, 'gracias')
     .replace(/\bgraxias\b/g, 'gracias')
@@ -239,6 +241,7 @@ function applyBasicConversationalNormalizations(text) {
     .replace(/\bbuenisim[oa]\b/g, 'buenisimo')
     .replace(/\bbarbaroo+\b/g, 'barbaro')
     .replace(/\bgenia+l+\b/g, 'genial')
+    .replace(/\bq\s*onda\b/g, 'que onda')
     .replace(/\bq\s+/g, 'que ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -393,6 +396,10 @@ function isGenericGreeting(text) {
     'buenas tardes',
     'buenas noches',
     'que tal',
+    'como andas',
+    'que onda',
+    'holis',
+    'todo bien',
     'info',
     'consulta',
     'consulta por favor',

@@ -35,6 +35,8 @@ function applyBasicConversationalNormalizations(text) {
   if (normalized === 'q tal') return 'que tal';
 
   return normalized
+    .replace(/\bholis+\b/g, 'hola')
+    .replace(/\bbuenass+\b/g, 'buenas')
     .replace(/\bgrax\b/g, 'gracias')
     .replace(/\bgrasias\b/g, 'gracias')
     .replace(/\bgraxias\b/g, 'gracias')
@@ -50,6 +52,7 @@ function applyBasicConversationalNormalizations(text) {
     .replace(/\bbuenisim[oa]\b/g, 'buenisimo')
     .replace(/\bbarbaroo+\b/g, 'barbaro')
     .replace(/\bgenia+l+\b/g, 'genial')
+    .replace(/\bq\s*onda\b/g, 'que onda')
     .replace(/\bq\s+/g, 'que ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -77,7 +80,7 @@ function isGlobalCancelMenu(text) {
 
 function isGreetingIntent(text) {
   const value = normalizeCommandText(text);
-  return ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'holi', 'que tal'].includes(value);
+  return ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'holi', 'holis', 'que tal', 'como andas', 'que onda', 'todo bien'].includes(value);
 }
 
 function isThanksIntent(text) {

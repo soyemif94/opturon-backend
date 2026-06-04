@@ -681,10 +681,14 @@ const COMMERCIAL_INTENT_MAP = {
     exact: [
       'que recomendas',
       'que me recomendas',
+      'cual me recomendas',
+      'que plan me recomendas',
       'cual recomendas',
       'cual me conviene',
       'me conviene',
       'que plan me conviene',
+      'cual elegirias vos',
+      'para mi negocio cual sirve',
       'cual me sirve',
       'que plan me sirve',
       'algo mas barato',
@@ -695,10 +699,14 @@ const COMMERCIAL_INTENT_MAP = {
     includes: [
       'que recomendas',
       'que me recomendas',
+      'cual me recomendas',
+      'que plan me recomendas',
       'cual recomendas',
       'cual me conviene',
       'me conviene',
       'que plan me conviene',
+      'cual elegirias vos',
+      'para mi negocio cual sirve',
       'cual me sirve',
       'que plan me sirve',
       'algo mas barato',
@@ -710,8 +718,12 @@ const COMMERCIAL_INTENT_MAP = {
     ],
     patterns: [
       /\bque\s+me\s+recomendas\b/,
+      /\bcual\s+me\s+recomendas\b/,
+      /\bque\s+plan\s+me\s+recomendas\b/,
       /\bcual\s+me\s+sirve\b/,
       /\bque\s+plan\s+me\s+sirve\b/,
+      /\bcual\s+elegirias\s+vos\b/,
+      /\bpara\s+mi\s+negocio\s+cual\s+sirve\b/,
       /\bme\s+conviene\b/,
       /\balgo\s+mas\s+(economico|accesible|barato)\b/
     ]
@@ -1260,14 +1272,19 @@ function isCommerceEntryIntent(rawText) {
   return (
     commercialIntent.type === 'products' ||
     commercialIntent.type === 'prices' ||
+    commercialIntent.type === 'payment' ||
+    commercialIntent.type === 'human_handoff' ||
+    commercialIntent.type === 'recommendation' ||
+    commercialIntent.type === 'location' ||
+    commercialIntent.type === 'hours' ||
+    commercialIntent.type === 'delivery' ||
+    commercialIntent.type === 'stock' ||
+    commercialIntent.type === 'promotions' ||
+    isPlanRecommendationIntent(text) ||
+    isPlanPricingIntent(text) ||
+    isPlanWorthItIntent(text) ||
     isCommercialOfferIntent(text) ||
-    text === 'hola' ||
-    text === 'buenas' ||
-    text === 'buen dia' ||
-    text === 'buenos dias' ||
-    text === 'buenas tardes' ||
-    text === 'buenas noches' ||
-    text === 'que tal' ||
+    isGreetingIntent(text) ||
     text === 'quiero hacer un pedido' ||
     text === 'quiero comprar' ||
     text === 'productos' ||
@@ -1430,7 +1447,9 @@ function buildCommercialShortMemoryPatch({
   topic = 'catalog',
   categoryId = null,
   lastSuggestedProductId = null,
-  recommendationType = 'general'
+  recommendationType = 'general',
+  lastObjectionType = null,
+  lastReplyKey = null
 } = {}) {
   return {
     commercialShortMemory: {
@@ -1438,7 +1457,9 @@ function buildCommercialShortMemoryPatch({
       topic: String(topic || 'catalog').trim().toLowerCase() || 'catalog',
       categoryId: categoryId ? String(categoryId).trim() : null,
       lastSuggestedProductId: lastSuggestedProductId ? String(lastSuggestedProductId).trim() : null,
-      recommendationType: String(recommendationType || 'general').trim().toLowerCase() || 'general'
+      recommendationType: String(recommendationType || 'general').trim().toLowerCase() || 'general',
+      lastObjectionType: lastObjectionType ? String(lastObjectionType).trim().toLowerCase() : null,
+      lastReplyKey: lastReplyKey ? String(lastReplyKey).trim().toLowerCase() : null
     }
   };
 }
@@ -1834,7 +1855,9 @@ function getActiveCommercialShortMemory(context) {
     topic,
     categoryId: memory.categoryId ? String(memory.categoryId).trim() : null,
     lastSuggestedProductId,
-    recommendationType: String(memory.recommendationType || 'general').trim().toLowerCase() || 'general'
+    recommendationType: String(memory.recommendationType || 'general').trim().toLowerCase() || 'general',
+    lastObjectionType: memory.lastObjectionType ? String(memory.lastObjectionType).trim().toLowerCase() : null,
+    lastReplyKey: memory.lastReplyKey ? String(memory.lastReplyKey).trim().toLowerCase() : null
   };
 }
 
@@ -2069,14 +2092,14 @@ function buildIntelligentFallbackReply(safeContext) {
     ? [
       softLead,
       '',
-      'Si querés, puedo ayudarte con planes, precios, pagos o recomendarte algo según tu negocio.',
+      'Si querés, puedo ayudarte con planes, catálogo, precios, pagos o recomendarte algo según tu negocio.',
       '',
       'Contame qué necesitás y seguimos.'
     ].join('\n')
     : [
       softLead,
       '',
-      'Puedo ayudarte con productos, precios, beneficios, horarios, pagos o hablar con alguien del equipo.',
+      'Puedo ayudarte con productos, precios, fidelización, turnos, pagos o hablar con alguien del equipo.',
       '',
       'Decime qué necesitás y te doy una mano.'
     ].join('\n');
@@ -2088,6 +2111,7 @@ function buildIntelligentFallbackReply(safeContext) {
       '- ver planes o productos',
       '- consultar precios',
       '- recomendarme una opción',
+      '- pagar por transferencia',
       '- hablar con una persona'
     ].join('\n')
     : [
@@ -2096,7 +2120,7 @@ function buildIntelligentFallbackReply(safeContext) {
       'Podés decirme algo como:',
       '- ver productos',
       '- consultar precios',
-      '- horarios o ubicación',
+      '- turnos, fidelización u horarios',
       '- hablar con alguien'
     ].join('\n');
 
@@ -2748,8 +2772,16 @@ function isPlanRecommendationIntent(rawText) {
     'que plan me conviene',
     'qué plan me conviene',
     'cual recomendas',
+    'cual me recomendas',
     'que me recomendas',
+    'que plan me recomendas',
     'cuál recomendás',
+    'cual elegirias vos',
+    'cuál elegirías vos',
+    'para mi negocio cual sirve',
+    'para mi negocio cuál sirve',
+    'para mi negocio que plan va',
+    'para mi negocio qué plan va',
     'cual recomiendan',
     'cual me sirve',
     'que plan me sirve',
@@ -3054,14 +3086,37 @@ function detectCommercialPlanObjection(rawText) {
   if (!text) return null;
 
   if (
+    text.includes('busco algo mas barato') ||
+    text.includes('busco algo más barato') ||
+    text.includes('quiero algo mas barato') ||
+    text.includes('quiero algo más barato') ||
+    text.includes('algo mas barato') ||
+    text.includes('algo más barato') ||
+    text.includes('algo mas economico') ||
+    text.includes('algo más económico') ||
+    text.includes('algo mas accesible') ||
+    text.includes('algo más accesible')
+  ) {
+    return 'cheaper_option';
+  }
+
+  if (
+    text.includes('no llego') ||
+    text.includes('no me da') ||
+    text.includes('se me va') ||
+    text.includes('se me complica') ||
+    text.includes('no me alcanza')
+  ) {
+    return 'budget_limit';
+  }
+
+  if (
     text.includes('ta caro') ||
     text.includes('es caro') ||
     text.includes('muy caro') ||
     text.includes('medio caro') ||
     text.includes('mmm caro') ||
     text.includes('sale mucho') ||
-    text.includes('se me va') ||
-    text.includes('no me da') ||
     text.includes('mas barato') ||
     text.includes('más barato') ||
     text.includes('mas economico') ||
@@ -3070,7 +3125,7 @@ function detectCommercialPlanObjection(rawText) {
     text.includes('más accesible') ||
     text === 'caro'
   ) {
-    return 'price';
+    return 'price_high';
   }
 
   if (
@@ -3089,6 +3144,52 @@ function detectCommercialPlanObjection(rawText) {
     text.includes('arranco recién')
   ) {
     return 'starting';
+  }
+
+  if (
+    text.includes('lo voy a pensar') ||
+    text.includes('dejame pensarlo') ||
+    text.includes('déjame pensarlo') ||
+    text.includes('mas adelante') ||
+    text.includes('más adelante') ||
+    text.includes('despues lo veo') ||
+    text.includes('después lo veo')
+  ) {
+    return 'later';
+  }
+
+  if (
+    text.includes('tengo que consultarlo') ||
+    text.includes('tengo que verlo') ||
+    text.includes('lo tengo que ver') ||
+    text.includes('lo tengo que consultar')
+  ) {
+    return 'consulting';
+  }
+
+  if (
+    text.includes('uso excel') ||
+    text.includes('me manejo con excel') ||
+    text.includes('trabajo con excel')
+  ) {
+    return 'excel_existing';
+  }
+
+  if (
+    text.includes('uso whatsapp normal') ||
+    text.includes('me manejo con whatsapp normal') ||
+    text.includes('ya uso whatsapp normal')
+  ) {
+    return 'whatsapp_manual';
+  }
+
+  if (
+    text.includes('ya tengo crm') ||
+    text.includes('uso un crm') ||
+    text.includes('ya usamos crm') ||
+    text.includes('ya tengo un crm')
+  ) {
+    return 'crm_existing';
   }
 
   return null;
@@ -3181,6 +3282,7 @@ function pickTextVariant(seed, options) {
 function hasWeakCommercialSignal(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
+  const detectedIntent = detectIntent(text);
 
   return (
     detectCommercialIntent(text).type !== 'unknown' ||
@@ -3189,7 +3291,10 @@ function hasWeakCommercialSignal(rawText) {
     isPlanRecommendationIntent(text) ||
     isPlanComparisonIntent(text) ||
     isPlanWorthItIntent(text) ||
-    /\b(plan|planes|precio|precios|producto|productos|negocio|vender|ventas|whatsapp|servicio|catalogo|pago|pagarte|abono|comprobante|aceptan|presupuesto|recomendacion)\b/.test(text) ||
+    isLoyaltyIntent(text) ||
+    detectedIntent === 'appointment' ||
+    detectedIntent === 'human' ||
+    /\b(plan|planes|precio|precios|producto|productos|negocio|vender|ventas|whatsapp|servicio|catalogo|pago|pagarte|abono|comprobante|aceptan|presupuesto|recomendacion|fidelizacion|recompensa|turno|agenda|asesor|persona)\b/.test(text) ||
     (text.includes('quiero') && (text.includes('saber') || text.includes('ver')))
   );
 }
@@ -3223,9 +3328,8 @@ function detectCommercialIndecisionIntent(rawText) {
   if (
     text === 'no se' ||
     text.includes('estoy viendo') ||
-    text.includes('lo voy a pensar') ||
     text.includes('dejame verlo') ||
-    text.includes('dejame pensarlo')
+    text.includes('tengo que verlo')
   ) {
     return 'indecision';
   }
@@ -3519,7 +3623,7 @@ function buildPlanWorthItReply(product, salesContext, allPlans = []) {
   ].join('\n');
 }
 
-function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, salesContext, allPlans = [], rawText = '') {
+function resolveCommercialObjectionTargetPlan(objectionType, recommendedPlan, allPlans = []) {
   const safePlan = recommendedPlan && typeof recommendedPlan === 'object' ? recommendedPlan : null;
   if (!safePlan) return null;
 
@@ -3527,78 +3631,253 @@ function buildCommercialPlanObjectionReply(objectionType, recommendedPlan, sales
   const lowerPlan = findLowerPlan(orderedPlans, safePlan);
   const starterPlan = findPlanByNeedHint(orderedPlans, 'starter');
   const growthPlan = findPlanByNeedHint(orderedPlans, 'growth');
-  const reason = buildRecommendationReasonSummary(safePlan, salesContext, orderedPlans);
   const normalizedName = normalizeCommandText(safePlan.name || '');
+
+  if (objectionType === 'cheaper_option' || objectionType === 'budget_limit') {
+    return lowerPlan || starterPlan || safePlan;
+  }
+
+  if (objectionType === 'starting' || objectionType === 'order_whatsapp') {
+    return starterPlan || lowerPlan || safePlan;
+  }
+
+  if (objectionType === 'price_high' && normalizedName.includes('empresa')) {
+    return growthPlan || starterPlan || lowerPlan || safePlan;
+  }
+
+  return safePlan;
+}
+
+function buildCommercialPlanObjectionReply(
+  objectionType,
+  recommendedPlan,
+  salesContext,
+  allPlans = [],
+  rawText = '',
+  options = {}
+) {
+  const safePlan = recommendedPlan && typeof recommendedPlan === 'object' ? recommendedPlan : null;
+  if (!safePlan) return null;
+
+  const orderedPlans = getOrderedPlanProducts(allPlans);
+  const lowerPlan = findLowerPlan(orderedPlans, safePlan);
+  const starterPlan = findPlanByNeedHint(orderedPlans, 'starter');
+  const growthPlan = findPlanByNeedHint(orderedPlans, 'growth');
+  const normalizedName = normalizeCommandText(safePlan.name || '');
+  const targetPlan = resolveCommercialObjectionTargetPlan(objectionType, safePlan, orderedPlans) || safePlan;
+  const isRepeated = options && options.isRepeated === true;
   const priceLead = pickTextVariant(`commercial_price_objection:${safePlan.name || 'plan'}:${normalizeCommandText(rawText)}`, [
     'Te entiendo 😊',
     'Sí, puede sentirse alto si hoy querés arrancar más liviano 😊',
     'Obvio, si hoy querés cuidar inversión hay que mirarlo fino 😊'
+  ]);
+  const repeatedLead = pickTextVariant(`commercial_repeated_objection:${safePlan.name || 'plan'}:${normalizeCommandText(rawText)}`, [
+    'Sí, ahí cambia la jugada 😊',
+    'Tal cual, si lo mirás por ese lado conviene simplificar 😊',
+    'De una, ahí yo no insistiría con lo mismo 😊'
   ]);
   const contextLead = pickTextVariant(`commercial_context_objection:${safePlan.name || 'plan'}:${normalizeCommandText(rawText)}`, [
     'Perfecto, con ese contexto yo lo bajaría un cambio.',
     'Sí, con ese punto cambia bastante la recomendación.',
     'Bien, ahí ya lo pensaría más simple.'
   ]);
+  const lead = isRepeated ? repeatedLead : priceLead;
+  const targetPlanId = String(targetPlan && (targetPlan.id || targetPlan.productId) ? (targetPlan.id || targetPlan.productId) : '').trim() || normalizeCommandText(targetPlan && targetPlan.name ? targetPlan.name : 'plan');
+  const replyKey = `${String(objectionType || 'objection').trim().toLowerCase()}:${targetPlanId}`;
+  const targetChanged = String(targetPlanId) !== String(safePlan && (safePlan.id || safePlan.productId) ? (safePlan.id || safePlan.productId) : normalizeCommandText(safePlan && safePlan.name ? safePlan.name : 'plan'));
 
-  if (objectionType === 'price') {
+  if (objectionType === 'cheaper_option') {
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        lead,
+        '',
+        targetChanged
+          ? `Si querés bajar inversión, yo miraría ${targetPlan.name || 'el plan más liviano'}.`
+          : `${safePlan.name || 'Ese plan'} ya es la opción más liviana que te puedo recomendar hoy.`,
+        targetChanged
+          ? 'Te deja ordenar lo básico sin saltar de entrada a una estructura más grande.'
+          : 'Si incluso así hoy no te cierra, probablemente convenga esperar a tener un poco más de movimiento.',
+        '',
+        targetChanged
+          ? 'Si después te queda corto, ahí sí subís al siguiente sin rehacer todo.'
+          : 'Y cuando tenga sentido por volumen o seguimiento, ahí sí damos el salto.'
+      ].join('\n')
+    };
+  }
+
+  if (objectionType === 'budget_limit') {
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        lead,
+        '',
+        targetChanged
+          ? `Si hoy no llegás cómodo, arrancaría con ${targetPlan.name || 'un plan más chico'}.`
+          : `Si hoy no llegás cómodo, no te empujaría a ${safePlan.name || 'ese plan'} de entrada.`,
+        'La idea es que la herramienta te ordene, no que te apriete la inversión.',
+        '',
+        targetChanged
+          ? 'Después, cuando haya más movimiento, subís con más sentido.'
+          : 'Si más adelante cambia el momento, ahí lo revisamos de nuevo.'
+      ].join('\n')
+    };
+  }
+
+  if (objectionType === 'price_high') {
     if (normalizedName.includes('empresa')) {
-      return [
-        priceLead,
-        '',
-        'Empresa es para cuando ya necesitás más equipo, control o personalización.',
-        '',
-        growthPlan
-          ? `Si querés algo más equilibrado, miraría ${growthPlan.name}; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
-          : `Si querés algo más equilibrado, miraría un plan intermedio; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
-      ].join('\n');
+      return {
+        replyKey,
+        targetPlan,
+        replyText: [
+          lead,
+          '',
+          'Empresa es para cuando ya necesitás más equipo, control o personalización.',
+          '',
+          growthPlan
+            ? `Si querés algo más equilibrado, miraría ${growthPlan.name}; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
+            : `Si querés algo más equilibrado, miraría un plan intermedio; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
+        ].join('\n')
+      };
     }
 
     if (normalizedName.includes('crecimiento')) {
-      return [
-        priceLead,
-        '',
-        starterPlan
-          ? `Si hoy querés cuidar inversión, arrancaría con ${starterPlan.name}.`
-          : 'Si hoy querés cuidar inversión, arrancaría por el plan más simple.',
-        `Te ordena WhatsApp sin irte a un plan más grande.`,
-        '',
-        'Después, si empezás a perder consultas o necesitás seguimiento, ahí sí subís a Crecimiento.'
-      ].join('\n');
+      return {
+        replyKey,
+        targetPlan,
+        replyText: [
+          lead,
+          '',
+          starterPlan
+            ? `Si hoy querés cuidar inversión, arrancaría con ${starterPlan.name}.`
+            : 'Si hoy querés cuidar inversión, arrancaría por el plan más simple.',
+          'Te ordena WhatsApp sin irte a un plan más grande.',
+          '',
+          'Después, si empezás a perder consultas o necesitás seguimiento, ahí sí subís a Crecimiento.'
+        ].join('\n')
+      };
     }
 
     if (starterPlan && String(safePlan.id || safePlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()) {
-      return [
-        priceLead,
-        '',
-        `${starterPlan.name} ya es la opción más económica para empezar a ordenar WhatsApp.`,
-        'Si incluso así hoy no te cierra, probablemente te convenga esperar a tener un poco más de movimiento antes de sumar una herramienta así.'
-      ].join('\n');
+      return {
+        replyKey,
+        targetPlan,
+        replyText: [
+          lead,
+          '',
+          `${starterPlan.name} ya es la opción más económica para empezar a ordenar WhatsApp.`,
+          'Si incluso así hoy no te cierra, probablemente te convenga esperar a tener un poco más de movimiento antes de sumar una herramienta así.'
+        ].join('\n')
+      };
     }
 
-    return [
-      priceLead,
-      '',
-      lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
-        ? `Si hoy querés cuidar inversión, arrancaría con ${lowerPlan.name || 'Plan Inicial'}.`
-        : `Si hoy querés cuidar inversión, podés bajar a ${lowerPlan ? (lowerPlan.name || 'un plan más chico') : 'un plan más simple'}.`,
-      lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
-        ? 'Te ordena WhatsApp sin irte a un plan más grande.'
-        : `La idea es no pasarte de estructura antes de que realmente lo necesites.`,
-      '',
-      lowerPlan
-        ? `Después, cuando ya tenga sentido por seguimiento, volumen o equipo, subís desde ahí.`
-        : `Si más adelante necesitás más seguimiento, más control o más volumen, ahí sí tiene sentido subir.`
-    ].join('\n');
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        lead,
+        '',
+        lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
+          ? `Si hoy querés cuidar inversión, arrancaría con ${lowerPlan.name || 'Plan Inicial'}.`
+          : `Si hoy querés cuidar inversión, podés bajar a ${lowerPlan ? (lowerPlan.name || 'un plan más chico') : 'un plan más simple'}.`,
+        lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
+          ? 'Te ordena WhatsApp sin irte a un plan más grande.'
+          : 'La idea es no pasarte de estructura antes de que realmente lo necesites.',
+        '',
+        lowerPlan
+          ? 'Después, cuando ya tenga sentido por seguimiento, volumen o equipo, subís desde ahí.'
+          : 'Si más adelante necesitás más seguimiento, más control o más volumen, ahí sí tiene sentido subir.'
+      ].join('\n')
+    };
   }
 
   if (objectionType === 'starting' || objectionType === 'order_whatsapp') {
-    const targetPlan = starterPlan || lowerPlan || safePlan;
-    return [
-      contextLead,
-      '',
-      `Si hoy la idea es ${objectionType === 'order_whatsapp' ? 'ordenar WhatsApp' : 'arrancar simple'}, miraría primero ${targetPlan.name || 'el plan inicial'}.`,
-      `Después, cuando ya necesites más seguimiento o más volumen, ahí sí pasaría al plan siguiente.`
-    ].join('\n');
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        contextLead,
+        '',
+        `Si hoy la idea es ${objectionType === 'order_whatsapp' ? 'ordenar WhatsApp' : 'arrancar simple'}, miraría primero ${targetPlan.name || 'el plan inicial'}.`,
+        'Después, cuando ya necesites más seguimiento o más volumen, ahí sí pasaría al plan siguiente.'
+      ].join('\n')
+    };
+  }
+
+  if (objectionType === 'later') {
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        isRepeated ? 'Sí, obvio 😊' : 'Dale, cero presión 😊',
+        '',
+        'Tiene sentido pensarlo con calma.',
+        `Si querés, te lo dejo resumido así: ${targetPlan.name || safePlan.name || 'ese plan'} te sirve cuando querés ordenar WhatsApp sin perder seguimiento.`,
+        '',
+        'Y si preferís, después volvés y lo retomamos desde ahí.'
+      ].join('\n')
+    };
+  }
+
+  if (objectionType === 'consulting') {
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        isRepeated ? 'De una 😊' : 'Obvio, consultalo tranquilo 😊',
+        '',
+        `Para que lo expliques fácil: ${targetPlan.name || safePlan.name || 'ese plan'} apunta a ordenar WhatsApp, hacer mejor seguimiento y no perder consultas.`,
+        '',
+        'Si querés, también te dejo la diferencia con el plan anterior para que lo tengas más claro.'
+      ].join('\n')
+    };
+  }
+
+  if (objectionType === 'excel_existing') {
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        contextLead,
+        '',
+        'Si hoy te manejás con Excel, no está mal.',
+        `La diferencia con ${targetPlan.name || safePlan.name || 'este plan'} es que no te quedás sólo en anotar: también te ayuda a seguir conversaciones y ordenar respuestas.`,
+        '',
+        'Por eso suele rendir cuando Excel ya empieza a quedar corto para vender.'
+      ].join('\n')
+    };
+  }
+
+  if (objectionType === 'whatsapp_manual') {
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        contextLead,
+        '',
+        'Si hoy usás WhatsApp normal, perfecto: de hecho esto apunta a ordenar justamente eso.',
+        `Lo que cambia con ${targetPlan.name || safePlan.name || 'este plan'} es el seguimiento, el orden y no depender de acordarte todo a mano.`,
+        '',
+        'Si hoy todavía te alcanza WhatsApp solo, arrancaría por algo simple y después ves si subir.'
+      ].join('\n')
+    };
+  }
+
+  if (objectionType === 'crm_existing') {
+    return {
+      replyKey,
+      targetPlan,
+      replyText: [
+        isRepeated ? 'Sí, ahí cambia bastante 😊' : 'Perfecto, eso ya me da contexto 😊',
+        '',
+        'Si ya tenés CRM, no te diría que cambies porque sí.',
+        `Lo que habría que mirar es si ${targetPlan.name || safePlan.name || 'este plan'} te resuelve mejor el seguimiento comercial por WhatsApp o la operación del equipo.`,
+        '',
+        'Si querés, te ayudo a comparar eso más fino.'
+      ].join('\n')
+    };
   }
 
   return null;
@@ -5750,6 +6029,10 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
 
   if (
     indecisionIntent &&
+    !planObjectionType &&
+    !activePlanContext &&
+    !(activeShortMemory && activeShortMemory.topic === 'plans') &&
+    !hasEffectiveSalesSignals &&
     !transferPaymentIntent &&
     !isLoyaltyIntent(inboundText) &&
     !isAgendaLike
@@ -5863,24 +6146,41 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     const recommendedPlan = referencedPlan || resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
 
     if (recommendedPlan) {
-      const objectionReply = buildCommercialPlanObjectionReply(planObjectionType, recommendedPlan, effectiveSalesContext || {}, orderedPlans, inboundText);
+      const objectionReply = buildCommercialPlanObjectionReply(
+        planObjectionType,
+        recommendedPlan,
+        effectiveSalesContext || {},
+        orderedPlans,
+        inboundText,
+        {
+          isRepeated: Boolean(
+            activeShortMemory &&
+            activeShortMemory.lastObjectionType === planObjectionType &&
+            activeShortMemory.lastSuggestedProductId &&
+            String(activeShortMemory.lastSuggestedProductId).trim() === String(recommendedPlan.id || recommendedPlan.productId || '').trim()
+          )
+        }
+      );
       if (objectionReply) {
+        const resolvedPlan = objectionReply.targetPlan || recommendedPlan;
         return {
           type: 'recommendation',
-          replyText: objectionReply,
+          replyText: objectionReply.replyText,
           contextPatch: {
             ...(hasEffectiveSalesSignals ? buildCommercialSalesContextPatch(effectiveSalesContext) : {}),
             ...buildCommercialPlanContextPatch({
               topic: 'plan_objection',
-              lastDiscussedPlanId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
+              lastDiscussedPlanId: resolvedPlan && (resolvedPlan.id || resolvedPlan.productId),
               lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
-              recommendationType: normalizeProductRecommendationType(recommendedPlan, orderedPlans)
+              recommendationType: normalizeProductRecommendationType(resolvedPlan, orderedPlans)
             }),
             ...(activeShortMemory && activeShortMemory.topic === 'plans'
               ? buildCommercialShortMemoryPatch({
                 topic: 'plans',
-                lastSuggestedProductId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
-                recommendationType: normalizeProductRecommendationType(recommendedPlan, orderedPlans)
+                lastSuggestedProductId: resolvedPlan && (resolvedPlan.id || resolvedPlan.productId),
+                recommendationType: normalizeProductRecommendationType(resolvedPlan, orderedPlans),
+                lastObjectionType: planObjectionType,
+                lastReplyKey: objectionReply.replyKey
               })
               : {})
           }
