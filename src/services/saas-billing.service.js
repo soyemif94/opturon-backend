@@ -22,6 +22,8 @@ const {
   mapMercadoPagoPreapprovalStatus,
   mapMercadoPagoPaymentStatus
 } = require('./mercado-pago.service');
+const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
+const { logError } = require('../utils/logger');
 
 const ALLOWED_PLAN_CODES = new Set(['inicial', 'crecimiento', 'empresa']);
 const ALLOWED_LOCAL_STATUSES = new Set(['pending', 'active', 'paused', 'canceled', 'payment_failed', 'suspended']);
@@ -170,15 +172,27 @@ function buildExternalReference(tenantId, subscriptionId) {
   return `opturon:${tenantId}:${subscriptionId}`;
 }
 
+function sanitizeMercadoPagoErrorBody(body) {
+  if (!body || typeof body !== 'object') return body || null;
+  const safe = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (key.toLowerCase().includes('token')) continue;
+    safe[key] = value;
+  }
+  return safe;
+}
+
 async function createSaasSubscriptionForTenant(input) {
   const tenantId = normalizeString(input.tenantId);
   const planCode = normalizePlanCode(input.planCode);
   const payerEmail = normalizeEmail(input.payerEmail);
-  const amount = normalizeAmount(input.amount);
-  const currency = normalizeCurrency(input.currency);
+  const planDefinition = resolveSaasPlanDefinition(planCode);
+  const amount = planDefinition ? normalizeAmount(planDefinition.amount) : null;
+  const currency = planDefinition ? normalizeCurrency(planDefinition.currency) : 'ARS';
 
   if (!tenantId) return { ok: false, reason: 'missing_tenant_id', status: 400 };
   if (!planCode) return { ok: false, reason: 'invalid_plan_code', status: 400 };
+  if (!planDefinition) return { ok: false, reason: 'plan_definition_not_found', status: 400 };
   if (!payerEmail) return { ok: false, reason: 'invalid_payer_email', status: 400 };
   if (!amount) return { ok: false, reason: 'invalid_amount', status: 400 };
 
@@ -188,13 +202,28 @@ async function createSaasSubscriptionForTenant(input) {
   const subscriptionId = randomUUID();
   const externalReference = buildExternalReference(tenantId, subscriptionId);
 
-  const preapproval = await createPreapproval({
-    reason: buildPreapprovalReason(planCode, tenantId),
-    externalReference,
-    payerEmail,
-    amount,
-    currency
-  });
+  let preapproval = null;
+  try {
+    preapproval = await createPreapproval({
+      reason: buildPreapprovalReason(planDefinition.label, tenantId),
+      externalReference,
+      payerEmail,
+      amount,
+      currency
+    });
+  } catch (error) {
+    logError('billing_subscription_create_mp_failed', {
+      tenantId,
+      planCode,
+      amount,
+      currency,
+      payerEmail,
+      mpStatus: Number.isInteger(Number(error && error.status)) ? Number(error.status) : null,
+      mpBody: sanitizeMercadoPagoErrorBody(error && error.body),
+      cause: error && error.message ? error.message : 'unknown_error'
+    });
+    throw error;
+  }
 
   const initialPatch = mapPreapprovalToSubscriptionPatch(preapproval);
 
@@ -220,7 +249,11 @@ async function createSaasSubscriptionForTenant(input) {
         lastPaymentStatus: null,
         externalReference,
         authorizationUrl: initialPatch.authorizationUrl,
-        metadata: initialPatch.metadata
+        metadata: {
+          ...initialPatch.metadata,
+          billingModel: 'pending_link',
+          plan: planDefinition
+        }
       },
       client
     );

@@ -69,7 +69,7 @@ function buildCreatePreapprovalPayload(input) {
       transaction_amount: Number(input.amount),
       currency_id: input.currency || 'ARS'
     },
-    status: 'authorized'
+    status: 'pending'
   };
 
   const backUrl = getConfiguredBackUrl();
@@ -114,7 +114,7 @@ async function cancelPreapproval(preapprovalId) {
 }
 
 async function reactivatePreapproval(preapprovalId) {
-  return updatePreapproval(preapprovalId, { status: 'authorized' });
+  return updatePreapproval(preapprovalId, { status: 'pending' });
 }
 
 async function getPayment(paymentId) {

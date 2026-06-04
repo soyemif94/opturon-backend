@@ -11,6 +11,28 @@ const {
   getSaasSubscriptionDetails,
   executeSubscriptionAction
 } = require('../services/saas-billing.service');
+const { logError } = require('../utils/logger');
+
+function sanitizeBillingPayload(payload) {
+  const safePayload = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  return {
+    tenantId: String(safePayload.tenantId || '').trim() || null,
+    planCode: String(safePayload.planCode || '').trim() || null,
+    amount: safePayload.amount === undefined || safePayload.amount === null ? null : Number(safePayload.amount),
+    currency: String(safePayload.currency || '').trim() || null,
+    payerEmail: String(safePayload.payerEmail || '').trim().toLowerCase() || null
+  };
+}
+
+function sanitizeBackendErrorBody(body) {
+  if (!body || typeof body !== 'object') return body || null;
+  const safe = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (String(key).toLowerCase().includes('token')) continue;
+    safe[key] = value;
+  }
+  return safe;
+}
 
 async function postSetActiveTenant(req, res) {
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
@@ -164,6 +186,7 @@ async function getAdminBillingSubscriptions(req, res) {
 
 async function postAdminBillingSubscription(req, res) {
   const payload = req.body || {};
+  const safePayload = sanitizeBillingPayload(payload);
 
   try {
     const result = await createSaasSubscriptionForTenant(payload);
@@ -176,6 +199,12 @@ async function postAdminBillingSubscription(req, res) {
 
     return res.status(201).json({ success: true, data: result });
   } catch (error) {
+    logError('billing_subscription_create_failed', {
+      ...safePayload,
+      mpStatus: Number.isInteger(Number(error && error.status)) ? Number(error.status) : null,
+      mpBody: sanitizeBackendErrorBody(error && error.body),
+      cause: error && error.message ? error.message : 'unknown_error'
+    });
     return res.status(500).json({
       success: false,
       error: 'billing_subscription_create_failed',
