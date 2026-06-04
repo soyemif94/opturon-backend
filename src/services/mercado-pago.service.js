@@ -22,6 +22,7 @@ function getConfiguredBackUrl() {
 function assertMercadoPagoConfigured() {
   if (!env.mercadoPagoAccessToken) {
     const error = new Error('mercado_pago_not_configured');
+    error.code = 'billing_subscription_env_missing';
     error.status = 500;
     throw error;
   }
@@ -47,15 +48,99 @@ async function mercadoPagoFetch(path, init = {}) {
   });
 
   const text = await response.text();
-  const json = text ? JSON.parse(text) : null;
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
   if (!response.ok) {
-    const error = new Error(json?.message || json?.error || `mercado_pago_request_failed_${response.status}`);
+    const sanitizedBody = sanitizeMercadoPagoErrorBody(json);
+    const errorCode = classifyMercadoPagoErrorCode(response.status, sanitizedBody);
+    const detail = buildMercadoPagoErrorDetail(response.status, sanitizedBody, text);
+    const error = new Error(detail);
+    error.code = errorCode;
     error.status = response.status;
-    error.body = json;
+    error.body = sanitizedBody || sanitizeMercadoPagoRawBody(text);
     throw error;
   }
 
   return json;
+}
+
+function sanitizeMercadoPagoErrorBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body || null;
+  const safe = {};
+  for (const [key, value] of Object.entries(body)) {
+    const normalizedKey = String(key || '').toLowerCase();
+    if (
+      normalizedKey.includes('token') ||
+      normalizedKey.includes('access_token') ||
+      normalizedKey.includes('card_token') ||
+      normalizedKey.includes('security')
+    ) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      safe[key] = value.map((item) => sanitizeMercadoPagoErrorBody(item) || item);
+      continue;
+    }
+    if (value && typeof value === 'object') {
+      safe[key] = sanitizeMercadoPagoErrorBody(value);
+      continue;
+    }
+    safe[key] = value;
+  }
+  return safe;
+}
+
+function sanitizeMercadoPagoRawBody(text) {
+  const raw = normalizeString(text);
+  if (!raw) return null;
+  return raw.slice(0, 500);
+}
+
+function extractMercadoPagoCause(body) {
+  if (!body || typeof body !== 'object') return '';
+
+  const parts = [];
+  const message = normalizeString(body.message);
+  const error = normalizeString(body.error);
+  const detail = normalizeString(body.detail);
+
+  if (message) parts.push(message);
+  if (error && error !== message) parts.push(error);
+  if (detail && detail !== message && detail !== error) parts.push(detail);
+
+  if (Array.isArray(body.cause)) {
+    for (const cause of body.cause) {
+      if (!cause || typeof cause !== 'object') continue;
+      const causeDescription = normalizeString(cause.description || cause.message || cause.code);
+      if (causeDescription) parts.push(causeDescription);
+    }
+  }
+
+  return parts.filter(Boolean).join(' | ');
+}
+
+function classifyMercadoPagoErrorCode(status, body) {
+  if (status === 401 || status === 403) {
+    return 'mercadopago_credentials_invalid';
+  }
+
+  if (status === 400 || status === 404 || status === 422) {
+    return 'mercadopago_invalid_payload';
+  }
+
+  return 'mercadopago_preapproval_failed';
+}
+
+function buildMercadoPagoErrorDetail(status, body, rawText) {
+  const safeCause = extractMercadoPagoCause(body) || sanitizeMercadoPagoRawBody(rawText);
+  if (safeCause) {
+    return `mercadopago_request_failed_${status}: ${safeCause}`;
+  }
+  return `mercadopago_request_failed_${status}`;
 }
 
 function buildCreatePreapprovalPayload(input) {

@@ -34,6 +34,65 @@ function sanitizeBackendErrorBody(body) {
   return safe;
 }
 
+function normalizeErrorCode(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function mapBillingSubscriptionCreateError(error) {
+  const upstreamStatus = Number.isInteger(Number(error && error.status)) ? Number(error.status) : null;
+  const upstreamBody = sanitizeBackendErrorBody(error && error.body);
+  const code = normalizeErrorCode(error && (error.code || error.message));
+  const detail = error && error.message ? error.message : 'billing_subscription_create_failed';
+
+  if (code === 'billing_subscription_env_missing' || code === 'mercado_pago_not_configured') {
+    return {
+      status: 500,
+      error: 'billing_subscription_env_missing',
+      detail: 'billing_subscription_env_missing: MERCADO_PAGO_ACCESS_TOKEN no esta configurado en backend.',
+      upstreamStatus,
+      upstreamBody
+    };
+  }
+
+  if (code === 'mercadopago_credentials_invalid') {
+    return {
+      status: 502,
+      error: 'mercadopago_credentials_invalid',
+      detail: `mercadopago_credentials_invalid: ${detail}`,
+      upstreamStatus,
+      upstreamBody
+    };
+  }
+
+  if (code === 'mercadopago_invalid_payload') {
+    return {
+      status: 502,
+      error: 'mercadopago_invalid_payload',
+      detail: `mercadopago_invalid_payload: ${detail}`,
+      upstreamStatus,
+      upstreamBody
+    };
+  }
+
+  if (code === 'mercadopago_preapproval_failed') {
+    return {
+      status: 502,
+      error: 'mercadopago_preapproval_failed',
+      detail: `mercadopago_preapproval_failed: ${detail}`,
+      upstreamStatus,
+      upstreamBody
+    };
+  }
+
+  return {
+    status: 500,
+    error: 'billing_subscription_create_failed',
+    detail,
+    upstreamStatus,
+    upstreamBody
+  };
+}
+
 async function postSetActiveTenant(req, res) {
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
   const tenantId = String((req.body && req.body.tenantId) || '').trim();
@@ -199,16 +258,20 @@ async function postAdminBillingSubscription(req, res) {
 
     return res.status(201).json({ success: true, data: result });
   } catch (error) {
+    const mappedError = mapBillingSubscriptionCreateError(error);
     logError('billing_subscription_create_failed', {
       ...safePayload,
-      mpStatus: Number.isInteger(Number(error && error.status)) ? Number(error.status) : null,
-      mpBody: sanitizeBackendErrorBody(error && error.body),
-      cause: error && error.message ? error.message : 'unknown_error'
+      errorCode: mappedError.error,
+      mpStatus: mappedError.upstreamStatus,
+      mpBody: mappedError.upstreamBody,
+      cause: mappedError.detail
     });
-    return res.status(500).json({
+    return res.status(mappedError.status).json({
       success: false,
-      error: 'billing_subscription_create_failed',
-      details: error.message
+      error: mappedError.error,
+      detail: mappedError.detail,
+      upstreamStatus: mappedError.upstreamStatus || undefined,
+      upstreamBody: mappedError.upstreamBody || undefined
     });
   }
 }
