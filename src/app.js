@@ -13,6 +13,7 @@ const debugPhase2Routes = require('./routes/debug.phase2.routes');
 const debugWhatsAppRoutes = require('./routes/debug.whatsapp');
 const portalRoutes = require('./routes/portal.routes');
 const adminRoutes = require('./routes/admin.routes');
+const mercadoPagoWebhookRoutes = require('./routes/mercadopago-webhook.routes');
 const env = require('./config/env');
 const buildInfo = require('./utils/build');
 
@@ -52,6 +53,7 @@ function createApp() {
   });
 
   app.use('/webhook', webhookLimiter, webhookRoutes);
+  app.use('/api/webhooks/mercadopago', webhookLimiter, mercadoPagoWebhookRoutes);
   app.use(
     express.json({
       limit: '2mb',

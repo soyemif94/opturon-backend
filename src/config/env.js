@@ -117,7 +117,14 @@ const env = {
   googleSheetName: String(process.env.GOOGLE_SHEET_NAME || 'Leads').trim(),
   googleServiceAccountEmail: String(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '').trim(),
   googlePrivateKey: String(process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-  portalInternalKey: String(process.env.PORTAL_INTERNAL_KEY || '').trim()
+  portalInternalKey: String(process.env.PORTAL_INTERNAL_KEY || '').trim(),
+
+  mercadoPagoAccessToken: String(process.env.MERCADO_PAGO_ACCESS_TOKEN || '').trim(),
+  mercadoPagoPublicKey: String(process.env.MERCADO_PAGO_PUBLIC_KEY || '').trim(),
+  mercadoPagoWebhookSecret: String(process.env.MERCADO_PAGO_WEBHOOK_SECRET || '').trim(),
+  mercadoPagoEnvironment: String(process.env.MERCADO_PAGO_ENVIRONMENT || 'production').trim().toLowerCase(),
+  opturonPublicAppUrl: String(process.env.OPTURON_PUBLIC_APP_URL || '').trim(),
+  opturonApiPublicUrl: String(process.env.OPTURON_API_PUBLIC_URL || '').trim()
 };
 
 function collectEnvValidation() {

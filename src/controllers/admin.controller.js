@@ -5,6 +5,12 @@ const {
   updateTenantPolicyByExternalTenantId
 } = require('../services/tenant-policy.service');
 const { validateTransferPaymentByExternalTenantId } = require('../services/transfer-payment-validation.service');
+const {
+  createSaasSubscriptionForTenant,
+  listSaasSubscriptionsForAdmin,
+  getSaasSubscriptionDetails,
+  executeSubscriptionAction
+} = require('../services/saas-billing.service');
 
 async function postSetActiveTenant(req, res) {
   const actorUserId = String(req.get('x-portal-actor-id') || '').trim();
@@ -141,10 +147,94 @@ async function postTransferPaymentValidation(req, res) {
   }
 }
 
+async function getAdminBillingSubscriptions(req, res) {
+  const tenantId = String(req.query.tenantId || '').trim();
+
+  try {
+    const result = await listSaasSubscriptionsForAdmin({ tenantId });
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'billing_subscriptions_list_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postAdminBillingSubscription(req, res) {
+  const payload = req.body || {};
+
+  try {
+    const result = await createSaasSubscriptionForTenant(payload);
+    if (!result.ok) {
+      return res.status(result.status || 400).json({
+        success: false,
+        error: result.reason
+      });
+    }
+
+    return res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'billing_subscription_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getAdminBillingSubscription(req, res) {
+  const subscriptionId = String(req.params.id || '').trim();
+
+  try {
+    const result = await getSaasSubscriptionDetails(subscriptionId);
+    if (!result.ok) {
+      return res.status(result.status || 404).json({
+        success: false,
+        error: result.reason
+      });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'billing_subscription_read_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postAdminBillingSubscriptionAction(req, res) {
+  const subscriptionId = String(req.params.id || '').trim();
+  const action = String(req.params.action || '').trim().toLowerCase();
+
+  try {
+    const result = await executeSubscriptionAction(subscriptionId, action);
+    if (!result.ok) {
+      return res.status(result.status || 400).json({
+        success: false,
+        error: result.reason
+      });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'billing_subscription_action_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   postSetActiveTenant,
   getTenants,
   getTenantPolicy,
   patchTenantPolicy,
-  postTransferPaymentValidation
+  postTransferPaymentValidation,
+  getAdminBillingSubscriptions,
+  postAdminBillingSubscription,
+  getAdminBillingSubscription,
+  postAdminBillingSubscriptionAction
 };
