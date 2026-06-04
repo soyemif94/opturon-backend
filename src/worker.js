@@ -2670,7 +2670,23 @@ function resolvePlanProfile(product) {
 
 function buildPlanCatalogLine(product) {
   const profile = resolvePlanProfile(product);
-  return `${formatCommerceIndex(product.index)} ${product.name} — ${formatMoney(product.price, product.currency)}\n   ${profile.shortDescription}`;
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const safeName = String(safeProduct.name || 'Plan').trim() || 'Plan';
+  const safePrice = Number(safeProduct.price || 0);
+  const lineParts = [];
+
+  if (Number.isFinite(safePrice) && safePrice > 0) {
+    lineParts.push(`${safeName} — ${formatMoney(safePrice, safeProduct.currency)}`);
+  } else {
+    lineParts.push(safeName);
+  }
+
+  const shortDescription = String(profile && profile.shortDescription ? profile.shortDescription : '').trim();
+  if (shortDescription) {
+    lineParts.push(`   ${shortDescription}`);
+  }
+
+  return lineParts.join('\n');
 }
 
 function buildPlanSalesCta(text = 'Si querés, te recomiendo uno según lo que buscás o te muestro el que más te convenga.') {
@@ -3113,6 +3129,8 @@ function detectCommercialPlanObjection(rawText) {
   if (
     text.includes('ta caro') ||
     text.includes('es caro') ||
+    text.includes('parece caro') ||
+    text.includes('me parece caro') ||
     text.includes('muy caro') ||
     text.includes('medio caro') ||
     text.includes('mmm caro') ||
@@ -3687,6 +3705,11 @@ function buildCommercialPlanObjectionReply(
   const targetChanged = String(targetPlanId) !== String(safePlan && (safePlan.id || safePlan.productId) ? (safePlan.id || safePlan.productId) : normalizeCommandText(safePlan && safePlan.name ? safePlan.name : 'plan'));
 
   if (objectionType === 'cheaper_option') {
+    const nextUpgradePlan = String(safePlan.id || safePlan.productId || '').trim() !== String(targetPlan.id || targetPlan.productId || '').trim()
+      ? safePlan
+      : (growthPlan && String(growthPlan.id || growthPlan.productId || '').trim() !== String(targetPlan.id || targetPlan.productId || '').trim()
+        ? growthPlan
+        : null);
     return {
       replyKey,
       targetPlan,
@@ -3701,7 +3724,7 @@ function buildCommercialPlanObjectionReply(
           : 'Si incluso así hoy no te cierra, probablemente convenga esperar a tener un poco más de movimiento.',
         '',
         targetChanged
-          ? 'Si después te queda corto, ahí sí subís al siguiente sin rehacer todo.'
+          ? `Después, si empezás a tener más volumen o necesitás más seguimiento, podés subir a ${nextUpgradePlan && nextUpgradePlan.name ? nextUpgradePlan.name : 'un plan más completo'}.`
           : 'Y cuando tenga sentido por volumen o seguimiento, ahí sí damos el salto.'
       ].join('\n')
     };
@@ -3768,7 +3791,9 @@ function buildCommercialPlanObjectionReply(
           lead,
           '',
           `${starterPlan.name} ya es la opción más económica para empezar a ordenar WhatsApp.`,
-          'Si incluso así hoy no te cierra, probablemente te convenga esperar a tener un poco más de movimiento antes de sumar una herramienta así.'
+          'Si incluso así hoy no te cierra, probablemente te convenga esperar a tener un poco más de movimiento antes de sumar una herramienta así.',
+          '',
+          'Si querés evaluar tu caso puntual, también te puedo pasar con una persona del equipo.'
         ].join('\n')
       };
     }
@@ -5975,6 +6000,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const normalizedText = normalizeCommandText(inboundText);
   const transferPaymentIntent = parseTransferPaymentIntent(inboundText);
   const nextStepIntent = detectCommercialNextStepIntent(inboundText);
+  const isCommerceEntry = isCommerceEntryIntent(inboundText);
   const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
     ? conversation.context
     : {};
@@ -6088,7 +6114,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (
     (activePlanContext || (activeShortMemory && activeShortMemory.topic === 'plans')) &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6134,7 +6160,6 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     planObjectionType &&
     (effectiveSalesContext || activePlanContext || (activeShortMemory && activeShortMemory.topic === 'plans')) &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6196,7 +6221,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     !isPlanWorthItIntent(inboundText) &&
     !isRecommendationWhyFollowUpIntent(inboundText) &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6248,7 +6273,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (
     pendingPlanComparison &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6318,7 +6343,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (
     (activePlanContext || (activeShortMemory && activeShortMemory.topic === 'plans') || hasEffectiveSalesSignals) &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6375,7 +6400,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (
     activePlanContext &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6436,7 +6461,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (
     activePlanContext &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6493,7 +6518,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     effectiveSalesContext &&
     (effectiveSalesContext.lastRecommendedPlan || (activePlanContext && activePlanContext.lastDiscussedPlanId)) &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6517,7 +6542,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     !activePlanContext &&
     !pendingPlanComparison &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
@@ -6547,7 +6572,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     !activePlanContext &&
     !pendingPlanComparison &&
     !isCatalogItemDetailIntent(inboundText) &&
-    !isCommerceEntryIntent(inboundText) &&
+    !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
