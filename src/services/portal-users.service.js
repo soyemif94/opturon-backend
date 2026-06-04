@@ -1,3 +1,4 @@
+const { createHash, randomBytes } = require('crypto');
 const { hashSync, compareSync } = require('bcryptjs');
 const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
@@ -8,16 +9,26 @@ const {
 } = require('../repositories/tenant.repository');
 const {
   listPortalUsersByClinicId,
+  listPortalUsersForManagementByClinicId,
   listPortalUsersForOpturonAdmin,
   createPortalUser,
   updatePortalUserAccountRootById,
+  updatePortalUserCredentialsById,
   updatePortalUserProfileById,
   updatePortalUserRole,
   deletePortalUserById,
+  findAnyPortalUserByEmailAndClinicId,
   findPortalUserByEmail,
   findPortalUserByEmailAndTenantId,
   findPortalUserById
 } = require('../repositories/portal-users.repository');
+const {
+  createPortalUserInvitation,
+  revokePendingPortalUserInvitationsByUserId,
+  listLatestPortalUserInvitationsByClinicId,
+  findPortalInvitationByTokenHash,
+  markPortalInvitationAccepted
+} = require('../repositories/portal-user-invitations.repository');
 const {
   createPortalUserAuditEvent,
   listPortalUserAuditEventsByClinicId
@@ -29,6 +40,8 @@ const {
 
 const ALLOWED_ROLES = new Set(['owner', 'manager', 'seller', 'viewer']);
 const PORTAL_USERS_LIMIT_KEY = 'tenant_portal_users';
+const INVITATION_TOKEN_BYTES = 32;
+const INVITATION_EXPIRES_IN_HOURS = 168;
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -50,6 +63,18 @@ function normalizeAccountScope(value) {
 function normalizeAuditActorId(value) {
   const safeValue = normalizeString(value);
   return safeValue || null;
+}
+
+function hashInvitationToken(token) {
+  return createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function generateInvitationToken() {
+  return randomBytes(INVITATION_TOKEN_BYTES).toString('hex');
+}
+
+function buildInvitationExpiryDate() {
+  return new Date(Date.now() + INVITATION_EXPIRES_IN_HOURS * 60 * 60 * 1000);
 }
 
 function slugifyTenantToken(value) {
@@ -105,6 +130,28 @@ function normalizePortalUserRecord(user, primaryPortalUserId) {
     ...user,
     accountKind: safePrimaryId && String(user.id) === safePrimaryId ? 'primary' : 'subaccount',
     isOperationalAssignee: isOperationalPortalAssigneeRole(user.role)
+  };
+}
+
+function resolvePortalUserInvitationStatus(user, invitation) {
+  if (user && user.active === true) return 'active';
+  if (!invitation) return 'invited';
+  if (invitation.acceptedAt) return 'active';
+  if (invitation.revokedAt) return 'invited';
+  const expiresAtMs = new Date(invitation.expiresAt).getTime();
+  if (!Number.isNaN(expiresAtMs) && expiresAtMs <= Date.now()) {
+    return 'expired';
+  }
+  return 'pending';
+}
+
+function enrichPortalUserRecord(user, primaryPortalUserId, invitation = null) {
+  const normalized = normalizePortalUserRecord(user, primaryPortalUserId);
+  return {
+    ...normalized,
+    invitationStatus: resolvePortalUserInvitationStatus(user, invitation),
+    invitationExpiresAt: invitation ? invitation.expiresAt : null,
+    invitationSentAt: invitation ? invitation.createdAt : null
   };
 }
 
@@ -193,11 +240,17 @@ async function listPortalUsers(tenantId) {
     return context;
   }
 
-  const currentUsers = await listPortalUsersByClinicId(context.clinic.id);
+  const currentUsers = await listPortalUsersForManagementByClinicId(context.clinic.id);
   const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers);
+  const latestInvitations = await listLatestPortalUserInvitationsByClinicId(context.clinic.id);
+  const invitationsByUserId = new Map(
+    (Array.isArray(latestInvitations) ? latestInvitations : []).map((invitation) => [String(invitation.userId), invitation])
+  );
 
   if (accountConfig.accountScope === 'opturon_admin') {
-    const users = (await listPortalUsersForOpturonAdmin()).map(normalizeAdminPortalUserRecord);
+    const users = (await listPortalUsersForOpturonAdmin()).map((user) =>
+      enrichPortalUserRecord(user, user.role === 'owner' ? user.id : accountConfig.primaryPortalUserId, invitationsByUserId.get(String(user.id)) || null)
+    );
     return {
       ok: true,
       tenantId: context.tenantId,
@@ -218,7 +271,9 @@ async function listPortalUsers(tenantId) {
   }
 
   const scopedUsers = filterClientScopedPortalUsers(currentUsers, accountConfig);
-  const users = scopedUsers.map((user) => normalizePortalUserRecord(user, accountConfig.primaryPortalUserId));
+  const users = scopedUsers.map((user) =>
+    enrichPortalUserRecord(user, accountConfig.primaryPortalUserId, invitationsByUserId.get(String(user.id)) || null)
+  );
   return {
     ok: true,
     tenantId: context.tenantId,
@@ -252,16 +307,19 @@ async function invitePortalUser(tenantId, payload, options = {}) {
   if (!name || name.length < 2) return { ok: false, tenantId: context.tenantId, reason: 'invalid_name' };
   if (!email || !email.includes('@')) return { ok: false, tenantId: context.tenantId, reason: 'invalid_email' };
   if (!role) return { ok: false, tenantId: context.tenantId, reason: 'invalid_role' };
-  if (!password || password.length < 6) return { ok: false, tenantId: context.tenantId, reason: 'invalid_password' };
+  if (password && password.length < 6) return { ok: false, tenantId: context.tenantId, reason: 'invalid_password' };
 
   const actorUserId = normalizeAuditActorId(options.actorUserId);
+  const invitationToken = generateInvitationToken();
+  const invitationTokenHash = hashInvitationToken(invitationToken);
+  const invitationExpiresAt = buildInvitationExpiryDate();
 
   try {
     const created = await withTransaction(async (client) => {
-      const currentUsers = await listPortalUsersByClinicId(context.clinic.id, client);
+      const currentUsers = await listPortalUsersForManagementByClinicId(context.clinic.id, client);
       const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers, client);
 
-      if (accountConfig.accountScope === 'opturon_admin' && role === 'owner') {
+      if (accountConfig.accountScope === 'opturon_admin' && role === 'owner' && password) {
         const provisionedTenantId = buildProvisionedTenantId({ name, email });
         const targetClinic = await provisionCleanClinicForExternalTenant(
           {
@@ -358,49 +416,119 @@ async function invitePortalUser(tenantId, payload, options = {}) {
         };
       }
 
-      let createdUser = await createPortalUser(
-        {
-          clinicId: context.clinic.id,
-          name,
-          email,
-          passwordHash: hashSync(password, 10),
-          role,
-          accountRootUserId: isPrimarySlotTaken ? accountConfig.primaryPortalUserId : null
-        },
-        client
-      );
+      let targetUser = await findAnyPortalUserByEmailAndClinicId(email, context.clinic.id, client);
+      if (targetUser && targetUser.active === true) {
+        return {
+          error: 'duplicate_user_email'
+        };
+      }
 
-      const primaryPortalUserId = isPrimarySlotTaken ? accountConfig.primaryPortalUserId : createdUser.id;
+      if (!targetUser) {
+        targetUser = await createPortalUser(
+          {
+            clinicId: context.clinic.id,
+            name,
+            email,
+            passwordHash: null,
+            role,
+            active: false,
+            accountRootUserId: isPrimarySlotTaken ? accountConfig.primaryPortalUserId : null
+          },
+          client
+        );
+      } else {
+        if (name && name !== String(targetUser.name || '').trim()) {
+          targetUser = await updatePortalUserProfileById(
+            {
+              userId: targetUser.id,
+              clinicId: context.clinic.id,
+              name
+            },
+            client
+          ) || targetUser;
+        }
+        if (role && role !== String(targetUser.role || '').toLowerCase()) {
+          targetUser = await updatePortalUserRole(
+            {
+              userId: targetUser.id,
+              clinicId: context.clinic.id,
+              role
+            },
+            client
+          ) || targetUser;
+        }
+        targetUser = await updatePortalUserCredentialsById(
+          {
+            userId: targetUser.id,
+            clinicId: context.clinic.id,
+            passwordHash: null,
+            active: false
+          },
+          client
+        ) || targetUser;
+      }
+
+      const primaryPortalUserId = isPrimarySlotTaken ? accountConfig.primaryPortalUserId : targetUser.id;
       if (!isPrimarySlotTaken && primaryPortalUserId) {
         await updateClinicPortalPrimaryUserIdById(context.clinic.id, primaryPortalUserId, client);
-        createdUser = await updatePortalUserAccountRootById(
+        targetUser = await updatePortalUserAccountRootById(
           {
-            userId: createdUser.id,
+            userId: targetUser.id,
             clinicId: context.clinic.id,
             accountRootUserId: primaryPortalUserId
           },
           client
-        ) || createdUser;
+        ) || targetUser;
       }
 
-      const normalizedNextUsers = [...scopedCurrentUsers, createdUser].map((user) =>
+      if (isPrimarySlotTaken && normalizeString(targetUser.accountRootUserId) !== normalizeString(primaryPortalUserId)) {
+        targetUser = await updatePortalUserAccountRootById(
+          {
+            userId: targetUser.id,
+            clinicId: context.clinic.id,
+            accountRootUserId: primaryPortalUserId
+          },
+          client
+        ) || targetUser;
+      }
+
+      await revokePendingPortalUserInvitationsByUserId(targetUser.id, client);
+      const invitation = await createPortalUserInvitation(
+        {
+          clinicId: context.clinic.id,
+          tenantId: context.tenantId,
+          userId: targetUser.id,
+          email,
+          role,
+          tokenHash: invitationTokenHash,
+          expiresAt: invitationExpiresAt.toISOString(),
+          createdByUserId: actorUserId
+        },
+        client
+      );
+
+      const scopedNextUsers = scopedCurrentUsers.some((user) => String(user.id) === String(targetUser.id))
+        ? scopedCurrentUsers.map((user) => (String(user.id) === String(targetUser.id) ? targetUser : user))
+        : [...scopedCurrentUsers, targetUser];
+      const normalizedNextUsers = scopedNextUsers.map((user) =>
         normalizePortalUserRecord(user, primaryPortalUserId)
       );
-      const normalizedCreatedUser = normalizePortalUserRecord(createdUser, primaryPortalUserId);
+      const normalizedCreatedUser = enrichPortalUserRecord(targetUser, primaryPortalUserId, invitation);
 
       await createPortalUserAuditEvent(
         {
           tenantId: context.tenantId,
           clinicId: context.clinic.id,
           actorUserId,
-          targetUserId: createdUser.id,
-          action: 'tenant_portal_user_created',
+          targetUserId: targetUser.id,
+          action: 'tenant_portal_user_invited',
           payload: {
-            targetUserId: createdUser.id,
-            name: createdUser.name,
-            email: createdUser.email,
-            role: createdUser.role,
-            accountKind: normalizedCreatedUser.accountKind
+            targetUserId: targetUser.id,
+            name: targetUser.name,
+            email: targetUser.email,
+            role: targetUser.role,
+            accountKind: normalizedCreatedUser.accountKind,
+            invitationExpiresAt: invitation.expiresAt
           }
         },
         client
@@ -408,6 +536,11 @@ async function invitePortalUser(tenantId, payload, options = {}) {
 
       return {
         user: normalizedCreatedUser,
+        invitation: {
+          token: invitationToken,
+          expiresAt: invitation.expiresAt,
+          sentAt: invitation.createdAt
+        },
         meta: buildPortalUsersMeta(
           normalizedNextUsers,
           {
@@ -442,6 +575,7 @@ async function invitePortalUser(tenantId, payload, options = {}) {
           }
         : context.clinic,
       user: created.user,
+      invitation: created.invitation || null,
       meta: created.meta
     };
   } catch (error) {
@@ -838,6 +972,113 @@ async function deletePortalUser(tenantId, userId, currentUserId) {
   };
 }
 
+async function resolvePortalInvitation(token) {
+  const safeToken = normalizeString(token);
+  if (!safeToken || safeToken.length < 20) {
+    return { ok: false, reason: 'invalid_or_expired_invitation' };
+  }
+
+  const invitation = await findPortalInvitationByTokenHash(hashInvitationToken(safeToken));
+  if (!invitation) {
+    return { ok: false, reason: 'invalid_or_expired_invitation' };
+  }
+
+  if (invitation.acceptedAt || invitation.revokedAt) {
+    return { ok: false, reason: 'invalid_or_expired_invitation' };
+  }
+
+  const expiresAtMs = new Date(invitation.expiresAt).getTime();
+  if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) {
+    return { ok: false, reason: 'invalid_or_expired_invitation' };
+  }
+
+  return {
+    ok: true,
+    invitation: {
+      tenantId: invitation.tenantId,
+      tenantName: invitation.clinicName || null,
+      clinicId: invitation.clinicId,
+      userId: invitation.userId,
+      email: invitation.email,
+      name: invitation.userName || null,
+      role: invitation.role,
+      expiresAt: invitation.expiresAt
+    }
+  };
+}
+
+async function acceptPortalInvitation(token, password) {
+  const safeToken = normalizeString(token);
+  const safePassword = String(password || '');
+  if (!safeToken || safeToken.length < 20 || safePassword.length < 8) {
+    return { ok: false, reason: 'invalid_invitation_acceptance' };
+  }
+
+  const invitationHash = hashInvitationToken(safeToken);
+  const accepted = await withTransaction(async (client) => {
+    const invitation = await findPortalInvitationByTokenHash(invitationHash, client);
+    if (!invitation) return { error: 'invalid_or_expired_invitation' };
+    if (invitation.acceptedAt || invitation.revokedAt) return { error: 'invalid_or_expired_invitation' };
+
+    const expiresAtMs = new Date(invitation.expiresAt).getTime();
+    if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) {
+      return { error: 'invalid_or_expired_invitation' };
+    }
+
+    const activatedUser = await updatePortalUserCredentialsById(
+      {
+        userId: invitation.userId,
+        clinicId: invitation.clinicId,
+        passwordHash: hashSync(safePassword, 10),
+        active: true
+      },
+      client
+    );
+    if (!activatedUser) return { error: 'invited_user_not_found' };
+
+    await markPortalInvitationAccepted(invitation.id, client);
+    await revokePendingPortalUserInvitationsByUserId(invitation.userId, client);
+
+    await createPortalUserAuditEvent(
+      {
+        tenantId: invitation.tenantId,
+        clinicId: invitation.clinicId,
+        actorUserId: invitation.userId,
+        targetUserId: invitation.userId,
+        action: 'tenant_portal_user_invitation_accepted',
+        payload: {
+          targetUserId: invitation.userId,
+          email: invitation.email,
+          role: invitation.role
+        }
+      },
+      client
+    );
+
+    return {
+      tenantId: invitation.tenantId,
+      tenantName: invitation.clinicName || null,
+      user: activatedUser
+    };
+  });
+
+  if (!accepted || accepted.error) {
+    return { ok: false, reason: accepted && accepted.error ? accepted.error : 'invalid_or_expired_invitation' };
+  }
+
+  return {
+    ok: true,
+    tenantId: accepted.tenantId,
+    tenantName: accepted.tenantName,
+    user: {
+      id: accepted.user.id,
+      email: accepted.user.email,
+      name: accepted.user.name,
+      role: accepted.user.role
+    }
+  };
+}
+
 async function authenticatePortalUser(email, password) {
   const safeEmail = normalizeEmail(email);
   const safePassword = String(password || '');
@@ -915,6 +1156,8 @@ module.exports = {
   assignPrimaryPortalUser,
   updatePortalUser,
   deletePortalUser,
+  resolvePortalInvitation,
+  acceptPortalInvitation,
   authenticatePortalUser,
   getPortalAuthUserByEmail,
   isOperationalPortalAssigneeRole

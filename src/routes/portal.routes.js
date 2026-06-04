@@ -90,6 +90,8 @@ const {
   getPortalUsers,
   postPortalUser,
   patchPortalPrimaryUser,
+  getPortalInvitation,
+  postPortalInvitationAccept,
   postPortalAutomation,
   patchPortalAutomationTemplate,
   patchPortalAutomation,
@@ -329,6 +331,8 @@ router.post('/tenants/:tenantId/users', requirePortalInternalAuth, postPortalUse
 router.patch('/tenants/:tenantId/users/primary', requirePortalInternalAuth, patchPortalPrimaryUser);
 router.patch('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, patchPortalUser);
 router.delete('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, destroyPortalUser);
+router.get('/auth/invitations', getPortalInvitation);
+router.post('/auth/invitations/accept', postPortalInvitationAccept);
 router.post('/auth/login', postPortalAuthLogin);
 router.get('/auth/users/by-email', requirePortalInternalAuth, getPortalAuthUser);
 

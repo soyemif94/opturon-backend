@@ -58,6 +58,8 @@ const {
   assignPrimaryPortalUser,
   updatePortalUser,
   deletePortalUser,
+  resolvePortalInvitation,
+  acceptPortalInvitation,
   authenticatePortalUser,
   getPortalAuthUserByEmail
 } = require('../services/portal-users.service');
@@ -3085,6 +3087,7 @@ async function postPortalUser(req, res) {
         data: {
           tenantId: result.tenantId,
           user: result.user,
+          invitation: result.invitation || null,
           meta: result.meta || null
         }
       });
@@ -3371,6 +3374,57 @@ async function destroyPortalUser(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_user_delete_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInvitation(req, res) {
+  const token = String(req.query.token || '').trim();
+
+  try {
+    const result = await resolvePortalInvitation(token);
+    if (!result.ok) {
+      return res.status(400).json({ success: false, error: result.reason });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.invitation
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invitation_lookup_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInvitationAccept(req, res) {
+  const token = req.body && req.body.token;
+  const password = req.body && req.body.password;
+
+  try {
+    const result = await acceptPortalInvitation(token, password);
+    if (!result.ok) {
+      const status =
+        result.reason === 'invalid_invitation_acceptance' || result.reason === 'invalid_or_expired_invitation'
+          ? 400
+          : result.reason === 'invited_user_not_found'
+            ? 404
+            : 500;
+      return res.status(status).json({ success: false, error: result.reason });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_invitation_accept_failed',
       details: error.message
     });
   }
@@ -4134,6 +4188,8 @@ module.exports = {
   patchPortalPrimaryUser,
   patchPortalUser,
   destroyPortalUser,
+  getPortalInvitation,
+  postPortalInvitationAccept,
   postPortalAuthLogin,
   getPortalAuthUser,
   postPortalWhatsAppEmbeddedSignupBootstrap,

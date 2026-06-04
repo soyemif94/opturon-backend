@@ -41,6 +41,30 @@ async function listPortalUsersByClinicId(clinicId, client = null) {
   return result.rows;
 }
 
+async function listPortalUsersForManagementByClinicId(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            "clinicId",
+            name,
+            email,
+            "accountRootUserId",
+            CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+            active,
+            "createdAt",
+            "updatedAt"
+     FROM staff_users
+     WHERE "clinicId" = $1
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND email IS NOT NULL
+       AND role IN ${PORTAL_ROLE_SQL}
+     ORDER BY "createdAt" ASC`,
+    [clinicId]
+  );
+
+  return result.rows;
+}
+
 async function listPortalUsersForOpturonAdmin(client = null) {
   const result = await dbQuery(
     client,
@@ -102,7 +126,7 @@ async function createPortalUser(payload, client = null) {
        SELECT gen_random_uuid() AS id
      )
      INSERT INTO staff_users (id, "clinicId", name, email, "passwordHash", role, "accountType", active, "accountRootUserId", "updatedAt")
-     SELECT next_user.id, $1, $2, $3, $4, $5, '${PORTAL_ACCOUNT_TYPE}', TRUE, COALESCE($6::uuid, next_user.id), NOW()
+     SELECT next_user.id, $1, $2, $3, $4, $5, '${PORTAL_ACCOUNT_TYPE}', $6, COALESCE($7::uuid, next_user.id), NOW()
      FROM next_user
      RETURNING id,
                "clinicId",
@@ -113,7 +137,15 @@ async function createPortalUser(payload, client = null) {
                active,
                "createdAt",
                "updatedAt"`,
-    [payload.clinicId, payload.name, payload.email, payload.passwordHash, payload.role, payload.accountRootUserId || null]
+    [
+      payload.clinicId,
+      payload.name,
+      payload.email,
+      payload.passwordHash || null,
+      payload.role,
+      payload.active !== false,
+      payload.accountRootUserId || null
+    ]
   );
 
   return result.rows[0] || null;
@@ -218,6 +250,32 @@ async function findPortalUserByEmail(email, client = null) {
   return result.rows[0] || null;
 }
 
+async function findAnyPortalUserByEmailAndClinicId(email, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            "clinicId",
+            name,
+            email,
+            "accountRootUserId",
+            CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+            active,
+            "passwordHash",
+            "createdAt",
+            "updatedAt"
+     FROM staff_users
+     WHERE LOWER(email) = LOWER($1)
+       AND "clinicId" = $2
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND email IS NOT NULL
+       AND role IN ${PORTAL_ROLE_SQL}
+     LIMIT 1`,
+    [email, clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function updatePortalUserProfileById(payload, client = null) {
   const result = await dbQuery(
     client,
@@ -238,6 +296,33 @@ async function updatePortalUserProfileById(payload, client = null) {
                "createdAt",
                "updatedAt"`,
     [payload.userId, payload.clinicId, payload.name]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function updatePortalUserCredentialsById(payload, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE staff_users
+     SET "passwordHash" = COALESCE($3, "passwordHash"),
+         active = COALESCE($4, active),
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND role IN ${PORTAL_ROLE_SQL}
+     RETURNING id,
+               "clinicId",
+               name,
+               email,
+               "accountRootUserId",
+               CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+               active,
+               "passwordHash",
+               "createdAt",
+               "updatedAt"`,
+    [payload.userId, payload.clinicId, payload.passwordHash || null, payload.active]
   );
 
   return result.rows[0] || null;
@@ -367,13 +452,16 @@ async function findPortalUserByNameAndClinicId(name, clinicId, client = null) {
 module.exports = {
   countOwnersByClinicId,
   listPortalUsersByClinicId,
+  listPortalUsersForManagementByClinicId,
   listPortalUsersForOpturonAdmin,
   createPortalUser,
   updatePortalUserAccountRootById,
   updatePortalUserRole,
   updatePortalUserProfileById,
+  updatePortalUserCredentialsById,
   deletePortalUserById,
   findPortalUserByEmail,
+  findAnyPortalUserByEmailAndClinicId,
   findPortalUserByEmailAndTenantId,
   findPortalUserById,
   findPortalUserByIdAndClinicId,
