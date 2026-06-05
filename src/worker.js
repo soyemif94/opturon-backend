@@ -3358,6 +3358,128 @@ function buildSalesDiscoveryQuestion() {
   return 'Depende un poco de tu operación 😊 ¿Hoy estás arrancando, ya recibís muchas consultas por WhatsApp o tenés un equipo vendiendo?';
 }
 
+function buildAiAssistFeatureContextPatch({ safeContext, effectiveSalesContext, derivedBusinessContext }) {
+  return {
+    ...(effectiveSalesContext && hasMinimumSalesContextForRecommendation(effectiveSalesContext)
+      ? buildCommercialSalesContextPatch(effectiveSalesContext)
+      : {}),
+    ...(derivedBusinessContext
+      ? buildBusinessRecommendationContextPatch(derivedBusinessContext)
+      : {}),
+    ...(getActiveCommercialShortMemory(safeContext)
+      ? buildCommercialShortMemoryPatch({
+        topic: 'plans',
+        lastSuggestedProductId: getActiveCommercialShortMemory(safeContext).lastSuggestedProductId || null,
+        recommendationType: getActiveCommercialShortMemory(safeContext).recommendationType || null,
+        lastReplyKey: 'feature_fit_followup'
+      })
+      : {})
+  };
+}
+
+function buildChannelCompatibilityReply(effectiveSalesContext = {}, derivedBusinessContext = null) {
+  const businessLead = describeSalesContextShort(effectiveSalesContext);
+  const businessLine = businessLead
+    ? `Por cómo trabajás hoy con ${businessLead}, la idea es ordenar mejor las consultas sin perder seguimiento.`
+    : 'La idea es ordenar mejor las consultas y el seguimiento comercial.';
+
+  return [
+    'Sí, te puede servir 😊',
+    '',
+    'Hoy WhatsApp es el canal principal dentro de Opturon para centralizar la conversación comercial.',
+    'Instagram puede acompañarse dentro de la operación según la configuración y la implementación, pero no te lo vendería como una integración completa universal si todavía no está definido así.',
+    '',
+    businessLine,
+    '',
+    derivedBusinessContext
+      ? 'Si querés, después te digo también cómo bajarlo a tu operación puntual.'
+      : 'Si querés, te explico cómo lo adaptaríamos a tu operación.'
+  ].join('\n');
+}
+
+function buildWhatsAppNumberPortabilityReply() {
+  return [
+    'En muchos casos sí, se puede conservar o usar tu número actual 😊',
+    '',
+    'Lo que hay que revisar es que cumpla con los requisitos de WhatsApp Business / API y la configuración de Meta para dejarlo bien conectado.',
+    'No te prometería portabilidad automática en todos los casos, pero el equipo acompaña esa conexión para ver la mejor forma de hacerlo.',
+    '',
+    'Si querés, después te cuento qué suele revisarse antes de migrarlo.'
+  ].join('\n');
+}
+
+function buildSellerReplacementReply(effectiveSalesContext = {}) {
+  const contextLead = describeSalesContextShort(effectiveSalesContext);
+  return [
+    'No, la idea no es reemplazar al vendedor humano 😊',
+    '',
+    'Opturon ayuda a filtrar consultas, responder lo repetitivo, ordenar seguimiento y liberar tiempo para que el equipo venda mejor.',
+    'Cuando hace falta intervención humana, también permite que una persona tome la conversación.',
+    '',
+    contextLead
+      ? `En un contexto como ${contextLead}, suele servir más para ordenar que para reemplazar personas.`
+      : 'Suele servir más para ordenar la operación comercial que para sacar al equipo de la ecuación.'
+  ].join('\n');
+}
+
+function buildIndustryFitReply(inboundText, effectiveSalesContext = {}) {
+  const text = normalizeCommandText(inboundText);
+  const explicitBusinessType = normalizeAiAssistBusinessType(text);
+  const businessType = explicitBusinessType || effectiveSalesContext.businessType || null;
+  const label = (
+    businessType === 'food_business' ? 'una rotisería o negocio de comida' :
+      businessType === 'beauty_business' ? 'una peluquería o negocio de estética' :
+        businessType === 'distribution' ? 'una distribuidora' :
+          businessType === 'fashion_retail' ? 'un negocio de ropa' :
+            businessType === 'services' ? 'un negocio de servicios' :
+              'ese tipo de negocio'
+  );
+
+  return [
+    `Sí, puede servir para ${label} 😊`,
+    '',
+    'Sobre todo cuando trabajás con consultas por WhatsApp y necesitás responder más ordenado, mostrar catálogo o servicios, y hacer seguimiento sin perder conversaciones.',
+    'Según la configuración, también puede acompañar pedidos, reservas o seguimiento comercial sin inventarte una operación nueva.',
+    '',
+    'Si querés, te lo bajo a un caso concreto de tu rubro.'
+  ].join('\n');
+}
+
+function buildFeatureFitReply(inboundText, effectiveSalesContext = {}) {
+  const text = normalizeCommandText(inboundText);
+
+  if (text.includes('sucursal')) {
+    return [
+      'Sí, se puede trabajar una operación con más de una sucursal o más de un frente 😊',
+      '',
+      'Lo importante es revisar cómo querés ordenar el seguimiento, el equipo y la operación para configurarlo de forma prolija.',
+      'No te prometería cualquier esquema sin verlo, pero está pensado para acompañar operaciones que ya tienen más de un punto o más de un rol.'
+    ].join('\n');
+  }
+
+  const contextLead = describeSalesContextShort(effectiveSalesContext);
+  return [
+    'Sí, puede encajar según cómo trabajás hoy 😊',
+    '',
+    contextLead
+      ? `Por ejemplo, si ${contextLead}, te ayuda a ordenar mejor consultas, seguimiento y operación comercial.`
+      : 'La lógica es ayudarte a ordenar consultas, seguimiento y operación comercial sin perder trazabilidad.',
+    '',
+    'Si querés, te digo cómo lo bajaría a tu caso puntual.'
+  ].join('\n');
+}
+
+function buildCatalogImportFitReply() {
+  return [
+    'Si tenés muchos productos, se puede trabajar el catálogo sin cargar todo a mano uno por uno 😊',
+    '',
+    'Opturon permite manejar catálogo y, cuando aplica, acompañar carga masiva o importación para ordenar mejor el alta.',
+    'No te prometería que cualquier Excel entra sin revisar formato, pero sí que se puede encarar de forma bastante más práctica que hacerlo manual completo.',
+    '',
+    'Si querés, te explico cuál suele ser la forma más prolija de prepararlo.'
+  ].join('\n');
+}
+
 function normalizeAiAssistBusinessType(value) {
   const text = normalizeCommandText(value);
   if (!text) return null;
@@ -3366,7 +3488,7 @@ function normalizeAiAssistBusinessType(value) {
   if (text.includes('ropa') || text.includes('indumentaria') || text.includes('boutique')) return 'fashion_retail';
   if (text.includes('accesorios') || text.includes('bijou')) return 'accessories_retail';
   if (text.includes('rotiseria') || text.includes('rotisería') || text.includes('comida') || text.includes('gastronomi')) return 'food_business';
-  if (text.includes('estetica') || text.includes('estética') || text.includes('belleza') || text.includes('salon')) return 'beauty_business';
+  if (text.includes('estetica') || text.includes('estética') || text.includes('belleza') || text.includes('salon') || text.includes('peluquer')) return 'beauty_business';
   if (text.includes('servicio') || text.includes('agencia') || text.includes('consultora') || text.includes('estudio')) return 'services';
   if (text.includes('negocio') || text.includes('tienda') || text.includes('local') || text.includes('emprendimiento')) return 'small_store';
 
@@ -3653,6 +3775,78 @@ async function resolveAiAssistDecision({
         lastObjectionType: objectionMap[decision.suggestedReplyIntent],
         lastReplyKey: objectionReply.replyKey
       }))
+    };
+  }
+
+  if (decision.suggestedReplyIntent === 'channel_compatibility') {
+    return {
+      type: 'recommendation',
+      replyText: buildChannelCompatibilityReply(effectiveSalesContext, derivedBusinessContext),
+      contextPatch: buildAiAssistFeatureContextPatch({
+        safeContext,
+        effectiveSalesContext,
+        derivedBusinessContext
+      })
+    };
+  }
+
+  if (decision.suggestedReplyIntent === 'whatsapp_number_portability') {
+    return {
+      type: 'recommendation',
+      replyText: buildWhatsAppNumberPortabilityReply(),
+      contextPatch: buildAiAssistFeatureContextPatch({
+        safeContext,
+        effectiveSalesContext,
+        derivedBusinessContext
+      })
+    };
+  }
+
+  if (decision.suggestedReplyIntent === 'seller_replacement') {
+    return {
+      type: 'recommendation',
+      replyText: buildSellerReplacementReply(effectiveSalesContext),
+      contextPatch: buildAiAssistFeatureContextPatch({
+        safeContext,
+        effectiveSalesContext,
+        derivedBusinessContext
+      })
+    };
+  }
+
+  if (decision.suggestedReplyIntent === 'industry_fit') {
+    return {
+      type: 'recommendation',
+      replyText: buildIndustryFitReply(inboundText, effectiveSalesContext),
+      contextPatch: buildAiAssistFeatureContextPatch({
+        safeContext,
+        effectiveSalesContext,
+        derivedBusinessContext
+      })
+    };
+  }
+
+  if (decision.suggestedReplyIntent === 'feature_fit') {
+    return {
+      type: 'recommendation',
+      replyText: buildFeatureFitReply(inboundText, effectiveSalesContext),
+      contextPatch: buildAiAssistFeatureContextPatch({
+        safeContext,
+        effectiveSalesContext,
+        derivedBusinessContext
+      })
+    };
+  }
+
+  if (decision.suggestedReplyIntent === 'catalog_import_fit') {
+    return {
+      type: 'recommendation',
+      replyText: buildCatalogImportFitReply(),
+      contextPatch: buildAiAssistFeatureContextPatch({
+        safeContext,
+        effectiveSalesContext,
+        derivedBusinessContext
+      })
     };
   }
 

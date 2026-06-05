@@ -18,7 +18,13 @@ const SUPPORTED_INTENTS = new Set([
   'objection',
   'business_fit',
   'implementation_question',
-  'general_commerce_question'
+  'general_commerce_question',
+  'channel_compatibility',
+  'whatsapp_number_portability',
+  'seller_replacement',
+  'industry_fit',
+  'feature_fit',
+  'catalog_import_fit'
 ]);
 const SUPPORTED_ROUTING_DECISIONS = new Set([
   'fallback_current',
@@ -42,7 +48,13 @@ const SUPPORTED_REPLY_INTENTS = new Set([
   'handle_objection_later',
   'handle_objection_consulting',
   'general_commerce_followup',
-  'implementation_followup'
+  'implementation_followup',
+  'channel_compatibility',
+  'whatsapp_number_portability',
+  'seller_replacement',
+  'industry_fit',
+  'feature_fit',
+  'catalog_import_fit'
 ]);
 
 function normalizeString(value) {
@@ -107,7 +119,21 @@ function buildAiAssistSystemPrompt() {
     'Si no hay suficiente confianza, devolve confidence baja e intent=unknown.',
     'Dominio permitido principal: commerce.',
     'SuggestedReplyIntent debe ser uno de los permitidos por el integrador.',
-    'Entities debe incluir solo inferencias razonables y conservadoras.'
+    'Entities debe incluir solo inferencias razonables y conservadoras.',
+    'Si preguntan compatibilidad con Instagram u otro canal, considera channel_compatibility.',
+    'Si preguntan si pueden usar o conservar su numero actual de WhatsApp, considera whatsapp_number_portability.',
+    'Si preguntan si reemplaza vendedores o equipo humano, considera seller_replacement.',
+    'Si preguntan si sirve para un rubro o negocio especifico, considera industry_fit.',
+    'Si preguntan por sucursales, canales, operacion o capacidad general del producto, considera feature_fit.',
+    'Si preguntan por muchos productos, Excel, carga o importacion de catalogo, considera catalog_import_fit.',
+    'Cuando una de esas clases aplique y haya suficiente señal, usa routingDecision=use_existing_commerce_reply.',
+    'No mandes fallback_current si la consulta comercial es clara y coincide con una de esas clases.',
+    'Ejemplos: "vendo tambien por instagram, es compatible?" -> intent=channel_compatibility, suggestedReplyIntent=channel_compatibility.',
+    'Ejemplos: "puedo usar mi numero actual de whatsapp?" -> intent=whatsapp_number_portability, suggestedReplyIntent=whatsapp_number_portability.',
+    'Ejemplos: "esto reemplaza a mis vendedores?" -> intent=seller_replacement, suggestedReplyIntent=seller_replacement.',
+    'Ejemplos: "sirve para una rotiseria?" o "sirve para una peluqueria?" -> intent=industry_fit, suggestedReplyIntent=industry_fit.',
+    'Ejemplos: "puedo conectar dos sucursales?" -> intent=feature_fit, suggestedReplyIntent=feature_fit.',
+    'Ejemplos: "tengo muchos productos, como los cargo?" -> intent=catalog_import_fit, suggestedReplyIntent=catalog_import_fit.'
   ].join('\n');
 }
 
@@ -344,9 +370,12 @@ async function classifyCommerceAiAssist(input, options = {}) {
         provider,
         model: providerResult.model,
         reason: sanitizeReason(input.reason || 'commercial_low_confidence'),
+        domain: providerResult.decision.domain,
+        intent: providerResult.decision.intent,
         confidence: providerResult.decision.confidence,
         routingDecision: providerResult.decision.routingDecision,
         suggestedReplyIntent: providerResult.decision.suggestedReplyIntent,
+        entities: providerResult.decision.entities,
         usage: providerResult.usage,
         estimatedCostUsd: null,
         latencyMs: Date.now() - startedAt
