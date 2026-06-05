@@ -33,6 +33,20 @@ function inferTokenKind(value) {
   return 'unknown';
 }
 
+function shouldUseMercadoPagoStageScope() {
+  return env.mercadoPagoEnvironment === 'test' && inferTokenKind(env.mercadoPagoAccessToken) !== 'production';
+}
+
+function maskEmail(value) {
+  const email = normalizeString(value).toLowerCase();
+  const parts = email.split('@');
+  if (parts.length !== 2) return null;
+  const [local, domain] = parts;
+  if (!local || !domain) return null;
+  const visibleLocal = local.length <= 2 ? local[0] || '*' : `${local.slice(0, 2)}***`;
+  return `${visibleLocal}@${domain}`;
+}
+
 function assertMercadoPagoConfigured() {
   if (!env.mercadoPagoAccessToken) {
     const error = new Error('mercado_pago_not_configured');
@@ -49,7 +63,7 @@ function buildMercadoPagoHeaders(extraHeaders = {}) {
     'Content-Type': 'application/json',
     ...extraHeaders
   };
-  if (env.mercadoPagoEnvironment === 'test') {
+  if (shouldUseMercadoPagoStageScope()) {
     headers['X-scope'] = 'stage';
   }
   return headers;
@@ -112,6 +126,26 @@ function sanitizeMercadoPagoRawBody(text) {
   const raw = normalizeString(text);
   if (!raw) return null;
   return raw.slice(0, 500);
+}
+
+function sanitizeMercadoPagoUserBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body || null;
+  return {
+    id: body.id || null,
+    nickname: normalizeString(body.nickname) || null,
+    country_id: normalizeString(body.country_id) || null,
+    site_id: normalizeString(body.site_id) || null,
+    email: maskEmail(body.email),
+    user_type: normalizeString(body.user_type) || null,
+    tags: Array.isArray(body.tags) ? body.tags.slice(0, 10) : [],
+    status: body.status && typeof body.status === 'object'
+      ? {
+          site_status: normalizeString(body.status.site_status) || null,
+          confirmed_email: Boolean(body.status.confirmed_email),
+          mercadopago_account_type: normalizeString(body.status.mercadopago_account_type) || null
+        }
+      : null
+  };
 }
 
 function extractMercadoPagoCause(body) {
@@ -201,6 +235,7 @@ function getMercadoPagoEnvDiagnostics() {
   const accessToken = normalizeString(env.mercadoPagoAccessToken);
   const publicKey = normalizeString(env.mercadoPagoPublicKey);
   const environment = normalizeString(env.mercadoPagoEnvironment).toLowerCase() || 'production';
+  const tokenKind = inferTokenKind(accessToken);
 
   return {
     keysRead: {
@@ -213,7 +248,7 @@ function getMercadoPagoEnvDiagnostics() {
       present: Boolean(accessToken),
       prefix: maskValuePrefix(accessToken),
       length: accessToken.length || 0,
-      kind: inferTokenKind(accessToken)
+      kind: tokenKind
     },
     publicKey: {
       present: Boolean(publicKey),
@@ -221,7 +256,8 @@ function getMercadoPagoEnvDiagnostics() {
       length: publicKey.length || 0
     },
     environment,
-    xScopeStageEnabled: environment === 'test',
+    xScopeStageEnabled: shouldUseMercadoPagoStageScope(),
+    environmentMismatch: environment === 'test' && tokenKind === 'production',
     webhookUrl: getConfiguredWebhookUrl(),
     backUrl: getConfiguredBackUrl()
   };
@@ -246,7 +282,7 @@ async function runMercadoPagoAuthDiagnostics(options = {}) {
     result.usersMe = {
       ok: true,
       status: 200,
-      body: sanitizeMercadoPagoErrorBody(user)
+      body: sanitizeMercadoPagoUserBody(user)
     };
   } catch (error) {
     result.usersMe = {
@@ -295,6 +331,26 @@ async function runMercadoPagoAuthDiagnostics(options = {}) {
       error: normalizeString(error && (error.code || error.message)) || 'mercadopago_preapproval_failed',
       detail: error && error.message ? error.message : 'mercadopago_preapproval_failed',
       body: sanitizeMercadoPagoErrorBody(error && error.body)
+    };
+  }
+
+  if (
+    result.usersMe &&
+    result.usersMe.ok &&
+    result.preapproval &&
+    result.preapproval.ok === false &&
+    result.preapproval.status === 403 &&
+    result.preapproval.body &&
+    typeof result.preapproval.body === 'object' &&
+    result.preapproval.body.code === 'PA_UNAUTHORIZED_RESULT_FROM_POLICIES'
+  ) {
+    result.analysis = {
+      rootCause: envDiagnostics.environmentMismatch
+        ? 'production_token_with_test_stage_scope'
+        : 'mercadopago_policy_unauthorized_for_preapproval',
+      message: envDiagnostics.environmentMismatch
+        ? 'Production token detected with MERCADO_PAGO_ENVIRONMENT=test. Backend was sending X-scope: stage to Mercado Pago.'
+        : 'Mercado Pago authenticated the token on /users/me but rejected /preapproval by policy.'
     };
   }
 
