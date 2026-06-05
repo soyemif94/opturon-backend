@@ -30,6 +30,15 @@ async function postMercadoPagoWebhook(req, res) {
   }
 
   try {
+    const topic = String(payload.type || payload.topic || '').trim().toLowerCase() || null;
+    const action = String(payload.action || '').trim().toLowerCase() || null;
+    const resourceId =
+      String(
+        (payload.data && payload.data.id) ||
+        payload.resource_id ||
+        payload.resource ||
+        ''
+      ).trim() || null;
     const result = await processMercadoPagoWebhook(payload, {
       requestId: req.requestId || req.get('x-request-id') || null,
       signatureValid
@@ -37,6 +46,9 @@ async function postMercadoPagoWebhook(req, res) {
 
     logInfo('mercado_pago_webhook_processed', {
       requestId: req.requestId || null,
+      topic,
+      action,
+      resourceId,
       duplicate: result.duplicate === true,
       ignored: result.ignored === true,
       subscriptionId: result.subscription ? result.subscription.id : null,
@@ -51,6 +63,15 @@ async function postMercadoPagoWebhook(req, res) {
   } catch (error) {
     logError('mercado_pago_webhook_failed', {
       requestId: req.requestId || null,
+      topic: String(payload.type || payload.topic || '').trim().toLowerCase() || null,
+      action: String(payload.action || '').trim().toLowerCase() || null,
+      resourceId:
+        String(
+          (payload.data && payload.data.id) ||
+          payload.resource_id ||
+          payload.resource ||
+          ''
+        ).trim() || null,
       signatureValid,
       error: error.message
     });

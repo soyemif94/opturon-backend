@@ -435,17 +435,6 @@ async function refreshSubscriptionFromMercadoPagoByPreapprovalId(preapprovalId) 
   return { ok: true, subscription: updated };
 }
 
-function deriveWebhookDedupeKey(payload, requestId) {
-  const topic = normalizeString(payload.type || payload.topic || payload.action || 'unknown').toLowerCase();
-  const resourceId =
-    normalizeString(payload.data && payload.data.id) ||
-    normalizeString(payload.id) ||
-    normalizeString(payload.resource) ||
-    'unknown';
-  const action = normalizeString(payload.action || 'unknown').toLowerCase();
-  return `${topic}:${action}:${resourceId}:${normalizeString(requestId) || 'no-request-id'}`;
-}
-
 function resolveSubscriptionIdFromPayment(payment) {
   return (
     normalizeString(payment && payment.metadata && payment.metadata.preapproval_id) ||
@@ -463,21 +452,126 @@ function resolveExternalReferenceFromPayment(payment) {
   );
 }
 
+function extractMercadoPagoResourceId(value) {
+  const raw = normalizeString(value);
+  if (!raw) return null;
+  if (!raw.includes('/')) {
+    return raw;
+  }
+
+  const normalized = raw.split('?')[0].replace(/\/+$/, '');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts.length ? normalizeString(parts[parts.length - 1]) : null;
+}
+
+function extractMercadoPagoWebhookTopic(payload) {
+  return normalizeString(payload && (payload.type || payload.topic)).toLowerCase() || null;
+}
+
+function extractMercadoPagoWebhookAction(payload) {
+  return normalizeString(payload && payload.action).toLowerCase() || null;
+}
+
+function extractMercadoPagoWebhookNotificationId(payload) {
+  return normalizeString(payload && payload.id) || null;
+}
+
+function extractMercadoPagoWebhookResourceId(payload) {
+  return (
+    normalizeString(payload && payload.data && payload.data.id) ||
+    extractMercadoPagoResourceId(payload && payload.resource) ||
+    normalizeString(payload && payload.resource_id) ||
+    normalizeString(payload && payload['data.id']) ||
+    null
+  );
+}
+
+function buildWebhookEventSnapshot(payload, meta = {}) {
+  return {
+    topic: extractMercadoPagoWebhookTopic(payload),
+    action: extractMercadoPagoWebhookAction(payload),
+    notificationId: extractMercadoPagoWebhookNotificationId(payload),
+    resourceId: extractMercadoPagoWebhookResourceId(payload),
+    requestId: normalizeString(meta.requestId) || null,
+    signatureValid:
+      meta.signatureValid === null || meta.signatureValid === undefined
+        ? null
+        : meta.signatureValid === true
+  };
+}
+
+function deriveWebhookDedupeKey(snapshot) {
+  const topic = snapshot.topic || 'unknown';
+  const action = snapshot.action || 'unknown';
+  const resourceId = snapshot.resourceId || 'unknown';
+  const notificationId = snapshot.notificationId || null;
+  if (notificationId) {
+    return `${topic}:${action}:${resourceId}:notification:${notificationId}`;
+  }
+  return `${topic}:${action}:${resourceId}`;
+}
+
+function buildPreapprovalWebhookMetadata(preapproval, payload, meta) {
+  return {
+    mercadoPagoPreapproval: preapproval || {},
+    mercadoPagoWebhook: {
+      topic: extractMercadoPagoWebhookTopic(payload),
+      action: extractMercadoPagoWebhookAction(payload),
+      notificationId: extractMercadoPagoWebhookNotificationId(payload),
+      resourceId: extractMercadoPagoWebhookResourceId(payload),
+      requestId: normalizeString(meta && meta.requestId) || null,
+      receivedAt: new Date().toISOString(),
+      signatureValid:
+        meta && (meta.signatureValid === true || meta.signatureValid === false)
+          ? meta.signatureValid
+          : null
+    }
+  };
+}
+
+function buildPaymentWebhookMetadata(payment, payload, meta) {
+  return {
+    mercadoPagoPayment: payment || {},
+    mercadoPagoPaymentSnapshot: {
+      id: normalizeString(payment && payment.id) || null,
+      status: normalizeString(payment && payment.status).toLowerCase() || null,
+      statusDetail: normalizeString(payment && payment.status_detail).toLowerCase() || null,
+      dateApproved: toIsoDate(payment && (payment.date_approved || payment.date_last_updated || payment.date_created)),
+      dateCreated: toIsoDate(payment && payment.date_created),
+      transactionAmount:
+        payment && payment.transaction_amount !== undefined && payment.transaction_amount !== null
+          ? Number(payment.transaction_amount)
+          : null,
+      currency: normalizeCurrency(payment && payment.currency_id),
+      externalReference: resolveExternalReferenceFromPayment(payment)
+    },
+    mercadoPagoWebhook: {
+      topic: extractMercadoPagoWebhookTopic(payload),
+      action: extractMercadoPagoWebhookAction(payload),
+      notificationId: extractMercadoPagoWebhookNotificationId(payload),
+      resourceId: extractMercadoPagoWebhookResourceId(payload),
+      requestId: normalizeString(meta && meta.requestId) || null,
+      receivedAt: new Date().toISOString(),
+      signatureValid:
+        meta && (meta.signatureValid === true || meta.signatureValid === false)
+          ? meta.signatureValid
+          : null
+    }
+  };
+}
+
 async function processMercadoPagoWebhook(payload, meta = {}) {
   const requestId = normalizeString(meta.requestId);
-  const dedupeKey = deriveWebhookDedupeKey(payload, requestId);
+  const snapshot = buildWebhookEventSnapshot(payload, meta);
+  const dedupeKey = deriveWebhookDedupeKey(snapshot);
 
   const insertedEvent = await insertSubscriptionEvent({
     subscriptionId: null,
     provider: 'mercado_pago',
-    topic: normalizeString(payload.type || payload.topic) || null,
-    action: normalizeString(payload.action) || null,
-    resourceId:
-      normalizeString(payload.data && payload.data.id) ||
-      normalizeString(payload.id) ||
-      normalizeString(payload.resource) ||
-      null,
-    notificationId: normalizeString(payload.id) || null,
+    topic: snapshot.topic,
+    action: snapshot.action,
+    resourceId: snapshot.resourceId,
+    notificationId: snapshot.notificationId,
     requestId: requestId || null,
     dedupeKey,
     signatureValid: meta.signatureValid,
@@ -491,16 +585,16 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
   }
 
   try {
-    const topic = normalizeString(payload.type || payload.topic).toLowerCase();
-    const action = normalizeString(payload.action).toLowerCase();
-    const resourceId =
-      normalizeString(payload.data && payload.data.id) ||
-      normalizeString(payload.id) ||
-      normalizeString(payload.resource);
+    const topic = snapshot.topic || '';
+    const action = snapshot.action || '';
+    const resourceId = snapshot.resourceId;
 
     let subscription = null;
 
-    if (topic === 'subscription_authorized_payment' || topic === 'payment') {
+    if (topic === 'subscription_authorized_payment' || topic === 'authorized_payment' || topic === 'payment') {
+      if (!resourceId) {
+        throw new Error('payment_resource_id_missing');
+      }
       const payment = await getPayment(resourceId);
       const preapprovalId = resolveSubscriptionIdFromPayment(payment);
       const externalReference = resolveExternalReferenceFromPayment(payment);
@@ -534,7 +628,7 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
                 ? (preapprovalPatch.localStatus || 'active')
                 : mapMercadoPagoPaymentStatus(payment.status),
             metadata: {
-              mercadoPagoPayment: payment || {}
+              ...buildPaymentWebhookMetadata(payment, payload, meta)
             }
           },
           client
@@ -554,15 +648,33 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
       return { ok: true, duplicate: false, subscription: updated };
     }
 
-    if (topic === 'subscription_preapproval' || topic === 'subscription' || action.includes('preapproval')) {
+    if (
+      topic === 'subscription_preapproval' ||
+      topic === 'preapproval' ||
+      topic === 'subscription' ||
+      action.includes('preapproval')
+    ) {
+      if (!resourceId) {
+        throw new Error('preapproval_resource_id_missing');
+      }
+
       subscription = await findSaasSubscriptionByPreapprovalId(resourceId);
+      const remote = await getPreapproval(resourceId);
+      if (!subscription) {
+        const remoteExternalReference = normalizeString(remote && remote.external_reference);
+        if (remoteExternalReference) {
+          subscription = await findSaasSubscriptionByExternalReference(remoteExternalReference);
+        }
+      }
       if (!subscription) {
         throw new Error('subscription_not_found_for_preapproval');
       }
 
       const clinic = await findClinicByExternalTenantId(subscription.externalTenantId);
-      const remote = await getPreapproval(resourceId);
-      const patch = mapPreapprovalToSubscriptionPatch(remote);
+      const patch = {
+        ...mapPreapprovalToSubscriptionPatch(remote),
+        metadata: buildPreapprovalWebhookMetadata(remote, payload, meta)
+      };
       const updated = await withTransaction(async (client) => {
         const next = await updateSaasSubscriptionById(subscription.id, patch, client);
         if (clinic) {
@@ -604,5 +716,18 @@ module.exports = {
   executeSubscriptionAction,
   refreshSubscriptionFromMercadoPagoByPreapprovalId,
   processMercadoPagoWebhook,
-  findLatestSaasSubscriptionByTenantId
+  findLatestSaasSubscriptionByTenantId,
+  __internal: {
+    extractMercadoPagoResourceId,
+    extractMercadoPagoWebhookTopic,
+    extractMercadoPagoWebhookAction,
+    extractMercadoPagoWebhookNotificationId,
+    extractMercadoPagoWebhookResourceId,
+    buildWebhookEventSnapshot,
+    deriveWebhookDedupeKey,
+    buildPreapprovalWebhookMetadata,
+    buildPaymentWebhookMetadata,
+    resolveSubscriptionIdFromPayment,
+    resolveExternalReferenceFromPayment
+  }
 };

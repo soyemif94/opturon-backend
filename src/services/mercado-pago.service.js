@@ -404,10 +404,28 @@ function parseSignatureHeader(headerValue) {
   );
 }
 
+function normalizeWebhookQueryDataId(value) {
+  const raw = normalizeString(value);
+  if (!raw) return null;
+  return /^[a-z0-9_-]+$/i.test(raw) ? raw.toLowerCase() : raw;
+}
+
 function buildWebhookManifest(req, ts) {
-  const queryDataId = normalizeString(req.query['data.id'] || req.query.id);
+  const parts = [];
+  const queryDataId = normalizeWebhookQueryDataId(req.query['data.id'] || req.query.id);
   const requestId = normalizeString(req.get('x-request-id'));
-  return `id:${queryDataId};request-id:${requestId};ts:${ts};`;
+
+  if (queryDataId) {
+    parts.push(`id:${queryDataId};`);
+  }
+  if (requestId) {
+    parts.push(`request-id:${requestId};`);
+  }
+  if (ts) {
+    parts.push(`ts:${ts};`);
+  }
+
+  return parts.join('');
 }
 
 function verifyWebhookSignature(req) {
@@ -419,6 +437,9 @@ function verifyWebhookSignature(req) {
   if (!ts || !v1) return false;
 
   const manifest = buildWebhookManifest(req, ts);
+  if (!manifest) {
+    return false;
+  }
   const expected = crypto
     .createHmac('sha256', env.mercadoPagoWebhookSecret)
     .update(manifest)
