@@ -14,6 +14,7 @@ const debugWhatsAppRoutes = require('./routes/debug.whatsapp');
 const portalRoutes = require('./routes/portal.routes');
 const adminRoutes = require('./routes/admin.routes');
 const mercadoPagoWebhookRoutes = require('./routes/mercadopago-webhook.routes');
+const mercadoPagoDiagnosticsRoutes = require('./routes/mercadopago-diagnostics.routes');
 const env = require('./config/env');
 const buildInfo = require('./utils/build');
 
@@ -65,6 +66,7 @@ function createApp() {
   app.use('/metrics', metricsRoutes);
   app.use('/api/admin', adminRoutes);
   app.use('/portal', portalRoutes);
+  app.use('/', mercadoPagoDiagnosticsRoutes);
   if (env.whatsappDebug && env.debugApiEnabled) {
     app.use('/debug', debugWhatsAppRoutes);
     app.use('/debug', debugRoutes);

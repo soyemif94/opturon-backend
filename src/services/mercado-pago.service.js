@@ -19,6 +19,20 @@ function getConfiguredBackUrl() {
   return `${base}/login`;
 }
 
+function maskValuePrefix(value, visible = 7) {
+  const raw = normalizeString(value);
+  if (!raw) return null;
+  return raw.slice(0, visible);
+}
+
+function inferTokenKind(value) {
+  const raw = normalizeString(value).toUpperCase();
+  if (!raw) return 'missing';
+  if (raw.startsWith('APP_USR')) return 'production';
+  if (raw.startsWith('TEST')) return 'test';
+  return 'unknown';
+}
+
 function assertMercadoPagoConfigured() {
   if (!env.mercadoPagoAccessToken) {
     const error = new Error('mercado_pago_not_configured');
@@ -177,6 +191,116 @@ async function createPreapproval(input) {
   });
 }
 
+async function getMercadoPagoUserMe() {
+  return mercadoPagoFetch('/users/me', {
+    method: 'GET'
+  });
+}
+
+function getMercadoPagoEnvDiagnostics() {
+  const accessToken = normalizeString(env.mercadoPagoAccessToken);
+  const publicKey = normalizeString(env.mercadoPagoPublicKey);
+  const environment = normalizeString(env.mercadoPagoEnvironment).toLowerCase() || 'production';
+
+  return {
+    keysRead: {
+      accessToken: 'MERCADO_PAGO_ACCESS_TOKEN',
+      publicKey: 'MERCADO_PAGO_PUBLIC_KEY',
+      environment: 'MERCADO_PAGO_ENVIRONMENT',
+      aliasesSupported: []
+    },
+    token: {
+      present: Boolean(accessToken),
+      prefix: maskValuePrefix(accessToken),
+      length: accessToken.length || 0,
+      kind: inferTokenKind(accessToken)
+    },
+    publicKey: {
+      present: Boolean(publicKey),
+      prefix: maskValuePrefix(publicKey),
+      length: publicKey.length || 0
+    },
+    environment,
+    xScopeStageEnabled: environment === 'test',
+    webhookUrl: getConfiguredWebhookUrl(),
+    backUrl: getConfiguredBackUrl()
+  };
+}
+
+async function runMercadoPagoAuthDiagnostics(options = {}) {
+  const planCode = normalizeString(options.planCode) || 'crecimiento';
+  const amount = Number(options.amount);
+  const currency = normalizeString(options.currency).toUpperCase() || 'ARS';
+  const payerEmail = normalizeString(options.payerEmail);
+  const tenantId = normalizeString(options.tenantId) || 'mp-auth-diag';
+  const envDiagnostics = getMercadoPagoEnvDiagnostics();
+
+  const result = {
+    env: envDiagnostics,
+    usersMe: null,
+    preapproval: null
+  };
+
+  try {
+    const user = await getMercadoPagoUserMe();
+    result.usersMe = {
+      ok: true,
+      status: 200,
+      body: sanitizeMercadoPagoErrorBody(user)
+    };
+  } catch (error) {
+    result.usersMe = {
+      ok: false,
+      status: Number.isInteger(Number(error && error.status)) ? Number(error.status) : null,
+      error: normalizeString(error && (error.code || error.message)) || 'mercadopago_users_me_failed',
+      detail: error && error.message ? error.message : 'mercadopago_users_me_failed',
+      body: sanitizeMercadoPagoErrorBody(error && error.body)
+    };
+    return result;
+  }
+
+  if (!payerEmail || !Number.isFinite(amount) || amount <= 0) {
+    return result;
+  }
+
+  const payload = buildCreatePreapprovalPayload({
+    reason: `Opturon ${planCode || 'crecimiento'} - ${tenantId}`,
+    externalReference: `mp-diag:${tenantId}:${Date.now()}`,
+    payerEmail,
+    amount,
+    currency
+  });
+
+  result.preapproval = {
+    attempted: true,
+    payload
+  };
+
+  try {
+    const created = await mercadoPagoFetch('/preapproval', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    result.preapproval = {
+      ...result.preapproval,
+      ok: true,
+      status: 201,
+      body: sanitizeMercadoPagoErrorBody(created)
+    };
+  } catch (error) {
+    result.preapproval = {
+      ...result.preapproval,
+      ok: false,
+      status: Number.isInteger(Number(error && error.status)) ? Number(error.status) : null,
+      error: normalizeString(error && (error.code || error.message)) || 'mercadopago_preapproval_failed',
+      detail: error && error.message ? error.message : 'mercadopago_preapproval_failed',
+      body: sanitizeMercadoPagoErrorBody(error && error.body)
+    };
+  }
+
+  return result;
+}
+
 async function getPreapproval(preapprovalId) {
   return mercadoPagoFetch(`/preapproval/${encodeURIComponent(preapprovalId)}`, {
     method: 'GET'
@@ -289,6 +413,9 @@ module.exports = {
   cancelPreapproval,
   reactivatePreapproval,
   getPayment,
+  getMercadoPagoUserMe,
+  getMercadoPagoEnvDiagnostics,
+  runMercadoPagoAuthDiagnostics,
   verifyWebhookSignature,
   mapMercadoPagoPreapprovalStatus,
   mapMercadoPagoPaymentStatus,
