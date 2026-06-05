@@ -47,6 +47,7 @@ const {
 const { claimJobs, markJobDone, requeueOrFailJob } = require('./repositories/job.repository');
 const { resolveAutomationReplyForInbound } = require('./services/automation-runtime.service');
 const { getAutomationEnablementState } = require('./services/automation-enablement.service');
+const { classifyCommerceAiAssist } = require('./services/ai-assist.service');
 const {
   suggestClinicAgendaSlots,
   createClinicAgendaBotReservation
@@ -318,7 +319,7 @@ function detectIntent(rawText) {
   const appointmentWords = /(turno|cita|agenda|sacar turno|reservar|agendar)/i;
   const urgentWords = /(dolor|urgencia|sangrado|inflamado|se me sali[oó]|me duele mucho)/i;
   const pricingWords = /(precio|cuanto|valor|costo|info)/i;
-  const humanWords = /(humano|recepcion|persona|llamar|asesor)/i;
+  const humanWords = /(humano|recepcion|llamar|asesor|hablar con una persona|pasame con una persona|quiero una persona)/i;
 
   if (urgentWords.test(text)) return 'urgent';
   if (commercialIntent.type === 'human_handoff') return 'human';
@@ -3287,6 +3288,318 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
 
 function buildSalesDiscoveryQuestion() {
   return 'Depende un poco de tu operación 😊 ¿Hoy estás arrancando, ya recibís muchas consultas por WhatsApp o tenés un equipo vendiendo?';
+}
+
+function normalizeAiAssistBusinessType(value) {
+  const text = normalizeCommandText(value);
+  if (!text) return null;
+
+  if (text.includes('distribuidora') || text.includes('mayorista')) return 'distribution';
+  if (text.includes('ropa') || text.includes('indumentaria') || text.includes('boutique')) return 'fashion_retail';
+  if (text.includes('accesorios') || text.includes('bijou')) return 'accessories_retail';
+  if (text.includes('rotiseria') || text.includes('rotisería') || text.includes('comida') || text.includes('gastronomi')) return 'food_business';
+  if (text.includes('estetica') || text.includes('estética') || text.includes('belleza') || text.includes('salon')) return 'beauty_business';
+  if (text.includes('servicio') || text.includes('agencia') || text.includes('consultora') || text.includes('estudio')) return 'services';
+  if (text.includes('negocio') || text.includes('tienda') || text.includes('local') || text.includes('emprendimiento')) return 'small_store';
+
+  return null;
+}
+
+function normalizeAiAssistTeamSizeSignal(value) {
+  const text = normalizeCommandText(value);
+  if (!text) return null;
+
+  if (
+    text.includes('sucursal') ||
+    text.includes('dos sucursales') ||
+    text.includes('varias sucursales') ||
+    text.includes('multi')
+  ) {
+    return 'multi_branch';
+  }
+
+  if (
+    text.includes('vendedores') ||
+    text.includes('equipo') ||
+    text.includes('varios') ||
+    text.includes('asesores')
+  ) {
+    return 'team';
+  }
+
+  if (
+    text.includes('solo') ||
+    text.includes('yo') ||
+    text.includes('arranco solo') ||
+    text.includes('arranco sola')
+  ) {
+    return 'solo';
+  }
+
+  return null;
+}
+
+function normalizeAiAssistPainPoints(entities = {}) {
+  const currentTool = normalizeCommandText(entities.currentTool);
+  const stage = normalizeCommandText(entities.stage);
+  const channels = Array.isArray(entities.channels) ? entities.channels.map((item) => normalizeCommandText(item)).filter(Boolean) : [];
+  const explicitPainPoints = Array.isArray(entities.painPoints)
+    ? entities.painPoints.map((item) => normalizeCommandText(item)).filter(Boolean)
+    : [];
+  const painPoints = new Set();
+
+  if (currentTool.includes('excel')) painPoints.add('sales_organization');
+  if (currentTool.includes('whatsapp')) painPoints.add('follow_up');
+  if (currentTool.includes('crm')) painPoints.add('complex_operation');
+  if (stage.includes('arranco') || stage.includes('empiezo')) painPoints.add('sales_organization');
+  if (channels.includes('instagram') && channels.includes('whatsapp')) {
+    painPoints.add('follow_up');
+    painPoints.add('sales_organization');
+  }
+
+  for (const point of explicitPainPoints) {
+    if (point.includes('seguimiento') || point.includes('follow')) painPoints.add('follow_up');
+    if (point.includes('organizacion') || point.includes('organización') || point.includes('orden')) painPoints.add('sales_organization');
+    if (point.includes('control') || point.includes('roles') || point.includes('sucursales')) painPoints.add('team_control');
+    if (point.includes('integracion') || point.includes('integración')) painPoints.add('complex_operation');
+    if (point.includes('respuesta')) painPoints.add('response_delay');
+  }
+
+  return [...painPoints];
+}
+
+function buildAiAssistSalesContext(entities = {}, currentContext = null) {
+  const baseContext = currentContext && typeof currentContext === 'object' ? currentContext : {};
+  const businessType = normalizeAiAssistBusinessType(entities.businessType) || baseContext.businessType || null;
+  const teamSizeSignal = normalizeAiAssistTeamSizeSignal(entities.teamSize) || baseContext.teamSizeSignal || null;
+  const stage = normalizeCommandText(entities.stage);
+  const channels = Array.isArray(entities.channels) ? entities.channels.map((item) => normalizeCommandText(item)).filter(Boolean) : [];
+  const whatsappVolume =
+    stage.includes('arranco') || stage.includes('empiezo')
+      ? 'low'
+      : (teamSizeSignal === 'team' || teamSizeSignal === 'multi_branch' || channels.length >= 2)
+        ? 'high'
+        : baseContext.whatsappVolume || null;
+  const painPoints = [...new Set([...(Array.isArray(baseContext.painPoints) ? baseContext.painPoints : []), ...normalizeAiAssistPainPoints(entities)])];
+
+  return {
+    businessType,
+    whatsappVolume,
+    teamSizeSignal,
+    painPoints,
+    lastRecommendedPlan: baseContext.lastRecommendedPlan || null,
+    lastRecommendationReason: baseContext.lastRecommendationReason || null
+  };
+}
+
+function shouldInvokeAiAssist({
+  botRoute,
+  intent,
+  commercialIntent,
+  transferPaymentIntent,
+  inboundText,
+  safeContext
+}) {
+  const text = normalizeCommandText(inboundText);
+  if (!text) return { ok: false, reason: 'empty_message' };
+  if (isGreetingIntent(text) || isThanksIntent(text) || isAffirmativeIntent(text) || isNegativeIntent(text)) {
+    return { ok: false, reason: 'trivial_message' };
+  }
+  if (transferPaymentIntent) return { ok: false, reason: 'payment_transfer_flow' };
+  if (isLoyaltyIntent(text)) return { ok: false, reason: 'loyalty_flow' };
+  if (looksLikeAgendaIntent({ inboundText: text, intent, managementIntent: detectTurnManagementIntent(text) })) {
+    return { ok: false, reason: 'agenda_flow' };
+  }
+  if (intent === 'appointment' || intent === 'human' || intent === 'loyalty' || intent === 'pricing') {
+    return { ok: false, reason: `strong_intent_${intent}` };
+  }
+  if (commercialIntent && commercialIntent.type && commercialIntent.type !== 'unknown') {
+    return { ok: false, reason: `strong_commercial_intent_${commercialIntent.type}` };
+  }
+  if (
+    /\b(como te transfiero|te mando comprobante|quiero un turno|ver productos|cuantos puntos tengo|quiero hablar con una persona)\b/.test(text)
+  ) {
+    return { ok: false, reason: 'critical_phrase_blocked' };
+  }
+
+  const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
+  const hasCommerceContext = Boolean(
+    (botRoute && (botRoute.domain === 'commerce' || botRoute.domain === 'demo')) ||
+    String(context.activeBotDomain || '').trim().toLowerCase() === 'commerce' ||
+    getActiveCommercialSalesContext(context) ||
+    getActiveBusinessRecommendationContext(context) ||
+    getActiveCommercialPlanContext(context)
+  );
+  const weakCommercialSignal = hasWeakCommercialSignal(text);
+
+  if (!weakCommercialSignal && !hasCommerceContext) {
+    return { ok: false, reason: 'no_commercial_signal' };
+  }
+
+  return {
+    ok: true,
+    reason: hasCommerceContext ? 'commercial_low_confidence_with_context' : 'commercial_ambiguous_signal'
+  };
+}
+
+async function resolveAiAssistDecision({
+  clinic,
+  conversation,
+  inboundText,
+  aiDecision,
+  safeContext
+}) {
+  const decision = aiDecision && typeof aiDecision === 'object' ? aiDecision : null;
+  if (!decision || decision.routingDecision === 'fallback_current') {
+    return null;
+  }
+
+  const currentSalesContext = getActiveCommercialSalesContext(safeContext);
+  const effectiveSalesContext = buildAiAssistSalesContext(decision.entities || {}, currentSalesContext);
+  const derivedBusinessContext =
+    deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) ||
+    getActiveBusinessRecommendationContext(safeContext);
+  const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+  const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+  const recommendationMap = {
+    recommend_plan_starter: 'starter',
+    recommend_plan_growth: 'growth',
+    recommend_plan_enterprise: 'enterprise'
+  };
+
+  const buildBasePatch = (product = null, extra = {}) => ({
+    ...buildCommercialSalesContextPatch({
+      ...effectiveSalesContext,
+      lastRecommendedPlan: product ? product.name : effectiveSalesContext.lastRecommendedPlan,
+      lastRecommendationReason: decision.reason || effectiveSalesContext.lastRecommendationReason || null
+    }),
+    ...(derivedBusinessContext
+      ? buildBusinessRecommendationContextPatch(derivedBusinessContext)
+      : {}),
+    ...(product
+      ? buildCommercialPlanContextPatch({
+        topic: 'ai_assist',
+        lastDiscussedPlanId: product.id || product.productId || null,
+        recommendationType: normalizeProductRecommendationType(product, orderedPlans)
+      })
+      : {}),
+    ...(product
+      ? buildCommercialShortMemoryPatch({
+        topic: 'plans',
+        lastSuggestedProductId: product.id || product.productId || null,
+        recommendationType: normalizeProductRecommendationType(product, orderedPlans),
+        lastReplyKey: normalizeCommandText(decision.suggestedReplyIntent)
+      })
+      : {}),
+    ...extra
+  });
+
+  if (decision.routingDecision === 'ask_clarifying_question') {
+    return {
+      type: 'recommendation',
+      replyText: buildSalesDiscoveryQuestion(),
+      contextPatch: buildBasePatch(null)
+    };
+  }
+
+  if (decision.suggestedReplyIntent === 'compare_plans') {
+    return {
+      type: 'recommendation',
+      replyText: buildPlanComparisonReply(orderedPlans),
+      contextPatch: buildBasePatch(null)
+    };
+  }
+
+  if (
+    decision.suggestedReplyIntent === 'recommend_plan_by_business_context' ||
+    decision.suggestedReplyIntent === 'explain_business_fit'
+  ) {
+    if (!orderedPlans.length) return null;
+    const plan = derivedBusinessContext
+      ? findPlanByBusinessRecommendationContext(orderedPlans, derivedBusinessContext)
+      : null;
+    if (!plan) {
+      return {
+        type: 'recommendation',
+        replyText: buildSalesDiscoveryQuestion(),
+        contextPatch: buildBasePatch(null)
+      };
+    }
+    return {
+      type: 'recommendation',
+      replyText: buildBusinessContextPlanRecommendationReply(plan, derivedBusinessContext, orderedPlans),
+      contextPatch: buildBasePatch(plan)
+    };
+  }
+
+  if (recommendationMap[decision.suggestedReplyIntent]) {
+    const plan = findPlanByNeedHint(orderedPlans, recommendationMap[decision.suggestedReplyIntent]);
+    if (!plan) return null;
+    return {
+      type: 'recommendation',
+      replyText: derivedBusinessContext
+        ? buildBusinessContextPlanRecommendationReply(plan, derivedBusinessContext, orderedPlans)
+        : buildPlanRecommendationReply(plan, effectiveSalesContext, orderedPlans),
+      contextPatch: buildBasePatch(plan)
+    };
+  }
+
+  const objectionMap = {
+    handle_objection_price: 'price_high',
+    handle_objection_starting: 'starting',
+    handle_objection_excel: 'excel_existing',
+    handle_objection_whatsapp_manual: 'whatsapp_manual',
+    handle_objection_crm_existing: 'crm_existing',
+    handle_objection_later: 'later',
+    handle_objection_consulting: 'consulting'
+  };
+  if (objectionMap[decision.suggestedReplyIntent]) {
+    const fallbackPlan =
+      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, getActiveCommercialPlanContext(safeContext), getActiveCommercialShortMemory(safeContext)) ||
+      (derivedBusinessContext ? findPlanByBusinessRecommendationContext(orderedPlans, derivedBusinessContext) : null) ||
+      findPlanByNeedHint(orderedPlans, derivedBusinessContext ? derivedBusinessContext.recommendationLevel : 'growth');
+    if (!fallbackPlan) {
+      return {
+        type: 'recommendation',
+        replyText: buildSalesDiscoveryQuestion(),
+        contextPatch: buildBasePatch(null)
+      };
+    }
+    const objectionReply = buildCommercialPlanObjectionReply(
+      objectionMap[decision.suggestedReplyIntent],
+      fallbackPlan,
+      effectiveSalesContext,
+      orderedPlans,
+      inboundText,
+      { isRepeated: false }
+    );
+    if (!objectionReply) return null;
+    const targetPlan = objectionReply.targetPlan || fallbackPlan;
+    return {
+      type: 'recommendation',
+      replyText: objectionReply.replyText,
+      contextPatch: buildBasePatch(targetPlan, buildCommercialShortMemoryPatch({
+        topic: 'plans',
+        lastSuggestedProductId: targetPlan.id || targetPlan.productId || null,
+        recommendationType: normalizeProductRecommendationType(targetPlan, orderedPlans),
+        lastObjectionType: objectionMap[decision.suggestedReplyIntent],
+        lastReplyKey: objectionReply.replyKey
+      }))
+    };
+  }
+
+  if (
+    decision.suggestedReplyIntent === 'general_commerce_followup' ||
+    decision.suggestedReplyIntent === 'implementation_followup'
+  ) {
+    return {
+      type: 'recommendation',
+      replyText: buildSalesDiscoveryQuestion(),
+      contextPatch: buildBasePatch(null)
+    };
+  }
+
+  return null;
 }
 
 function pickTextVariant(seed, options) {
@@ -11817,36 +12130,104 @@ async function processConversationReplyJob(job) {
   }
 
   if (
-    intent === 'unknown' &&
-    commercialIntent.type === 'unknown' &&
     !shouldPrioritizeAgendaFlow &&
     !shouldShortCircuitToDemoSourceOfTruth &&
-    !inboundLooksLikeCommerce &&
-    !inboundLooksLikeCommerceCancel &&
-    !transferPaymentIntent &&
-    !isGreetingIntent(inboundText)
+    !inboundLooksLikeCommerceCancel
   ) {
-    const intelligentFallback = buildIntelligentFallbackReply(safeContext, inboundText);
-    await conversationRepo.updateConversationState({
-      conversationId: conversation.id,
-      state: conversation.state || 'READY',
-      contextPatch: intelligentFallback.contextPatch
+    const aiAssistInvocation = shouldInvokeAiAssist({
+      botRoute,
+      intent,
+      commercialIntent,
+      transferPaymentIntent,
+      inboundText,
+      safeContext
     });
+    if (aiAssistInvocation.ok) {
+      const aiAssistResult = await classifyCommerceAiAssist({
+        clinicId: conversation.clinicId,
+        conversationId: conversation.id,
+        message: inboundText,
+        context: safeContext,
+        recentMessages: Array.isArray(recentMessages)
+          ? recentMessages.map((item) => item && (item.text || item.body || item.message || '')).filter(Boolean)
+          : [],
+        reason: aiAssistInvocation.reason
+      });
 
-    await sendAndPersistReply({
-      clinicId: conversation.clinicId,
-      channel,
-      conversationId: conversation.id,
-      contact,
-      text: intelligentFallback.replyText,
-      automation: {
-        ...replyAutomationMeta,
-        source: 'intelligent_fallback'
-      },
-      requestId,
-      correlationMessageId: waMessageId || inboundMessage.id
-    });
-    return;
+      if (aiAssistResult.ok && aiAssistResult.decision.confidence >= 0.62) {
+        const aiAssistReply = await resolveAiAssistDecision({
+          clinic,
+          conversation,
+          inboundText,
+          aiDecision: aiAssistResult.decision,
+          safeContext
+        });
+
+        if (aiAssistReply) {
+          await conversationRepo.updateConversationState({
+            conversationId: conversation.id,
+            state: conversation.state || 'READY',
+            contextPatch: aiAssistReply.contextPatch || null
+          });
+
+          await sendAndPersistReply({
+            clinicId: conversation.clinicId,
+            channel,
+            conversationId: conversation.id,
+            contact,
+            text: aiAssistReply.replyText,
+            outboundMedia: aiAssistReply.outboundMedia || null,
+            automation: {
+              ...replyAutomationMeta,
+              source: 'ai_assist'
+            },
+            requestId,
+            correlationMessageId: waMessageId || inboundMessage.id
+          });
+          return;
+        }
+      } else {
+        logInfo('ai_assist_skipped_or_low_confidence', {
+          requestId,
+          jobId: job.id,
+          conversationId: conversation.id,
+          clinicId: conversation.clinicId,
+          ok: aiAssistResult.ok === true,
+          reason: aiAssistResult.reason || null,
+          confidence: aiAssistResult.decision ? aiAssistResult.decision.confidence : null
+        });
+      }
+    }
+
+    if (
+      intent === 'unknown' &&
+      commercialIntent.type === 'unknown' &&
+      !inboundLooksLikeCommerce &&
+      !transferPaymentIntent &&
+      !isGreetingIntent(inboundText)
+    ) {
+      const intelligentFallback = buildIntelligentFallbackReply(safeContext, inboundText);
+      await conversationRepo.updateConversationState({
+        conversationId: conversation.id,
+        state: conversation.state || 'READY',
+        contextPatch: intelligentFallback.contextPatch
+      });
+
+      await sendAndPersistReply({
+        clinicId: conversation.clinicId,
+        channel,
+        conversationId: conversation.id,
+        contact,
+        text: intelligentFallback.replyText,
+        automation: {
+          ...replyAutomationMeta,
+          source: 'intelligent_fallback'
+        },
+        requestId,
+        correlationMessageId: waMessageId || inboundMessage.id
+      });
+      return;
+    }
   }
 
   const workerOwnsCommerceFlow =
@@ -13391,6 +13772,12 @@ module.exports = {
     buildCommercialGreetingReply,
     buildCommercialIndecisionReply,
     hasWeakCommercialSignal,
+    normalizeAiAssistBusinessType,
+    normalizeAiAssistTeamSizeSignal,
+    normalizeAiAssistPainPoints,
+    buildAiAssistSalesContext,
+    shouldInvokeAiAssist,
+    resolveAiAssistDecision,
     buildLoyaltyWhatsAppReply,
     buildLoyaltyContextPatch,
     getPendingLoyaltyOfferedAction,

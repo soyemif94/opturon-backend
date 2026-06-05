@@ -67,10 +67,40 @@ async function countRecentEventsByType(clinicId, conversationId, type, withinMin
   return (result.rows[0] && result.rows[0].total) || 0;
 }
 
+async function countEventsByType(clinicId, conversationId, type, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT COUNT(*)::int AS total
+     FROM conversation_events
+     WHERE "clinicId" = $1
+       AND "conversationId" = $2
+       AND type = $3`,
+    [clinicId, conversationId, type]
+  );
+
+  return (result.rows[0] && result.rows[0].total) || 0;
+}
+
+async function countClinicEventsByTypeCurrentMonth(clinicId, type, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT COUNT(*)::int AS total
+     FROM conversation_events
+     WHERE "clinicId" = $1
+       AND type = $2
+       AND "createdAt" >= date_trunc('month', NOW())`,
+    [clinicId, type]
+  );
+
+  return (result.rows[0] && result.rows[0].total) || 0;
+}
+
 module.exports = {
   addEvent,
   listEvents,
   findLatestEventByType,
-  countRecentEventsByType
+  countRecentEventsByType,
+  countEventsByType,
+  countClinicEventsByTypeCurrentMonth
 };
 
