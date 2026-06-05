@@ -128,12 +128,22 @@ function buildAiAssistSystemPrompt() {
     'Si preguntan por muchos productos, Excel, carga o importacion de catalogo, considera catalog_import_fit.',
     'Cuando una de esas clases aplique y haya suficiente señal, usa routingDecision=use_existing_commerce_reply.',
     'No mandes fallback_current si la consulta comercial es clara y coincide con una de esas clases.',
+    'Si el usuario describe tipo de negocio + canales + equipo o tamaño de operacion y pregunta que ofrece Opturon, eso es commerce con business_fit o plan_recommendation, no seller_replacement.',
+    'Si hay señales suficientes y claras, usa confidence >= 0.7.',
+    'No clasifiques seller_replacement salvo que pregunten explicitamente si Opturon reemplaza vendedores, equipo humano o permite prescindir de personas.',
+    'Si mencionan Instagram junto con WhatsApp, extrae channels=["whatsapp","instagram"] y considera business_fit o channel_compatibility.',
+    'Si mencionan distribuidora, rotiseria, peluqueria, ropa o servicios, extrae businessType.',
+    'Si dicen no tengo muchos vendedores o tengo poco equipo, eso describe teamSize small y no implica seller_replacement.',
     'Ejemplos: "vendo tambien por instagram, es compatible?" -> intent=channel_compatibility, suggestedReplyIntent=channel_compatibility.',
     'Ejemplos: "puedo usar mi numero actual de whatsapp?" -> intent=whatsapp_number_portability, suggestedReplyIntent=whatsapp_number_portability.',
     'Ejemplos: "esto reemplaza a mis vendedores?" -> intent=seller_replacement, suggestedReplyIntent=seller_replacement.',
     'Ejemplos: "sirve para una rotiseria?" o "sirve para una peluqueria?" -> intent=industry_fit, suggestedReplyIntent=industry_fit.',
     'Ejemplos: "puedo conectar dos sucursales?" -> intent=feature_fit, suggestedReplyIntent=feature_fit.',
-    'Ejemplos: "tengo muchos productos, como los cargo?" -> intent=catalog_import_fit, suggestedReplyIntent=catalog_import_fit.'
+    'Ejemplos: "tengo muchos productos, como los cargo?" -> intent=catalog_import_fit, suggestedReplyIntent=catalog_import_fit.',
+    'Ejemplo de salida esperada para: "Hola Opturon, tengo una distribuidora y vendo por whatsapp e instagram pero no tengo muchos vendedores, que tenes para ofrecerme?" => {"domain":"commerce","intent":"business_fit","confidence":0.85,"entities":{"businessType":"distribution","teamSize":"small","channels":["whatsapp","instagram"]},"routingDecision":"use_existing_commerce_reply","suggestedReplyIntent":"feature_fit","reason":"El usuario describe su operación comercial y pregunta qué puede ofrecer Opturon."}',
+    'Ejemplo de salida esperada para: "esto reemplaza a mis vendedores?" => {"domain":"commerce","intent":"seller_replacement","confidence":0.9,"entities":{},"routingDecision":"use_existing_commerce_reply","suggestedReplyIntent":"seller_replacement","reason":"El usuario pregunta explícitamente si Opturon reemplaza vendedores humanos."}',
+    'Ejemplo de salida esperada para: "vendo también por instagram, su software es compatible?" => {"domain":"commerce","intent":"channel_compatibility","confidence":0.85,"entities":{"channels":["instagram"]},"routingDecision":"use_existing_commerce_reply","suggestedReplyIntent":"channel_compatibility","reason":"Pregunta si Opturon es compatible con el canal Instagram."}',
+    'Ejemplo de salida esperada para: "puedo usar mi número actual de whatsapp?" => {"domain":"commerce","intent":"whatsapp_number_portability","confidence":0.9,"entities":{"channels":["whatsapp"]},"routingDecision":"use_existing_commerce_reply","suggestedReplyIntent":"whatsapp_number_portability","reason":"Pregunta si puede conservar su número actual de WhatsApp."}'
   ].join('\n');
 }
 
@@ -185,9 +195,17 @@ function normalizeChannels(value) {
 
 function normalizeEntities(value) {
   const safe = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const rawTeamSize = normalizeIntentText(safe.teamSize);
+  const normalizedTeamSize =
+    rawTeamSize.includes('small') ||
+    rawTeamSize.includes('pocos vendedores') ||
+    rawTeamSize.includes('poco equipo') ||
+    rawTeamSize.includes('equipo chico')
+      ? 'small'
+      : rawTeamSize || null;
   return {
     businessType: normalizeIntentText(safe.businessType) || null,
-    teamSize: normalizeIntentText(safe.teamSize) || null,
+    teamSize: normalizedTeamSize,
     channels: normalizeChannels(safe.channels),
     currentTool: normalizeIntentText(safe.currentTool) || null,
     stage: normalizeIntentText(safe.stage) || null,

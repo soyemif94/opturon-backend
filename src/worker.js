@@ -3518,6 +3518,15 @@ function normalizeAiAssistTeamSizeSignal(value) {
   }
 
   if (
+    text.includes('small') ||
+    text.includes('pocos vendedores') ||
+    text.includes('poco equipo') ||
+    text.includes('equipo chico')
+  ) {
+    return 'team';
+  }
+
+  if (
     text.includes('solo') ||
     text.includes('yo') ||
     text.includes('arranco solo') ||
@@ -3527,6 +3536,25 @@ function normalizeAiAssistTeamSizeSignal(value) {
   }
 
   return null;
+}
+
+const SAFE_LOW_CONFIDENCE_AI_ASSIST_REPLY_INTENTS = new Set([
+  'channel_compatibility',
+  'whatsapp_number_portability',
+  'seller_replacement',
+  'industry_fit',
+  'feature_fit',
+  'catalog_import_fit'
+]);
+
+function canUseSafeLowConfidenceAiAssistDecision(aiAssistDecision) {
+  const decision = aiAssistDecision && typeof aiAssistDecision === 'object' ? aiAssistDecision : null;
+  if (!decision) return false;
+  if (decision.confidence === 0) return false;
+  if (decision.confidence >= 0.62) return true;
+  if (decision.confidence <= 0.45) return false;
+  if (decision.routingDecision !== 'use_existing_commerce_reply') return false;
+  return SAFE_LOW_CONFIDENCE_AI_ASSIST_REPLY_INTENTS.has(String(decision.suggestedReplyIntent || '').trim());
 }
 
 function normalizeAiAssistPainPoints(entities = {}) {
@@ -12427,7 +12455,7 @@ async function processConversationReplyJob(job) {
         reason: aiAssistInvocation.reason
       });
 
-      if (aiAssistResult.ok && aiAssistResult.decision.confidence >= 0.62) {
+      if (aiAssistResult.ok && canUseSafeLowConfidenceAiAssistDecision(aiAssistResult.decision)) {
         const aiAssistReply = await resolveAiAssistDecision({
           clinic,
           conversation,
@@ -14050,6 +14078,7 @@ module.exports = {
     normalizeAiAssistTeamSizeSignal,
     normalizeAiAssistPainPoints,
     buildAiAssistSalesContext,
+    canUseSafeLowConfidenceAiAssistDecision,
     shouldInvokeAiAssist,
     resolveAiAssistDecision,
     buildLoyaltyWhatsAppReply,
