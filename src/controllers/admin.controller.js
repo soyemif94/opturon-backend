@@ -9,7 +9,8 @@ const {
   createSaasSubscriptionForTenant,
   listSaasSubscriptionsForAdmin,
   getSaasSubscriptionDetails,
-  executeSubscriptionAction
+  executeSubscriptionAction,
+  sendSaasSubscriptionAuthorizationLinkEmail
 } = require('../services/saas-billing.service');
 const { logError } = require('../utils/logger');
 
@@ -319,6 +320,32 @@ async function postAdminBillingSubscriptionAction(req, res) {
   }
 }
 
+async function postAdminBillingSubscriptionSendLink(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+
+  try {
+    const result = await sendSaasSubscriptionAuthorizationLinkEmail({ tenantId });
+    if (!result.ok) {
+      return res.status(result.status || 400).json({
+        success: false,
+        error: result.reason
+      });
+    }
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    logError('billing_subscription_send_link_failed', {
+      tenantId,
+      cause: error && error.message ? error.message : 'unknown_error'
+    });
+    return res.status(500).json({
+      success: false,
+      error: 'billing_subscription_send_link_failed',
+      detail: error.message
+    });
+  }
+}
+
 module.exports = {
   postSetActiveTenant,
   getTenants,
@@ -328,5 +355,6 @@ module.exports = {
   getAdminBillingSubscriptions,
   postAdminBillingSubscription,
   getAdminBillingSubscription,
-  postAdminBillingSubscriptionAction
+  postAdminBillingSubscriptionAction,
+  postAdminBillingSubscriptionSendLink
 };

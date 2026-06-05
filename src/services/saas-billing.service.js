@@ -23,7 +23,8 @@ const {
   mapMercadoPagoPaymentStatus
 } = require('./mercado-pago.service');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
-const { logError } = require('../utils/logger');
+const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
+const { logError, logInfo } = require('../utils/logger');
 
 const ALLOWED_PLAN_CODES = new Set(['inicial', 'crecimiento', 'empresa']);
 const ALLOWED_LOCAL_STATUSES = new Set(['pending', 'active', 'paused', 'canceled', 'payment_failed', 'suspended']);
@@ -55,6 +56,19 @@ function normalizeAmount(value) {
 
 function normalizeCurrency(value) {
   return normalizeString(value).toUpperCase() || 'ARS';
+}
+
+function planLabel(planCode) {
+  const definition = resolveSaasPlanDefinition(planCode);
+  return definition ? definition.label : normalizeString(planCode) || 'Plan Opturon';
+}
+
+function maskEmail(value) {
+  const email = normalizeEmail(value);
+  if (!email) return null;
+  const [local, domain] = email.split('@');
+  if (!local || !domain) return null;
+  return `${local.slice(0, 2) || '*'}***@${domain}`;
 }
 
 function parseSettings(raw) {
@@ -280,6 +294,97 @@ async function listSaasSubscriptionsForAdmin(filters = {}) {
   return { ok: true, subscriptions: items };
 }
 
+async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
+  const tenantId = normalizeString(input && input.tenantId);
+  if (!tenantId) return { ok: false, reason: 'missing_tenant_id', status: 400 };
+
+  const clinic = await findClinicByExternalTenantId(tenantId);
+  if (!clinic) return { ok: false, reason: 'tenant_not_found', status: 404 };
+
+  const subscription = await findLatestSaasSubscriptionByTenantId(tenantId);
+  if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
+  if (subscription.localStatus !== 'pending') {
+    return { ok: false, reason: 'subscription_not_pending', status: 409 };
+  }
+  if (!normalizeString(subscription.authorizationUrl)) {
+    return { ok: false, reason: 'subscription_authorization_link_missing', status: 409 };
+  }
+
+  const metadata = subscription.metadata && typeof subscription.metadata === 'object' ? subscription.metadata : {};
+  const billingLinkEmail = metadata.billingLinkEmail && typeof metadata.billingLinkEmail === 'object'
+    ? metadata.billingLinkEmail
+    : {};
+  const lastSentAt = normalizeString(billingLinkEmail.lastSentAt);
+  if (lastSentAt) {
+    const lastSentAtMs = new Date(lastSentAt).getTime();
+    if (Number.isFinite(lastSentAtMs) && Date.now() - lastSentAtMs < 60 * 1000) {
+      return { ok: false, reason: 'subscription_authorization_email_recently_sent', status: 409 };
+    }
+  }
+
+  const destinationEmail = normalizeEmail(subscription.mercadoPagoPayerEmail);
+  if (!destinationEmail) {
+    return { ok: false, reason: 'subscription_payer_email_missing', status: 409 };
+  }
+
+  try {
+    const delivery = await sendBillingSubscriptionAuthorizationEmail({
+      email: destinationEmail,
+      clientName: normalizeString(clinic.name) || tenantId,
+      planLabel: planLabel(subscription.planCode),
+      amount: subscription.amount,
+      currency: subscription.currency,
+      authorizationUrl: subscription.authorizationUrl
+    });
+
+    const sentAt = new Date().toISOString();
+    const updated = await updateSaasSubscriptionById(subscription.id, {
+      metadata: {
+        billingLinkEmail: {
+          lastSentAt: sentAt,
+          lastSentTo: destinationEmail,
+          provider: delivery.provider,
+          providerMessageId: delivery.id || null,
+          status: 'sent'
+        }
+      }
+    });
+
+    logInfo('billing_subscription_authorization_email_sent', {
+      tenantId,
+      subscriptionId: subscription.id,
+      planCode: subscription.planCode,
+      localStatus: subscription.localStatus,
+      email: maskEmail(destinationEmail),
+      provider: delivery.provider
+    });
+
+    return {
+      ok: true,
+      subscription: updated,
+      delivery: {
+        to: destinationEmail,
+        provider: delivery.provider,
+        sentAt
+      }
+    };
+  } catch (error) {
+    logError('billing_subscription_authorization_email_failed', {
+      tenantId,
+      subscriptionId: subscription.id,
+      planCode: subscription.planCode,
+      email: maskEmail(destinationEmail),
+      provider: 'resend',
+      status: Number.isInteger(Number(error && error.status)) ? Number(error.status) : null,
+      body: error && error.body ? error.body : null,
+      cause: error && error.message ? error.message : 'unknown_error'
+    });
+
+    const reason = error && error.code ? String(error.code) : 'billing_link_email_send_failed';
+    return { ok: false, reason, status: reason === 'billing_link_email_not_configured' ? 503 : 502 };
+  }
+}
+
 async function executeSubscriptionAction(subscriptionId, action) {
   const subscription = await findSaasSubscriptionById(subscriptionId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
@@ -495,6 +600,7 @@ module.exports = {
   createSaasSubscriptionForTenant,
   getSaasSubscriptionDetails,
   listSaasSubscriptionsForAdmin,
+  sendSaasSubscriptionAuthorizationLinkEmail,
   executeSubscriptionAction,
   refreshSubscriptionFromMercadoPagoByPreapprovalId,
   processMercadoPagoWebhook,

@@ -118,6 +118,10 @@ const env = {
   googleServiceAccountEmail: String(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '').trim(),
   googlePrivateKey: String(process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
   portalInternalKey: String(process.env.PORTAL_INTERNAL_KEY || '').trim(),
+  resendApiKey: String(process.env.RESEND_API_KEY || '').trim(),
+  resetEmailFrom: String(process.env.RESET_EMAIL_FROM || '').trim(),
+  portalInvitationEmailFrom: String(process.env.PORTAL_INVITATION_EMAIL_FROM || '').trim(),
+  billingEmailFrom: String(process.env.BILLING_EMAIL_FROM || '').trim(),
 
   mercadoPagoAccessToken: String(process.env.MERCADO_PAGO_ACCESS_TOKEN || '').trim(),
   mercadoPagoPublicKey: String(process.env.MERCADO_PAGO_PUBLIC_KEY || '').trim(),
