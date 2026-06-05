@@ -2951,9 +2951,77 @@ function isPlanWorthItIntent(rawText) {
   return (
     text.includes('vale la pena') ||
     text === 'me conviene' ||
-    text.includes('me sirve') ||
-    text.includes('sirve para mi')
+      text.includes('me sirve') ||
+      text.includes('sirve para mi')
   );
+}
+
+function isCurrentMessageAskingForPlanRecommendation(rawText, commercialIntent = null, detectedSalesContext = null) {
+  const text = normalizeCommandText(rawText);
+  const safeCommercialIntent = commercialIntent && typeof commercialIntent === 'object' ? commercialIntent : {};
+  const safeDetectedSalesContext = detectedSalesContext && typeof detectedSalesContext === 'object' ? detectedSalesContext : null;
+  if (!text) return false;
+
+  if (safeCommercialIntent.type === 'recommendation') {
+    return true;
+  }
+
+  if (
+    isPlanRecommendationIntent(text) ||
+    isPlanComparisonIntent(text) ||
+    isPlanVsPlanIntent(text) ||
+    isRecommendationWhyFollowUpIntent(text) ||
+    isPlanWorthItIntent(text) ||
+    hasPlanComparisonSemanticCue(text) ||
+    isContextualPlanQuestionIntent(text)
+  ) {
+    return true;
+  }
+
+  const mentionsPlanByName = /\b(plan|planes|inicial|crecimiento|empresa)\b/.test(text);
+  const asksToChoose = (
+    text.includes('cual') ||
+    text.includes('cuál') ||
+    text.includes('eleg') ||
+    text.includes('elijo') ||
+    text.includes('conviene') ||
+    text.includes('recomend') ||
+    text.includes('usar') ||
+    text.includes('sirve mas') ||
+    text.includes('sirve más')
+  );
+  if (mentionsPlanByName && asksToChoose) {
+    return true;
+  }
+
+  if (!safeDetectedSalesContext) {
+    return false;
+  }
+
+  const hasBusinessSizingSignals = Boolean(
+    safeDetectedSalesContext.businessType ||
+    safeDetectedSalesContext.whatsappVolume ||
+    safeDetectedSalesContext.teamSizeSignal ||
+    (Array.isArray(safeDetectedSalesContext.painPoints) && safeDetectedSalesContext.painPoints.length)
+  );
+  const asksForWhatToUse = (
+    text.includes('que plan') ||
+    text.includes('qué plan') ||
+    text.includes('cual uso') ||
+    text.includes('cuál uso') ||
+    text.includes('que uso') ||
+    text.includes('qué uso') ||
+    text.includes('cual elijo') ||
+    text.includes('cuál elijo') ||
+    text.includes('que plan elijo') ||
+    text.includes('qué plan elijo') ||
+    text.includes('me conviene') ||
+    text.includes('recomend') ||
+    text.includes('sirve mas') ||
+    text.includes('sirve más')
+  );
+
+  return hasBusinessSizingSignals && asksForWhatToUse;
 }
 
 function isRecommendationWhyFollowUpIntent(rawText) {
@@ -7127,6 +7195,17 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   }
 
   if (effectiveBusinessContext) {
+    if (!isCurrentMessageAskingForPlanRecommendation(inboundText, commercialIntent, detectedSalesContext)) {
+      logInfo('commercial_recommendation_context_skipped', {
+        inboundText: normalizedText,
+        commercialIntentType: commercialIntent.type || 'unknown',
+        hasDetectedSalesContext: Boolean(detectedSalesContext),
+        recommendationLevel: effectiveBusinessContext.recommendationLevel || null,
+        businessType: effectiveBusinessContext.businessType || null
+      });
+      return null;
+    }
+
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
     const orderedPlans = getOrderedPlanProducts(eligibleProducts);
@@ -13752,6 +13831,7 @@ module.exports = {
     isPlanRecommendationIntent,
     isPlanPricingIntent,
     isPlanWorthItIntent,
+    isCurrentMessageAskingForPlanRecommendation,
     isCommercialSoftFollowUpIntent,
     isLoyaltyIntent,
     detectCommercialIntent,
