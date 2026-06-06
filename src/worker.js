@@ -3415,8 +3415,50 @@ function buildAiAssistFeatureContextPatch({ safeContext, effectiveSalesContext, 
   };
 }
 
+function scopeSalesContextByIntent(intent, salesContext = {}) {
+  const safeIntent = String(intent || '').trim().toLowerCase();
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+
+  if (safeIntent === 'seller_replacement') {
+    return {
+      teamSizeSignal: safeContext.teamSizeSignal || null
+    };
+  }
+
+  if (safeIntent === 'whatsapp_number_portability') {
+    return {};
+  }
+
+  if (safeIntent === 'catalog_import_fit') {
+    return {};
+  }
+
+  if (safeIntent === 'industry_fit') {
+    return {
+      businessType: safeContext.businessType || null,
+      whatsappVolume: safeContext.whatsappVolume || null,
+      teamSizeSignal: safeContext.teamSizeSignal || null
+    };
+  }
+
+  if (safeIntent === 'feature_fit') {
+    return {
+      teamSizeSignal: safeContext.teamSizeSignal || null
+    };
+  }
+
+  if (safeIntent === 'channel_compatibility') {
+    return {
+      whatsappVolume: safeContext.whatsappVolume || null
+    };
+  }
+
+  return {};
+}
+
 function buildChannelCompatibilityReply(effectiveSalesContext = {}, derivedBusinessContext = null) {
-  const businessLead = describeSalesContextShort(effectiveSalesContext);
+  const scopedContext = scopeSalesContextByIntent('channel_compatibility', effectiveSalesContext);
+  const businessLead = describeSalesContextShort(scopedContext);
   const businessLine = businessLead
     ? `Si hoy trabajás con ${businessLead}, te ayuda a ordenar mejor las consultas y no perder oportunidades.`
     : 'Te ayuda a ordenar mejor las consultas, responder más rápido y dar seguimiento sin perder oportunidades.';
@@ -3446,7 +3488,8 @@ function buildWhatsAppNumberPortabilityReply() {
 }
 
 function buildSellerReplacementReply(effectiveSalesContext = {}) {
-  const contextLead = describeSalesContextShort(effectiveSalesContext);
+  const scopedContext = scopeSalesContextByIntent('seller_replacement', effectiveSalesContext);
+  const contextLead = describeSalesContextShort(scopedContext);
   return [
     'No, no busca reemplazar a tu equipo 😊',
     '',
@@ -3464,7 +3507,8 @@ function buildSellerReplacementReply(effectiveSalesContext = {}) {
 function buildIndustryFitReply(inboundText, effectiveSalesContext = {}) {
   const text = normalizeCommandText(inboundText);
   const explicitBusinessType = normalizeAiAssistBusinessType(text);
-  const businessType = explicitBusinessType || effectiveSalesContext.businessType || null;
+  const scopedContext = scopeSalesContextByIntent('industry_fit', effectiveSalesContext);
+  const businessType = explicitBusinessType || scopedContext.businessType || null;
   const label = (
     businessType === 'food_business' ? 'una rotisería o negocio de comida' :
       businessType === 'beauty_business' ? 'una peluquería o negocio de estética' :
@@ -3492,6 +3536,7 @@ function buildIndustryFitReply(inboundText, effectiveSalesContext = {}) {
 
 function buildFeatureFitReply(inboundText, effectiveSalesContext = {}) {
   const text = normalizeCommandText(inboundText);
+  const scopedContext = scopeSalesContextByIntent('feature_fit', effectiveSalesContext);
 
   if (text.includes('sucursal')) {
     return [
@@ -3504,7 +3549,7 @@ function buildFeatureFitReply(inboundText, effectiveSalesContext = {}) {
     ].join('\n');
   }
 
-  const contextLead = describeSalesContextShort(effectiveSalesContext);
+  const contextLead = describeSalesContextShort(scopedContext);
   return [
     'Sí, puede servirte 😊',
     '',
