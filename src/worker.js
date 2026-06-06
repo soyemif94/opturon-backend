@@ -1297,6 +1297,44 @@ function isCommerceEntryIntent(rawText) {
   );
 }
 
+function detectWeakCommercialSignal(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+  const detectedIntent = detectIntent(text);
+
+  if (detectCommercialIntent(text).type !== 'unknown') return 'known_commercial_intent';
+  if (Boolean(parseTransferPaymentIntent(text))) return 'transfer_payment_phrase';
+  if (Boolean(detectCommercialPlanObjection(text))) return 'plan_objection_phrase';
+  if (isPlanRecommendationIntent(text)) return 'plan_recommendation_phrase';
+  if (isPlanComparisonIntent(text)) return 'plan_comparison_phrase';
+  if (isPlanWorthItIntent(text)) return 'plan_worth_it_phrase';
+  if (isLoyaltyIntent(text)) return 'loyalty_phrase';
+  if (detectedIntent === 'appointment') return 'appointment_phrase';
+  if (detectedIntent === 'human') return 'human_phrase';
+  if (/\b(whatsapp\s+e\s+instagram|whatsapp\s+y\s+instagram)\b/.test(text)) return 'whatsapp_instagram_combo';
+  if (/\b(vendo|venden|ventas?)\s+(tambien\s+)?por\b/.test(text)) return 'selling_channel_phrase';
+  if (/\b(instagram|compatib(?:le|ilidad)|software|sirve\s+para|me\s+sirve|funciona\s+para|mi\s+negocio|distribuidora|rotiseria|peluqueria|sucursal(?:es)?|vendedores?)\b/.test(text)) {
+    return 'product_fit_phrase';
+  }
+  if (/\b(numero\s+actual\s+de\s+whatsapp|usar\s+mi\s+numero\s+actual|mi\s+numero\s+actual\s+de\s+whatsapp)\b/.test(text)) {
+    return 'whatsapp_number_portability_phrase';
+  }
+  if (/\b(reemplaza\s+a\s+mis\s+vendedores|reemplaza\s+vendedores)\b/.test(text)) {
+    return 'seller_replacement_phrase';
+  }
+  if (/\b(muchos\s+productos|como\s+los\s+cargo|como\s+cargo|cargar\s+productos)\b/.test(text)) {
+    return 'catalog_import_phrase';
+  }
+  if (/\b(plan|planes|precio|precios|producto|productos|negocio|vender|ventas|whatsapp|servicio|catalogo|pago|pagarte|abono|comprobante|aceptan|presupuesto|recomendacion|fidelizacion|recompensa|turno|agenda|asesor|persona)\b/.test(text)) {
+    return 'commerce_keyword';
+  }
+  if (text.includes('quiero') && (text.includes('saber') || text.includes('ver'))) {
+    return 'discovery_phrase';
+  }
+
+  return null;
+}
+
 const COMMERCE_PRODUCTS_PAGE_SIZE = 10;
 const COMMERCE_MORE_KEYWORDS = new Set(['mas', 'más', 'ver mas', 'ver más', 'mostrar mas', 'mostrar más', 'siguiente']);
 const COMMERCE_UNCATEGORIZED_CATEGORY_ID = '__uncategorized__';
@@ -3648,7 +3686,7 @@ function shouldInvokeAiAssist({
     getActiveBusinessRecommendationContext(context) ||
     getActiveCommercialPlanContext(context)
   );
-  const weakCommercialSignal = hasWeakCommercialSignal(text);
+  const weakCommercialSignal = detectWeakCommercialSignal(text);
 
   if (!weakCommercialSignal && !hasCommerceContext) {
     return { ok: false, reason: 'no_commercial_signal' };
@@ -3656,7 +3694,8 @@ function shouldInvokeAiAssist({
 
   return {
     ok: true,
-    reason: hasCommerceContext ? 'commercial_low_confidence_with_context' : 'commercial_ambiguous_signal'
+    reason: hasCommerceContext ? 'commercial_low_confidence_with_context' : 'commercial_weak_signal',
+    signal: weakCommercialSignal
   };
 }
 
@@ -3901,23 +3940,7 @@ function pickTextVariant(seed, options) {
 }
 
 function hasWeakCommercialSignal(rawText) {
-  const text = normalizeCommandText(rawText);
-  if (!text) return false;
-  const detectedIntent = detectIntent(text);
-
-  return (
-    detectCommercialIntent(text).type !== 'unknown' ||
-    Boolean(parseTransferPaymentIntent(text)) ||
-    Boolean(detectCommercialPlanObjection(text)) ||
-    isPlanRecommendationIntent(text) ||
-    isPlanComparisonIntent(text) ||
-    isPlanWorthItIntent(text) ||
-    isLoyaltyIntent(text) ||
-    detectedIntent === 'appointment' ||
-    detectedIntent === 'human' ||
-    /\b(plan|planes|precio|precios|producto|productos|negocio|vender|ventas|whatsapp|servicio|catalogo|pago|pagarte|abono|comprobante|aceptan|presupuesto|recomendacion|fidelizacion|recompensa|turno|agenda|asesor|persona)\b/.test(text) ||
-    (text.includes('quiero') && (text.includes('saber') || text.includes('ver')))
-  );
+  return Boolean(detectWeakCommercialSignal(rawText));
 }
 
 function isCommercialSoftFollowUpIntent(rawText) {
@@ -12444,6 +12467,15 @@ async function processConversationReplyJob(job) {
       safeContext
     });
     if (aiAssistInvocation.ok) {
+      if (aiAssistInvocation.reason === 'commercial_weak_signal') {
+        logInfo('ai_assist_weak_signal_detected', {
+          requestId,
+          jobId: job.id,
+          conversationId: conversation.id,
+          clinicId: conversation.clinicId,
+          signal: aiAssistInvocation.signal || null
+        });
+      }
       const aiAssistResult = await classifyCommerceAiAssist({
         clinicId: conversation.clinicId,
         conversationId: conversation.id,
