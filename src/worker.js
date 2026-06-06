@@ -3518,6 +3518,128 @@ function buildCatalogImportFitReply() {
   ].join('\n');
 }
 
+function inferWeakSignalChannels(inboundText) {
+  const text = normalizeCommandText(inboundText);
+  const channels = [];
+  if (text.includes('whatsapp')) channels.push('whatsapp');
+  if (text.includes('instagram')) channels.push('instagram');
+  return channels;
+}
+
+function inferWeakSignalReplyIntent(inboundText, signal) {
+  const text = normalizeCommandText(inboundText);
+  const safeSignal = String(signal || '').trim().toLowerCase();
+
+  if (safeSignal === 'whatsapp_number_portability_phrase' || text.includes('numero actual de whatsapp')) {
+    return 'whatsapp_number_portability';
+  }
+  if (safeSignal === 'seller_replacement_phrase' || text.includes('reemplaza') || text.includes('vendedores')) {
+    return 'seller_replacement';
+  }
+  if (safeSignal === 'catalog_import_phrase' || text.includes('muchos productos') || text.includes('como los cargo') || text.includes('cargar productos')) {
+    return 'catalog_import_fit';
+  }
+  if (
+    text.includes('rotiseria') ||
+    text.includes('rotisería') ||
+    text.includes('peluquer') ||
+    text.includes('distribuidora') ||
+    text.includes('sirve para') ||
+    text.includes('funciona para')
+  ) {
+    return 'industry_fit';
+  }
+  if (text.includes('instagram') || text.includes('compatible') || text.includes('compatibilidad') || text.includes('software')) {
+    return 'channel_compatibility';
+  }
+  return 'feature_fit';
+}
+
+function shouldUseWeakSignalCommercialFallback(aiAssistInvocation, aiAssistResult) {
+  if (!aiAssistInvocation || aiAssistInvocation.ok !== true) return false;
+  if (aiAssistInvocation.reason !== 'commercial_weak_signal') return false;
+  if (!aiAssistResult || aiAssistResult.ok === true) return false;
+  const reason = String(aiAssistResult.reason || '').trim().toLowerCase();
+  if (!reason) return false;
+  return (
+    reason.startsWith('ai_assist_timeout_') ||
+    reason.startsWith('ai_assist_provider_failed_') ||
+    reason.startsWith('ai_assist_invalid_') ||
+    reason.startsWith('ai_assist_provider_not_supported') ||
+    aiAssistResult.failed === true
+  );
+}
+
+function buildWeakSignalCommercialFallback({ inboundText, safeContext, signal }) {
+  const currentSalesContext = getActiveCommercialSalesContext(safeContext);
+  const effectiveSalesContext = buildAiAssistSalesContext({
+    businessType: normalizeAiAssistBusinessType(inboundText),
+    teamSize: normalizeAiAssistTeamSizeSignal(inboundText),
+    channels: inferWeakSignalChannels(inboundText)
+  }, currentSalesContext);
+  const derivedBusinessContext =
+    deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) ||
+    getActiveBusinessRecommendationContext(safeContext);
+  const replyIntent = inferWeakSignalReplyIntent(inboundText, signal);
+  const contextPatch = buildAiAssistFeatureContextPatch({
+    safeContext,
+    effectiveSalesContext,
+    derivedBusinessContext
+  });
+
+  if (replyIntent === 'channel_compatibility') {
+    return {
+      type: 'recommendation',
+      source: 'weak_signal_timeout_fallback',
+      replyText: buildChannelCompatibilityReply(effectiveSalesContext, derivedBusinessContext),
+      contextPatch
+    };
+  }
+
+  if (replyIntent === 'whatsapp_number_portability') {
+    return {
+      type: 'recommendation',
+      source: 'weak_signal_timeout_fallback',
+      replyText: buildWhatsAppNumberPortabilityReply(),
+      contextPatch
+    };
+  }
+
+  if (replyIntent === 'seller_replacement') {
+    return {
+      type: 'recommendation',
+      source: 'weak_signal_timeout_fallback',
+      replyText: buildSellerReplacementReply(effectiveSalesContext),
+      contextPatch
+    };
+  }
+
+  if (replyIntent === 'industry_fit') {
+    return {
+      type: 'recommendation',
+      source: 'weak_signal_timeout_fallback',
+      replyText: buildIndustryFitReply(inboundText, effectiveSalesContext),
+      contextPatch
+    };
+  }
+
+  if (replyIntent === 'catalog_import_fit') {
+    return {
+      type: 'recommendation',
+      source: 'weak_signal_timeout_fallback',
+      replyText: buildCatalogImportFitReply(),
+      contextPatch
+    };
+  }
+
+  return {
+    type: 'recommendation',
+    source: 'weak_signal_timeout_fallback',
+    replyText: buildFeatureFitReply(inboundText, effectiveSalesContext),
+    contextPatch
+  };
+}
+
 function normalizeAiAssistBusinessType(value) {
   const text = normalizeCommandText(value);
   if (!text) return null;
@@ -12520,6 +12642,45 @@ async function processConversationReplyJob(job) {
           return;
         }
       } else {
+        if (shouldUseWeakSignalCommercialFallback(aiAssistInvocation, aiAssistResult)) {
+          const weakSignalFallback = buildWeakSignalCommercialFallback({
+            inboundText,
+            safeContext,
+            signal: aiAssistInvocation.signal || null
+          });
+
+          if (weakSignalFallback) {
+            logInfo('ai_assist_weak_signal_fallback_used', {
+              requestId,
+              jobId: job.id,
+              conversationId: conversation.id,
+              clinicId: conversation.clinicId,
+              signal: aiAssistInvocation.signal || null,
+              aiReason: aiAssistResult.reason || null
+            });
+            await conversationRepo.updateConversationState({
+              conversationId: conversation.id,
+              state: conversation.state || 'READY',
+              contextPatch: weakSignalFallback.contextPatch || null
+            });
+
+            await sendAndPersistReply({
+              clinicId: conversation.clinicId,
+              channel,
+              conversationId: conversation.id,
+              contact,
+              text: weakSignalFallback.replyText,
+              outboundMedia: weakSignalFallback.outboundMedia || null,
+              automation: {
+                ...replyAutomationMeta,
+                source: 'ai_assist_weak_signal_fallback'
+              },
+              requestId,
+              correlationMessageId: waMessageId || inboundMessage.id
+            });
+            return;
+          }
+        }
         logInfo('ai_assist_skipped_or_low_confidence', {
           requestId,
           jobId: job.id,
@@ -14106,12 +14267,15 @@ module.exports = {
     buildCommercialGreetingReply,
     buildCommercialIndecisionReply,
     hasWeakCommercialSignal,
+    detectWeakCommercialSignal,
     normalizeAiAssistBusinessType,
     normalizeAiAssistTeamSizeSignal,
     normalizeAiAssistPainPoints,
     buildAiAssistSalesContext,
     canUseSafeLowConfidenceAiAssistDecision,
     shouldInvokeAiAssist,
+    shouldUseWeakSignalCommercialFallback,
+    buildWeakSignalCommercialFallback,
     resolveAiAssistDecision,
     buildLoyaltyWhatsAppReply,
     buildLoyaltyContextPatch,
