@@ -3418,45 +3418,46 @@ function buildAiAssistFeatureContextPatch({ safeContext, effectiveSalesContext, 
 function buildChannelCompatibilityReply(effectiveSalesContext = {}, derivedBusinessContext = null) {
   const businessLead = describeSalesContextShort(effectiveSalesContext);
   const businessLine = businessLead
-    ? `Por cómo trabajás hoy con ${businessLead}, la idea es ordenar mejor las consultas sin perder seguimiento.`
-    : 'La idea es ordenar mejor las consultas y el seguimiento comercial.';
+    ? `Si hoy trabajás con ${businessLead}, te ayuda a ordenar mejor las consultas y no perder oportunidades.`
+    : 'Te ayuda a ordenar mejor las consultas, responder más rápido y dar seguimiento sin perder oportunidades.';
 
   return [
     'Sí, te puede servir 😊',
     '',
-    'Hoy WhatsApp es el canal principal dentro de Opturon para centralizar la conversación comercial.',
-    'Instagram puede acompañarse dentro de la operación según la configuración y la implementación, pero no te lo vendería como una integración completa universal si todavía no está definido así.',
+    'Si hoy recibís consultas por WhatsApp y también por Instagram, Opturon te ayuda a ordenar conversaciones, hacer seguimiento y responder con más claridad.',
     '',
     businessLine,
     '',
     derivedBusinessContext
-      ? 'Si querés, después te digo también cómo bajarlo a tu operación puntual.'
-      : 'Si querés, te explico cómo lo adaptaríamos a tu operación.'
+      ? '¿Vendés productos o servicios?'
+      : '¿Hoy vendés productos o servicios?'
   ].join('\n');
 }
 
 function buildWhatsAppNumberPortabilityReply() {
   return [
-    'En muchos casos sí, se puede conservar o usar tu número actual 😊',
+    'Sí, en muchos casos se puede trabajar con tu número actual 😊',
     '',
-    'Lo que hay que revisar es que cumpla con los requisitos de WhatsApp Business / API y la configuración de Meta para dejarlo bien conectado.',
-    'No te prometería portabilidad automática en todos los casos, pero el equipo acompaña esa conexión para ver la mejor forma de hacerlo.',
+    'La idea es que no tengas que arrancar de cero si ya venís atendiendo por WhatsApp.',
+    'Eso ayuda a mantener la continuidad con tus clientes y a ordenar mejor las conversaciones desde el mismo canal.',
     '',
-    'Si querés, después te cuento qué suele revisarse antes de migrarlo.'
+    '¿Hoy atendés desde un número personal o desde WhatsApp Business?'
   ].join('\n');
 }
 
 function buildSellerReplacementReply(effectiveSalesContext = {}) {
   const contextLead = describeSalesContextShort(effectiveSalesContext);
   return [
-    'No, la idea no es reemplazar al vendedor humano 😊',
+    'No, no busca reemplazar a tu equipo 😊',
     '',
-    'Opturon ayuda a filtrar consultas, responder lo repetitivo, ordenar seguimiento y liberar tiempo para que el equipo venda mejor.',
-    'Cuando hace falta intervención humana, también permite que una persona tome la conversación.',
+    'La idea es que el sistema se encargue de tareas repetitivas para que los vendedores puedan enfocarse en atender mejor y cerrar más ventas.',
+    'Sirve para ordenar consultas, seguimiento y derivación, sin sacar a la persona del proceso cuando hace falta.',
     '',
     contextLead
-      ? `En un contexto como ${contextLead}, suele servir más para ordenar que para reemplazar personas.`
-      : 'Suele servir más para ordenar la operación comercial que para sacar al equipo de la ecuación.'
+      ? `En un esquema como ${contextLead}, suele sumar mucho más por organización y velocidad de respuesta.`
+      : 'Suele sumar mucho más por organización y velocidad de respuesta que por reemplazo.',
+    '',
+    '¿Cuántas personas atienden hoy las consultas?'
   ].join('\n');
 }
 
@@ -3474,12 +3475,18 @@ function buildIndustryFitReply(inboundText, effectiveSalesContext = {}) {
   );
 
   return [
-    `Sí, puede servir para ${label} 😊`,
+    `Sí, puede servir perfectamente para ${label} 😊`,
     '',
-    'Sobre todo cuando trabajás con consultas por WhatsApp y necesitás responder más ordenado, mostrar catálogo o servicios, y hacer seguimiento sin perder conversaciones.',
-    'Según la configuración, también puede acompañar pedidos, reservas o seguimiento comercial sin inventarte una operación nueva.',
+    'Cuando tenés muchas consultas, pedidos o reservas, ayuda a ordenar las conversaciones y darle seguimiento a cada cliente sin perder tiempo.',
+    'También te permite responder más parejo y mantener más control sobre lo que entra cada día.',
     '',
-    'Si querés, te lo bajo a un caso concreto de tu rubro.'
+    businessType === 'food_business'
+      ? '¿Cómo manejan hoy los pedidos?'
+      : businessType === 'beauty_business'
+        ? '¿Cómo organizan hoy los turnos y las consultas?'
+        : businessType === 'distribution'
+          ? '¿Hoy las consultas las atiende una sola persona o ya tienen equipo?'
+          : '¿Cómo manejan hoy las consultas en tu negocio?'
   ].join('\n');
 }
 
@@ -3488,33 +3495,35 @@ function buildFeatureFitReply(inboundText, effectiveSalesContext = {}) {
 
   if (text.includes('sucursal')) {
     return [
-      'Sí, se puede trabajar una operación con más de una sucursal o más de un frente 😊',
+      'Sí, puede acompañar una operación con más de una sucursal 😊',
       '',
-      'Lo importante es revisar cómo querés ordenar el seguimiento, el equipo y la operación para configurarlo de forma prolija.',
-      'No te prometería cualquier esquema sin verlo, pero está pensado para acompañar operaciones que ya tienen más de un punto o más de un rol.'
+      'Cuando hay más de un punto de atención, lo importante es ordenar mejor las conversaciones, el seguimiento y quién toma cada caso.',
+      'Eso ayuda a que el equipo trabaje más claro y a que no se pierdan consultas por el camino.',
+      '',
+      '¿Hoy manejan todo desde un solo número o cada sucursal atiende por separado?'
     ].join('\n');
   }
 
   const contextLead = describeSalesContextShort(effectiveSalesContext);
   return [
-    'Sí, puede encajar según cómo trabajás hoy 😊',
+    'Sí, puede servirte 😊',
     '',
     contextLead
-      ? `Por ejemplo, si ${contextLead}, te ayuda a ordenar mejor consultas, seguimiento y operación comercial.`
-      : 'La lógica es ayudarte a ordenar consultas, seguimiento y operación comercial sin perder trazabilidad.',
+      ? `Si ${contextLead}, te ayuda a ordenar mejor consultas, seguimiento y operación comercial.`
+      : 'La idea es ayudarte a ordenar consultas, seguimiento y operación comercial de una forma más simple.',
     '',
-    'Si querés, te digo cómo lo bajaría a tu caso puntual.'
+    '¿Qué parte te gustaría ordenar primero: consultas, seguimiento o catálogo?'
   ].join('\n');
 }
 
 function buildCatalogImportFitReply() {
   return [
-    'Si tenés muchos productos, se puede trabajar el catálogo sin cargar todo a mano uno por uno 😊',
+    'Sí, no hace falta cargar todo manualmente uno por uno 😊',
     '',
-    'Opturon permite manejar catálogo y, cuando aplica, acompañar carga masiva o importación para ordenar mejor el alta.',
-    'No te prometería que cualquier Excel entra sin revisar formato, pero sí que se puede encarar de forma bastante más práctica que hacerlo manual completo.',
+    'Hay formas de agilizar la incorporación del catálogo para que el proceso sea mucho más rápido y ordenado.',
+    'La idea es que puedas empezar a trabajar sin trabarte con una carga eterna desde el día uno.',
     '',
-    'Si querés, te explico cuál suele ser la forma más prolija de prepararlo.'
+    '¿Aproximadamente cuántos productos manejás hoy?'
   ].join('\n');
 }
 
@@ -3529,6 +3538,7 @@ function inferWeakSignalChannels(inboundText) {
 function inferWeakSignalReplyIntent(inboundText, signal) {
   const text = normalizeCommandText(inboundText);
   const safeSignal = String(signal || '').trim().toLowerCase();
+  const explicitBusinessType = normalizeAiAssistBusinessType(text);
 
   if (safeSignal === 'whatsapp_number_portability_phrase' || text.includes('numero actual de whatsapp')) {
     return 'whatsapp_number_portability';
@@ -3538,6 +3548,9 @@ function inferWeakSignalReplyIntent(inboundText, signal) {
   }
   if (safeSignal === 'catalog_import_phrase' || text.includes('muchos productos') || text.includes('como los cargo') || text.includes('cargar productos')) {
     return 'catalog_import_fit';
+  }
+  if (explicitBusinessType) {
+    return 'industry_fit';
   }
   if (
     text.includes('rotiseria') ||
