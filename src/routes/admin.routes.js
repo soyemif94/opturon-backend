@@ -9,7 +9,8 @@ const {
   postAdminBillingSubscription,
   getAdminBillingSubscription,
   postAdminBillingSubscriptionAction,
-  postAdminBillingSubscriptionSendLink
+  postAdminBillingSubscriptionSendLink,
+  getAdminAiAssistDiagnostics
 } = require('../controllers/admin.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 
@@ -25,5 +26,6 @@ router.post('/billing/subscriptions', requirePortalInternalAuth, postAdminBillin
 router.get('/billing/subscriptions/:id', requirePortalInternalAuth, getAdminBillingSubscription);
 router.post('/billing/subscriptions/:id/:action(cancel|pause|reactivate)', requirePortalInternalAuth, postAdminBillingSubscriptionAction);
 router.post('/tenants/:tenantId/billing/subscription/send-link', requirePortalInternalAuth, postAdminBillingSubscriptionSendLink);
+router.get('/diagnostics/ai-assist', requirePortalInternalAuth, getAdminAiAssistDiagnostics);
 
 module.exports = router;

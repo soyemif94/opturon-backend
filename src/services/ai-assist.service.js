@@ -9,6 +9,7 @@ const { logInfo, logWarn } = require('../utils/logger');
 const AI_ASSIST_EVENT_TYPE = 'AI_ASSIST_INVOKED';
 const AI_ASSIST_FAILURE_EVENT_TYPE = 'AI_ASSIST_FAILED';
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
+let aiAssistRuntimeConfigLogged = false;
 
 const SUPPORTED_DOMAINS = new Set(['commerce', 'unknown']);
 const SUPPORTED_INTENTS = new Set([
@@ -106,6 +107,27 @@ function isAiAssistEnabledForClinic(clinicId) {
 function getAiAssistProvider() {
   const provider = normalizeString(env.aiAssistProvider).toLowerCase() || 'openai';
   return provider;
+}
+
+function getAiAssistRuntimeDiagnostics() {
+  return {
+    enabled: env.aiAssistEnabled === true,
+    provider: getAiAssistProvider(),
+    model: normalizeString(env.aiAssistModel) || 'gpt-4o-mini',
+    maxMonthlyCalls: Math.max(1, Number(env.aiAssistMaxMonthlyCalls || 2000)),
+    maxCallsPerConversation: Math.max(1, Number(env.aiAssistMaxCallsPerConversation || 3)),
+    enabledClinicIds: Array.isArray(env.aiAssistEnabledClinicIds) ? env.aiAssistEnabledClinicIds.filter(Boolean) : [],
+    enabledClinicIdsCount: Array.isArray(env.aiAssistEnabledClinicIds) ? env.aiAssistEnabledClinicIds.filter(Boolean).length : 0,
+    disabledClinicIdsCount: Array.isArray(env.aiAssistDisabledClinicIds) ? env.aiAssistDisabledClinicIds.filter(Boolean).length : 0,
+    keyPresent: Boolean(normalizeString(env.aiAssistApiKey))
+  };
+}
+
+function logAiAssistRuntimeConfigOnce() {
+  if (aiAssistRuntimeConfigLogged) return;
+  aiAssistRuntimeConfigLogged = true;
+  const diagnostics = getAiAssistRuntimeDiagnostics();
+  logInfo('ai_assist_runtime_config', diagnostics);
 }
 
 function buildAiAssistSystemPrompt() {
@@ -325,6 +347,7 @@ async function invokeProvider(input, providerOverride = null) {
 }
 
 async function reserveAiAssistBudget({ clinicId, conversationId }) {
+  logAiAssistRuntimeConfigOnce();
   const conversationLimit = Math.max(1, Number(env.aiAssistMaxCallsPerConversation || 3));
   const monthlyLimit = Math.max(1, Number(env.aiAssistMaxMonthlyCalls || 2000));
   const [conversationSuccessCount, conversationFailureCount, monthlySuccessCount, monthlyFailureCount] = await Promise.all([
@@ -335,11 +358,29 @@ async function reserveAiAssistBudget({ clinicId, conversationId }) {
   ]);
   const conversationCount = conversationSuccessCount + conversationFailureCount;
   if (conversationCount >= conversationLimit) {
+    logWarn('ai_assist_budget_blocked', {
+      clinicId,
+      conversationId,
+      conversationCount,
+      conversationLimit,
+      monthlyCount: null,
+      monthlyLimit,
+      reason: 'conversation_limit_reached'
+    });
     return { ok: false, reason: 'conversation_limit_reached', conversationCount, monthlyCount: null };
   }
 
   const monthlyCount = monthlySuccessCount + monthlyFailureCount;
   if (monthlyCount >= monthlyLimit) {
+    logWarn('ai_assist_budget_blocked', {
+      clinicId,
+      conversationId,
+      conversationCount,
+      conversationLimit,
+      monthlyCount,
+      monthlyLimit,
+      reason: 'monthly_limit_reached'
+    });
     return { ok: false, reason: 'monthly_limit_reached', conversationCount, monthlyCount };
   }
 
@@ -447,7 +488,10 @@ module.exports = {
   AI_ASSIST_FAILURE_EVENT_TYPE,
   classifyCommerceAiAssist,
   isAiAssistEnabledForClinic,
+  getAiAssistRuntimeDiagnostics,
   __internal: {
+    getAiAssistRuntimeDiagnostics,
+    logAiAssistRuntimeConfigOnce,
     buildAiAssistSystemPrompt,
     buildAiAssistUserPrompt,
     normalizeAiAssistDecision,

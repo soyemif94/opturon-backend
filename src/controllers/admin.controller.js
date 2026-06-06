@@ -12,6 +12,7 @@ const {
   executeSubscriptionAction,
   sendSaasSubscriptionAuthorizationLinkEmail
 } = require('../services/saas-billing.service');
+const { getAiAssistRuntimeDiagnostics } = require('../services/ai-assist.service');
 const { logError } = require('../utils/logger');
 
 function sanitizeBillingPayload(payload) {
@@ -346,6 +347,21 @@ async function postAdminBillingSubscriptionSendLink(req, res) {
   }
 }
 
+async function getAdminAiAssistDiagnostics(req, res) {
+  try {
+    return res.status(200).json({
+      success: true,
+      data: getAiAssistRuntimeDiagnostics()
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'ai_assist_diagnostics_failed',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   postSetActiveTenant,
   getTenants,
@@ -356,5 +372,6 @@ module.exports = {
   postAdminBillingSubscription,
   getAdminBillingSubscription,
   postAdminBillingSubscriptionAction,
-  postAdminBillingSubscriptionSendLink
+  postAdminBillingSubscriptionSendLink,
+  getAdminAiAssistDiagnostics
 };
