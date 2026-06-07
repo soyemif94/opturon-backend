@@ -1522,16 +1522,25 @@ function buildCommercialSalesContextPatch({
   businessType = null,
   whatsappVolume = null,
   teamSizeSignal = null,
+  teamSizeValue = null,
+  whatsappAccountTypeSignal = null,
+  offerTypeSignal = null,
+  channelMixSignal = null,
   painPoints = [],
   lastRecommendedPlan = null,
   lastRecommendationReason = null
 } = {}) {
+  const normalizedTeamSizeValue = Number.parseInt(String(teamSizeValue || ''), 10);
   return {
     commercialSalesContext: {
       updatedAt: new Date().toISOString(),
       businessType: businessType ? String(businessType).trim().toLowerCase() : null,
       whatsappVolume: whatsappVolume ? String(whatsappVolume).trim().toLowerCase() : null,
       teamSizeSignal: teamSizeSignal ? String(teamSizeSignal).trim().toLowerCase() : null,
+      teamSizeValue: Number.isInteger(normalizedTeamSizeValue) && normalizedTeamSizeValue > 0 ? normalizedTeamSizeValue : null,
+      whatsappAccountTypeSignal: whatsappAccountTypeSignal ? String(whatsappAccountTypeSignal).trim().toLowerCase() : null,
+      offerTypeSignal: offerTypeSignal ? String(offerTypeSignal).trim().toLowerCase() : null,
+      channelMixSignal: channelMixSignal ? String(channelMixSignal).trim().toLowerCase() : null,
       painPoints: Array.isArray(painPoints)
         ? [...new Set(painPoints.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 6)
         : [],
@@ -1620,10 +1629,25 @@ function getActiveCommercialSalesContext(context) {
   const businessType = String(stored.businessType || '').trim().toLowerCase() || null;
   const whatsappVolume = String(stored.whatsappVolume || '').trim().toLowerCase() || null;
   const teamSizeSignal = String(stored.teamSizeSignal || '').trim().toLowerCase() || null;
+  const teamSizeValueRaw = Number.parseInt(String(stored.teamSizeValue || ''), 10);
+  const teamSizeValue = Number.isInteger(teamSizeValueRaw) && teamSizeValueRaw > 0 ? teamSizeValueRaw : null;
+  const whatsappAccountTypeSignal = String(stored.whatsappAccountTypeSignal || '').trim().toLowerCase() || null;
+  const offerTypeSignal = String(stored.offerTypeSignal || '').trim().toLowerCase() || null;
+  const channelMixSignal = String(stored.channelMixSignal || '').trim().toLowerCase() || null;
   const lastRecommendedPlan = String(stored.lastRecommendedPlan || '').trim() || null;
   const lastRecommendationReason = String(stored.lastRecommendationReason || '').trim() || null;
 
-  if (!businessType && !whatsappVolume && !teamSizeSignal && !painPoints.length && !lastRecommendedPlan) {
+  if (
+    !businessType &&
+    !whatsappVolume &&
+    !teamSizeSignal &&
+    !teamSizeValue &&
+    !whatsappAccountTypeSignal &&
+    !offerTypeSignal &&
+    !channelMixSignal &&
+    !painPoints.length &&
+    !lastRecommendedPlan
+  ) {
     return null;
   }
 
@@ -1632,6 +1656,10 @@ function getActiveCommercialSalesContext(context) {
     businessType,
     whatsappVolume,
     teamSizeSignal,
+    teamSizeValue,
+    whatsappAccountTypeSignal,
+    offerTypeSignal,
+    channelMixSignal,
     painPoints,
     lastRecommendedPlan,
     lastRecommendationReason
@@ -1788,10 +1816,340 @@ function mergeCommercialSalesContext(baseContext, incomingContext = null) {
     businessType: incoming.businessType || base.businessType || null,
     whatsappVolume: incoming.whatsappVolume || base.whatsappVolume || null,
     teamSizeSignal: incoming.teamSizeSignal || base.teamSizeSignal || null,
+    teamSizeValue: incoming.teamSizeValue || base.teamSizeValue || null,
+    whatsappAccountTypeSignal: incoming.whatsappAccountTypeSignal || base.whatsappAccountTypeSignal || null,
+    offerTypeSignal: incoming.offerTypeSignal || base.offerTypeSignal || null,
+    channelMixSignal: incoming.channelMixSignal || base.channelMixSignal || null,
     painPoints: [...new Set([...(Array.isArray(base.painPoints) ? base.painPoints : []), ...(Array.isArray(incoming.painPoints) ? incoming.painPoints : [])])],
     lastRecommendedPlan: incoming.lastRecommendedPlan || base.lastRecommendedPlan || null,
     lastRecommendationReason: incoming.lastRecommendationReason || base.lastRecommendationReason || null
   };
+}
+
+function buildCommercialDiscoveryPendingPatch({
+  field,
+  sourceIntent = null,
+  meta = null
+} = {}) {
+  const normalizedField = String(field || '').trim().toLowerCase();
+  if (!normalizedField) return null;
+
+  return {
+    commercialDiscoveryPending: {
+      field: normalizedField,
+      askedAt: new Date().toISOString(),
+      sourceIntent: sourceIntent ? String(sourceIntent).trim().toLowerCase() : null,
+      meta: meta && typeof meta === 'object' ? meta : null
+    }
+  };
+}
+
+function clearCommercialDiscoveryPendingPatch() {
+  return {
+    commercialDiscoveryPending: {
+      field: null,
+      askedAt: null,
+      sourceIntent: null,
+      meta: null,
+      completedAt: new Date().toISOString()
+    }
+  };
+}
+
+function getActiveCommercialDiscoveryPending(safeContext) {
+  const pending = safeContext && safeContext.commercialDiscoveryPending && typeof safeContext.commercialDiscoveryPending === 'object'
+    ? safeContext.commercialDiscoveryPending
+    : null;
+  if (!pending) return null;
+
+  const field = String(pending.field || '').trim().toLowerCase();
+  const askedAt = String(pending.askedAt || '').trim();
+  const askedAtMs = Date.parse(askedAt);
+  if (!field || !askedAt || !Number.isFinite(askedAtMs) || Date.now() - askedAtMs > COMMERCIAL_SHORT_MEMORY_TTL_MS) {
+    return null;
+  }
+
+  return {
+    field,
+    askedAt: new Date(askedAtMs).toISOString(),
+    sourceIntent: String(pending.sourceIntent || '').trim().toLowerCase() || null,
+    meta: pending.meta && typeof pending.meta === 'object' ? pending.meta : null
+  };
+}
+
+function parseSpelledSmallNumber(text) {
+  const safeText = normalizeCommandText(text);
+  if (!safeText) return null;
+
+  const wordMap = new Map([
+    ['un', 1],
+    ['uno', 1],
+    ['una', 1],
+    ['dos', 2],
+    ['tres', 3],
+    ['cuatro', 4],
+    ['cinco', 5],
+    ['seis', 6],
+    ['siete', 7],
+    ['ocho', 8],
+    ['nueve', 9],
+    ['diez', 10]
+  ]);
+
+  for (const [word, value] of wordMap.entries()) {
+    if (new RegExp(`\\b${word}\\b`).test(safeText)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function parseCommercialTeamSizeAnswer(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  if (text === 'mi esposa y yo') {
+    return { teamSizeValue: 2, teamSizeSignal: 'team' };
+  }
+
+  if (
+    text.includes('atiendo yo solo') ||
+    text.includes('atiendo yo sola') ||
+    text.includes('yo solo') ||
+    text.includes('yo sola')
+  ) {
+    return { teamSizeValue: 1, teamSizeSignal: 'solo' };
+  }
+
+  const digitsMatch = text.match(/\b(\d{1,2})\b/);
+  const numericValue = digitsMatch ? Number.parseInt(digitsMatch[1], 10) : parseSpelledSmallNumber(text);
+  if (Number.isInteger(numericValue) && numericValue > 0) {
+    return {
+      teamSizeValue: numericValue,
+      teamSizeSignal: numericValue === 1 ? 'solo' : 'team'
+    };
+  }
+
+  if (
+    text.includes('una persona') ||
+    text.includes('una sola persona') ||
+    text.includes('una en atencion') ||
+    text.includes('un vendedor')
+  ) {
+    return { teamSizeValue: 1, teamSizeSignal: 'solo' };
+  }
+
+  return null;
+}
+
+function parseCommercialWhatsAppAccountTypeAnswer(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  if (text.includes('whatsapp business') || text === 'business') {
+    return 'business';
+  }
+
+  if (
+    text.includes('numero personal') ||
+    text.includes('número personal') ||
+    text.includes('whatsapp personal') ||
+    text.includes('personal') ||
+    text.includes('particular')
+  ) {
+    return 'personal';
+  }
+
+  return null;
+}
+
+function parseCommercialOfferTypeAnswer(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+  if (text === 'productos' || text === 'producto' || text.includes('vendo productos')) return 'products';
+  if (text === 'servicios' || text === 'servicio' || text.includes('vendo servicios')) return 'services';
+  return null;
+}
+
+function parseCommercialChannelMixAnswer(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  const hasWhatsApp = text.includes('whatsapp');
+  const otherChannelSignals = ['instagram', 'facebook', 'web', 'pagina', 'página', 'mail', 'llamadas', 'telefono', 'teléfono'];
+  const hasOtherChannels = otherChannelSignals.some((signal) => text.includes(signal)) || text.includes('otros canales');
+
+  if (hasWhatsApp && hasOtherChannels) return 'multi_channel';
+  if (hasWhatsApp && (text.includes('solo') || text.includes('principalmente') || text.includes('nomas') || text.includes('nomas'))) {
+    return 'whatsapp_only';
+  }
+  if (hasWhatsApp) return 'whatsapp_only';
+  if (hasOtherChannels) return 'multi_channel';
+
+  return null;
+}
+
+function buildTeamSizeLead(teamSizeValue, teamSizeSignal) {
+  if (Number.isInteger(teamSizeValue) && teamSizeValue > 0) {
+    return teamSizeValue === 1
+      ? 'Con 1 persona atendiendo consultas'
+      : `Con ${teamSizeValue} personas atendiendo consultas`;
+  }
+
+  return teamSizeSignal === 'solo'
+    ? 'Si hoy atendés vos solo'
+    : 'Si hoy ya tienen más de una persona atendiendo consultas';
+}
+
+function buildSellerReplacementDiscoveryFollowUp({ teamSizeValue = null, teamSizeSignal = null } = {}) {
+  return [
+    'Perfecto 😊',
+    '',
+    `${buildTeamSizeLead(teamSizeValue, teamSizeSignal)}, Opturon puede ayudarles a ordenar mejor los mensajes y evitar que se pierdan oportunidades cuando hay varias conversaciones al mismo tiempo.`,
+    '',
+    '¿Hoy las consultas les llegan principalmente por WhatsApp o también usan otros canales?'
+  ].join('\n');
+}
+
+function buildWhatsAppAccountTypeDiscoveryFollowUp(accountTypeSignal) {
+  const detail = accountTypeSignal === 'business'
+    ? 'Si ya usan WhatsApp Business, normalmente el objetivo es mantener continuidad con el número y ordenar mejor la atención sin arrancar de cero.'
+    : 'Si hoy atienden desde un número personal, el siguiente paso suele ser ordenar mejor la atención y evaluar la transición sin perder continuidad con los clientes.';
+
+  return [
+    'Perfecto 😊',
+    '',
+    detail,
+    '',
+    '¿Hoy reciben consultas solo por WhatsApp o también por Instagram u otros canales?'
+  ].join('\n');
+}
+
+function buildOfferTypeDiscoveryFollowUp(offerTypeSignal) {
+  const detail = offerTypeSignal === 'services'
+    ? 'Si vendés servicios, Opturon puede ayudarte a ordenar mejor las consultas, responder más parejo y dar seguimiento sin depender de acordarse de cada conversación.'
+    : 'Si vendés productos, Opturon puede ayudarte a responder más parejo, ordenar consultas y dar seguimiento cuando alguien pregunta pero no compra en el momento.';
+
+  return [
+    'Perfecto 😊',
+    '',
+    detail,
+    '',
+    '¿Hoy las consultas te llegan principalmente por WhatsApp o también usan otros canales?'
+  ].join('\n');
+}
+
+function buildChannelMixDiscoveryFollowUp(channelMixSignal, sourceIntent = null) {
+  const detail = channelMixSignal === 'multi_channel'
+    ? 'Cuando entran consultas por más de un canal, ordenar conversaciones y seguimiento suele hacer una diferencia grande.'
+    : 'Cuando la mayor parte entra por WhatsApp, ordenar la atención y el seguimiento desde ahí ya puede mejorar mucho la operación.';
+
+  const nextQuestion = sourceIntent === 'channel_compatibility'
+    ? '¿Hoy cuántas personas atienden esas consultas?'
+    : '¿Hoy vendés productos o servicios?';
+
+  return [
+    'Perfecto 😊',
+    '',
+    detail,
+    '',
+    nextQuestion
+  ].join('\n');
+}
+
+function resolveCommercialDiscoveryPendingReply({
+  pending,
+  inboundText,
+  effectiveSalesContext
+}) {
+  const currentSalesContext = effectiveSalesContext && typeof effectiveSalesContext === 'object' ? effectiveSalesContext : {};
+  if (!pending || !pending.field) return null;
+
+  if (pending.field === 'team_size') {
+    const teamAnswer = parseCommercialTeamSizeAnswer(inboundText);
+    if (!teamAnswer) return null;
+
+    return {
+      type: 'recommendation',
+      replyText: buildSellerReplacementDiscoveryFollowUp(teamAnswer),
+      contextPatch: mergeContextPatches(
+        buildCommercialSalesContextPatch({
+          ...currentSalesContext,
+          teamSizeSignal: teamAnswer.teamSizeSignal,
+          teamSizeValue: teamAnswer.teamSizeValue
+        }),
+        buildCommercialDiscoveryPendingPatch({
+          field: 'channel_mix',
+          sourceIntent: pending.sourceIntent || 'seller_replacement'
+        })
+      )
+    };
+  }
+
+  if (pending.field === 'whatsapp_account_type') {
+    const accountTypeSignal = parseCommercialWhatsAppAccountTypeAnswer(inboundText);
+    if (!accountTypeSignal) return null;
+
+    return {
+      type: 'recommendation',
+      replyText: buildWhatsAppAccountTypeDiscoveryFollowUp(accountTypeSignal),
+      contextPatch: mergeContextPatches(
+        buildCommercialSalesContextPatch({
+          ...currentSalesContext,
+          whatsappAccountTypeSignal: accountTypeSignal
+        }),
+        buildCommercialDiscoveryPendingPatch({
+          field: 'channel_mix',
+          sourceIntent: pending.sourceIntent || 'whatsapp_number_portability'
+        })
+      )
+    };
+  }
+
+  if (pending.field === 'offer_type') {
+    const offerTypeSignal = parseCommercialOfferTypeAnswer(inboundText);
+    if (!offerTypeSignal) return null;
+
+    return {
+      type: 'recommendation',
+      replyText: buildOfferTypeDiscoveryFollowUp(offerTypeSignal),
+      contextPatch: mergeContextPatches(
+        buildCommercialSalesContextPatch({
+          ...currentSalesContext,
+          offerTypeSignal
+        }),
+        buildCommercialDiscoveryPendingPatch({
+          field: 'channel_mix',
+          sourceIntent: pending.sourceIntent || 'channel_compatibility'
+        })
+      )
+    };
+  }
+
+  if (pending.field === 'channel_mix') {
+    const channelMixSignal = parseCommercialChannelMixAnswer(inboundText);
+    if (!channelMixSignal) return null;
+
+    return {
+      type: 'recommendation',
+      replyText: buildChannelMixDiscoveryFollowUp(channelMixSignal, pending.sourceIntent),
+      contextPatch: mergeContextPatches(
+        buildCommercialSalesContextPatch({
+          ...currentSalesContext,
+          channelMixSignal
+        }),
+        pending.sourceIntent === 'channel_compatibility'
+          ? buildCommercialDiscoveryPendingPatch({
+            field: 'team_size',
+            sourceIntent: pending.sourceIntent
+          })
+          : clearCommercialDiscoveryPendingPatch()
+      )
+    };
+  }
+
+  return null;
 }
 
 function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
@@ -2113,6 +2471,7 @@ function buildIntelligentFallbackReply(safeContext) {
   const inboundText = arguments.length > 1 ? arguments[1] : '';
   const looksCommercial = hasWeakCommercialSignal(inboundText) ||
     String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase() === 'commerce' ||
+    Boolean(getActiveCommercialDiscoveryPending(safeContext)) ||
     Boolean(getActiveCommercialShortMemory(safeContext)) ||
     Boolean(getActiveCommercialPlanContext(safeContext)) ||
     Boolean(getPendingPlanComparisonAction(safeContext));
@@ -3650,7 +4009,13 @@ function buildWeakSignalCommercialFallback({ inboundText, safeContext, signal })
       type: 'recommendation',
       source: 'weak_signal_timeout_fallback',
       replyText: buildChannelCompatibilityReply(effectiveSalesContext, derivedBusinessContext),
-      contextPatch
+      contextPatch: mergeContextPatches(
+        contextPatch,
+        buildCommercialDiscoveryPendingPatch({
+          field: 'offer_type',
+          sourceIntent: 'channel_compatibility'
+        })
+      )
     };
   }
 
@@ -3659,7 +4024,13 @@ function buildWeakSignalCommercialFallback({ inboundText, safeContext, signal })
       type: 'recommendation',
       source: 'weak_signal_timeout_fallback',
       replyText: buildWhatsAppNumberPortabilityReply(),
-      contextPatch
+      contextPatch: mergeContextPatches(
+        contextPatch,
+        buildCommercialDiscoveryPendingPatch({
+          field: 'whatsapp_account_type',
+          sourceIntent: 'whatsapp_number_portability'
+        })
+      )
     };
   }
 
@@ -3668,7 +4039,13 @@ function buildWeakSignalCommercialFallback({ inboundText, safeContext, signal })
       type: 'recommendation',
       source: 'weak_signal_timeout_fallback',
       replyText: buildSellerReplacementReply(effectiveSalesContext),
-      contextPatch
+      contextPatch: mergeContextPatches(
+        contextPatch,
+        buildCommercialDiscoveryPendingPatch({
+          field: 'team_size',
+          sourceIntent: 'seller_replacement'
+        })
+      )
     };
   }
 
@@ -4029,11 +4406,17 @@ async function resolveAiAssistDecision({
     return {
       type: 'recommendation',
       replyText: buildChannelCompatibilityReply(effectiveSalesContext, derivedBusinessContext),
-      contextPatch: buildAiAssistFeatureContextPatch({
-        safeContext,
-        effectiveSalesContext,
-        derivedBusinessContext
-      })
+      contextPatch: mergeContextPatches(
+        buildAiAssistFeatureContextPatch({
+          safeContext,
+          effectiveSalesContext,
+          derivedBusinessContext
+        }),
+        buildCommercialDiscoveryPendingPatch({
+          field: 'offer_type',
+          sourceIntent: 'channel_compatibility'
+        })
+      )
     };
   }
 
@@ -4041,11 +4424,17 @@ async function resolveAiAssistDecision({
     return {
       type: 'recommendation',
       replyText: buildWhatsAppNumberPortabilityReply(),
-      contextPatch: buildAiAssistFeatureContextPatch({
-        safeContext,
-        effectiveSalesContext,
-        derivedBusinessContext
-      })
+      contextPatch: mergeContextPatches(
+        buildAiAssistFeatureContextPatch({
+          safeContext,
+          effectiveSalesContext,
+          derivedBusinessContext
+        }),
+        buildCommercialDiscoveryPendingPatch({
+          field: 'whatsapp_account_type',
+          sourceIntent: 'whatsapp_number_portability'
+        })
+      )
     };
   }
 
@@ -4053,11 +4442,17 @@ async function resolveAiAssistDecision({
     return {
       type: 'recommendation',
       replyText: buildSellerReplacementReply(effectiveSalesContext),
-      contextPatch: buildAiAssistFeatureContextPatch({
-        safeContext,
-        effectiveSalesContext,
-        derivedBusinessContext
-      })
+      contextPatch: mergeContextPatches(
+        buildAiAssistFeatureContextPatch({
+          safeContext,
+          effectiveSalesContext,
+          derivedBusinessContext
+        }),
+        buildCommercialDiscoveryPendingPatch({
+          field: 'team_size',
+          sourceIntent: 'seller_replacement'
+        })
+      )
     };
   }
 
@@ -6810,6 +7205,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
     ? conversation.context
     : {};
+  const activeCommercialDiscoveryPending = getActiveCommercialDiscoveryPending(safeContext);
   const activeShortMemory = getActiveCommercialShortMemory(safeContext);
   const pendingPlanComparison = getPendingPlanComparisonAction(safeContext);
   const activePlanContext = getActiveCommercialPlanContext(safeContext);
@@ -6829,6 +7225,10 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       effectiveSalesContext.businessType ||
       effectiveSalesContext.whatsappVolume ||
       effectiveSalesContext.teamSizeSignal ||
+      effectiveSalesContext.teamSizeValue ||
+      effectiveSalesContext.whatsappAccountTypeSignal ||
+      effectiveSalesContext.offerTypeSignal ||
+      effectiveSalesContext.channelMixSignal ||
       (Array.isArray(effectiveSalesContext.painPoints) && effectiveSalesContext.painPoints.length) ||
       effectiveSalesContext.lastRecommendedPlan ||
       effectiveSalesContext.lastRecommendationReason
@@ -6846,6 +7246,23 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     intent: detectIntent(inboundText),
     managementIntent: detectTurnManagementIntent(inboundText)
   });
+
+  if (
+    activeCommercialDiscoveryPending &&
+    !transferPaymentIntent &&
+    !isLoyaltyIntent(inboundText) &&
+    !isAgendaLike &&
+    normalizeCommandText(inboundText) !== 'cancelar'
+  ) {
+    const discoveryReply = resolveCommercialDiscoveryPendingReply({
+      pending: activeCommercialDiscoveryPending,
+      inboundText,
+      effectiveSalesContext
+    });
+    if (discoveryReply) {
+      return discoveryReply;
+    }
+  }
 
   if (
     isGreetingIntent(inboundText) &&
@@ -14317,10 +14734,15 @@ module.exports = {
     buildSafeCommercialIntentReply,
     buildCommercialShortMemoryReply,
     getActiveCommercialShortMemory,
+    getActiveCommercialDiscoveryPending,
     getActiveBusinessRecommendationContext,
     getActiveCommercialPlanContext,
     getPendingPlanComparisonAction,
     resolveCommercialShortMemoryFollowUpType,
+    parseCommercialTeamSizeAnswer,
+    parseCommercialWhatsAppAccountTypeAnswer,
+    parseCommercialOfferTypeAnswer,
+    resolveCommercialDiscoveryPendingReply,
     buildIntelligentFallbackReply,
     buildCommercialGreetingReply,
     buildCommercialIndecisionReply,

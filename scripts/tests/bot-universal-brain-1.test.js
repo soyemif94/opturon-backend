@@ -69,8 +69,12 @@ const {
   parseTransferPaymentIntent,
   isLoyaltyIntent,
   detectIntent,
+  parseCommercialTeamSizeAnswer,
+  parseCommercialWhatsAppAccountTypeAnswer,
+  parseCommercialOfferTypeAnswer,
   buildSafeCommercialIntentReply,
-  resolveCommerceDecision
+  resolveCommerceDecision,
+  getActiveCommercialDiscoveryPending
 } = worker.__private__;
 
 const clinic = {
@@ -183,8 +187,72 @@ async function run() {
   assert.strictEqual(hireDecision.newState, 'PAYMENT_TRANSFER');
   assert.strictEqual(hireDecision.contextPatch.transferPayment.selectedPlan.name, 'Plan Crecimiento');
 
-  assert.strictEqual(detectCommercialPlanObjection('es caro'), 'price');
-  assert.strictEqual(detectCommercialPlanObjection('algo mas barato'), 'price');
+  assert.strictEqual(detectCommercialPlanObjection('es caro'), 'price_high');
+  assert.strictEqual(detectCommercialPlanObjection('algo mas barato'), 'cheaper_option');
+
+  assert.deepStrictEqual(parseCommercialTeamSizeAnswer('mi esposa y yo'), { teamSizeValue: 2, teamSizeSignal: 'team' });
+  assert.deepStrictEqual(parseCommercialTeamSizeAnswer('atiendo yo solo'), { teamSizeValue: 1, teamSizeSignal: 'solo' });
+  assert.strictEqual(parseCommercialWhatsAppAccountTypeAnswer('Uso WhatsApp Business'), 'business');
+  assert.strictEqual(parseCommercialOfferTypeAnswer('Productos'), 'products');
+
+  const sellerDiscoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce',
+        commercialDiscoveryPending: {
+          field: 'team_size',
+          askedAt: new Date().toISOString(),
+          sourceIntent: 'seller_replacement'
+        }
+      }
+    },
+    inboundText: 'Tengo 2 personas en atención al público'
+  });
+  assert.match(sellerDiscoveryReply.replyText, /Con 2 personas atendiendo consultas/i);
+  assert.match(sellerDiscoveryReply.replyText, /principalmente por WhatsApp/i);
+  assert.strictEqual(sellerDiscoveryReply.contextPatch.commercialSalesContext.teamSizeSignal, 'team');
+  assert.strictEqual(sellerDiscoveryReply.contextPatch.commercialSalesContext.teamSizeValue, 2);
+  assert.strictEqual(getActiveCommercialDiscoveryPending(sellerDiscoveryReply.contextPatch).field, 'channel_mix');
+
+  const portabilityDiscoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce',
+        commercialDiscoveryPending: {
+          field: 'whatsapp_account_type',
+          askedAt: new Date().toISOString(),
+          sourceIntent: 'whatsapp_number_portability'
+        }
+      }
+    },
+    inboundText: 'Uso WhatsApp Business'
+  });
+  assert.match(portabilityDiscoveryReply.replyText, /mantener continuidad con el n[uú]mero/i);
+  assert.strictEqual(portabilityDiscoveryReply.contextPatch.commercialSalesContext.whatsappAccountTypeSignal, 'business');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(portabilityDiscoveryReply.contextPatch).field, 'channel_mix');
+
+  const offerTypeDiscoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce',
+        commercialDiscoveryPending: {
+          field: 'offer_type',
+          askedAt: new Date().toISOString(),
+          sourceIntent: 'channel_compatibility'
+        }
+      }
+    },
+    inboundText: 'Productos'
+  });
+  assert.match(offerTypeDiscoveryReply.replyText, /Si vendés productos/i);
+  assert.strictEqual(offerTypeDiscoveryReply.contextPatch.commercialSalesContext.offerTypeSignal, 'products');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(offerTypeDiscoveryReply.contextPatch).field, 'channel_mix');
 
   assert.strictEqual(detectIntent('quiero un turno'), 'appointment');
   assert.strictEqual(parseTransferPaymentIntent('como te transfiero'), 'request');
