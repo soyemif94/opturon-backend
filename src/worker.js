@@ -1783,6 +1783,10 @@ function detectCommercialSalesContext(rawText) {
     ['solo', ['soy yo solo', 'soy yo sola', 'atiendo yo', 'estoy solo', 'estoy sola', 'no tengo vendedores', 'sin vendedores', 'no tengo equipo', 'estoy yo solo']],
     ['team', ['tengo vendedores', 'tengo equipo', 'somos varios', 'varios vendedores', 'equipo vendiendo', 'tengo asesores', 'tenemos vendedores', 'tenemos equipo']]
   ]);
+  const parsedTeamSize = parseCommercialTeamSizeAnswer(rawText);
+  const parsedOfferTypeSignal = parseCommercialOfferTypeAnswer(rawText);
+  const parsedChannelMixSignal = parseCommercialChannelMixAnswer(rawText);
+  const parsedWhatsappVolume = parseCommercialWhatsappVolumeAnswer(rawText);
 
   const painSignals = [
     ['lead_loss', ['se me pierden consultas', 'pierdo consultas', 'se me escapan consultas', 'se me pasan consultas']],
@@ -1796,14 +1800,26 @@ function detectCommercialSalesContext(rawText) {
     .filter(([, phrases]) => phrases.some((phrase) => text.includes(phrase)))
     .map(([key]) => key);
 
-  if (!businessType && !whatsappVolume && !teamSizeSignal && !painPoints.length) {
+  if (
+    !businessType &&
+    !whatsappVolume &&
+    !teamSizeSignal &&
+    !parsedTeamSize &&
+    !parsedOfferTypeSignal &&
+    !parsedChannelMixSignal &&
+    !parsedWhatsappVolume &&
+    !painPoints.length
+  ) {
     return null;
   }
 
   return {
     businessType,
-    whatsappVolume,
-    teamSizeSignal,
+    whatsappVolume: parsedWhatsappVolume || whatsappVolume,
+    teamSizeSignal: parsedTeamSize ? parsedTeamSize.teamSizeSignal : teamSizeSignal,
+    teamSizeValue: parsedTeamSize ? parsedTeamSize.teamSizeValue : null,
+    offerTypeSignal: parsedOfferTypeSignal || null,
+    channelMixSignal: parsedChannelMixSignal || null,
     painPoints
   };
 }
@@ -1972,6 +1988,54 @@ function parseCommercialOfferTypeAnswer(rawText) {
   return null;
 }
 
+function normalizeCommercialWhatsappVolumeSignalFromCount(count) {
+  const safeCount = Number.parseInt(String(count || ''), 10);
+  if (!Number.isInteger(safeCount) || safeCount <= 0) return null;
+  return safeCount >= 25 ? 'high' : 'low';
+}
+
+function parseCommercialWhatsappVolumeAnswer(rawText, options = {}) {
+  const strict = options && options.strict === true;
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  const hasVolumeCue = (
+    text.includes('por dia') ||
+    text.includes('al dia') ||
+    text.includes('por día') ||
+    text.includes('mensajes') ||
+    text.includes('consultas') ||
+    text.includes('conversaciones') ||
+    text.includes('pedidos')
+  );
+  const numericMatch = text.match(/\b(\d{1,3})\b/);
+  const numericValue = numericMatch ? Number.parseInt(numericMatch[1], 10) : parseSpelledSmallNumber(text);
+  if (Number.isInteger(numericValue) && numericValue > 0 && (strict || hasVolumeCue)) {
+    return normalizeCommercialWhatsappVolumeSignalFromCount(numericValue);
+  }
+
+  if (
+    text.includes('muchas') ||
+    text.includes('muchos mensajes') ||
+    text.includes('bastantes') ||
+    text.includes('alto volumen')
+  ) {
+    return 'high';
+  }
+
+  if (
+    text.includes('pocas') ||
+    text.includes('pocos') ||
+    text.includes('poquitas') ||
+    text.includes('recien arranco') ||
+    text.includes('recién arranco')
+  ) {
+    return 'low';
+  }
+
+  return null;
+}
+
 function parseCommercialChannelMixAnswer(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return null;
@@ -2002,17 +2066,264 @@ function buildTeamSizeLead(teamSizeValue, teamSizeSignal) {
     : 'Si hoy ya tienen más de una persona atendiendo consultas';
 }
 
-function buildSellerReplacementDiscoveryFollowUp({ teamSizeValue = null, teamSizeSignal = null } = {}) {
+function getCommercialConversationLabel(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  if (safeContext.businessType === 'food_business') return 'consultas y pedidos';
+  if (safeContext.offerTypeSignal === 'products') return 'consultas';
+  if (safeContext.offerTypeSignal === 'services') return 'consultas';
+  return 'conversaciones';
+}
+
+function classifyCommercialOperationShape(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const hasTeam = safeContext.teamSizeSignal === 'team' || safeContext.teamSizeSignal === 'multi_branch';
+  const isMultiBranch = safeContext.teamSizeSignal === 'multi_branch';
+  const isHighVolume = safeContext.whatsappVolume === 'high';
+  const isMultiChannel = safeContext.channelMixSignal === 'multi_channel';
+  const painPoints = Array.isArray(safeContext.painPoints) ? safeContext.painPoints : [];
+  const hasComplexPains = painPoints.includes('team_control') || painPoints.includes('complex_operation');
+
+  if (
+    isMultiBranch ||
+    safeContext.businessType === 'distribution' ||
+    teamSizeValue >= 6 ||
+    (teamSizeValue >= 4 && isMultiChannel) ||
+    (hasTeam && isHighVolume && isMultiChannel) ||
+    hasComplexPains
+  ) {
+    return 'complex';
+  }
+
+  if (
+    (hasTeam && (!Number.isInteger(teamSizeValue) || teamSizeValue >= 3)) ||
+    teamSizeValue >= 3 ||
+    isHighVolume ||
+    isMultiChannel
+  ) {
+    return 'team';
+  }
+
+  return 'small';
+}
+
+function chooseNextCommercialDiscoveryField(salesContext = {}, sourceIntent = null) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const hasKnownTeam = Boolean(safeContext.teamSizeSignal || (Number.isInteger(teamSizeValue) && teamSizeValue > 0));
+  const hasKnownVolume = Boolean(safeContext.whatsappVolume);
+  const hasKnownChannels = Boolean(safeContext.channelMixSignal);
+  const hasKnownOffer = Boolean(safeContext.offerTypeSignal || safeContext.businessType);
+  const shape = classifyCommercialOperationShape(safeContext);
+  const safeSourceIntent = String(sourceIntent || '').trim().toLowerCase();
+
+  if (!hasKnownTeam && safeSourceIntent !== 'whatsapp_number_portability') return 'team_size';
+
+  if (
+    !hasKnownChannels &&
+    (
+      shape === 'complex' ||
+      safeSourceIntent === 'whatsapp_number_portability' ||
+      (safeSourceIntent === 'seller_replacement' && !safeContext.businessType && !safeContext.offerTypeSignal)
+    )
+  ) {
+    return 'channel_mix';
+  }
+
+  if (!hasKnownTeam) return 'team_size';
+
+  if (!hasKnownVolume) return 'whatsapp_volume';
+
+  if (!hasKnownChannels) return 'channel_mix';
+
+  if (!hasKnownOffer) return 'offer_type';
+
+  return null;
+}
+
+function buildCommercialDiscoveryQuestion(field, salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  if (field === 'team_size') {
+    return '¿Hoy cuántas personas atienden esas consultas?';
+  }
+  if (field === 'channel_mix') {
+    return '¿Las consultas llegan sólo por WhatsApp o también por otros canales?';
+  }
+  if (field === 'offer_type') {
+    return '¿Vendés productos o servicios?';
+  }
+  if (field === 'whatsapp_volume') {
+    return `¿Aproximadamente cuántas ${getCommercialConversationLabel(safeContext)} reciben por día?`;
+  }
+  return null;
+}
+
+function buildCommercialOrientationLead(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const shape = classifyCommercialOperationShape(safeContext);
+  const handlesOrders = safeContext.businessType === 'food_business' || safeContext.offerTypeSignal === 'products';
+
+  if (shape === 'complex') {
+    return 'Cuando ya hay varias personas o más de un frente atendiendo, suele ser importante tener seguimiento y control de conversaciones para que no se pierdan oportunidades.';
+  }
+
+  if (shape === 'team') {
+    return handlesOrders
+      ? 'Por lo que me contás, parece una operación en crecimiento donde normalmente conviene ordenar mejor consultas y pedidos antes de sumar más complejidad.'
+      : 'Por lo que me contás, parece una operación en crecimiento donde normalmente el foco está en ordenar consultas, seguimiento y respuesta del equipo.';
+  }
+
+  return handlesOrders
+    ? 'Por lo que me contás, parece una operación relativamente chica donde normalmente el foco está en organizar consultas y pedidos sin sumar complejidad.'
+    : 'Por lo que me contás, parece una operación relativamente chica donde normalmente el foco está en organizar consultas y responder más parejo sin sumar complejidad.';
+}
+
+function hasEnoughCommercialSignalsForSoftRecommendation(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const signalCount = [
+    safeContext.businessType,
+    safeContext.teamSizeSignal,
+    Number.isInteger(teamSizeValue) ? 'team_size_value' : null,
+    safeContext.whatsappVolume,
+    safeContext.offerTypeSignal,
+    safeContext.channelMixSignal
+  ].filter(Boolean).length;
+  const hasLoadSignal = Boolean(safeContext.whatsappVolume || safeContext.channelMixSignal);
+  const hasBusinessSignal = Boolean(safeContext.businessType || safeContext.offerTypeSignal);
+  const hasTeamSignal = Boolean(safeContext.teamSizeSignal || (Number.isInteger(teamSizeValue) && teamSizeValue > 0));
+
+  return (
+    (hasLoadSignal && hasBusinessSignal && hasTeamSignal) ||
+    (signalCount >= 4 && hasLoadSignal) ||
+    safeContext.teamSizeSignal === 'multi_branch' ||
+    (teamSizeValue >= 6 && hasLoadSignal) ||
+    (safeContext.businessType === 'distribution' && hasLoadSignal) ||
+    (safeContext.teamSizeSignal === 'team' && safeContext.channelMixSignal === 'multi_channel')
+  );
+}
+
+function buildSoftCommercialPlanRecommendationReply(businessContext = {}, salesContext = {}) {
+  const safeBusinessContext = businessContext && typeof businessContext === 'object' ? businessContext : {};
+  const safeSalesContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const recommendationLevel = String(safeBusinessContext.recommendationLevel || '').trim().toLowerCase();
+
+  if (recommendationLevel === 'enterprise') {
+    return [
+      'Con lo que ya me contaste, yo no te empujaría a algo básico 😊',
+      '',
+      'Lo que más sentido me hace es mirar una opción tipo Empresa, porque ya aparece necesidad de más control, seguimiento y coordinación entre varias personas o varios frentes.',
+      '',
+      'Si querés, te cuento en qué casos iría por Empresa y en cuáles todavía alcanzaría algo más liviano.'
+    ].join('\n');
+  }
+
+  if (recommendationLevel === 'starter') {
+    return [
+      'Con lo que ya me contaste, yo arrancaría por algo simple 😊',
+      '',
+      'La orientación más lógica sería una opción tipo Inicial, porque parece una operación chica donde hoy lo más importante es ordenar WhatsApp sin meter estructura de más.',
+      '',
+      'Si querés, después te cuento en qué momento conviene pasar al siguiente plan.'
+    ].join('\n');
+  }
+
   return [
-    'Perfecto 😊',
+    'Con lo que ya me contaste, yo miraría una opción intermedia 😊',
     '',
-    `${buildTeamSizeLead(teamSizeValue, teamSizeSignal)}, Opturon puede ayudarles a ordenar mejor los mensajes y evitar que se pierdan oportunidades cuando hay varias conversaciones al mismo tiempo.`,
+    `La orientación más lógica sería algo tipo Crecimiento, porque ${buildRecommendationReasonSummary({ name: 'Plan Crecimiento' }, safeSalesContext, [])}.`,
     '',
-    '¿Hoy las consultas les llegan principalmente por WhatsApp o también usan otros canales?'
+    'Si querés, te explico rápido por qué lo pondría por encima de una opción más básica.'
   ].join('\n');
 }
 
-function buildWhatsAppAccountTypeDiscoveryFollowUp(accountTypeSignal) {
+function buildCommercialOrientationReply({
+  salesContext,
+  businessContext,
+  sourceIntent = null
+}) {
+  const safeSalesContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const safeBusinessContext = businessContext && typeof businessContext === 'object' ? businessContext : null;
+
+  if (
+    safeBusinessContext &&
+    safeBusinessContext.recommendationLevel &&
+    hasEnoughCommercialSignalsForSoftRecommendation(safeSalesContext)
+  ) {
+    return {
+      replyText: buildSoftCommercialPlanRecommendationReply(safeBusinessContext, safeSalesContext),
+      pendingField: null
+    };
+  }
+
+  const nextField = chooseNextCommercialDiscoveryField(safeSalesContext, sourceIntent);
+  const nextQuestion = buildCommercialDiscoveryQuestion(nextField, safeSalesContext);
+  return {
+    replyText: [
+      'Perfecto 😊',
+      '',
+      buildCommercialOrientationLead(safeSalesContext),
+      ...(nextQuestion ? ['', nextQuestion] : [])
+    ].join('\n'),
+    pendingField: nextField || null
+  };
+}
+
+function buildSellerReplacementDiscoveryFollowUp(salesContext = {}, businessContext = null) {
+  return buildCommercialOrientationReply({
+    salesContext,
+    businessContext,
+    sourceIntent: 'seller_replacement'
+  });
+}
+
+function buildWhatsAppAccountTypeDiscoveryFollowUp(salesContext = {}, businessContext = null) {
+  return buildCommercialOrientationReply({
+    salesContext,
+    businessContext,
+    sourceIntent: 'whatsapp_number_portability'
+  });
+}
+
+function buildOfferTypeDiscoveryFollowUp(salesContext = {}, businessContext = null) {
+  return buildCommercialOrientationReply({
+    salesContext,
+    businessContext,
+    sourceIntent: 'channel_compatibility'
+  });
+}
+
+function buildChannelMixDiscoveryFollowUp(salesContext = {}, businessContext = null, sourceIntent = null) {
+  return buildCommercialOrientationReply({
+    salesContext,
+    businessContext,
+    sourceIntent
+  });
+}
+
+function buildCommercialDiscoveryResponse({
+  salesContext,
+  businessContext,
+  sourceIntent = null
+}) {
+  const orientation = buildCommercialOrientationReply({
+    salesContext,
+    businessContext,
+    sourceIntent
+  });
+
+  return {
+    replyText: orientation.replyText,
+    contextPatch: orientation.pendingField
+      ? buildCommercialDiscoveryPendingPatch({
+        field: orientation.pendingField,
+        sourceIntent: sourceIntent || null
+      })
+      : clearCommercialDiscoveryPendingPatch()
+  };
+}
+
+function buildWhatsAppAccountTypeDiscoveryFollowUpLegacy(accountTypeSignal) {
   const detail = accountTypeSignal === 'business'
     ? 'Si ya usan WhatsApp Business, normalmente el objetivo es mantener continuidad con el número y ordenar mejor la atención sin arrancar de cero.'
     : 'Si hoy atienden desde un número personal, el siguiente paso suele ser ordenar mejor la atención y evaluar la transición sin perder continuidad con los clientes.';
@@ -2023,38 +2334,6 @@ function buildWhatsAppAccountTypeDiscoveryFollowUp(accountTypeSignal) {
     detail,
     '',
     '¿Hoy reciben consultas solo por WhatsApp o también por Instagram u otros canales?'
-  ].join('\n');
-}
-
-function buildOfferTypeDiscoveryFollowUp(offerTypeSignal) {
-  const detail = offerTypeSignal === 'services'
-    ? 'Si vendés servicios, Opturon puede ayudarte a ordenar mejor las consultas, responder más parejo y dar seguimiento sin depender de acordarse de cada conversación.'
-    : 'Si vendés productos, Opturon puede ayudarte a responder más parejo, ordenar consultas y dar seguimiento cuando alguien pregunta pero no compra en el momento.';
-
-  return [
-    'Perfecto 😊',
-    '',
-    detail,
-    '',
-    '¿Hoy las consultas te llegan principalmente por WhatsApp o también usan otros canales?'
-  ].join('\n');
-}
-
-function buildChannelMixDiscoveryFollowUp(channelMixSignal, sourceIntent = null) {
-  const detail = channelMixSignal === 'multi_channel'
-    ? 'Cuando entran consultas por más de un canal, ordenar conversaciones y seguimiento suele hacer una diferencia grande.'
-    : 'Cuando la mayor parte entra por WhatsApp, ordenar la atención y el seguimiento desde ahí ya puede mejorar mucho la operación.';
-
-  const nextQuestion = sourceIntent === 'channel_compatibility'
-    ? '¿Hoy cuántas personas atienden esas consultas?'
-    : '¿Hoy vendés productos o servicios?';
-
-  return [
-    'Perfecto 😊',
-    '',
-    detail,
-    '',
-    nextQuestion
   ].join('\n');
 }
 
@@ -2069,20 +2348,26 @@ function resolveCommercialDiscoveryPendingReply({
   if (pending.field === 'team_size') {
     const teamAnswer = parseCommercialTeamSizeAnswer(inboundText);
     if (!teamAnswer) return null;
+    const nextSalesContext = {
+      ...currentSalesContext,
+      teamSizeSignal: teamAnswer.teamSizeSignal,
+      teamSizeValue: teamAnswer.teamSizeValue
+    };
+    const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
+    const response = buildCommercialDiscoveryResponse({
+      salesContext: nextSalesContext,
+      businessContext,
+      sourceIntent: pending.sourceIntent || 'seller_replacement'
+    });
 
     return {
       type: 'recommendation',
-      replyText: buildSellerReplacementDiscoveryFollowUp(teamAnswer),
+      replyText: response.replyText,
       contextPatch: mergeContextPatches(
         buildCommercialSalesContextPatch({
-          ...currentSalesContext,
-          teamSizeSignal: teamAnswer.teamSizeSignal,
-          teamSizeValue: teamAnswer.teamSizeValue
+          ...nextSalesContext
         }),
-        buildCommercialDiscoveryPendingPatch({
-          field: 'channel_mix',
-          sourceIntent: pending.sourceIntent || 'seller_replacement'
-        })
+        response.contextPatch
       )
     };
   }
@@ -2090,19 +2375,25 @@ function resolveCommercialDiscoveryPendingReply({
   if (pending.field === 'whatsapp_account_type') {
     const accountTypeSignal = parseCommercialWhatsAppAccountTypeAnswer(inboundText);
     if (!accountTypeSignal) return null;
+    const nextSalesContext = {
+      ...currentSalesContext,
+      whatsappAccountTypeSignal: accountTypeSignal
+    };
+    const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
+    const response = buildCommercialDiscoveryResponse({
+      salesContext: nextSalesContext,
+      businessContext,
+      sourceIntent: pending.sourceIntent || 'whatsapp_number_portability'
+    });
 
     return {
       type: 'recommendation',
-      replyText: buildWhatsAppAccountTypeDiscoveryFollowUp(accountTypeSignal),
+      replyText: response.replyText,
       contextPatch: mergeContextPatches(
         buildCommercialSalesContextPatch({
-          ...currentSalesContext,
-          whatsappAccountTypeSignal: accountTypeSignal
+          ...nextSalesContext
         }),
-        buildCommercialDiscoveryPendingPatch({
-          field: 'channel_mix',
-          sourceIntent: pending.sourceIntent || 'whatsapp_number_portability'
-        })
+        response.contextPatch
       )
     };
   }
@@ -2110,19 +2401,51 @@ function resolveCommercialDiscoveryPendingReply({
   if (pending.field === 'offer_type') {
     const offerTypeSignal = parseCommercialOfferTypeAnswer(inboundText);
     if (!offerTypeSignal) return null;
+    const nextSalesContext = {
+      ...currentSalesContext,
+      offerTypeSignal
+    };
+    const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
+    const response = buildCommercialDiscoveryResponse({
+      salesContext: nextSalesContext,
+      businessContext,
+      sourceIntent: pending.sourceIntent || 'channel_compatibility'
+    });
 
     return {
       type: 'recommendation',
-      replyText: buildOfferTypeDiscoveryFollowUp(offerTypeSignal),
+      replyText: response.replyText,
       contextPatch: mergeContextPatches(
         buildCommercialSalesContextPatch({
-          ...currentSalesContext,
-          offerTypeSignal
+          ...nextSalesContext
         }),
-        buildCommercialDiscoveryPendingPatch({
-          field: 'channel_mix',
-          sourceIntent: pending.sourceIntent || 'channel_compatibility'
-        })
+        response.contextPatch
+      )
+    };
+  }
+
+  if (pending.field === 'whatsapp_volume') {
+    const whatsappVolumeSignal = parseCommercialWhatsappVolumeAnswer(inboundText, { strict: true });
+    if (!whatsappVolumeSignal) return null;
+    const nextSalesContext = {
+      ...currentSalesContext,
+      whatsappVolume: whatsappVolumeSignal
+    };
+    const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
+    const response = buildCommercialDiscoveryResponse({
+      salesContext: nextSalesContext,
+      businessContext,
+      sourceIntent: pending.sourceIntent || null
+    });
+
+    return {
+      type: 'recommendation',
+      replyText: response.replyText,
+      contextPatch: mergeContextPatches(
+        buildCommercialSalesContextPatch({
+          ...nextSalesContext
+        }),
+        response.contextPatch
       )
     };
   }
@@ -2130,21 +2453,25 @@ function resolveCommercialDiscoveryPendingReply({
   if (pending.field === 'channel_mix') {
     const channelMixSignal = parseCommercialChannelMixAnswer(inboundText);
     if (!channelMixSignal) return null;
+    const nextSalesContext = {
+      ...currentSalesContext,
+      channelMixSignal
+    };
+    const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
+    const response = buildCommercialDiscoveryResponse({
+      salesContext: nextSalesContext,
+      businessContext,
+      sourceIntent: pending.sourceIntent || null
+    });
 
     return {
       type: 'recommendation',
-      replyText: buildChannelMixDiscoveryFollowUp(channelMixSignal, pending.sourceIntent),
+      replyText: response.replyText,
       contextPatch: mergeContextPatches(
         buildCommercialSalesContextPatch({
-          ...currentSalesContext,
-          channelMixSignal
+          ...nextSalesContext
         }),
-        pending.sourceIntent === 'channel_compatibility'
-          ? buildCommercialDiscoveryPendingPatch({
-            field: 'team_size',
-            sourceIntent: pending.sourceIntent
-          })
-          : clearCommercialDiscoveryPendingPatch()
+        response.contextPatch
       )
     };
   }
@@ -2157,12 +2484,15 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
   if (!safeContext) return null;
 
   const painPoints = Array.isArray(safeContext.painPoints) ? safeContext.painPoints : [];
+  const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
   const isHighVolume = safeContext.whatsappVolume === 'high';
   const isLowVolume = safeContext.whatsappVolume === 'low';
   const hasTeam = safeContext.teamSizeSignal === 'team' || safeContext.teamSizeSignal === 'multi_branch';
   const isMultiBranch = safeContext.teamSizeSignal === 'multi_branch';
   const isSolo = safeContext.teamSizeSignal === 'solo';
   const isDistribution = safeContext.businessType === 'distribution';
+  const isProductsFlow = safeContext.offerTypeSignal === 'products' || safeContext.businessType === 'food_business';
+  const isMultiChannel = safeContext.channelMixSignal === 'multi_channel';
   const hasControlSignals = painPoints.includes('team_control') || painPoints.includes('complex_operation');
   const hasGrowthPains = painPoints.includes('lead_loss') || painPoints.includes('follow_up') || painPoints.includes('response_delay') || painPoints.includes('sales_organization');
 
@@ -2172,6 +2502,8 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
 
   if (isLowVolume) starterScore += 2;
   if (isSolo) starterScore += 1;
+  if (teamSizeValue === 1) starterScore += 2;
+  if (teamSizeValue > 0 && teamSizeValue <= 2) starterScore += 1;
   if (!painPoints.length) starterScore += 1;
 
   if (safeContext.businessType && safeContext.businessType !== 'distribution') growthScore += 1;
@@ -2179,11 +2511,17 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
   if (hasGrowthPains) growthScore += 3;
   if (isSolo) growthScore += 1;
   if (hasTeam) growthScore += 1;
+  if (teamSizeValue >= 3 && teamSizeValue <= 5) growthScore += 2;
+  if (isMultiChannel) growthScore += 2;
+  if (isProductsFlow) growthScore += 1;
 
   if (isDistribution) enterpriseScore += 4;
   if (isMultiBranch) enterpriseScore += 4;
   if (safeContext.teamSizeSignal === 'team') enterpriseScore += 2;
+  if (teamSizeValue >= 6) enterpriseScore += 4;
+  if (teamSizeValue >= 4) enterpriseScore += 1;
   if (hasControlSignals) enterpriseScore += 3;
+  if (isMultiChannel) enterpriseScore += 1;
   if (isHighVolume && hasTeam) enterpriseScore += 1;
 
   if (enterpriseScore >= 5 && enterpriseScore > growthScore) {
@@ -2191,6 +2529,20 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
       businessType: safeContext.businessType || (isDistribution ? 'distribution' : 'high_volume'),
       teamSize: hasTeam ? 'team' : 'small',
       recommendationLevel: 'enterprise'
+    };
+  }
+
+  if (
+    isLowVolume &&
+    teamSizeValue > 0 &&
+    teamSizeValue <= 2 &&
+    !isMultiChannel &&
+    !hasControlSignals
+  ) {
+    return {
+      businessType: safeContext.businessType || 'starter',
+      teamSize: 'small',
+      recommendationLevel: 'starter'
     };
   }
 
@@ -2221,12 +2573,16 @@ function hasMinimumSalesContextForRecommendation(salesContext) {
     safeContext.businessType,
     safeContext.whatsappVolume,
     safeContext.teamSizeSignal,
+    safeContext.teamSizeValue ? 'team_size_value' : null,
+    safeContext.offerTypeSignal,
+    safeContext.channelMixSignal,
     Array.isArray(safeContext.painPoints) && safeContext.painPoints.length ? 'pain' : null
   ].filter(Boolean).length;
 
   return (
     signalCount >= 2 ||
     safeContext.whatsappVolume === 'high' ||
+    Number.parseInt(String(safeContext.teamSizeValue || ''), 10) >= 4 ||
     safeContext.teamSizeSignal === 'team' ||
     safeContext.teamSizeSignal === 'multi_branch'
   );
@@ -3752,7 +4108,7 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
 }
 
 function buildSalesDiscoveryQuestion() {
-  return 'Depende un poco de tu operación 😊 ¿Hoy estás arrancando, ya recibís muchas consultas por WhatsApp o tenés un equipo vendiendo?';
+  return 'Depende un poco de tu operación 😊 ¿Aproximadamente cuántas conversaciones reciben por día y cuántas personas las atienden?';
 }
 
 function buildAiAssistFeatureContextPatch({ safeContext, effectiveSalesContext, derivedBusinessContext }) {
@@ -14742,7 +15098,11 @@ module.exports = {
     parseCommercialTeamSizeAnswer,
     parseCommercialWhatsAppAccountTypeAnswer,
     parseCommercialOfferTypeAnswer,
+    parseCommercialWhatsappVolumeAnswer,
     resolveCommercialDiscoveryPendingReply,
+    buildCommercialOrientationReply,
+    deriveBusinessRecommendationContextFromSalesContext,
+    hasEnoughCommercialSignalsForSoftRecommendation,
     buildIntelligentFallbackReply,
     buildCommercialGreetingReply,
     buildCommercialIndecisionReply,

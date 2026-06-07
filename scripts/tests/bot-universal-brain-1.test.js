@@ -72,9 +72,13 @@ const {
   parseCommercialTeamSizeAnswer,
   parseCommercialWhatsAppAccountTypeAnswer,
   parseCommercialOfferTypeAnswer,
+  parseCommercialWhatsappVolumeAnswer,
   buildSafeCommercialIntentReply,
   resolveCommerceDecision,
-  getActiveCommercialDiscoveryPending
+  getActiveCommercialDiscoveryPending,
+  buildCommercialOrientationReply,
+  deriveBusinessRecommendationContextFromSalesContext,
+  hasEnoughCommercialSignalsForSoftRecommendation
 } = worker.__private__;
 
 const clinic = {
@@ -194,6 +198,8 @@ async function run() {
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('atiendo yo solo'), { teamSizeValue: 1, teamSizeSignal: 'solo' });
   assert.strictEqual(parseCommercialWhatsAppAccountTypeAnswer('Uso WhatsApp Business'), 'business');
   assert.strictEqual(parseCommercialOfferTypeAnswer('Productos'), 'products');
+  assert.strictEqual(parseCommercialWhatsappVolumeAnswer('30 por dia'), 'high');
+  assert.strictEqual(parseCommercialWhatsappVolumeAnswer('10 por dia'), 'low');
 
   const sellerDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -201,6 +207,10 @@ async function run() {
       ...conversation,
       context: {
         activeBotDomain: 'commerce',
+        commercialSalesContext: {
+          updatedAt: new Date().toISOString(),
+          businessType: 'food_business'
+        },
         commercialDiscoveryPending: {
           field: 'team_size',
           askedAt: new Date().toISOString(),
@@ -208,13 +218,13 @@ async function run() {
         }
       }
     },
-    inboundText: 'Tengo 2 personas en atención al público'
+    inboundText: 'Tengo 2 personas en atencion al publico'
   });
-  assert.match(sellerDiscoveryReply.replyText, /Con 2 personas atendiendo consultas/i);
-  assert.match(sellerDiscoveryReply.replyText, /principalmente por WhatsApp/i);
+  assert.match(sellerDiscoveryReply.replyText, /relativamente chica/i);
+  assert.match(sellerDiscoveryReply.replyText, /por d[ií]a/i);
   assert.strictEqual(sellerDiscoveryReply.contextPatch.commercialSalesContext.teamSizeSignal, 'team');
   assert.strictEqual(sellerDiscoveryReply.contextPatch.commercialSalesContext.teamSizeValue, 2);
-  assert.strictEqual(getActiveCommercialDiscoveryPending(sellerDiscoveryReply.contextPatch).field, 'channel_mix');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(sellerDiscoveryReply.contextPatch).field, 'whatsapp_volume');
 
   const portabilityDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -231,9 +241,10 @@ async function run() {
     },
     inboundText: 'Uso WhatsApp Business'
   });
-  assert.match(portabilityDiscoveryReply.replyText, /mantener continuidad con el n[uú]mero/i);
+  assert.match(portabilityDiscoveryReply.replyText, /relativamente chica|en crecimiento|varias personas/i);
   assert.strictEqual(portabilityDiscoveryReply.contextPatch.commercialSalesContext.whatsappAccountTypeSignal, 'business');
-  assert.strictEqual(getActiveCommercialDiscoveryPending(portabilityDiscoveryReply.contextPatch).field, 'channel_mix');
+  assert.strictEqual(portabilityDiscoveryReply.contextPatch.commercialSalesContext.channelMixSignal, 'whatsapp_only');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(portabilityDiscoveryReply.contextPatch).field, 'team_size');
 
   const offerTypeDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -250,9 +261,79 @@ async function run() {
     },
     inboundText: 'Productos'
   });
-  assert.match(offerTypeDiscoveryReply.replyText, /Si vendés productos/i);
+  assert.match(offerTypeDiscoveryReply.replyText, /relativamente chica|en crecimiento/i);
   assert.strictEqual(offerTypeDiscoveryReply.contextPatch.commercialSalesContext.offerTypeSignal, 'products');
-  assert.strictEqual(getActiveCommercialDiscoveryPending(offerTypeDiscoveryReply.contextPatch).field, 'channel_mix');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(offerTypeDiscoveryReply.contextPatch).field, 'team_size');
+
+  const mediumOrientationContext = {
+    businessType: 'food_business',
+    offerTypeSignal: 'products',
+    teamSizeSignal: 'team',
+    teamSizeValue: 2
+  };
+  const mediumOrientation = buildCommercialOrientationReply({
+    salesContext: mediumOrientationContext,
+    businessContext: deriveBusinessRecommendationContextFromSalesContext(mediumOrientationContext),
+    sourceIntent: 'seller_replacement'
+  });
+  assert.match(mediumOrientation.replyText, /relativamente chica/i);
+  assert.strictEqual(mediumOrientation.pendingField, 'whatsapp_volume');
+
+  const complexOrientationContext = {
+    teamSizeSignal: 'team',
+    teamSizeValue: 8
+  };
+  const complexOrientation = buildCommercialOrientationReply({
+    salesContext: complexOrientationContext,
+    businessContext: deriveBusinessRecommendationContextFromSalesContext(complexOrientationContext),
+    sourceIntent: 'seller_replacement'
+  });
+  assert.match(complexOrientation.replyText, /varias personas o m[aá]s de un frente/i);
+  assert.strictEqual(complexOrientation.pendingField, 'channel_mix');
+
+  const starterRecommendationContext = {
+    businessType: 'food_business',
+    offerTypeSignal: 'products',
+    teamSizeSignal: 'team',
+    teamSizeValue: 2,
+    whatsappVolume: 'low'
+  };
+  const starterRecommendation = buildCommercialOrientationReply({
+    salesContext: starterRecommendationContext,
+    businessContext: deriveBusinessRecommendationContextFromSalesContext(starterRecommendationContext),
+    sourceIntent: 'seller_replacement'
+  });
+  assert.strictEqual(hasEnoughCommercialSignalsForSoftRecommendation(starterRecommendationContext), true);
+  assert.match(starterRecommendation.replyText, /tipo Inicial/i);
+
+  const growthRecommendationContext = {
+    businessType: 'services',
+    offerTypeSignal: 'services',
+    teamSizeSignal: 'team',
+    teamSizeValue: 3,
+    whatsappVolume: 'high'
+  };
+  const growthRecommendation = buildCommercialOrientationReply({
+    salesContext: growthRecommendationContext,
+    businessContext: deriveBusinessRecommendationContextFromSalesContext(growthRecommendationContext),
+    sourceIntent: 'seller_replacement'
+  });
+  assert.match(growthRecommendation.replyText, /tipo Crecimiento/i);
+
+  const enterpriseRecommendationContext = {
+    businessType: 'distribution',
+    offerTypeSignal: 'products',
+    teamSizeSignal: 'team',
+    teamSizeValue: 8,
+    whatsappVolume: 'high',
+    channelMixSignal: 'multi_channel'
+  };
+  const enterpriseRecommendation = buildCommercialOrientationReply({
+    salesContext: enterpriseRecommendationContext,
+    businessContext: deriveBusinessRecommendationContextFromSalesContext(enterpriseRecommendationContext),
+    sourceIntent: 'seller_replacement'
+  });
+  assert.match(enterpriseRecommendation.replyText, /tipo Empresa/i);
 
   assert.strictEqual(detectIntent('quiero un turno'), 'appointment');
   assert.strictEqual(parseTransferPaymentIntent('como te transfiero'), 'request');
