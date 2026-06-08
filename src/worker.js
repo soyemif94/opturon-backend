@@ -3876,7 +3876,46 @@ function isRecommendationWhyFollowUpIntent(rawText) {
       text.includes('como llegaste a eso') ||
       text.includes('como llegaste a esa recomendacion') ||
       text.includes('cómo llegaste a eso') ||
-      text.includes('cómo llegaste a esa recomendación')
+      text.includes('cómo llegaste a esa recomendación') ||
+      text.includes('por que no el mas barato') ||
+      text.includes('por qué no el más barato') ||
+      text.includes('me alcanza con crecimiento') ||
+      text.includes('me alcanza con inicial') ||
+      text.includes('no sera mucho empresa') ||
+      text.includes('no será mucho empresa') ||
+      text.includes('empresa no es mucho para mi') ||
+      text.includes('empresa no es mucho para mí') ||
+      text.includes('que gano pagando mas') ||
+      text.includes('qué gano pagando más')
+  );
+}
+
+function isPlanDefenseIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    isRecommendationWhyFollowUpIntent(text) ||
+    isPlanVsPlanIntent(text) ||
+    (
+      isPlanComparisonIntent(text) &&
+      (
+        text.includes('diferencia') ||
+        text.includes('conviene') ||
+        text.includes('elegirias') ||
+        text.includes('elegirías')
+      )
+    ) ||
+    text.includes('me alcanza con') ||
+    text.includes('vale la diferencia') ||
+    text.includes('que gano pagando mas') ||
+    text.includes('qué gano pagando más') ||
+    text.includes('no sera mucho') ||
+    text.includes('no será mucho') ||
+    text.includes('no es mucho para mi') ||
+    text.includes('no es mucho para mí') ||
+    text.includes('mas barato') ||
+    text.includes('más barato')
   );
 }
 
@@ -5543,6 +5582,129 @@ function buildCommercialPlanObjectionReply(
   return null;
 }
 
+function buildPlanDefenseContextFragments(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const fragments = [];
+
+  if (Number.isInteger(teamSizeValue) && teamSizeValue > 1) {
+    fragments.push(`ya tenés ${teamSizeValue} personas atendiendo`);
+  } else if (safeContext.teamSizeSignal === 'team') {
+    fragments.push('ya tienen más de una persona atendiendo');
+  } else if (safeContext.teamSizeSignal === 'multi_branch') {
+    fragments.push('ya tienen varios frentes atendiendo');
+  }
+
+  if (safeContext.whatsappVolume === 'high') {
+    fragments.push('hay bastante movimiento por WhatsApp');
+  } else if (safeContext.whatsappVolume === 'low') {
+    fragments.push('todavía el volumen es bastante manejable');
+  }
+
+  if (safeContext.channelMixSignal === 'multi_channel') {
+    fragments.push('les entran consultas por más de un canal');
+  }
+
+  return fragments;
+}
+
+function joinPlanDefenseFragments(fragments = []) {
+  const safeFragments = Array.isArray(fragments) ? fragments.filter(Boolean) : [];
+  if (!safeFragments.length) return '';
+  if (safeFragments.length === 1) return safeFragments[0];
+  if (safeFragments.length === 2) return `${safeFragments[0]} y ${safeFragments[1]}`;
+  return `${safeFragments.slice(0, -1).join(', ')} y ${safeFragments[safeFragments.length - 1]}`;
+}
+
+function buildPlanDefenseLowerFitLine(plan, salesContext = {}) {
+  const normalizedName = normalizeCommandText(plan && plan.name ? plan.name : '');
+  if (normalizedName.includes('inicial')) {
+    return `${plan.name || 'Plan Inicial'} alcanza cuando el foco está en ordenar lo básico de WhatsApp sin sumar estructura de más.`;
+  }
+  if (normalizedName.includes('crecimiento')) {
+    return `${plan.name || 'Plan Crecimiento'} te puede servir si lo principal es ordenar conversaciones y seguimiento sin irte todavía al plan más grande.`;
+  }
+  if (normalizedName.includes('empresa')) {
+    return `${plan.name || 'Plan Empresa'} tiene sentido cuando ya necesitás más control, coordinación o personalización.`;
+  }
+  return `${plan.name || 'Ese plan'} puede servir si hoy lo principal es ${resolvePlanProfile(plan).problemSolved}.`;
+}
+
+function buildPlanDefenseHigherFitLine(plan, salesContext = {}) {
+  const normalizedName = normalizeCommandText(plan && plan.name ? plan.name : '');
+  if (normalizedName.includes('empresa')) {
+    return `${plan.name || 'Plan Empresa'} empieza a justificar la diferencia cuando ya necesitás más control, seguimiento y una operación más acompañada.`;
+  }
+  if (normalizedName.includes('crecimiento')) {
+    return `${plan.name || 'Plan Crecimiento'} empieza a rendir más cuando ya necesitás seguimiento real y una operación comercial más ordenada.`;
+  }
+  return `${plan.name || 'Ese plan'} conviene más cuando el objetivo ya pasa por ${resolvePlanProfile(plan).result}.`;
+}
+
+function buildPlanDefenseRiskLine(recommendedPlan, comparedPlan, salesContext = {}) {
+  const recommendedName = normalizeCommandText(recommendedPlan && recommendedPlan.name ? recommendedPlan.name : '');
+  const comparedName = normalizeCommandText(comparedPlan && comparedPlan.name ? comparedPlan.name : '');
+
+  if (recommendedName.includes('empresa') && comparedName.includes('crecimiento')) {
+    return 'Ahí el problema no suele ser solo responder más rápido, sino coordinar mejor al equipo, tener más control y evitar que se pierdan oportunidades entre varias personas.';
+  }
+
+  if (recommendedName.includes('crecimiento') && comparedName.includes('inicial')) {
+    return 'Ahí el salto ya no pasa solo por ordenar WhatsApp, sino por hacer seguimiento real y no depender de acordarte todo a mano.';
+  }
+
+  if (recommendedName.includes('empresa') && comparedName.includes('inicial')) {
+    return 'Ahí el salto no pasa solo por ordenar conversaciones, sino por tener control, seguimiento y una base más firme para el equipo.';
+  }
+
+  return `La diferencia principal es que ${recommendedPlan && recommendedPlan.name ? recommendedPlan.name : 'ese plan'} apunta a ${resolvePlanProfile(recommendedPlan).result}, mientras que ${comparedPlan && comparedPlan.name ? comparedPlan.name : 'el otro'} se queda más en ${resolvePlanProfile(comparedPlan).problemSolved}.`;
+}
+
+function buildCommercialPlanDefenseReply({
+  recommendedPlan,
+  comparedPlan,
+  salesContext = null,
+  preferRecommended = true
+}) {
+  const recommended = recommendedPlan && typeof recommendedPlan === 'object' ? recommendedPlan : null;
+  const compared = comparedPlan && typeof comparedPlan === 'object' ? comparedPlan : null;
+  if (!recommended || !compared) return null;
+
+  const contextFragments = buildPlanDefenseContextFragments(salesContext);
+  const contextSummary = joinPlanDefenseFragments(contextFragments);
+
+  if (!preferRecommended) {
+    return [
+      'Buena pregunta 😊',
+      '',
+      buildPlanDefenseLowerFitLine(recommended, salesContext),
+      '',
+      buildPlanDefenseHigherFitLine(compared, salesContext),
+      '',
+      contextSummary
+        ? `Si hoy ${contextSummary}, normalmente pesa más el nivel de seguimiento y control que necesiten.`
+        : 'La diferencia real suele estar en cuánto seguimiento, control y estructura necesitás hoy.',
+      '',
+      `${recommended.name || 'El plan más chico'} alcanza si querés resolver lo más básico. ${compared.name || 'El plan siguiente'} empieza a rendir más cuando ya necesitás un paso extra en la operación.`
+    ].join('\n');
+  }
+
+  return [
+    'Buena pregunta 😊',
+    '',
+    buildPlanDefenseLowerFitLine(compared, salesContext),
+    '',
+    contextSummary
+      ? `La razón por la que miraría ${recommended.name || 'ese plan'} en tu caso es que ${contextSummary}.`
+      : `La razón por la que miraría ${recommended.name || 'ese plan'} es que ${buildRecommendationReasonSummary(recommended, salesContext, [compared, recommended])}.`,
+    buildPlanDefenseRiskLine(recommended, compared, salesContext),
+    '',
+    `${compared.name || 'El plan menor'} podría alcanzar si hoy eso ya lo tienen ordenado y no se les escapan conversaciones ni oportunidades.`,
+    '',
+    buildPlanDefenseHigherFitLine(recommended, salesContext)
+  ].join('\n');
+}
+
 function buildComparisonLead(primaryPlan, secondaryPlan) {
   const options = [
     'Te cuento la diferencia simple 😊',
@@ -5595,6 +5757,91 @@ function resolveRecentCommercialPlan(products, salesContext, planContext = null,
   const fromFollowUp = resolveRecommendedPlanForCommercialFollowUp(products, salesContext, planContext);
   if (fromFollowUp) return fromFollowUp;
   return resolvePlanFromCommercialShortMemory(products, shortMemory);
+}
+
+function resolveCommercialPlanDefenseComparison(products, rawText, salesContext, planContext = null, shortMemory = null, businessContext = null) {
+  const orderedPlans = getOrderedPlanProducts(products);
+  const text = normalizeCommandText(rawText);
+  const referencedPlans = findReferencedPlans(orderedPlans, rawText);
+  const activeRecommendedPlan =
+    resolveRecentCommercialPlan(orderedPlans, salesContext, planContext, shortMemory) ||
+    (businessContext ? findPlanByBusinessRecommendationContext(orderedPlans, businessContext) : null);
+  const starterPlan = findPlanByNeedHint(orderedPlans, 'starter');
+
+  if (!text) return null;
+
+  const prefersRecommended = (
+    text.includes(' y no ') ||
+    text.includes('me alcanza con') ||
+    text.includes('no sera mucho') ||
+    text.includes('no será mucho') ||
+    text.includes('no es mucho para mi') ||
+    text.includes('no es mucho para mí') ||
+    text.includes('mas barato') ||
+    text.includes('más barato') ||
+    isRecommendationWhyFollowUpIntent(text)
+  );
+
+  if (referencedPlans.length >= 2) {
+    if (prefersRecommended) {
+      return {
+        recommendedPlan: referencedPlans[0],
+        comparedPlan: referencedPlans[1],
+        preferRecommended: true
+      };
+    }
+
+    return {
+      recommendedPlan: referencedPlans[0],
+      comparedPlan: referencedPlans[1],
+      preferRecommended: false
+    };
+  }
+
+  if (referencedPlans.length === 1) {
+    const referencedPlan = referencedPlans[0];
+    const sameAsActive = activeRecommendedPlan && String(activeRecommendedPlan.id || activeRecommendedPlan.productId || '').trim() === String(referencedPlan.id || referencedPlan.productId || '').trim();
+    if (activeRecommendedPlan && !sameAsActive) {
+      return {
+        recommendedPlan: activeRecommendedPlan,
+        comparedPlan: referencedPlan,
+        preferRecommended: true
+      };
+    }
+
+    const fallbackComparedPlan = chooseLogicalComparisonItem(orderedPlans, referencedPlan, planContext && planContext.lastComparedPlanId);
+    if (fallbackComparedPlan) {
+      return {
+        recommendedPlan: referencedPlan,
+        comparedPlan: fallbackComparedPlan,
+        preferRecommended: !isPlanComparisonIntent(text)
+      };
+    }
+  }
+
+  if ((text.includes('mas barato') || text.includes('más barato')) && starterPlan) {
+    const recommendedPlan = activeRecommendedPlan || findPlanByNeedHint(orderedPlans, 'growth') || starterPlan;
+    if (recommendedPlan && String(recommendedPlan.id || recommendedPlan.productId || '').trim() !== String(starterPlan.id || starterPlan.productId || '').trim()) {
+      return {
+        recommendedPlan,
+        comparedPlan: starterPlan,
+        preferRecommended: true
+      };
+    }
+  }
+
+  if (activeRecommendedPlan) {
+    const comparedPlan = chooseLogicalComparisonItem(orderedPlans, activeRecommendedPlan, planContext && planContext.lastComparedPlanId);
+    if (comparedPlan) {
+      return {
+        recommendedPlan: activeRecommendedPlan,
+        comparedPlan,
+        preferRecommended: true
+      };
+    }
+  }
+
+  return null;
 }
 
 function findPlanByStoredId(products, storedId) {
@@ -7812,6 +8059,70 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
           }
         }
       };
+    }
+  }
+
+  if (
+    !isCatalogItemDetailIntent(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isPlanDefenseIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const defenseComparison = resolveCommercialPlanDefenseComparison(
+      orderedPlans,
+      inboundText,
+      effectiveSalesContext,
+      activePlanContext,
+      activeShortMemory,
+      effectiveBusinessContext
+    );
+
+    if (defenseComparison && defenseComparison.recommendedPlan && defenseComparison.comparedPlan) {
+      const result = {
+        type: 'recommendation',
+        replyText: buildCommercialPlanDefenseReply({
+          recommendedPlan: defenseComparison.recommendedPlan,
+          comparedPlan: defenseComparison.comparedPlan,
+          salesContext: effectiveSalesContext,
+          preferRecommended: defenseComparison.preferRecommended !== false
+        }),
+        contextPatch: {
+          ...(hasEffectiveSalesSignals ? buildCommercialSalesContextPatch({
+            ...effectiveSalesContext,
+            lastRecommendedPlan: defenseComparison.recommendedPlan && (defenseComparison.recommendedPlan.id || defenseComparison.recommendedPlan.productId),
+            lastRecommendationReason: buildRecommendationReasonSummary(defenseComparison.recommendedPlan, effectiveSalesContext, orderedPlans)
+          }) : {}),
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: defenseComparison.recommendedPlan && (defenseComparison.recommendedPlan.id || defenseComparison.recommendedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(defenseComparison.recommendedPlan, orderedPlans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_comparison',
+            lastDiscussedPlanId: defenseComparison.recommendedPlan && (defenseComparison.recommendedPlan.id || defenseComparison.recommendedPlan.productId),
+            lastComparedPlanId: defenseComparison.comparedPlan && (defenseComparison.comparedPlan.id || defenseComparison.comparedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(defenseComparison.recommendedPlan, orderedPlans)
+          }),
+          pendingOfferedAction: {
+            type: null,
+            activeAt: null,
+            completedAt: new Date().toISOString()
+          }
+        }
+      };
+      logInfo('commercial_reply_trace', {
+        stage: 'plan_defense',
+        inboundText: normalizedText,
+        matchedIntent: commercialIntent.type,
+        recommendedPlanId: defenseComparison.recommendedPlan.id || defenseComparison.recommendedPlan.productId || null,
+        comparedPlanId: defenseComparison.comparedPlan.id || defenseComparison.comparedPlan.productId || null,
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
     }
   }
 

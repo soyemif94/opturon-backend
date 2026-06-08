@@ -395,6 +395,59 @@ async function run() {
   assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.teamSizeValue, 3);
   assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.whatsappVolume, 'high');
 
+  const contextAfterRecommendation = applyContextPatch(contextAfterBusinessType, finalRecommendationReply.contextPatch);
+  const enterpriseDefenseReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterRecommendation
+    },
+    inboundText: 'A ver contame por que Plan Empresa y no Plan Crecimiento'
+  });
+  assert.match(enterpriseDefenseReply.replyText, /Buena pregunta/i);
+  assert.match(enterpriseDefenseReply.replyText, /Plan Crecimiento te puede servir/i);
+  assert.match(enterpriseDefenseReply.replyText, /3 personas|mas de una persona|m[aá]s de una persona/i);
+  assert.match(enterpriseDefenseReply.replyText, /bastante movimiento|seguimiento|control/i);
+  assert.doesNotMatch(enterpriseDefenseReply.replyText, /^Por lo que me contas, yo miraria Plan Empresa/im);
+
+  const cheaperDefenseReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterRecommendation
+    },
+    inboundText: 'Por que no el mas barato'
+  });
+  assert.match(cheaperDefenseReply.replyText, /Plan Inicial|mas chico|más chico/i);
+  assert.match(cheaperDefenseReply.replyText, /justifica la diferencia|empieza a rendir mas|empieza a rendir más|seguimiento/i);
+
+  const growthDefenseReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterRecommendation
+    },
+    inboundText: 'Me alcanza con Crecimiento'
+  });
+  assert.match(growthDefenseReply.replyText, /Plan Crecimiento te puede servir/i);
+  assert.match(growthDefenseReply.replyText, /podria alcanzar|podría alcanzar/i);
+  assert.match(growthDefenseReply.replyText, /Plan Empresa/i);
+
+  const directComparisonReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'Que diferencia hay entre Inicial y Crecimiento'
+  });
+  assert.match(directComparisonReply.replyText, /Buena pregunta/i);
+  assert.match(directComparisonReply.replyText, /Plan Inicial/i);
+  assert.match(directComparisonReply.replyText, /Plan Crecimiento/i);
+  assert.doesNotMatch(directComparisonReply.replyText, /fallback|mezclo|mezcló/i);
+
   const contaminatedReply = await buildSafeCommercialIntentReply({
     clinic,
     conversation: {
@@ -411,6 +464,39 @@ async function run() {
   });
   assert.doesNotMatch(contaminatedReply.replyText, /est[eé]tica/i);
   assert.strictEqual(contaminatedReply.contextPatch.commercialSalesContext.businessType, 'distribution');
+
+  const contaminatedDefenseReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce',
+        commercialSalesContext: {
+          updatedAt: new Date().toISOString(),
+          businessType: 'beauty_business',
+          teamSizeSignal: 'team',
+          teamSizeValue: 3,
+          whatsappVolume: 'high',
+          lastRecommendedPlan: 'plan-enterprise'
+        },
+        commercialPlanContext: {
+          activeAt: new Date().toISOString(),
+          topic: 'plan_recommendation',
+          lastDiscussedPlanId: 'plan-enterprise',
+          lastComparedPlanId: 'plan-growth',
+          recommendationType: 'enterprise'
+        },
+        commercialShortMemory: {
+          activeAt: new Date().toISOString(),
+          topic: 'plans',
+          lastSuggestedProductId: 'plan-enterprise',
+          recommendationType: 'enterprise'
+        }
+      }
+    },
+    inboundText: 'Por que Empresa y no Crecimiento'
+  });
+  assert.doesNotMatch(contaminatedDefenseReply.replyText, /est[eÃ©]tica|uÃ±as|uñas/i);
 
   assert.strictEqual(detectIntent('quiero un turno'), 'appointment');
   assert.strictEqual(parseTransferPaymentIntent('como te transfiero'), 'request');
