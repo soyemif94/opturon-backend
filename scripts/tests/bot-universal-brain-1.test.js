@@ -123,6 +123,13 @@ const conversation = {
   }
 };
 
+function applyContextPatch(baseContext, patch) {
+  return {
+    ...(baseContext && typeof baseContext === 'object' ? baseContext : {}),
+    ...(patch && typeof patch === 'object' ? patch : {})
+  };
+}
+
 const contact = {
   id: 'contact-1',
   name: 'Emi',
@@ -196,10 +203,12 @@ async function run() {
 
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('mi esposa y yo'), { teamSizeValue: 2, teamSizeSignal: 'team' });
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('atiendo yo solo'), { teamSizeValue: 1, teamSizeSignal: 'solo' });
+  assert.strictEqual(parseCommercialTeamSizeAnswer('Tengo una distribuidora'), null);
   assert.strictEqual(parseCommercialWhatsAppAccountTypeAnswer('Uso WhatsApp Business'), 'business');
   assert.strictEqual(parseCommercialOfferTypeAnswer('Productos'), 'products');
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('30 por dia'), 'high');
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('10 por dia'), 'low');
+  assert.strictEqual(parseCommercialWhatsappVolumeAnswer('Somos 3 vendedores y recibimos unas 80 consultas por dia'), 'high');
 
   const sellerDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -334,6 +343,74 @@ async function run() {
     sourceIntent: 'seller_replacement'
   });
   assert.match(enterpriseRecommendation.replyText, /tipo Empresa/i);
+
+  const discoveryAuditConversation = {
+    ...conversation,
+    context: {
+      activeBotDomain: 'commerce'
+    }
+  };
+  const discoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: discoveryAuditConversation,
+    inboundText: 'Vendo por WhatsApp e Instagram, ¿me sirve su software?'
+  });
+  assert.doesNotMatch(discoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.match(discoveryReply.replyText, /WhatsApp/i);
+  assert.match(discoveryReply.replyText, /Instagram/i);
+  assert.match(discoveryReply.replyText, /productos o servicios/i);
+  assert.strictEqual(discoveryReply.contextPatch.commercialSalesContext.channelMixSignal, 'multi_channel');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(discoveryReply.contextPatch).field, 'offer_type');
+
+  const contextAfterDiscovery = applyContextPatch(discoveryAuditConversation.context, discoveryReply.contextPatch);
+  const businessTypeReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterDiscovery
+    },
+    inboundText: 'Tengo una distribuidora'
+  });
+  assert.doesNotMatch(businessTypeReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.doesNotMatch(businessTypeReply.replyText, /est[eé]tica/i);
+  assert.match(businessTypeReply.replyText, /distribuidora/i);
+  assert.match(businessTypeReply.replyText, /cu[aá]ntas personas atienden/i);
+  assert.strictEqual(businessTypeReply.contextPatch.commercialSalesContext.businessType, 'distribution');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(businessTypeReply.contextPatch).field, 'team_size');
+
+  const contextAfterBusinessType = applyContextPatch(contextAfterDiscovery, businessTypeReply.contextPatch);
+  const finalRecommendationReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterBusinessType
+    },
+    inboundText: 'Somos 3 vendedores y recibimos unas 80 consultas por día'
+  });
+  assert.doesNotMatch(finalRecommendationReply.replyText, /est[eé]tica/i);
+  assert.match(finalRecommendationReply.replyText, /tipo Empresa|Empresa/i);
+  assert.match(finalRecommendationReply.replyText, /3 personas|3 vendedores|equipo atendiendo/i);
+  assert.match(finalRecommendationReply.replyText, /bastante movimiento|seguimiento|control/i);
+  assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.businessType, 'distribution');
+  assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.teamSizeValue, 3);
+  assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.whatsappVolume, 'high');
+
+  const contaminatedReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce',
+        commercialSalesContext: {
+          updatedAt: new Date().toISOString(),
+          businessType: 'beauty_business'
+        }
+      }
+    },
+    inboundText: 'Tengo una distribuidora'
+  });
+  assert.doesNotMatch(contaminatedReply.replyText, /est[eé]tica/i);
+  assert.strictEqual(contaminatedReply.contextPatch.commercialSalesContext.businessType, 'distribution');
 
   assert.strictEqual(detectIntent('quiero un turno'), 'appointment');
   assert.strictEqual(parseTransferPaymentIntent('como te transfiero'), 'request');
