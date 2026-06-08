@@ -3739,6 +3739,31 @@ function isPlanDirectDetailIntent(rawText) {
   );
 }
 
+function isPlanPriceComparisonIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('cuanto mas caro') ||
+    text.includes('cuánto más caro') ||
+    text.includes('cuanto mas cuesta') ||
+    text.includes('cuánto más cuesta') ||
+    text.includes('diferencia de precio') ||
+    text.includes('diferencia de precios') ||
+    text.includes('diferencia economica') ||
+    text.includes('diferencia económica') ||
+    text.includes('que diferencia economica hay') ||
+    text.includes('qué diferencia económica hay') ||
+    text.includes('sale comparado con') ||
+    text.includes('cuanto sale comparado') ||
+    text.includes('cuánto sale comparado') ||
+    text.includes('vale la pena pagar mas') ||
+    text.includes('vale la pena pagar más') ||
+    text.includes('que cambia por la diferencia de precio') ||
+    text.includes('qué cambia por la diferencia de precio')
+  );
+}
+
 function isContextualPlanQuestionIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
@@ -5705,6 +5730,49 @@ function buildCommercialPlanDefenseReply({
   ].join('\n');
 }
 
+function buildCommercialPlanPriceComparisonReply({
+  recommendedPlan,
+  comparedPlan,
+  salesContext = null
+}) {
+  const recommended = recommendedPlan && typeof recommendedPlan === 'object' ? recommendedPlan : null;
+  const compared = comparedPlan && typeof comparedPlan === 'object' ? comparedPlan : null;
+  if (!recommended || !compared) return null;
+
+  const recommendedPrice = Number(recommended.price || 0);
+  const comparedPrice = Number(compared.price || 0);
+  const currency = recommended.currency || compared.currency || 'ARS';
+  const hasComparablePrices = Number.isFinite(recommendedPrice) && recommendedPrice > 0 && Number.isFinite(comparedPrice) && comparedPrice > 0;
+  const priceDifference = hasComparablePrices ? Math.abs(recommendedPrice - comparedPrice) : null;
+  const recommendedIsHigher = hasComparablePrices ? recommendedPrice >= comparedPrice : true;
+  const higherPlan = recommendedIsHigher ? recommended : compared;
+  const lowerPlan = recommendedIsHigher ? compared : recommended;
+
+  const priceLines = hasComparablePrices
+    ? [
+        `${recommended.name || 'Ese plan'} hoy cuesta ${formatMoney(recommendedPrice, currency)} y ${compared.name || 'el otro'} ${formatMoney(comparedPrice, currency)}.`,
+        `La diferencia es de ${formatMoney(priceDifference, currency)}.`
+      ]
+    : [
+        `Hoy la comparación sería entre ${recommended.name || 'ese plan'} y ${compared.name || 'el otro'}.`,
+        'No tengo ambos precios normalizados para calcularte una diferencia exacta desde acá.'
+      ];
+
+  return [
+    'Buena pregunta 😊',
+    '',
+    ...priceLines,
+    '',
+    'Lo importante no es solamente la diferencia de precio sino cuándo se justifica.',
+    buildCommercialPlanDefenseReply({
+      recommendedPlan: higherPlan,
+      comparedPlan: lowerPlan,
+      salesContext,
+      preferRecommended: true
+    }).replace(/^Buena pregunta 😊\n\n/, '')
+  ].join('\n');
+}
+
 function buildComparisonLead(primaryPlan, secondaryPlan) {
   const options = [
     'Te cuento la diferencia simple 😊',
@@ -5842,6 +5910,17 @@ function resolveCommercialPlanDefenseComparison(products, rawText, salesContext,
   }
 
   return null;
+}
+
+function resolveCommercialPlanPriceComparison(products, rawText, salesContext, planContext = null, shortMemory = null, businessContext = null) {
+  return resolveCommercialPlanDefenseComparison(
+    products,
+    rawText,
+    salesContext,
+    planContext,
+    shortMemory,
+    businessContext
+  );
 }
 
 function findPlanByStoredId(products, storedId) {
@@ -8059,6 +8138,69 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
           }
         }
       };
+    }
+  }
+
+  if (
+    !isCatalogItemDetailIntent(inboundText) &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isPlanPriceComparisonIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const priceComparison = resolveCommercialPlanPriceComparison(
+      orderedPlans,
+      inboundText,
+      effectiveSalesContext,
+      activePlanContext,
+      activeShortMemory,
+      effectiveBusinessContext
+    );
+
+    if (priceComparison && priceComparison.recommendedPlan && priceComparison.comparedPlan) {
+      const result = {
+        type: 'recommendation',
+        replyText: buildCommercialPlanPriceComparisonReply({
+          recommendedPlan: priceComparison.recommendedPlan,
+          comparedPlan: priceComparison.comparedPlan,
+          salesContext: effectiveSalesContext
+        }),
+        contextPatch: {
+          ...(hasEffectiveSalesSignals ? buildCommercialSalesContextPatch({
+            ...effectiveSalesContext,
+            lastRecommendedPlan: priceComparison.recommendedPlan && (priceComparison.recommendedPlan.id || priceComparison.recommendedPlan.productId),
+            lastRecommendationReason: buildRecommendationReasonSummary(priceComparison.recommendedPlan, effectiveSalesContext, orderedPlans)
+          }) : {}),
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: priceComparison.recommendedPlan && (priceComparison.recommendedPlan.id || priceComparison.recommendedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(priceComparison.recommendedPlan, orderedPlans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_price_comparison',
+            lastDiscussedPlanId: priceComparison.recommendedPlan && (priceComparison.recommendedPlan.id || priceComparison.recommendedPlan.productId),
+            lastComparedPlanId: priceComparison.comparedPlan && (priceComparison.comparedPlan.id || priceComparison.comparedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(priceComparison.recommendedPlan, orderedPlans)
+          }),
+          pendingOfferedAction: {
+            type: null,
+            activeAt: null,
+            completedAt: new Date().toISOString()
+          }
+        }
+      };
+      logInfo('commercial_reply_trace', {
+        stage: 'plan_price_comparison',
+        inboundText: normalizedText,
+        matchedIntent: commercialIntent.type,
+        recommendedPlanId: priceComparison.recommendedPlan.id || priceComparison.recommendedPlan.productId || null,
+        comparedPlanId: priceComparison.comparedPlan.id || priceComparison.comparedPlan.productId || null,
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
     }
   }
 
@@ -15527,6 +15669,7 @@ module.exports = {
     isCommercialOfferIntent,
     isPlanRecommendationIntent,
     isPlanPricingIntent,
+    isPlanPriceComparisonIntent,
     isPlanWorthItIntent,
     isCurrentMessageAskingForPlanRecommendation,
     isCommercialSoftFollowUpIntent,

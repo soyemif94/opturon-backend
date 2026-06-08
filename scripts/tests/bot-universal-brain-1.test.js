@@ -78,7 +78,8 @@ const {
   getActiveCommercialDiscoveryPending,
   buildCommercialOrientationReply,
   deriveBusinessRecommendationContextFromSalesContext,
-  hasEnoughCommercialSignalsForSoftRecommendation
+  hasEnoughCommercialSignalsForSoftRecommendation,
+  isPlanPriceComparisonIntent
 } = worker.__private__;
 
 const clinic = {
@@ -209,6 +210,7 @@ async function run() {
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('30 por dia'), 'high');
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('10 por dia'), 'low');
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('Somos 3 vendedores y recibimos unas 80 consultas por dia'), 'high');
+  assert.strictEqual(isPlanPriceComparisonIntent('Y cuanto mas caro es Empresa?'), true);
 
   const sellerDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -447,6 +449,54 @@ async function run() {
   assert.match(directComparisonReply.replyText, /Plan Inicial/i);
   assert.match(directComparisonReply.replyText, /Plan Crecimiento/i);
   assert.doesNotMatch(directComparisonReply.replyText, /fallback|mezclo|mezcló/i);
+
+  const priceComparisonReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterRecommendation
+    },
+    inboundText: 'Y cuanto mas caro es Empresa?'
+  });
+  assert.match(priceComparisonReply.replyText, /Plan Empresa hoy cuesta/i);
+  assert.match(priceComparisonReply.replyText, /Plan Crecimiento/i);
+  assert.match(priceComparisonReply.replyText, /La diferencia es de/i);
+  assert.match(priceComparisonReply.replyText, /3 personas|bastante movimiento|control|seguimiento/i);
+  assert.doesNotMatch(priceComparisonReply.replyText, /Plan Inicial —|Plan Crecimiento — .*Plan Empresa —/i);
+
+  const worthPayingMoreReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterRecommendation
+    },
+    inboundText: 'Vale la pena pagar mas?'
+  });
+  assert.match(worthPayingMoreReply.replyText, /La diferencia es de|Lo importante no es solamente la diferencia de precio/i);
+  assert.match(worthPayingMoreReply.replyText, /podr[ií]a seguir alcanzando|podr[ií]a alcanzar|se justifica/i);
+
+  const economicDifferenceReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterRecommendation
+    },
+    inboundText: 'Que diferencia economica hay?'
+  });
+  assert.match(economicDifferenceReply.replyText, /La diferencia es de/i);
+  assert.match(economicDifferenceReply.replyText, /seguimiento|control|coordin/i);
+
+  const explicitCatalogReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: contextAfterRecommendation
+    },
+    inboundText: 'Que planes tienen?'
+  });
+  assert.match(explicitCatalogReply.replyText, /Plan Inicial/i);
+  assert.match(explicitCatalogReply.replyText, /Plan Crecimiento/i);
+  assert.match(explicitCatalogReply.replyText, /Plan Empresa/i);
 
   const contaminatedReply = await buildSafeCommercialIntentReply({
     clinic,
