@@ -115,7 +115,8 @@ function getAiAssistRuntimeDiagnostics() {
     provider: getAiAssistProvider(),
     model: normalizeString(env.aiAssistModel) || 'gpt-4o-mini',
     maxMonthlyCalls: Math.max(1, Number(env.aiAssistMaxMonthlyCalls || 2000)),
-    maxCallsPerConversation: Math.max(1, Number(env.aiAssistMaxCallsPerConversation || 3)),
+    maxCallsPerConversation: Math.max(1, Number(env.aiAssistMaxCallsPerConversation || 50)),
+    suggestedProdMaxCallsPerConversation: Math.max(1, Number(env.aiAssistSuggestedProdMaxCallsPerConversation || 15)),
     enabledClinicIds: Array.isArray(env.aiAssistEnabledClinicIds) ? env.aiAssistEnabledClinicIds.filter(Boolean) : [],
     enabledClinicIdsCount: Array.isArray(env.aiAssistEnabledClinicIds) ? env.aiAssistEnabledClinicIds.filter(Boolean).length : 0,
     disabledClinicIdsCount: Array.isArray(env.aiAssistDisabledClinicIds) ? env.aiAssistDisabledClinicIds.filter(Boolean).length : 0,
@@ -142,6 +143,11 @@ function buildAiAssistSystemPrompt() {
     'Dominio permitido principal: commerce.',
     'SuggestedReplyIntent debe ser uno de los permitidos por el integrador.',
     'Entities debe incluir solo inferencias razonables y conservadoras.',
+    'Para rubros abiertos o no hardcodeados, usa entities.businessTypeRaw con el texto del rubro mencionado, intenta inferir entities.businessCategory y propone likelyNeeds conservadores.',
+    'businessCategory debe ser una categoria amplia, por ejemplo: automotive, healthcare, wellness, retail, professional_services, wholesale_distribution o fitness.',
+    'likelyNeeds debe ser una lista corta de 1 a 3 necesidades probables, por ejemplo precios, disponibilidad, turnos, seguimiento o presupuestos.',
+    'commercialFit debe indicar si parece aplicable: likely_fit, unclear_fit o low_fit.',
+    'nextDiscoveryField debe sugerir solo una de estas opciones: team_size, channel_mix, whatsapp_volume, offer_type o whatsapp_account_type.',
     'Si preguntan compatibilidad con Instagram u otro canal, considera channel_compatibility.',
     'Si preguntan si pueden usar o conservar su numero actual de WhatsApp, considera whatsapp_number_portability.',
     'Si preguntan si reemplaza vendedores o equipo humano, considera seller_replacement.',
@@ -160,6 +166,8 @@ function buildAiAssistSystemPrompt() {
     'Ejemplos: "puedo usar mi numero actual de whatsapp?" -> intent=whatsapp_number_portability, suggestedReplyIntent=whatsapp_number_portability.',
     'Ejemplos: "esto reemplaza a mis vendedores?" -> intent=seller_replacement, suggestedReplyIntent=seller_replacement.',
     'Ejemplos: "sirve para una rotiseria?" o "sirve para una peluqueria?" -> intent=industry_fit, suggestedReplyIntent=industry_fit.',
+    'Ejemplos: "tengo un lubricentro" -> intent=industry_fit, suggestedReplyIntent=industry_fit, entities.businessTypeRaw="lubricentro", entities.businessCategory="automotive", entities.likelyNeeds=["precios","disponibilidad","turnos"], entities.commercialFit="likely_fit", entities.nextDiscoveryField="team_size".',
+    'Ejemplos: "soy dentista" -> intent=industry_fit, suggestedReplyIntent=industry_fit, entities.businessTypeRaw="dentista", entities.businessCategory="healthcare", entities.likelyNeeds=["consultas","turnos","seguimiento"], entities.commercialFit="likely_fit", entities.nextDiscoveryField="channel_mix".',
     'Ejemplos: "puedo conectar dos sucursales?" -> intent=feature_fit, suggestedReplyIntent=feature_fit.',
     'Ejemplos: "tengo muchos productos, como los cargo?" -> intent=catalog_import_fit, suggestedReplyIntent=catalog_import_fit.',
     'Ejemplo de salida esperada para: "Hola Opturon, tengo una distribuidora y vendo por whatsapp e instagram pero no tengo muchos vendedores, que tenes para ofrecerme?" => {"domain":"commerce","intent":"business_fit","confidence":0.85,"entities":{"businessType":"distribution","teamSize":"small","channels":["whatsapp","instagram"]},"routingDecision":"use_existing_commerce_reply","suggestedReplyIntent":"feature_fit","reason":"El usuario describe su operación comercial y pregunta qué puede ofrecer Opturon."}',
@@ -227,10 +235,17 @@ function normalizeEntities(value) {
       : rawTeamSize || null;
   return {
     businessType: normalizeIntentText(safe.businessType) || null,
+    businessTypeRaw: normalizeIntentText(safe.businessTypeRaw) || null,
+    businessCategory: normalizeIntentText(safe.businessCategory) || null,
     teamSize: normalizedTeamSize,
     channels: normalizeChannels(safe.channels),
     currentTool: normalizeIntentText(safe.currentTool) || null,
     stage: normalizeIntentText(safe.stage) || null,
+    likelyNeeds: Array.isArray(safe.likelyNeeds)
+      ? [...new Set(safe.likelyNeeds.map((item) => normalizeIntentText(item)).filter(Boolean))].slice(0, 6)
+      : [],
+    commercialFit: normalizeIntentText(safe.commercialFit) || null,
+    nextDiscoveryField: normalizeIntentText(safe.nextDiscoveryField) || null,
     painPoints: Array.isArray(safe.painPoints)
       ? [...new Set(safe.painPoints.map((item) => normalizeIntentText(item)).filter(Boolean))].slice(0, 6)
       : []
@@ -348,7 +363,7 @@ async function invokeProvider(input, providerOverride = null) {
 
 async function reserveAiAssistBudget({ clinicId, conversationId }) {
   logAiAssistRuntimeConfigOnce();
-  const conversationLimit = Math.max(1, Number(env.aiAssistMaxCallsPerConversation || 3));
+  const conversationLimit = Math.max(1, Number(env.aiAssistMaxCallsPerConversation || 50));
   const monthlyLimit = Math.max(1, Number(env.aiAssistMaxMonthlyCalls || 2000));
   const [conversationSuccessCount, conversationFailureCount, monthlySuccessCount, monthlyFailureCount] = await Promise.all([
     countEventsByType(clinicId, conversationId, AI_ASSIST_EVENT_TYPE),

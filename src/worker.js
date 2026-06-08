@@ -1301,6 +1301,7 @@ function detectWeakCommercialSignal(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return null;
   const detectedIntent = detectIntent(text);
+  const openBusinessTypeRaw = extractOpenBusinessTypeRaw(rawText);
 
   if (detectCommercialIntent(text).type !== 'unknown') return 'known_commercial_intent';
   if (Boolean(parseTransferPaymentIntent(text))) return 'transfer_payment_phrase';
@@ -1321,6 +1322,9 @@ function detectWeakCommercialSignal(rawText) {
   }
   if (/\b(reemplaza\s+a\s+mis\s+vendedores|reemplaza\s+vendedores)\b/.test(text)) {
     return 'seller_replacement_phrase';
+  }
+  if (openBusinessTypeRaw) {
+    return 'open_business_phrase';
   }
   if (/\b(muchos\s+productos|como\s+los\s+cargo|como\s+cargo|cargar\s+productos)\b/.test(text)) {
     return 'catalog_import_phrase';
@@ -1520,6 +1524,8 @@ function buildBusinessRecommendationContextPatch({
 
 function buildCommercialSalesContextPatch({
   businessType = null,
+  businessTypeRaw = null,
+  businessCategory = null,
   whatsappVolume = null,
   teamSizeSignal = null,
   teamSizeValue = null,
@@ -1527,6 +1533,10 @@ function buildCommercialSalesContextPatch({
   offerTypeSignal = null,
   channelMixSignal = null,
   painPoints = [],
+  likelyNeeds = [],
+  commercialFit = null,
+  nextDiscoveryField = null,
+  aiAssistConfidence = null,
   lastRecommendedPlan = null,
   lastRecommendationReason = null
 } = {}) {
@@ -1535,6 +1545,8 @@ function buildCommercialSalesContextPatch({
     commercialSalesContext: {
       updatedAt: new Date().toISOString(),
       businessType: businessType ? String(businessType).trim().toLowerCase() : null,
+      businessTypeRaw: businessTypeRaw ? String(businessTypeRaw).trim().toLowerCase() : null,
+      businessCategory: businessCategory ? String(businessCategory).trim().toLowerCase() : null,
       whatsappVolume: whatsappVolume ? String(whatsappVolume).trim().toLowerCase() : null,
       teamSizeSignal: teamSizeSignal ? String(teamSizeSignal).trim().toLowerCase() : null,
       teamSizeValue: Number.isInteger(normalizedTeamSizeValue) && normalizedTeamSizeValue > 0 ? normalizedTeamSizeValue : null,
@@ -1544,6 +1556,12 @@ function buildCommercialSalesContextPatch({
       painPoints: Array.isArray(painPoints)
         ? [...new Set(painPoints.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 6)
         : [],
+      likelyNeeds: Array.isArray(likelyNeeds)
+        ? [...new Set(likelyNeeds.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 6)
+        : [],
+      commercialFit: commercialFit ? String(commercialFit).trim().toLowerCase() : null,
+      nextDiscoveryField: nextDiscoveryField ? String(nextDiscoveryField).trim().toLowerCase() : null,
+      aiAssistConfidence: Number.isFinite(Number(aiAssistConfidence)) ? Math.max(0, Math.min(1, Number(aiAssistConfidence))) : null,
       lastRecommendedPlan: lastRecommendedPlan ? String(lastRecommendedPlan).trim() : null,
       lastRecommendationReason: lastRecommendationReason ? String(lastRecommendationReason).trim() : null
     }
@@ -1627,6 +1645,8 @@ function getActiveCommercialSalesContext(context) {
     ? [...new Set(stored.painPoints.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))]
     : [];
   const businessType = String(stored.businessType || '').trim().toLowerCase() || null;
+  const businessTypeRaw = String(stored.businessTypeRaw || '').trim().toLowerCase() || null;
+  const businessCategory = String(stored.businessCategory || '').trim().toLowerCase() || null;
   const whatsappVolume = String(stored.whatsappVolume || '').trim().toLowerCase() || null;
   const teamSizeSignal = String(stored.teamSizeSignal || '').trim().toLowerCase() || null;
   const teamSizeValueRaw = Number.parseInt(String(stored.teamSizeValue || ''), 10);
@@ -1634,6 +1654,13 @@ function getActiveCommercialSalesContext(context) {
   const whatsappAccountTypeSignal = String(stored.whatsappAccountTypeSignal || '').trim().toLowerCase() || null;
   const offerTypeSignal = String(stored.offerTypeSignal || '').trim().toLowerCase() || null;
   const channelMixSignal = String(stored.channelMixSignal || '').trim().toLowerCase() || null;
+  const likelyNeeds = Array.isArray(stored.likelyNeeds)
+    ? [...new Set(stored.likelyNeeds.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))]
+    : [];
+  const commercialFit = String(stored.commercialFit || '').trim().toLowerCase() || null;
+  const nextDiscoveryField = String(stored.nextDiscoveryField || '').trim().toLowerCase() || null;
+  const aiAssistConfidenceRaw = Number(stored.aiAssistConfidence);
+  const aiAssistConfidence = Number.isFinite(aiAssistConfidenceRaw) ? Math.max(0, Math.min(1, aiAssistConfidenceRaw)) : null;
   const lastRecommendedPlan = String(stored.lastRecommendedPlan || '').trim() || null;
   const lastRecommendationReason = String(stored.lastRecommendationReason || '').trim() || null;
 
@@ -1646,6 +1673,11 @@ function getActiveCommercialSalesContext(context) {
     !offerTypeSignal &&
     !channelMixSignal &&
     !painPoints.length &&
+    !businessTypeRaw &&
+    !businessCategory &&
+    !likelyNeeds.length &&
+    !commercialFit &&
+    !nextDiscoveryField &&
     !lastRecommendedPlan
   ) {
     return null;
@@ -1654,6 +1686,8 @@ function getActiveCommercialSalesContext(context) {
   return {
     updatedAt: new Date(updatedAtMs).toISOString(),
     businessType,
+    businessTypeRaw,
+    businessCategory,
     whatsappVolume,
     teamSizeSignal,
     teamSizeValue,
@@ -1661,6 +1695,10 @@ function getActiveCommercialSalesContext(context) {
     offerTypeSignal,
     channelMixSignal,
     painPoints,
+    likelyNeeds,
+    commercialFit,
+    nextDiscoveryField,
+    aiAssistConfidence,
     lastRecommendedPlan,
     lastRecommendationReason
   };
@@ -1824,12 +1862,102 @@ function detectCommercialSalesContext(rawText) {
   };
 }
 
+const OPEN_BUSINESS_GENERIC_LABELS = new Set([
+  'negocio',
+  'emprendimiento',
+  'empresa',
+  'comercio',
+  'local',
+  'tienda',
+  'servicio',
+  'servicios',
+  'consultorio'
+]);
+
+function sanitizeOpenBusinessLabel(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^[\s,.;:!?-]+|[\s,.;:!?-]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractOpenBusinessTypeRaw(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  const patterns = [
+    /\ben realidad no es(?:\s+una|\s+un)?\s+[a-z0-9\s]+?,\s*es(?:\s+una|\s+un)?\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
+    /\b(?:tengo|tenemos|manejo|manejamos)\s+(?:una|un)\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
+    /\bsoy\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
+    /\bes\s+(?:una|un)\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match || !match[1]) continue;
+    const candidate = sanitizeOpenBusinessLabel(match[1]);
+    if (!candidate) continue;
+    if (candidate.split(' ').length > 4) continue;
+    if (OPEN_BUSINESS_GENERIC_LABELS.has(candidate)) continue;
+    return candidate;
+  }
+
+  return null;
+}
+
+function inferBusinessCategoryFromRawBusinessType(rawBusinessType) {
+  const text = sanitizeOpenBusinessLabel(rawBusinessType);
+  if (!text) return null;
+
+  if (/(lubricentro|repuesto|repuestos|gomer|taller|autoparte|autopartes|mecanic)/.test(text)) return 'automotive';
+  if (/(dentista|odontolog|medic|clinica|clinica dental|consultorio|veterinaria|veterinario)/.test(text)) return 'healthcare';
+  if (/(masaje|spa|bienestar|terapia corporal)/.test(text)) return 'wellness';
+  if (/(ferreter|dietetic|almacen|almac[eé]n|kiosco|bazar|local de repuestos|tienda)/.test(text)) return 'retail';
+  if (/(estudio juridico|estudio contable|abogad|contador|escriban|consultora|asesoria)/.test(text)) return 'professional_services';
+  if (/(mayorista|distribuidor|distribuidora|proveedor)/.test(text)) return 'wholesale_distribution';
+  if (/(gimnasio|fitness|entrenamiento)/.test(text)) return 'fitness';
+  return null;
+}
+
+function inferLikelyNeedsFromBusinessCategory(category, rawBusinessType = null) {
+  const safeCategory = sanitizeOpenBusinessLabel(category);
+  if (!safeCategory) return [];
+
+  if (safeCategory === 'automotive') return ['precios', 'disponibilidad', 'turnos'];
+  if (safeCategory === 'healthcare') {
+    if (sanitizeOpenBusinessLabel(rawBusinessType).includes('veterin')) return ['consultas', 'turnos', 'seguimiento'];
+    return ['consultas', 'turnos', 'seguimiento'];
+  }
+  if (safeCategory === 'wellness') return ['consultas', 'turnos', 'seguimiento'];
+  if (safeCategory === 'retail') return ['precios', 'stock', 'seguimiento'];
+  if (safeCategory === 'professional_services') return ['consultas', 'presupuestos', 'seguimiento'];
+  if (safeCategory === 'wholesale_distribution') return ['precios', 'pedidos', 'seguimiento'];
+  if (safeCategory === 'fitness') return ['consultas', 'planes', 'seguimiento'];
+  return [];
+}
+
+function inferCommercialFitFromBusinessCategory(category, rawBusinessType = null) {
+  const safeCategory = sanitizeOpenBusinessLabel(category);
+  if (!safeCategory && !sanitizeOpenBusinessLabel(rawBusinessType)) return null;
+  return 'likely_fit';
+}
+
+function inferNextDiscoveryFieldFromBusinessCategory(category) {
+  const safeCategory = sanitizeOpenBusinessLabel(category);
+  if (safeCategory === 'healthcare' || safeCategory === 'wellness' || safeCategory === 'fitness') return 'channel_mix';
+  return 'team_size';
+}
+
 function mergeCommercialSalesContext(baseContext, incomingContext = null) {
   const base = baseContext && typeof baseContext === 'object' ? baseContext : {};
   const incoming = incomingContext && typeof incomingContext === 'object' ? incomingContext : {};
 
   return {
     businessType: incoming.businessType || base.businessType || null,
+    businessTypeRaw: incoming.businessTypeRaw || base.businessTypeRaw || null,
+    businessCategory: incoming.businessCategory || base.businessCategory || null,
     whatsappVolume: incoming.whatsappVolume || base.whatsappVolume || null,
     teamSizeSignal: incoming.teamSizeSignal || base.teamSizeSignal || null,
     teamSizeValue: incoming.teamSizeValue || base.teamSizeValue || null,
@@ -1837,6 +1965,10 @@ function mergeCommercialSalesContext(baseContext, incomingContext = null) {
     offerTypeSignal: incoming.offerTypeSignal || base.offerTypeSignal || null,
     channelMixSignal: incoming.channelMixSignal || base.channelMixSignal || null,
     painPoints: [...new Set([...(Array.isArray(base.painPoints) ? base.painPoints : []), ...(Array.isArray(incoming.painPoints) ? incoming.painPoints : [])])],
+    likelyNeeds: [...new Set([...(Array.isArray(base.likelyNeeds) ? base.likelyNeeds : []), ...(Array.isArray(incoming.likelyNeeds) ? incoming.likelyNeeds : [])])],
+    commercialFit: incoming.commercialFit || base.commercialFit || null,
+    nextDiscoveryField: incoming.nextDiscoveryField || base.nextDiscoveryField || null,
+    aiAssistConfidence: incoming.aiAssistConfidence || base.aiAssistConfidence || null,
     lastRecommendedPlan: incoming.lastRecommendedPlan || base.lastRecommendedPlan || null,
     lastRecommendationReason: incoming.lastRecommendationReason || base.lastRecommendationReason || null
   };
@@ -4244,7 +4376,12 @@ function buildSalesDiscoveryQuestion() {
 
 function buildAiAssistFeatureContextPatch({ safeContext, effectiveSalesContext, derivedBusinessContext }) {
   return {
-    ...(effectiveSalesContext && hasMinimumSalesContextForRecommendation(effectiveSalesContext)
+    ...(effectiveSalesContext && (
+      hasMinimumSalesContextForRecommendation(effectiveSalesContext) ||
+      effectiveSalesContext.businessTypeRaw ||
+      effectiveSalesContext.businessCategory ||
+      (Array.isArray(effectiveSalesContext.likelyNeeds) && effectiveSalesContext.likelyNeeds.length)
+    )
       ? buildCommercialSalesContextPatch(effectiveSalesContext)
       : {}),
     ...(derivedBusinessContext
@@ -4282,8 +4419,12 @@ function scopeSalesContextByIntent(intent, salesContext = {}) {
   if (safeIntent === 'industry_fit') {
     return {
       businessType: safeContext.businessType || null,
+      businessTypeRaw: safeContext.businessTypeRaw || null,
+      businessCategory: safeContext.businessCategory || null,
       whatsappVolume: safeContext.whatsappVolume || null,
-      teamSizeSignal: safeContext.teamSizeSignal || null
+      teamSizeSignal: safeContext.teamSizeSignal || null,
+      likelyNeeds: Array.isArray(safeContext.likelyNeeds) ? safeContext.likelyNeeds : [],
+      nextDiscoveryField: safeContext.nextDiscoveryField || null
     };
   }
 
@@ -4350,10 +4491,78 @@ function buildSellerReplacementReply(effectiveSalesContext = {}) {
   ].join('\n');
 }
 
+function buildLikelyNeedsText(likelyNeeds = []) {
+  const safeNeeds = Array.isArray(likelyNeeds) ? likelyNeeds.filter(Boolean).slice(0, 3) : [];
+  if (!safeNeeds.length) return 'consultas y seguimiento';
+  if (safeNeeds.length === 1) return safeNeeds[0];
+  if (safeNeeds.length === 2) return `${safeNeeds[0]} o ${safeNeeds[1]}`;
+  return `${safeNeeds[0]}, ${safeNeeds[1]} o ${safeNeeds[2]}`;
+}
+
+function buildOpenIndustryDiscoveryQuestion(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const preferredField = safeContext.nextDiscoveryField || inferNextDiscoveryFieldFromBusinessCategory(safeContext.businessCategory);
+  if (preferredField === 'channel_mix' && (safeContext.businessCategory === 'healthcare' || safeContext.businessCategory === 'wellness' || safeContext.businessCategory === 'fitness')) {
+    return '¿Hoy reciben consultas principalmente por WhatsApp o también por otros canales?';
+  }
+  return buildCommercialDiscoveryQuestion(preferredField || 'team_size', safeContext) || '¿Hoy las consultas las atiende una sola persona o tienen equipo?';
+}
+
+function buildOpenIndustryFallbackReply(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const rawBusinessType = safeContext.businessTypeRaw || null;
+  const businessCategory = safeContext.businessCategory || inferBusinessCategoryFromRawBusinessType(rawBusinessType);
+  const likelyNeeds = Array.isArray(safeContext.likelyNeeds) && safeContext.likelyNeeds.length
+    ? safeContext.likelyNeeds
+    : inferLikelyNeedsFromBusinessCategory(businessCategory, rawBusinessType);
+  const likelyNeedsText = buildLikelyNeedsText(likelyNeeds);
+  const discoveryQuestion = buildOpenIndustryDiscoveryQuestion({
+    ...safeContext,
+    businessCategory
+  });
+
+  if (rawBusinessType) {
+    if (businessCategory === 'healthcare') {
+      return [
+        'Sí, puede servir 😊',
+        '',
+        'En un consultorio suele ser clave ordenar consultas, turnos y seguimiento. Opturon puede ayudarte a centralizar esas conversaciones por WhatsApp y responder con más claridad.',
+        '',
+        discoveryQuestion
+      ].join('\n');
+    }
+
+    return [
+      'Sí, puede servir 😊',
+      '',
+      `En un negocio como el tuyo (${rawBusinessType}), donde suelen entrar consultas por ${likelyNeedsText}, Opturon te ayuda a ordenar los mensajes y hacer seguimiento para no perder oportunidades.`,
+      '',
+      discoveryQuestion
+    ].join('\n');
+  }
+
+  return [
+    'Sí, puede servir para distintos tipos de negocios que atienden por WhatsApp 😊',
+    '',
+    'Opturon ayuda a ordenar mensajes, hacer seguimiento y responder más parejo cuando empiezan a juntarse conversaciones comerciales.',
+    '',
+    'Para orientarte mejor, contame qué tipo de consultas recibís más seguido.'
+  ].join('\n');
+}
+
 function buildIndustryFitReply(inboundText, effectiveSalesContext = {}) {
   const text = normalizeCommandText(inboundText);
   const explicitBusinessType = normalizeAiAssistBusinessType(text);
   const scopedContext = scopeSalesContextByIntent('industry_fit', effectiveSalesContext);
+  const openBusinessTypeRaw = extractOpenBusinessTypeRaw(inboundText) || scopedContext.businessTypeRaw || null;
+  if (openBusinessTypeRaw || scopedContext.businessCategory) {
+    return buildOpenIndustryFallbackReply({
+      ...scopedContext,
+      businessTypeRaw: openBusinessTypeRaw || scopedContext.businessTypeRaw || null,
+      businessCategory: scopedContext.businessCategory || inferBusinessCategoryFromRawBusinessType(openBusinessTypeRaw),
+      likelyNeeds: Array.isArray(scopedContext.likelyNeeds) ? scopedContext.likelyNeeds : []
+    });
+  }
   const businessType = explicitBusinessType || scopedContext.businessType || null;
   const label = (
     businessType === 'food_business' ? 'una rotisería o negocio de comida' :
@@ -4430,6 +4639,7 @@ function inferWeakSignalReplyIntent(inboundText, signal) {
   const text = normalizeCommandText(inboundText);
   const safeSignal = String(signal || '').trim().toLowerCase();
   const explicitBusinessType = normalizeAiAssistBusinessType(text);
+  const openBusinessTypeRaw = extractOpenBusinessTypeRaw(inboundText);
 
   if (safeSignal === 'whatsapp_number_portability_phrase' || text.includes('numero actual de whatsapp')) {
     return 'whatsapp_number_portability';
@@ -4440,7 +4650,7 @@ function inferWeakSignalReplyIntent(inboundText, signal) {
   if (safeSignal === 'catalog_import_phrase' || text.includes('muchos productos') || text.includes('como los cargo') || text.includes('cargar productos')) {
     return 'catalog_import_fit';
   }
-  if (explicitBusinessType) {
+  if (safeSignal === 'open_business_phrase' || explicitBusinessType || openBusinessTypeRaw) {
     return 'industry_fit';
   }
   if (
@@ -4461,25 +4671,41 @@ function inferWeakSignalReplyIntent(inboundText, signal) {
 
 function shouldUseWeakSignalCommercialFallback(aiAssistInvocation, aiAssistResult) {
   if (!aiAssistInvocation || aiAssistInvocation.ok !== true) return false;
-  if (aiAssistInvocation.reason !== 'commercial_weak_signal') return false;
+  if (aiAssistInvocation.reason !== 'commercial_weak_signal' && aiAssistInvocation.signal !== 'open_business_phrase') return false;
   if (!aiAssistResult || aiAssistResult.ok === true) return false;
   const reason = String(aiAssistResult.reason || '').trim().toLowerCase();
-  if (!reason) return false;
+  if (aiAssistResult.skipped === true) {
+    return true;
+  }
+  if (!reason) return Boolean(aiAssistResult.failed === true);
   return (
     reason.startsWith('ai_assist_timeout_') ||
     reason.startsWith('ai_assist_provider_failed_') ||
     reason.startsWith('ai_assist_invalid_') ||
     reason.startsWith('ai_assist_provider_not_supported') ||
+    reason === 'disabled_globally' ||
+    reason === 'clinic_disabled' ||
+    reason === 'clinic_not_allowlisted' ||
+    reason === 'missing_api_key' ||
+    reason === 'conversation_limit_reached' ||
+    reason === 'monthly_limit_reached' ||
     aiAssistResult.failed === true
   );
 }
 
 function buildWeakSignalCommercialFallback({ inboundText, safeContext, signal }) {
   const currentSalesContext = getActiveCommercialSalesContext(safeContext);
+  const openBusinessTypeRaw = extractOpenBusinessTypeRaw(inboundText);
+  const openBusinessCategory = inferBusinessCategoryFromRawBusinessType(openBusinessTypeRaw);
   const effectiveSalesContext = buildAiAssistSalesContext({
-    businessType: normalizeAiAssistBusinessType(inboundText),
+    businessType: normalizeAiAssistBusinessType(inboundText) || normalizeAiAssistBusinessType(openBusinessTypeRaw),
+    businessTypeRaw: openBusinessTypeRaw,
+    businessCategory: openBusinessCategory,
     teamSize: normalizeAiAssistTeamSizeSignal(inboundText),
-    channels: inferWeakSignalChannels(inboundText)
+    channels: inferWeakSignalChannels(inboundText),
+    likelyNeeds: inferLikelyNeedsFromBusinessCategory(openBusinessCategory, openBusinessTypeRaw),
+    commercialFit: inferCommercialFitFromBusinessCategory(openBusinessCategory, openBusinessTypeRaw),
+    nextDiscoveryField: inferNextDiscoveryFieldFromBusinessCategory(openBusinessCategory)
   }, currentSalesContext);
   const derivedBusinessContext =
     deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) ||
@@ -4537,11 +4763,20 @@ function buildWeakSignalCommercialFallback({ inboundText, safeContext, signal })
   }
 
   if (replyIntent === 'industry_fit') {
+    const pendingField = effectiveSalesContext.nextDiscoveryField || inferNextDiscoveryFieldFromBusinessCategory(effectiveSalesContext.businessCategory);
     return {
       type: 'recommendation',
       source: 'weak_signal_timeout_fallback',
       replyText: buildIndustryFitReply(inboundText, effectiveSalesContext),
-      contextPatch
+      contextPatch: mergeContextPatches(
+        contextPatch,
+        pendingField
+          ? buildCommercialDiscoveryPendingPatch({
+            field: pendingField,
+            sourceIntent: 'industry_fit'
+          })
+          : null
+      )
     };
   }
 
@@ -4575,6 +4810,19 @@ function normalizeAiAssistBusinessType(value) {
   if (text.includes('negocio') || text.includes('tienda') || text.includes('local') || text.includes('emprendimiento')) return 'small_store';
 
   return null;
+}
+
+function normalizeAiAssistBusinessCategory(value) {
+  const text = normalizeCommandText(value);
+  if (!text) return null;
+  if (text.includes('wholesale') || text.includes('distribution')) return 'wholesale_distribution';
+  if (text.includes('automotive')) return 'automotive';
+  if (text.includes('healthcare') || text.includes('medical')) return 'healthcare';
+  if (text.includes('wellness')) return 'wellness';
+  if (text.includes('retail')) return 'retail';
+  if (text.includes('professional')) return 'professional_services';
+  if (text.includes('fitness')) return 'fitness';
+  return inferBusinessCategoryFromRawBusinessType(text);
 }
 
 function normalizeAiAssistTeamSizeSignal(value) {
@@ -4670,7 +4918,19 @@ function normalizeAiAssistPainPoints(entities = {}) {
 
 function buildAiAssistSalesContext(entities = {}, currentContext = null) {
   const baseContext = currentContext && typeof currentContext === 'object' ? currentContext : {};
-  const businessType = normalizeAiAssistBusinessType(entities.businessType) || baseContext.businessType || null;
+  const hasExplicitBusinessSignal = Boolean(
+    normalizeCommandText(entities.businessType) ||
+    normalizeCommandText(entities.businessTypeRaw)
+  );
+  const businessTypeRaw = sanitizeOpenBusinessLabel(entities.businessTypeRaw || baseContext.businessTypeRaw || '');
+  const normalizedBusinessTypeFromEntity = normalizeAiAssistBusinessType(entities.businessType);
+  const normalizedBusinessTypeFromRaw = normalizeAiAssistBusinessType(businessTypeRaw);
+  const businessType = hasExplicitBusinessSignal
+    ? (normalizedBusinessTypeFromEntity || normalizedBusinessTypeFromRaw || null)
+    : (baseContext.businessType || null);
+  const businessCategory = hasExplicitBusinessSignal
+    ? (normalizeAiAssistBusinessCategory(entities.businessCategory) || inferBusinessCategoryFromRawBusinessType(businessTypeRaw) || null)
+    : (normalizeAiAssistBusinessCategory(entities.businessCategory) || inferBusinessCategoryFromRawBusinessType(businessTypeRaw) || baseContext.businessCategory || null);
   const teamSizeSignal = normalizeAiAssistTeamSizeSignal(entities.teamSize) || baseContext.teamSizeSignal || null;
   const stage = normalizeCommandText(entities.stage);
   const channels = Array.isArray(entities.channels) ? entities.channels.map((item) => normalizeCommandText(item)).filter(Boolean) : [];
@@ -4681,12 +4941,25 @@ function buildAiAssistSalesContext(entities = {}, currentContext = null) {
         ? 'high'
         : baseContext.whatsappVolume || null;
   const painPoints = [...new Set([...(Array.isArray(baseContext.painPoints) ? baseContext.painPoints : []), ...normalizeAiAssistPainPoints(entities)])];
+  const likelyNeeds = [...new Set([
+    ...(hasExplicitBusinessSignal ? [] : (Array.isArray(baseContext.likelyNeeds) ? baseContext.likelyNeeds : [])),
+    ...(Array.isArray(entities.likelyNeeds) ? entities.likelyNeeds.map((item) => sanitizeOpenBusinessLabel(item)).filter(Boolean) : inferLikelyNeedsFromBusinessCategory(businessCategory, businessTypeRaw))
+  ])].slice(0, 6);
+  const commercialFit = sanitizeOpenBusinessLabel(entities.commercialFit || '') || (hasExplicitBusinessSignal ? null : baseContext.commercialFit) || inferCommercialFitFromBusinessCategory(businessCategory, businessTypeRaw) || null;
+  const nextDiscoveryField = sanitizeOpenBusinessLabel(entities.nextDiscoveryField || '') || (hasExplicitBusinessSignal ? null : baseContext.nextDiscoveryField) || inferNextDiscoveryFieldFromBusinessCategory(businessCategory);
+  const aiAssistConfidence = Number.isFinite(Number(entities.confidence)) ? Number(entities.confidence) : baseContext.aiAssistConfidence || null;
 
   return {
     businessType,
+    businessTypeRaw: businessTypeRaw || null,
+    businessCategory,
     whatsappVolume,
     teamSizeSignal,
     painPoints,
+    likelyNeeds,
+    commercialFit,
+    nextDiscoveryField,
+    aiAssistConfidence,
     lastRecommendedPlan: baseContext.lastRecommendedPlan || null,
     lastRecommendationReason: baseContext.lastRecommendationReason || null
   };
@@ -4756,7 +5029,10 @@ async function resolveAiAssistDecision({
   }
 
   const currentSalesContext = getActiveCommercialSalesContext(safeContext);
-  const effectiveSalesContext = buildAiAssistSalesContext(decision.entities || {}, currentSalesContext);
+  const effectiveSalesContext = buildAiAssistSalesContext({
+    ...(decision.entities || {}),
+    confidence: decision.confidence
+  }, currentSalesContext);
   const derivedBusinessContext =
     deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) ||
     getActiveBusinessRecommendationContext(safeContext);
@@ -4944,14 +5220,23 @@ async function resolveAiAssistDecision({
   }
 
   if (decision.suggestedReplyIntent === 'industry_fit') {
+    const pendingField = effectiveSalesContext.nextDiscoveryField || inferNextDiscoveryFieldFromBusinessCategory(effectiveSalesContext.businessCategory);
     return {
       type: 'recommendation',
       replyText: buildIndustryFitReply(inboundText, effectiveSalesContext),
-      contextPatch: buildAiAssistFeatureContextPatch({
-        safeContext,
-        effectiveSalesContext,
-        derivedBusinessContext
-      })
+      contextPatch: mergeContextPatches(
+        buildAiAssistFeatureContextPatch({
+          safeContext,
+          effectiveSalesContext,
+          derivedBusinessContext
+        }),
+        pendingField
+          ? buildCommercialDiscoveryPendingPatch({
+            field: pendingField,
+            sourceIntent: 'industry_fit'
+          })
+          : null
+      )
     };
   }
 
@@ -7985,6 +8270,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const hasEffectiveSalesSignals = Boolean(
     effectiveSalesContext && (
       effectiveSalesContext.businessType ||
+      effectiveSalesContext.businessTypeRaw ||
+      effectiveSalesContext.businessCategory ||
       effectiveSalesContext.whatsappVolume ||
       effectiveSalesContext.teamSizeSignal ||
       effectiveSalesContext.teamSizeValue ||
@@ -7992,6 +8279,9 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       effectiveSalesContext.offerTypeSignal ||
       effectiveSalesContext.channelMixSignal ||
       (Array.isArray(effectiveSalesContext.painPoints) && effectiveSalesContext.painPoints.length) ||
+      (Array.isArray(effectiveSalesContext.likelyNeeds) && effectiveSalesContext.likelyNeeds.length) ||
+      effectiveSalesContext.commercialFit ||
+      effectiveSalesContext.nextDiscoveryField ||
       effectiveSalesContext.lastRecommendedPlan ||
       effectiveSalesContext.lastRecommendationReason
     )
@@ -15702,6 +15992,8 @@ module.exports = {
     buildCommercialIndecisionReply,
     hasWeakCommercialSignal,
     detectWeakCommercialSignal,
+    extractOpenBusinessTypeRaw,
+    inferBusinessCategoryFromRawBusinessType,
     normalizeAiAssistBusinessType,
     normalizeAiAssistTeamSizeSignal,
     normalizeAiAssistPainPoints,

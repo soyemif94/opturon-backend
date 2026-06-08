@@ -79,7 +79,13 @@ const {
   buildCommercialOrientationReply,
   deriveBusinessRecommendationContextFromSalesContext,
   hasEnoughCommercialSignalsForSoftRecommendation,
-  isPlanPriceComparisonIntent
+  isPlanPriceComparisonIntent,
+  extractOpenBusinessTypeRaw,
+  inferBusinessCategoryFromRawBusinessType,
+  shouldInvokeAiAssist,
+  buildWeakSignalCommercialFallback,
+  resolveAiAssistDecision,
+  buildAiAssistSalesContext
 } = worker.__private__;
 
 const clinic = {
@@ -211,6 +217,164 @@ async function run() {
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('10 por dia'), 'low');
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('Somos 3 vendedores y recibimos unas 80 consultas por dia'), 'high');
   assert.strictEqual(isPlanPriceComparisonIntent('Y cuanto mas caro es Empresa?'), true);
+  assert.strictEqual(extractOpenBusinessTypeRaw('Tengo un lubricentro'), 'lubricentro');
+  assert.strictEqual(extractOpenBusinessTypeRaw('En realidad no es una distribuidora, es un lubricentro'), 'lubricentro');
+  assert.strictEqual(inferBusinessCategoryFromRawBusinessType('lubricentro'), 'automotive');
+  assert.strictEqual(inferBusinessCategoryFromRawBusinessType('dentista'), 'healthcare');
+
+  const openBusinessAiInvocation = shouldInvokeAiAssist({
+    botRoute: null,
+    intent: detectIntent('Tengo un lubricentro'),
+    commercialIntent: detectCommercialIntent('Tengo un lubricentro'),
+    transferPaymentIntent: parseTransferPaymentIntent('Tengo un lubricentro'),
+    inboundText: 'Tengo un lubricentro',
+    safeContext: {}
+  });
+  assert.strictEqual(openBusinessAiInvocation.ok, true);
+  assert.strictEqual(openBusinessAiInvocation.reason, 'commercial_weak_signal');
+  assert.strictEqual(openBusinessAiInvocation.signal, 'open_business_phrase');
+
+  const helloAiInvocation = shouldInvokeAiAssist({
+    botRoute: null,
+    intent: detectIntent('Hola'),
+    commercialIntent: detectCommercialIntent('Hola'),
+    transferPaymentIntent: parseTransferPaymentIntent('Hola'),
+    inboundText: 'Hola',
+    safeContext: {}
+  });
+  assert.strictEqual(helloAiInvocation.ok, false);
+  assert.strictEqual(helloAiInvocation.reason, 'trivial_message');
+
+  const transferAiInvocation = shouldInvokeAiAssist({
+    botRoute: null,
+    intent: detectIntent('Como te transfiero'),
+    commercialIntent: detectCommercialIntent('Como te transfiero'),
+    transferPaymentIntent: parseTransferPaymentIntent('Como te transfiero'),
+    inboundText: 'Como te transfiero',
+    safeContext: {}
+  });
+  assert.strictEqual(transferAiInvocation.ok, false);
+  assert.strictEqual(transferAiInvocation.reason, 'payment_transfer_flow');
+
+  const catalogAiInvocation = shouldInvokeAiAssist({
+    botRoute: null,
+    intent: detectIntent('Que planes tienen'),
+    commercialIntent: detectCommercialIntent('Que planes tienen'),
+    transferPaymentIntent: parseTransferPaymentIntent('Que planes tienen'),
+    inboundText: 'Que planes tienen',
+    safeContext: {}
+  });
+  assert.strictEqual(catalogAiInvocation.ok, false);
+  assert.match(catalogAiInvocation.reason, /strong_commercial_intent_/i);
+
+  const lubricentroFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'Tengo un lubricentro',
+    safeContext: {
+      activeBotDomain: 'commerce'
+    },
+    signal: 'open_business_phrase'
+  });
+  assert.match(lubricentroFallback.replyText, /lubricentro/i);
+  assert.match(lubricentroFallback.replyText, /precios|disponibilidad|turnos/i);
+  assert.match(lubricentroFallback.replyText, /cu[aá]ntas personas atienden|tienen equipo|una sola persona/i);
+  assert.strictEqual(lubricentroFallback.contextPatch.commercialSalesContext.businessTypeRaw, 'lubricentro');
+  assert.strictEqual(lubricentroFallback.contextPatch.commercialSalesContext.businessCategory, 'automotive');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(lubricentroFallback.contextPatch).field, 'team_size');
+
+  const dentistFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'Soy dentista',
+    safeContext: {
+      activeBotDomain: 'commerce'
+    },
+    signal: 'open_business_phrase'
+  });
+  assert.match(dentistFallback.replyText, /consultorio/i);
+  assert.match(dentistFallback.replyText, /turnos|seguimiento|WhatsApp/i);
+  assert.doesNotMatch(dentistFallback.replyText, /fallback|mezclo|mezcló/i);
+  assert.strictEqual(dentistFallback.contextPatch.commercialSalesContext.businessTypeRaw, 'dentista');
+  assert.strictEqual(dentistFallback.contextPatch.commercialSalesContext.businessCategory, 'healthcare');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(dentistFallback.contextPatch).field, 'channel_mix');
+
+  const massageFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'Tengo una casa de masajes',
+    safeContext: {
+      activeBotDomain: 'commerce'
+    },
+    signal: 'open_business_phrase'
+  });
+  assert.match(massageFallback.replyText, /casa de masajes/i);
+  assert.match(massageFallback.replyText, /consultas|turnos|seguimiento/i);
+  assert.doesNotMatch(massageFallback.replyText, /sensible|terapia sexual|adult/i);
+
+  const correctedFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'En realidad no es una distribuidora, es un lubricentro',
+    safeContext: {
+      activeBotDomain: 'commerce',
+      commercialSalesContext: {
+        updatedAt: new Date().toISOString(),
+        businessType: 'distribution',
+        businessTypeRaw: 'distribuidora',
+        businessCategory: 'wholesale_distribution'
+      }
+    },
+    signal: 'open_business_phrase'
+  });
+  assert.strictEqual(correctedFallback.contextPatch.commercialSalesContext.businessTypeRaw, 'lubricentro');
+  assert.strictEqual(correctedFallback.contextPatch.commercialSalesContext.businessCategory, 'automotive');
+  assert.strictEqual(correctedFallback.contextPatch.commercialSalesContext.businessType, null);
+  assert.doesNotMatch(correctedFallback.replyText, /distribuidora/i);
+
+  const openIndustrySalesContext = buildAiAssistSalesContext({
+    businessTypeRaw: 'lubricentro',
+    businessCategory: 'automotive',
+    likelyNeeds: ['precios', 'disponibilidad'],
+    commercialFit: 'likely_fit',
+    nextDiscoveryField: 'team_size',
+    confidence: 0.88
+  }, null);
+  assert.strictEqual(openIndustrySalesContext.businessTypeRaw, 'lubricentro');
+  assert.strictEqual(openIndustrySalesContext.businessCategory, 'automotive');
+  assert.deepStrictEqual(openIndustrySalesContext.likelyNeeds, ['precios', 'disponibilidad']);
+  assert.strictEqual(openIndustrySalesContext.commercialFit, 'likely_fit');
+  assert.strictEqual(openIndustrySalesContext.nextDiscoveryField, 'team_size');
+  assert.strictEqual(openIndustrySalesContext.aiAssistConfidence, 0.88);
+
+  const aiIndustryReply = await resolveAiAssistDecision({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'Tengo un lubricentro',
+    aiDecision: {
+      domain: 'commerce',
+      intent: 'industry_fit',
+      confidence: 0.91,
+      entities: {
+        businessTypeRaw: 'lubricentro',
+        businessCategory: 'automotive',
+        likelyNeeds: ['precios', 'disponibilidad', 'turnos'],
+        commercialFit: 'likely_fit',
+        nextDiscoveryField: 'team_size'
+      },
+      routingDecision: 'use_existing_commerce_reply',
+      suggestedReplyIntent: 'industry_fit',
+      reason: 'Rubro abierto interpretable'
+    },
+    safeContext: {
+      activeBotDomain: 'commerce'
+    }
+  });
+  assert.match(aiIndustryReply.replyText, /lubricentro/i);
+  assert.strictEqual(aiIndustryReply.contextPatch.commercialSalesContext.businessTypeRaw, 'lubricentro');
+  assert.strictEqual(aiIndustryReply.contextPatch.commercialSalesContext.businessCategory, 'automotive');
+  assert.deepStrictEqual(aiIndustryReply.contextPatch.commercialSalesContext.likelyNeeds, ['precios', 'disponibilidad', 'turnos']);
+  assert.strictEqual(aiIndustryReply.contextPatch.commercialSalesContext.commercialFit, 'likely_fit');
+  assert.strictEqual(aiIndustryReply.contextPatch.commercialSalesContext.nextDiscoveryField, 'team_size');
+  assert.strictEqual(aiIndustryReply.contextPatch.commercialSalesContext.aiAssistConfidence, 0.91);
+  assert.strictEqual(getActiveCommercialDiscoveryPending(aiIndustryReply.contextPatch).field, 'team_size');
 
   const sellerDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
