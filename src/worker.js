@@ -1,6 +1,8 @@
 ﻿require('dotenv').config({ path: require('path').resolve(__dirname, '..', '.env') });
 
 const { DateTime } = require('luxon');
+const path = require('path');
+const { execSync } = require('child_process');
 const env = require('./config/env');
 const { withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
@@ -99,6 +101,43 @@ const APPOINTMENT_REMINDER_LEAD_MINUTES = Number(env.appointmentReminderLeadMinu
 const APPOINTMENT_REMINDER_SWEEP_MS = Number(env.appointmentReminderSweepMs || 60000);
 const APPOINTMENT_REMINDER_CLAIM_TTL_MINUTES = Number(env.appointmentReminderClaimTtlMinutes || 10);
 const GENERATED_SALES_BOT_TEMPLATE_KEY = 'generated_sales_bot';
+const WORKER_RUNTIME_VERSION = 'industry-discovery-guard-2026-06-09';
+let workerRuntimeCommitShaCache = undefined;
+
+function resolveWorkerRuntimeCommitShaFromGit() {
+  if (workerRuntimeCommitShaCache !== undefined) return workerRuntimeCommitShaCache;
+  try {
+    workerRuntimeCommitShaCache = execSync('git rev-parse HEAD', {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
+    return workerRuntimeCommitShaCache;
+  } catch {
+    workerRuntimeCommitShaCache = null;
+    return workerRuntimeCommitShaCache;
+  }
+}
+
+function buildWorkerRuntimeAuditMeta(extra = {}) {
+  const envCommitSha = String(
+    process.env.RENDER_GIT_COMMIT ||
+    process.env.COMMIT_SHA ||
+    process.env.GIT_COMMIT ||
+    ''
+  ).trim() || null;
+  const gitCommitSha = resolveWorkerRuntimeCommitShaFromGit();
+  return {
+    workerRuntimeVersion: WORKER_RUNTIME_VERSION,
+    commitSha: gitCommitSha || envCommitSha,
+    envCommitSha,
+    gitCommitSha,
+    executedFile: __filename,
+    workerId: WORKER_ID,
+    pid: process.pid,
+    ...extra
+  };
+}
 
 function sanitizeDatabaseUrl(databaseUrl) {
   const raw = String(databaseUrl || '').trim();
@@ -1314,7 +1353,7 @@ function detectWeakCommercialSignal(rawText) {
   if (detectedIntent === 'human') return 'human_phrase';
   if (/\b(whatsapp\s+e\s+instagram|whatsapp\s+y\s+instagram)\b/.test(text)) return 'whatsapp_instagram_combo';
   if (/\b(vendo|venden|ventas?)\s+(tambien\s+)?por\b/.test(text)) return 'selling_channel_phrase';
-  if (/\b(instagram|compatib(?:le|ilidad)|software|sirve\s+para|me\s+sirve|funciona\s+para|mi\s+negocio|distribuidora|rotiseria|peluqueria|sucursal(?:es)?|vendedores?)\b/.test(text)) {
+  if (/\b(instagram|compatib(?:le|ilidad)|software|sirve\s+para|me\s+sirve|funciona\s+para|mi\s+negocio|distribuidora|mayorista|minorista|ferreteria|rotiseria|peluqueria|tienda|comercio|local|heladeras?|mostrador|productos?|sucursal(?:es)?|vendedores?)\b/.test(text)) {
     return 'product_fit_phrase';
   }
   if (/\b(numero\s+actual\s+de\s+whatsapp|usar\s+mi\s+numero\s+actual|mi\s+numero\s+actual\s+de\s+whatsapp)\b/.test(text)) {
@@ -1791,6 +1830,7 @@ function detectBusinessRecommendationContext(rawText) {
 function detectCommercialSalesContext(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return null;
+  const businessTypeRaw = extractOpenBusinessTypeRaw(rawText);
 
   const findMatch = (groups) => {
     for (const [value, phrases] of groups) {
@@ -1830,7 +1870,7 @@ function detectCommercialSalesContext(rawText) {
     ['lead_loss', ['se me pierden consultas', 'pierdo consultas', 'se me escapan consultas', 'se me pasan consultas']],
     ['follow_up', ['no hago seguimiento', 'me falta seguimiento', 'seguir conversaciones', 'retomar consultas', 'me cuesta seguir consultas', 'me cuesta seguir las consultas', 'seguir consultas']],
     ['response_delay', ['respondo tarde', 'contestamos tarde', 'responder tarde', 'tardo en atender consultas', 'tardo en responder', 'atiendo tarde']],
-    ['sales_organization', ['ordenar ventas', 'ordenar whatsapp', 'ordenar consultas', 'ordenar la operacion', 'ordenar la operación', 'mala administracion por whatsapp', 'mala administración por whatsapp', 'caos por whatsapp']],
+    ['sales_organization', ['ordenar ventas', 'ordenar whatsapp', 'ordenar consultas', 'ordenar la operacion', 'ordenar la operación', 'mala administracion por whatsapp', 'mala administración por whatsapp', 'caos por whatsapp', 'usamos excel', 'uso excel', 'pedidos', 'registrar pedidos', 'crm', 'catalogo', 'catálogo', 'caja', 'comprobantes', 'cobramos', 'pagos']],
     ['team_control', ['supervision', 'supervisión', 'control del equipo', 'permisos', 'roles', 'sucursales']],
     ['complex_operation', ['personalizacion', 'personalización', 'integraciones', 'operacion compleja', 'operación compleja']]
   ];
@@ -1840,6 +1880,7 @@ function detectCommercialSalesContext(rawText) {
 
   if (
     !businessType &&
+    !businessTypeRaw &&
     !whatsappVolume &&
     !teamSizeSignal &&
     !parsedTeamSize &&
@@ -1853,6 +1894,8 @@ function detectCommercialSalesContext(rawText) {
 
   return {
     businessType,
+    businessTypeRaw,
+    businessCategory: inferBusinessCategoryFromRawBusinessType(businessTypeRaw),
     whatsappVolume: parsedWhatsappVolume || whatsappVolume,
     teamSizeSignal: parsedTeamSize ? parsedTeamSize.teamSizeSignal : teamSizeSignal,
     teamSizeValue: parsedTeamSize ? parsedTeamSize.teamSizeValue : null,
@@ -1890,7 +1933,10 @@ function extractOpenBusinessTypeRaw(rawText) {
   const patterns = [
     /\ben realidad no es(?:\s+una|\s+un)?\s+[a-z0-9\s]+?,\s*es(?:\s+una|\s+un)?\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
     /\b(?:tengo|tenemos|manejo|manejamos)\s+(?:una|un)\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
+    /\bmi\s+negocio\s+es(?:\s+una|\s+un)?\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
     /\bsoy\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
+    /\btrabajo\s+con\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
+    /\bvendo\s+(?!por\b)([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con | me sirve| sirve para)/,
     /\bes\s+(?:una|un)\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/
   ];
 
@@ -1914,9 +1960,11 @@ function inferBusinessCategoryFromRawBusinessType(rawBusinessType) {
   if (/(lubricentro|repuesto|repuestos|gomer|taller|autoparte|autopartes|mecanic)/.test(text)) return 'automotive';
   if (/(dentista|odontolog|medic|clinica|clinica dental|consultorio|veterinaria|veterinario)/.test(text)) return 'healthcare';
   if (/(masaje|spa|bienestar|terapia corporal)/.test(text)) return 'wellness';
-  if (/(ferreter|dietetic|almacen|almac[eé]n|kiosco|bazar|local de repuestos|tienda)/.test(text)) return 'retail';
+  if (/(rotiser|comida|restaurant|resto|gastronomi|alimento|alimentos)/.test(text)) return 'food_business';
+  if (/(peluquer|estetica|belleza|salon|uñas|unas)/.test(text)) return 'beauty_business';
+  if (/(ferreter|dietetic|almacen|almac[eé]n|kiosco|bazar|local de repuestos|tienda|ropa|minorista)/.test(text)) return 'retail';
   if (/(estudio juridico|estudio contable|abogad|contador|escriban|consultora|asesoria)/.test(text)) return 'professional_services';
-  if (/(mayorista|distribuidor|distribuidora|proveedor)/.test(text)) return 'wholesale_distribution';
+  if (/(mayorista|distribuidor|distribuidora|proveedor|heladera|heladeras|mostrador|productos para comercios)/.test(text)) return 'wholesale_distribution';
   if (/(gimnasio|fitness|entrenamiento)/.test(text)) return 'fitness';
   return null;
 }
@@ -1931,6 +1979,8 @@ function inferLikelyNeedsFromBusinessCategory(category, rawBusinessType = null) 
     return ['consultas', 'turnos', 'seguimiento'];
   }
   if (safeCategory === 'wellness') return ['consultas', 'turnos', 'seguimiento'];
+  if (safeCategory === 'food_business') return ['pedidos', 'consultas', 'seguimiento'];
+  if (safeCategory === 'beauty_business') return ['consultas', 'turnos', 'seguimiento'];
   if (safeCategory === 'retail') return ['precios', 'stock', 'seguimiento'];
   if (safeCategory === 'professional_services') return ['consultas', 'presupuestos', 'seguimiento'];
   if (safeCategory === 'wholesale_distribution') return ['precios', 'pedidos', 'seguimiento'];
@@ -1946,7 +1996,7 @@ function inferCommercialFitFromBusinessCategory(category, rawBusinessType = null
 
 function inferNextDiscoveryFieldFromBusinessCategory(category) {
   const safeCategory = sanitizeOpenBusinessLabel(category);
-  if (safeCategory === 'healthcare' || safeCategory === 'wellness' || safeCategory === 'fitness') return 'channel_mix';
+  if (safeCategory === 'healthcare' || safeCategory === 'wellness' || safeCategory === 'fitness' || safeCategory === 'beauty_business') return 'channel_mix';
   return 'team_size';
 }
 
@@ -2378,6 +2428,13 @@ function hasEnoughCommercialSignalsForSoftRecommendation(salesContext = {}) {
   const hasLoadSignal = Boolean(safeContext.whatsappVolume || safeContext.channelMixSignal);
   const hasBusinessSignal = Boolean(safeContext.businessType || safeContext.offerTypeSignal);
   const hasTeamSignal = Boolean(safeContext.teamSizeSignal || (Number.isInteger(teamSizeValue) && teamSizeValue > 0));
+  const hasOperationalSignal = Boolean(
+    hasLoadSignal ||
+    hasTeamSignal ||
+    painPoints.length ||
+    safeContext.whatsappAccountTypeSignal ||
+    safeContext.channelMixSignal
+  );
   const hasComplexitySignal = Boolean(
     hasLoadSignal ||
     safeContext.teamSizeSignal === 'multi_branch' ||
@@ -2386,7 +2443,123 @@ function hasEnoughCommercialSignalsForSoftRecommendation(salesContext = {}) {
     painPoints.includes('complex_operation')
   );
 
-  return hasBusinessSignal && hasTeamSignal && hasComplexitySignal;
+  return (
+    (hasBusinessSignal && hasTeamSignal && hasComplexitySignal) ||
+    (hasOperationalSignal && hasTeamSignal && hasLoadSignal) ||
+    (hasOperationalSignal && painPoints.length > 0 && (hasTeamSignal || hasLoadSignal))
+  );
+}
+
+function hasIndustryOnlyCommercialSignal(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const painPoints = Array.isArray(safeContext.painPoints) ? safeContext.painPoints : [];
+  if (!(safeContext.businessType || safeContext.businessTypeRaw || safeContext.businessCategory)) return false;
+  const hasOperationalSignal = Boolean(
+    safeContext.whatsappVolume ||
+    safeContext.channelMixSignal ||
+    safeContext.teamSizeSignal ||
+    (Number.isInteger(teamSizeValue) && teamSizeValue > 0) ||
+    safeContext.whatsappAccountTypeSignal ||
+    safeContext.offerTypeSignal ||
+    painPoints.length
+  );
+  return !hasOperationalSignal && !hasEnoughCommercialSignalsForSoftRecommendation(safeContext);
+}
+
+function getIndustryDiscoveryLabel(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  if (safeContext.businessTypeRaw) return safeContext.businessTypeRaw;
+  if (safeContext.businessType === 'distribution') return 'una distribuidora';
+  if (safeContext.businessType === 'food_business') return 'una rotisería o negocio de comida';
+  if (safeContext.businessType === 'beauty_business') return 'una peluquería o negocio de estética';
+  if (safeContext.businessType === 'fashion_retail') return 'un negocio de ropa';
+  if (safeContext.businessType === 'services') return 'un negocio de servicios';
+  return 'tu negocio';
+}
+
+function buildIndustryDiscoveryReply(salesContext = {}) {
+  const label = getIndustryDiscoveryLabel(salesContext);
+  return [
+    `Sí, para ${label} Opturon puede servirte, pero antes de recomendarte un plan necesito entender un poco cómo trabajan hoy.`,
+    '',
+    'Te hago 3 preguntas rápidas:',
+    '1. ¿Cuántas consultas les entran por WhatsApp por día aproximadamente?',
+    '2. ¿Cuántas personas o vendedores responden esos mensajes?',
+    '3. ¿Hoy cómo registran pedidos, clientes, pagos o comprobantes?',
+    '',
+    'Con eso te puedo decir si les conviene algo más simple o una solución más completa con CRM, ventas, pedidos, caja y seguimiento.'
+  ].join('\n');
+}
+
+function isExplicitPlanCatalogOrPricingRequest(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  if (isPlanPricingIntent(text)) return true;
+  if (/\b(que planes tienen|qué planes tienen|ver planes|mostrar planes|planes disponibles|lista de planes)\b/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function isIndustryOrientationQuestion(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('que servicio') ||
+    text.includes('qué servicio') ||
+    text.includes('servicio me serv') ||
+    text.includes('me sirve para mi negocio') ||
+    text.includes('sirve para mi negocio') ||
+    text.includes('sirve para mi rubro') ||
+    text.includes('me serviria') ||
+    text.includes('me serviría') ||
+    text.includes('que me recomendas') ||
+    text.includes('qué me recomendás') ||
+    text.includes('que me recomendarias') ||
+    text.includes('qué me recomendarías') ||
+    text.includes('que me conviene') ||
+    text.includes('qué me conviene') ||
+    text.includes('que plan me conviene') ||
+    text.includes('qué plan me conviene') ||
+    text.includes('tengo una') ||
+    text.includes('tengo un') ||
+    text.includes('mi negocio es') ||
+    text.includes('soy ') ||
+    text.includes('vendo ') ||
+    text.includes('trabajo con')
+  );
+}
+
+function shouldForceIndustryDiscoveryBeforePlanRecommendation(message, salesContext, businessContext) {
+  const safeSalesContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const hasIndustrySignal = Boolean(
+    safeSalesContext.businessType ||
+    safeSalesContext.businessTypeRaw ||
+    safeSalesContext.businessCategory
+  );
+  const explicitPlanOrPricing = isExplicitPlanCatalogOrPricingRequest(message);
+  const industryOrientation = isIndustryOrientationQuestion(message);
+  const industryOnly = hasIndustryOnlyCommercialSignal(safeSalesContext);
+  const forced = Boolean(hasIndustrySignal && !explicitPlanOrPricing && industryOrientation && industryOnly);
+
+  logInfo('worker_runtime_force_industry_discovery_eval', {
+    ...buildWorkerRuntimeAuditMeta({
+      inboundText: normalizeCommandText(message).slice(0, 240),
+      hasIndustrySignal,
+      explicitPlanOrPricing,
+      industryOrientation,
+      industryOnly,
+      forced,
+      salesBusinessType: safeSalesContext.businessType || null,
+      salesBusinessTypeRaw: safeSalesContext.businessTypeRaw || null,
+      salesBusinessCategory: safeSalesContext.businessCategory || null,
+      businessRecommendationLevel: businessContext && businessContext.recommendationLevel ? businessContext.recommendationLevel : null
+    })
+  });
+
+  return forced;
 }
 
 function buildSoftCommercialPlanRecommendationReply(businessContext = {}, salesContext = {}) {
@@ -2452,6 +2625,13 @@ function buildCommercialOrientationReply({
     return {
       replyText: buildSoftCommercialPlanRecommendationReply(safeBusinessContext, safeSalesContext),
       pendingField: null
+    };
+  }
+
+  if (hasIndustryOnlyCommercialSignal(safeSalesContext)) {
+    return {
+      replyText: buildIndustryDiscoveryReply(safeSalesContext),
+      pendingField: 'team_size'
     };
   }
 
@@ -3984,6 +4164,9 @@ function isCurrentMessageAskingForPlanRecommendation(rawText, commercialIntent =
   const asksForWhatToUse = (
     text.includes('que plan') ||
     text.includes('qué plan') ||
+    text.includes('que servicio') ||
+    text.includes('qué servicio') ||
+    text.includes('servicio me serv') ||
     text.includes('cual uso') ||
     text.includes('cuál uso') ||
     text.includes('que uso') ||
@@ -3993,6 +4176,8 @@ function isCurrentMessageAskingForPlanRecommendation(rawText, commercialIntent =
     text.includes('que plan elijo') ||
     text.includes('qué plan elijo') ||
     text.includes('me conviene') ||
+    text.includes('me serviria') ||
+    text.includes('me serviría') ||
     text.includes('recomend') ||
     text.includes('sirve mas') ||
     text.includes('sirve más')
@@ -4338,6 +4523,15 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
   const safeProduct = product && typeof product === 'object' ? product : {};
   const safeContext = businessContext && typeof businessContext === 'object' ? businessContext : {};
   const enterprisePlan = findPlanByNeedHint(allPlans, 'enterprise');
+  logWarn('worker_runtime_business_context_plan_recommendation_builder_entered', {
+    ...buildWorkerRuntimeAuditMeta({
+      productName: safeProduct.name || null,
+      productId: safeProduct.id || safeProduct.productId || null,
+      recommendationLevel: safeContext.recommendationLevel || null,
+      businessType: safeContext.businessType || null,
+      teamSize: safeContext.teamSize || null
+    })
+  });
 
   if (safeContext.recommendationLevel === 'enterprise') {
     return [
@@ -4533,11 +4727,13 @@ function buildOpenIndustryFallbackReply(salesContext = {}) {
     }
 
     return [
-      'Sí, puede servir 😊',
+      'Sí, te puede servir 😊',
       '',
-      `En un negocio como el tuyo (${rawBusinessType}), donde suelen entrar consultas por ${likelyNeedsText}, Opturon te ayuda a ordenar los mensajes y hacer seguimiento para no perder oportunidades.`,
+      `Para ${rawBusinessType}, Opturon puede ayudarte a centralizar las consultas que llegan por WhatsApp, mostrar productos o catálogo, registrar pedidos y hacer seguimiento de cada cliente sin perder conversaciones.`,
       '',
-      discoveryQuestion
+      `Si hoy te escriben para consultar ${likelyNeedsText}, este tipo de sistema encaja bien.`,
+      '',
+      '¿Recibís muchas consultas por WhatsApp o manejás pedidos de forma manual?'
     ].join('\n');
   }
 
@@ -4671,7 +4867,7 @@ function inferWeakSignalReplyIntent(inboundText, signal) {
 
 function shouldUseWeakSignalCommercialFallback(aiAssistInvocation, aiAssistResult) {
   if (!aiAssistInvocation || aiAssistInvocation.ok !== true) return false;
-  if (aiAssistInvocation.reason !== 'commercial_weak_signal' && aiAssistInvocation.signal !== 'open_business_phrase') return false;
+  if (aiAssistInvocation.reason !== 'commercial_weak_signal' && !aiAssistInvocation.signal) return false;
   if (!aiAssistResult || aiAssistResult.ok === true) return false;
   const reason = String(aiAssistResult.reason || '').trim().toLowerCase();
   if (aiAssistResult.skipped === true) {
@@ -5071,12 +5267,54 @@ async function resolveAiAssistDecision({
     ...extra
   });
 
+  const forceIndustryDiscovery = shouldForceIndustryDiscoveryBeforePlanRecommendation(
+    inboundText,
+    effectiveSalesContext,
+    derivedBusinessContext
+  );
+  logInfo('worker_runtime_ai_assist_plan_guard_result', {
+    ...buildWorkerRuntimeAuditMeta({
+      route: 'resolveAiAssistDecision',
+      inboundText: normalizeCommandText(inboundText).slice(0, 240),
+      suggestedReplyIntent: decision.suggestedReplyIntent || null,
+      routingDecision: decision.routingDecision || null,
+      forceIndustryDiscovery,
+      salesBusinessType: effectiveSalesContext.businessType || null,
+      salesBusinessTypeRaw: effectiveSalesContext.businessTypeRaw || null,
+      salesBusinessCategory: effectiveSalesContext.businessCategory || null,
+      businessRecommendationLevel: derivedBusinessContext && derivedBusinessContext.recommendationLevel ? derivedBusinessContext.recommendationLevel : null
+    })
+  });
+  const buildForcedIndustryDiscoveryDecision = () => ({
+    type: 'recommendation',
+    replyText: buildIndustryDiscoveryReply(effectiveSalesContext),
+    contextPatch: mergeContextPatches(
+      buildBasePatch(null),
+      buildCommercialDiscoveryPendingPatch({
+        field: 'team_size',
+        sourceIntent: 'industry_fit'
+      })
+    )
+  });
+
   if (decision.routingDecision === 'ask_clarifying_question') {
     return {
       type: 'recommendation',
       replyText: buildSalesDiscoveryQuestion(),
       contextPatch: buildBasePatch(null)
     };
+  }
+
+  if (forceIndustryDiscovery) {
+    logWarn('worker_runtime_ai_assist_plan_guard_forced_discovery', {
+      ...buildWorkerRuntimeAuditMeta({
+        route: 'resolveAiAssistDecision',
+        inboundText: normalizeCommandText(inboundText).slice(0, 240),
+        suggestedReplyIntent: decision.suggestedReplyIntent || null,
+        routingDecision: decision.routingDecision || null
+      })
+    });
+    return buildForcedIndustryDiscoveryDecision();
   }
 
   if (decision.suggestedReplyIntent === 'compare_plans') {
@@ -5345,11 +5583,11 @@ function buildCommercialGreetingReply(safeContext, rawText = '') {
   return hasOngoingCommercialFlow
     ? [
       greeting,
-      'Seguimos con eso si querés. Te puedo recomendar una opción, comparar planes o dejarte el siguiente paso para avanzar.'
+      'Contame un poco de tu negocio o qué estás buscando resolver y te doy una mano.'
     ].join('\n')
     : [
       greeting,
-      'Contame qué estás buscando y te doy una mano. Si querés, también te muestro planes, precios o te recomiendo una opción.'
+      'Contame un poco de tu negocio o qué estás buscando resolver y te doy una mano.'
     ].join('\n');
 }
 
@@ -8353,6 +8591,21 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     return {
       type: 'thanks',
       replyText: buildCommercialThanksReply(safeContext)
+    };
+  }
+
+  if (shouldForceIndustryDiscoveryBeforePlanRecommendation(inboundText, effectiveSalesContext, effectiveBusinessContext)) {
+    return {
+      type: 'recommendation',
+      replyText: buildIndustryDiscoveryReply(effectiveSalesContext),
+      contextPatch: mergeContextPatches(
+        detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null,
+        buildCommercialDiscoveryPendingPatch({
+          field: 'team_size',
+          sourceIntent: 'industry_fit'
+        }),
+        effectiveBusinessContext ? buildBusinessRecommendationContextPatch(effectiveBusinessContext) : null
+      )
     };
   }
 
@@ -11723,6 +11976,13 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const clinicProducts = await loadClinicProducts();
   const availablePlanProducts = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
   const planSalesActive = isPlanCatalog(availablePlanProducts);
+  const directPlanSalesContext = mergeCommercialSalesContext(
+    getActiveCommercialSalesContext(safeContext),
+    detectCommercialSalesContext(inboundText)
+  );
+  const directBusinessContext =
+    deriveBusinessRecommendationContextFromSalesContext(directPlanSalesContext) ||
+    getActiveBusinessRecommendationContext(safeContext);
 
   if (isCatalogItemDetailIntent(inboundText)) {
     const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
@@ -11772,6 +12032,20 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (planSalesActive) {
+    if (shouldForceIndustryDiscoveryBeforePlanRecommendation(inboundText, directPlanSalesContext, directBusinessContext)) {
+      return {
+        replyText: buildIndustryDiscoveryReply(directPlanSalesContext),
+        newState: 'IDLE',
+        contextPatch: mergeContextPatches(
+          buildCommercialSalesContextPatch(directPlanSalesContext),
+          buildCommercialDiscoveryPendingPatch({
+            field: 'team_size',
+            sourceIntent: 'industry_fit'
+          })
+        )
+      };
+    }
+
     const directlyReferencedPlan = findReferencedPlan(availablePlanProducts, inboundText);
     const contextualPlan = isContextualPlanReferenceIntent(inboundText)
       ? findPlanByContext(availablePlanProducts, safeContext)
@@ -13538,6 +13812,18 @@ async function processInboundJob(job) {
   const dbMessageId = payload.dbMessageId || null;
   const inboundMessage = dbMessageId ? await getMessageById(dbMessageId) : null;
   const inboundText = inboundMessage && inboundMessage.body ? inboundMessage.body : '';
+  logInfo('worker_runtime_inbound_loaded', {
+    ...buildWorkerRuntimeAuditMeta({
+      route: 'processInboundJob',
+      requestId,
+      jobId: job.id,
+      clinicId,
+      channelId,
+      conversationId: conversation.id,
+      messageId,
+      inboundText: normalizeCommandText(inboundText).slice(0, 240)
+    })
+  });
   const inboundAutomationMeta = inboundMessage
     ? {
       inboundMessageId: inboundMessage.id,
@@ -13931,6 +14217,24 @@ async function processConversationReplyJob(job) {
   const commerceContextActive = hasCommerceContext(safeContext);
   const activeBotDomain = String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase();
   const appointmentFlowPhase = String(safeContext && safeContext.appointmentFlowPhase ? safeContext.appointmentFlowPhase : '').trim().toLowerCase();
+  logInfo('worker_runtime_inbound_loaded', {
+    ...buildWorkerRuntimeAuditMeta({
+      route: 'conversation_reply',
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      channelId,
+      conversationId: conversation.id,
+      inboundMessageId,
+      waMessageId,
+      currentState,
+      activeBotDomain,
+      inboundText: normalizedInboundText.slice(0, 240),
+      intent,
+      commercialIntentType: commercialIntent.type || null,
+      transferPaymentIntent: transferPaymentIntent ? transferPaymentIntent.type || true : null
+    })
+  });
   const isInAgendaFlow = activeBotDomain === 'agenda' && !!appointmentFlowPhase;
   const qaAgendaBypassActive = shouldBypassCommerceForQa({
     contact,
@@ -15905,7 +16209,13 @@ function startWorker() {
     marker: 'AGENDA_BYPASS_V2',
     workerId: WORKER_ID,
     pid: process.pid,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    ...buildWorkerRuntimeAuditMeta()
+  });
+  logInfo('worker_runtime_version_loaded', {
+    ...buildWorkerRuntimeAuditMeta({
+      marker: 'INDUSTRY_DISCOVERY_GUARD_RUNTIME_AUDIT'
+    })
   });
 
   pollOnce()

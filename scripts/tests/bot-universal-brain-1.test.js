@@ -83,6 +83,7 @@ const {
   extractOpenBusinessTypeRaw,
   inferBusinessCategoryFromRawBusinessType,
   shouldInvokeAiAssist,
+  shouldUseWeakSignalCommercialFallback,
   buildWeakSignalCommercialFallback,
   resolveAiAssistDecision,
   buildAiAssistSalesContext
@@ -167,6 +168,14 @@ async function run() {
   assert.strictEqual(productsReply.type, 'products');
   assert.match(productsReply.replyText, /Plan Crecimiento/i);
 
+  const pricesReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: { ...conversation, context: {} },
+    inboundText: 'Cuanto cuesta?'
+  });
+  assert.strictEqual(pricesReply.type, 'prices');
+  assert.match(pricesReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+
   const hoursReply = await buildSafeCommercialIntentReply({ clinic, conversation, inboundText: 'horarios' });
   assert.match(hoursReply.replyText, /Lunes a viernes/i);
 
@@ -218,8 +227,12 @@ async function run() {
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('Somos 3 vendedores y recibimos unas 80 consultas por dia'), 'high');
   assert.strictEqual(isPlanPriceComparisonIntent('Y cuanto mas caro es Empresa?'), true);
   assert.strictEqual(extractOpenBusinessTypeRaw('Tengo un lubricentro'), 'lubricentro');
+  assert.strictEqual(extractOpenBusinessTypeRaw('Mi negocio es una distribuidora'), 'distribuidora');
+  assert.strictEqual(extractOpenBusinessTypeRaw('Trabajo con productos para comercios'), 'productos para comercios');
+  assert.strictEqual(extractOpenBusinessTypeRaw('Vendo heladeras mostrador, me sirve Opturon?'), 'heladeras mostrador');
   assert.strictEqual(extractOpenBusinessTypeRaw('En realidad no es una distribuidora, es un lubricentro'), 'lubricentro');
   assert.strictEqual(inferBusinessCategoryFromRawBusinessType('lubricentro'), 'automotive');
+  assert.strictEqual(inferBusinessCategoryFromRawBusinessType('heladeras mostrador'), 'wholesale_distribution');
   assert.strictEqual(inferBusinessCategoryFromRawBusinessType('dentista'), 'healthcare');
 
   const openBusinessAiInvocation = shouldInvokeAiAssist({
@@ -234,6 +247,22 @@ async function run() {
   assert.strictEqual(openBusinessAiInvocation.reason, 'commercial_weak_signal');
   assert.strictEqual(openBusinessAiInvocation.signal, 'open_business_phrase');
 
+  const commerceContextIndustryAiInvocation = shouldInvokeAiAssist({
+    botRoute: { domain: 'commerce' },
+    intent: detectIntent('Tengo una distribuidora de heladeras mostrador, que servicio me serviria a mi'),
+    commercialIntent: detectCommercialIntent('Tengo una distribuidora de heladeras mostrador, que servicio me serviria a mi'),
+    transferPaymentIntent: parseTransferPaymentIntent('Tengo una distribuidora de heladeras mostrador, que servicio me serviria a mi'),
+    inboundText: 'Tengo una distribuidora de heladeras mostrador, que servicio me serviria a mi',
+    safeContext: { activeBotDomain: 'commerce' }
+  });
+  assert.strictEqual(commerceContextIndustryAiInvocation.ok, true);
+  assert.strictEqual(commerceContextIndustryAiInvocation.reason, 'commercial_low_confidence_with_context');
+  assert.strictEqual(shouldUseWeakSignalCommercialFallback(commerceContextIndustryAiInvocation, {
+    ok: false,
+    reason: 'ai_assist_provider_failed_500',
+    failed: true
+  }), true);
+
   const helloAiInvocation = shouldInvokeAiAssist({
     botRoute: null,
     intent: detectIntent('Hola'),
@@ -244,6 +273,19 @@ async function run() {
   });
   assert.strictEqual(helloAiInvocation.ok, false);
   assert.strictEqual(helloAiInvocation.reason, 'trivial_message');
+
+  const helloCommercialReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'Hola'
+  });
+  assert.match(helloCommercialReply.replyText, /Contame un poco de tu negocio/i);
+  assert.doesNotMatch(helloCommercialReply.replyText, /planes|precios/i);
 
   const transferAiInvocation = shouldInvokeAiAssist({
     botRoute: null,
@@ -276,10 +318,67 @@ async function run() {
   });
   assert.match(lubricentroFallback.replyText, /lubricentro/i);
   assert.match(lubricentroFallback.replyText, /precios|disponibilidad|turnos/i);
-  assert.match(lubricentroFallback.replyText, /cu[aá]ntas personas atienden|tienen equipo|una sola persona/i);
+  assert.match(lubricentroFallback.replyText, /centralizar las consultas|cat[aá]logo|registrar pedidos|seguimiento/i);
+  assert.match(lubricentroFallback.replyText, /Recib[ií]s muchas consultas por WhatsApp|pedidos de forma manual/i);
   assert.strictEqual(lubricentroFallback.contextPatch.commercialSalesContext.businessTypeRaw, 'lubricentro');
   assert.strictEqual(lubricentroFallback.contextPatch.commercialSalesContext.businessCategory, 'automotive');
   assert.strictEqual(getActiveCommercialDiscoveryPending(lubricentroFallback.contextPatch).field, 'team_size');
+
+  const realCaseFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'Tengo una distribuidora de heladeras mostrador, que servicio me serviria a mi',
+    safeContext: {
+      activeBotDomain: 'commerce'
+    },
+    signal: 'product_fit_phrase'
+  });
+  assert.match(realCaseFallback.replyText, /distribuidora de heladeras mostrador/i);
+  assert.match(realCaseFallback.replyText, /WhatsApp/i);
+  assert.match(realCaseFallback.replyText, /cat[aá]logo|productos/i);
+  assert.match(realCaseFallback.replyText, /registrar pedidos/i);
+  assert.doesNotMatch(realCaseFallback.replyText, /Se me mezcl/i);
+  assert.strictEqual(realCaseFallback.contextPatch.commercialSalesContext.businessTypeRaw, 'distribuidora de heladeras mostrador');
+  assert.strictEqual(realCaseFallback.contextPatch.commercialSalesContext.businessCategory, 'wholesale_distribution');
+
+  const rotiseriaFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'Tengo una rotiseria, sirve para mi negocio?',
+    safeContext: {
+      activeBotDomain: 'commerce'
+    },
+    signal: 'product_fit_phrase'
+  });
+  assert.match(rotiseriaFallback.replyText, /rotiseria/i);
+  assert.match(rotiseriaFallback.replyText, /pedidos|consultas|seguimiento/i);
+  assert.doesNotMatch(rotiseriaFallback.replyText, /Se me mezcl/i);
+
+  const instagramFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'Vendo por Instagram, me sirve?',
+    safeContext: {
+      activeBotDomain: 'commerce'
+    },
+    signal: 'selling_channel_phrase'
+  });
+  assert.match(instagramFallback.replyText, /Instagram/i);
+  assert.doesNotMatch(instagramFallback.replyText, /Se me mezcl/i);
+
+  const currentNumberFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'Puedo usar mi numero actual de WhatsApp?',
+    safeContext: {
+      activeBotDomain: 'commerce'
+    },
+    signal: 'whatsapp_number_portability_phrase'
+  });
+  assert.match(currentNumberFallback.replyText, /n[uú]mero actual/i);
+  assert.doesNotMatch(currentNumberFallback.replyText, /Se me mezcl/i);
+
+  const sellerReplacementFallback = buildWeakSignalCommercialFallback({
+    inboundText: 'Esto reemplaza a mis vendedores?',
+    safeContext: {
+      activeBotDomain: 'commerce'
+    },
+    signal: 'seller_replacement_phrase'
+  });
+  assert.match(sellerReplacementFallback.replyText, /No, no busca reemplazar/i);
+  assert.match(sellerReplacementFallback.replyText, /ordenar consultas|seguimiento/i);
 
   const dentistFallback = buildWeakSignalCommercialFallback({
     inboundText: 'Soy dentista',
@@ -375,6 +474,66 @@ async function run() {
   assert.strictEqual(aiIndustryReply.contextPatch.commercialSalesContext.nextDiscoveryField, 'team_size');
   assert.strictEqual(aiIndustryReply.contextPatch.commercialSalesContext.aiAssistConfidence, 0.91);
   assert.strictEqual(getActiveCommercialDiscoveryPending(aiIndustryReply.contextPatch).field, 'team_size');
+
+  const aiForcedIndustryDiscoveryReply = await resolveAiAssistDecision({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'Hola Opturon, tengo una distribuidora de heladeras mostrador, que servicio me serviria a mi?',
+    aiDecision: {
+      domain: 'commerce',
+      intent: 'plan_recommendation',
+      confidence: 0.86,
+      entities: {
+        businessType: 'distribution',
+        businessTypeRaw: 'distribuidora de heladeras mostrador',
+        businessCategory: 'wholesale_distribution'
+      },
+      routingDecision: 'use_existing_commerce_reply',
+      suggestedReplyIntent: 'recommend_plan_by_business_context',
+      reason: 'El usuario pregunta que servicio le sirve para su rubro'
+    },
+    safeContext: {
+      activeBotDomain: 'commerce'
+    }
+  });
+  assert.doesNotMatch(aiForcedIndustryDiscoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.match(aiForcedIndustryDiscoveryReply.replyText, /distribuidora de heladeras mostrador/i);
+  assert.match(aiForcedIndustryDiscoveryReply.replyText, /3 preguntas r[aá]pidas/i);
+  assert.strictEqual(getActiveCommercialDiscoveryPending(aiForcedIndustryDiscoveryReply.contextPatch).field, 'team_size');
+
+  const aiForcedGrowthDiscoveryReply = await resolveAiAssistDecision({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'Tengo una distribuidora, que plan me conviene?',
+    aiDecision: {
+      domain: 'commerce',
+      intent: 'plan_recommendation',
+      confidence: 0.88,
+      entities: {
+        businessType: 'distribution',
+        businessTypeRaw: 'distribuidora',
+        businessCategory: 'wholesale_distribution'
+      },
+      routingDecision: 'use_existing_commerce_reply',
+      suggestedReplyIntent: 'recommend_plan_growth',
+      reason: 'AI Assist intento recomendar growth solo por rubro'
+    },
+    safeContext: {
+      activeBotDomain: 'commerce'
+    }
+  });
+  assert.doesNotMatch(aiForcedGrowthDiscoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.match(aiForcedGrowthDiscoveryReply.replyText, /3 preguntas r[aá]pidas/i);
 
   const sellerDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -527,6 +686,46 @@ async function run() {
   assert.match(discoveryReply.replyText, /productos o servicios/i);
   assert.strictEqual(discoveryReply.contextPatch.commercialSalesContext.channelMixSignal, 'multi_channel');
   assert.strictEqual(getActiveCommercialDiscoveryPending(discoveryReply.contextPatch).field, 'offer_type');
+
+  const industryServiceDiscoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: discoveryAuditConversation,
+    inboundText: 'Hola Opturon, tengo una distribuidora de heladeras mostrador, que servicio me serviria a mi?'
+  });
+  assert.doesNotMatch(industryServiceDiscoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.match(industryServiceDiscoveryReply.replyText, /distribuidora de heladeras mostrador/i);
+  assert.match(industryServiceDiscoveryReply.replyText, /3 preguntas r[aá]pidas/i);
+  assert.match(industryServiceDiscoveryReply.replyText, /consultas.*WhatsApp/i);
+  assert.match(industryServiceDiscoveryReply.replyText, /personas o vendedores/i);
+  assert.match(industryServiceDiscoveryReply.replyText, /pedidos, clientes, pagos o comprobantes/i);
+  assert.match(industryServiceDiscoveryReply.replyText, /CRM, ventas, pedidos, caja y seguimiento/i);
+  assert.strictEqual(industryServiceDiscoveryReply.contextPatch.commercialSalesContext.businessTypeRaw, 'distribuidora de heladeras mostrador');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(industryServiceDiscoveryReply.contextPatch).field, 'team_size');
+
+  const industryPlanDiscoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: discoveryAuditConversation,
+    inboundText: 'Tengo una distribuidora, que plan me conviene?'
+  });
+  assert.doesNotMatch(industryPlanDiscoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.match(industryPlanDiscoveryReply.replyText, /3 preguntas r[aá]pidas/i);
+
+  const rotiseriaDiscoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: discoveryAuditConversation,
+    inboundText: 'Tengo una rotiseria, sirve para mi negocio?'
+  });
+  assert.doesNotMatch(rotiseriaDiscoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.match(rotiseriaDiscoveryReply.replyText, /rotiseria/i);
+  assert.match(rotiseriaDiscoveryReply.replyText, /3 preguntas r[aá]pidas/i);
+
+  const operationalRecommendationReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: discoveryAuditConversation,
+    inboundText: 'Tengo 200 consultas por dia y 5 vendedores, que plan me conviene?'
+  });
+  assert.match(operationalRecommendationReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.doesNotMatch(operationalRecommendationReply.replyText, /3 preguntas r[aá]pidas/i);
 
   const contextAfterDiscovery = applyContextPatch(discoveryAuditConversation.context, discoveryReply.contextPatch);
   const businessTypeReply = await buildSafeCommercialIntentReply({
