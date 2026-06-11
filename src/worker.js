@@ -1569,6 +1569,8 @@ function buildCommercialSalesContextPatch({
   businessTypeRaw = null,
   businessCategory = null,
   whatsappVolume = null,
+  estimatedDailyConversations = null,
+  peakDailyConversations = null,
   teamSizeSignal = null,
   teamSizeValue = null,
   whatsappAccountTypeSignal = null,
@@ -1583,6 +1585,8 @@ function buildCommercialSalesContextPatch({
   lastRecommendationReason = null
 } = {}) {
   const normalizedTeamSizeValue = Number.parseInt(String(teamSizeValue || ''), 10);
+  const normalizedEstimatedDailyConversations = Number.parseInt(String(estimatedDailyConversations || ''), 10);
+  const normalizedPeakDailyConversations = Number.parseInt(String(peakDailyConversations || ''), 10);
   return {
     commercialSalesContext: {
       updatedAt: new Date().toISOString(),
@@ -1590,6 +1594,8 @@ function buildCommercialSalesContextPatch({
       businessTypeRaw: businessTypeRaw ? String(businessTypeRaw).trim().toLowerCase() : null,
       businessCategory: businessCategory ? String(businessCategory).trim().toLowerCase() : null,
       whatsappVolume: whatsappVolume ? String(whatsappVolume).trim().toLowerCase() : null,
+      estimatedDailyConversations: Number.isInteger(normalizedEstimatedDailyConversations) && normalizedEstimatedDailyConversations > 0 ? normalizedEstimatedDailyConversations : null,
+      peakDailyConversations: Number.isInteger(normalizedPeakDailyConversations) && normalizedPeakDailyConversations > 0 ? normalizedPeakDailyConversations : null,
       teamSizeSignal: teamSizeSignal ? String(teamSizeSignal).trim().toLowerCase() : null,
       teamSizeValue: Number.isInteger(normalizedTeamSizeValue) && normalizedTeamSizeValue > 0 ? normalizedTeamSizeValue : null,
       whatsappAccountTypeSignal: whatsappAccountTypeSignal ? String(whatsappAccountTypeSignal).trim().toLowerCase() : null,
@@ -1868,6 +1874,7 @@ function detectCommercialSalesContext(rawText) {
   const parsedOfferTypeSignal = parseCommercialOfferTypeAnswer(rawText);
   const parsedChannelMixSignal = parseCommercialChannelMixAnswer(rawText);
   const parsedWhatsappVolume = parseCommercialWhatsappVolumeAnswer(rawText);
+  const discoveryEntities = extractCommercialDiscoveryEntities(rawText);
 
   const painSignals = [
     ['lead_loss', ['se me pierden consultas', 'pierdo consultas', 'se me escapan consultas', 'se me pasan consultas']],
@@ -1880,6 +1887,7 @@ function detectCommercialSalesContext(rawText) {
   const painPoints = painSignals
     .filter(([, phrases]) => phrases.some((phrase) => text.includes(phrase)))
     .map(([key]) => key);
+  const mergedPainPoints = [...new Set([...painPoints, ...discoveryEntities.painPoints])];
 
   if (
     !businessType &&
@@ -1890,7 +1898,7 @@ function detectCommercialSalesContext(rawText) {
     !parsedOfferTypeSignal &&
     !parsedChannelMixSignal &&
     !parsedWhatsappVolume &&
-    !painPoints.length
+    !mergedPainPoints.length
   ) {
     return null;
   }
@@ -1900,11 +1908,13 @@ function detectCommercialSalesContext(rawText) {
     businessTypeRaw,
     businessCategory: inferBusinessCategoryFromRawBusinessType(businessTypeRaw),
     whatsappVolume: parsedWhatsappVolume || whatsappVolume,
-    teamSizeSignal: parsedTeamSize ? parsedTeamSize.teamSizeSignal : teamSizeSignal,
-    teamSizeValue: parsedTeamSize ? parsedTeamSize.teamSizeValue : null,
+    estimatedDailyConversations: discoveryEntities.estimatedDailyConversations,
+    peakDailyConversations: discoveryEntities.peakDailyConversations,
+    teamSizeSignal: discoveryEntities.teamAnswer ? discoveryEntities.teamAnswer.teamSizeSignal : (parsedTeamSize ? parsedTeamSize.teamSizeSignal : teamSizeSignal),
+    teamSizeValue: discoveryEntities.teamAnswer ? discoveryEntities.teamAnswer.teamSizeValue : (parsedTeamSize ? parsedTeamSize.teamSizeValue : null),
     offerTypeSignal: parsedOfferTypeSignal || null,
     channelMixSignal: parsedChannelMixSignal || null,
-    painPoints
+    painPoints: mergedPainPoints
   };
 }
 
@@ -2013,6 +2023,8 @@ function mergeCommercialSalesContext(baseContext, incomingContext = null) {
     businessTypeRaw: incoming.businessTypeRaw || base.businessTypeRaw || null,
     businessCategory: incoming.businessCategory || base.businessCategory || null,
     whatsappVolume: incoming.whatsappVolume || base.whatsappVolume || null,
+    estimatedDailyConversations: incoming.estimatedDailyConversations || base.estimatedDailyConversations || null,
+    peakDailyConversations: incoming.peakDailyConversations || base.peakDailyConversations || null,
     teamSizeSignal: incoming.teamSizeSignal || base.teamSizeSignal || null,
     teamSizeValue: incoming.teamSizeValue || base.teamSizeValue || null,
     whatsappAccountTypeSignal: incoming.whatsappAccountTypeSignal || base.whatsappAccountTypeSignal || null,
@@ -2121,6 +2133,8 @@ function parseCommercialTeamSizeAnswer(rawText) {
   if (
     text.includes('atiendo yo solo') ||
     text.includes('atiendo yo sola') ||
+    text.includes('trabajo solo') ||
+    text.includes('trabajo sola') ||
     text.includes('yo solo') ||
     text.includes('yo sola')
   ) {
@@ -2131,9 +2145,30 @@ function parseCommercialTeamSizeAnswer(rawText) {
     text.includes('una persona') ||
     text.includes('una sola persona') ||
     text.includes('una en atencion') ||
-    text.includes('un vendedor')
+    text.includes('un vendedor') ||
+    text.includes('una secretaria') ||
+    text.includes('un secretario')
   ) {
     return { teamSizeValue: 1, teamSizeSignal: 'solo' };
+  }
+
+  const contextualCountPatterns = [
+    /\b(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+(?:personas|vendedores|asesores|secretarias|secretarios)\b/,
+    /\b(?:somos|son|atienden|atiende|responden|responde|tengo|tenemos)\s+(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/,
+    /\b(?:lo|la|las|los)\s+(?:atiende|atienden|responde|responden|agenda|agendan)\s+(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/
+  ];
+  for (const pattern of contextualCountPatterns) {
+    const match = text.match(pattern);
+    if (!match || !match[1]) continue;
+    const contextualValue = /^\d+$/.test(match[1])
+      ? Number.parseInt(match[1], 10)
+      : parseSpelledSmallNumber(match[1], { includeArticles: false });
+    if (Number.isInteger(contextualValue) && contextualValue > 0) {
+      return {
+        teamSizeValue: contextualValue,
+        teamSizeSignal: contextualValue === 1 ? 'solo' : 'team'
+      };
+    }
   }
 
   const digitsMatch = text.match(/\b(\d{1,2})\b/);
@@ -2191,6 +2226,7 @@ function extractCommercialWhatsappVolumeCount(text) {
   if (!safeText) return null;
 
   const specificPatterns = [
+    /\b(?:unas?\s+|aprox(?:imadamente)?\s+|alrededor de\s+|cerca de\s+)?(\d{1,3})\s*\/\s*(\d{1,3})\s+(?:consultas|mensajes|conversaciones|pedidos)?(?:\s*(?:por|al)\s+dia)?\b/g,
     /\b(?:unas?\s+|aprox(?:imadamente)?\s+|alrededor de\s+|cerca de\s+)?(\d{1,3})\s+(?:consultas|mensajes|conversaciones|pedidos)\b/g,
     /\b(?:unas?\s+|aprox(?:imadamente)?\s+|alrededor de\s+|cerca de\s+)?(\d{1,3})\s+(?:por|al)\s+dia\b/g
   ];
@@ -2198,7 +2234,8 @@ function extractCommercialWhatsappVolumeCount(text) {
   for (const pattern of specificPatterns) {
     const matches = [...safeText.matchAll(pattern)];
     if (matches.length) {
-      const numericValue = Number.parseInt(matches[matches.length - 1][1], 10);
+      const lastMatch = matches[matches.length - 1];
+      const numericValue = Number.parseInt(lastMatch[2] || lastMatch[1], 10);
       if (Number.isInteger(numericValue) && numericValue > 0) {
         return numericValue;
       }
@@ -2271,6 +2308,31 @@ function parseCommercialWhatsappVolumeAnswer(rawText, options = {}) {
   }
 
   return null;
+}
+
+function extractCommercialDiscoveryEntities(rawText) {
+  const text = normalizeCommandText(rawText);
+  const teamAnswer = parseCommercialTeamSizeAnswer(rawText);
+  const volumeCount = extractCommercialWhatsappVolumeCount(text);
+  const whatsappVolume = parseCommercialWhatsappVolumeAnswer(rawText, { strict: true });
+  const painPoints = [];
+
+  if (/\b(secretaria|secretario|agenda|agendan|turnos?|consultas?|seguimiento)\b/.test(text)) {
+    painPoints.push('sales_organization');
+  }
+  if (/\bseguimiento|seguir|retomar\b/.test(text)) {
+    painPoints.push('follow_up');
+  }
+
+  return {
+    teamAnswer,
+    estimatedDailyConversations: Number.isInteger(volumeCount) ? volumeCount : null,
+    peakDailyConversations: Number.isInteger(volumeCount) && /\b(maximo|maxima|pico|dia de mas|dias altos|día de más|días altos)\b/.test(text)
+      ? volumeCount
+      : null,
+    whatsappVolume,
+    painPoints: [...new Set(painPoints)]
+  };
 }
 
 function parseCommercialChannelMixAnswer(rawText) {
@@ -2428,8 +2490,14 @@ function buildCommercialOrientationLead(salesContext = {}) {
 function hasEnoughCommercialSignalsForSoftRecommendation(salesContext = {}) {
   const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
   const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const estimatedDailyConversations = Number.parseInt(String(safeContext.estimatedDailyConversations || ''), 10);
+  const peakDailyConversations = Number.parseInt(String(safeContext.peakDailyConversations || ''), 10);
   const painPoints = Array.isArray(safeContext.painPoints) ? safeContext.painPoints : [];
-  const hasLoadSignal = Boolean(safeContext.whatsappVolume || safeContext.channelMixSignal);
+  const hasDailyConversationCount = Boolean(
+    (Number.isInteger(estimatedDailyConversations) && estimatedDailyConversations > 0) ||
+    (Number.isInteger(peakDailyConversations) && peakDailyConversations > 0)
+  );
+  const hasLoadSignal = Boolean(safeContext.whatsappVolume || safeContext.channelMixSignal || hasDailyConversationCount);
   const hasBusinessSignal = Boolean(safeContext.businessType || safeContext.offerTypeSignal);
   const hasTeamSignal = Boolean(safeContext.teamSizeSignal || (Number.isInteger(teamSizeValue) && teamSizeValue > 0));
   const hasOperationalSignal = Boolean(
@@ -2729,12 +2797,27 @@ function resolveCommercialDiscoveryPendingReply({
   if (!pending || !pending.field) return null;
 
   if (pending.field === 'team_size') {
-    const teamAnswer = parseCommercialTeamSizeAnswer(inboundText);
-    if (!teamAnswer) return null;
+    const discoveryEntities = extractCommercialDiscoveryEntities(inboundText);
+    const teamAnswer = discoveryEntities.teamAnswer;
+    const hasVolumeAnswer = Boolean(discoveryEntities.whatsappVolume);
+    if (!teamAnswer && !hasVolumeAnswer) return null;
     const nextSalesContext = {
       ...currentSalesContext,
-      teamSizeSignal: teamAnswer.teamSizeSignal,
-      teamSizeValue: teamAnswer.teamSizeValue
+      ...(teamAnswer
+        ? {
+          teamSizeSignal: teamAnswer.teamSizeSignal,
+          teamSizeValue: teamAnswer.teamSizeValue
+        }
+        : null),
+      ...(hasVolumeAnswer ? { whatsappVolume: discoveryEntities.whatsappVolume } : null),
+      ...(discoveryEntities.estimatedDailyConversations ? { estimatedDailyConversations: discoveryEntities.estimatedDailyConversations } : null),
+      ...(discoveryEntities.peakDailyConversations ? { peakDailyConversations: discoveryEntities.peakDailyConversations } : null),
+      painPoints: [
+        ...new Set([
+          ...(Array.isArray(currentSalesContext.painPoints) ? currentSalesContext.painPoints : []),
+          ...discoveryEntities.painPoints
+        ])
+      ]
     };
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
     const response = buildCommercialDiscoveryResponse({
@@ -2876,6 +2959,12 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
 
   const painPoints = Array.isArray(safeContext.painPoints) ? safeContext.painPoints : [];
   const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const estimatedDailyConversations = Number.parseInt(String(safeContext.estimatedDailyConversations || ''), 10);
+  const peakDailyConversations = Number.parseInt(String(safeContext.peakDailyConversations || ''), 10);
+  const dailyConversationCount = Math.max(
+    Number.isInteger(estimatedDailyConversations) ? estimatedDailyConversations : 0,
+    Number.isInteger(peakDailyConversations) ? peakDailyConversations : 0
+  );
   const isHighVolume = safeContext.whatsappVolume === 'high';
   const isLowVolume = safeContext.whatsappVolume === 'low';
   const hasTeam = safeContext.teamSizeSignal === 'team' || safeContext.teamSizeSignal === 'multi_branch';
@@ -2899,6 +2988,7 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
 
   if (safeContext.businessType && safeContext.businessType !== 'distribution') growthScore += 1;
   if (isHighVolume) growthScore += 2;
+  if (dailyConversationCount >= 10 && dailyConversationCount <= 100) growthScore += 2;
   if (hasGrowthPains) growthScore += 3;
   if (isSolo) growthScore += 1;
   if (hasTeam) growthScore += 1;
@@ -2907,6 +2997,7 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
   if (isProductsFlow) growthScore += 1;
 
   if (isDistribution) enterpriseScore += 4;
+  if (dailyConversationCount >= 100) enterpriseScore += 5;
   if (isMultiBranch) enterpriseScore += 4;
   if (safeContext.teamSizeSignal === 'team') enterpriseScore += 2;
   if (teamSizeValue >= 6) enterpriseScore += 4;
@@ -2915,7 +3006,7 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
   if (isMultiChannel) enterpriseScore += 1;
   if (isHighVolume && hasTeam) enterpriseScore += 1;
 
-  if (enterpriseScore >= 5 && enterpriseScore > growthScore) {
+  if (enterpriseScore >= 5 && (enterpriseScore > growthScore || isDistribution || dailyConversationCount >= 100)) {
     return {
       businessType: safeContext.businessType || (isDistribution ? 'distribution' : 'high_volume'),
       teamSize: hasTeam ? 'team' : 'small',
@@ -2937,7 +3028,7 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
     };
   }
 
-  if (starterScore >= 3 && starterScore >= growthScore && enterpriseScore === 0) {
+  if (!isHighVolume && starterScore >= 3 && starterScore >= growthScore && enterpriseScore === 0) {
     return {
       businessType: safeContext.businessType || 'starter',
       teamSize: 'small',
@@ -5383,6 +5474,8 @@ function buildAiAssistSalesContext(entities = {}, currentContext = null) {
       : (teamSizeSignal === 'team' || teamSizeSignal === 'multi_branch' || channels.length >= 2)
         ? 'high'
         : baseContext.whatsappVolume || null;
+  const estimatedDailyConversations = Number.parseInt(String(entities.estimatedDailyConversations || baseContext.estimatedDailyConversations || ''), 10);
+  const peakDailyConversations = Number.parseInt(String(entities.peakDailyConversations || baseContext.peakDailyConversations || ''), 10);
   const painPoints = [...new Set([...(Array.isArray(baseContext.painPoints) ? baseContext.painPoints : []), ...normalizeAiAssistPainPoints(entities)])];
   const likelyNeeds = [...new Set([
     ...(hasExplicitBusinessSignal ? [] : (Array.isArray(baseContext.likelyNeeds) ? baseContext.likelyNeeds : [])),
@@ -5397,6 +5490,8 @@ function buildAiAssistSalesContext(entities = {}, currentContext = null) {
     businessTypeRaw: businessTypeRaw || null,
     businessCategory,
     whatsappVolume,
+    estimatedDailyConversations: Number.isInteger(estimatedDailyConversations) && estimatedDailyConversations > 0 ? estimatedDailyConversations : null,
+    peakDailyConversations: Number.isInteger(peakDailyConversations) && peakDailyConversations > 0 ? peakDailyConversations : null,
     teamSizeSignal,
     channelMixSignal,
     painPoints,
@@ -5954,6 +6049,12 @@ function describeSalesContextShort(salesContext) {
 function buildSalesContextMomentLine(salesContext) {
   const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
   const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const estimatedDailyConversations = Number.parseInt(String(safeContext.estimatedDailyConversations || ''), 10);
+  const peakDailyConversations = Number.parseInt(String(safeContext.peakDailyConversations || ''), 10);
+  const dailyConversationCount = Math.max(
+    Number.isInteger(estimatedDailyConversations) ? estimatedDailyConversations : 0,
+    Number.isInteger(peakDailyConversations) ? peakDailyConversations : 0
+  );
   const businessLabel = (
     safeContext.businessType === 'fashion_retail' ? 'tenés una tienda de ropa' :
       safeContext.businessType === 'accessories_retail' ? 'tenés un negocio de accesorios' :
@@ -5964,13 +6065,16 @@ function buildSalesContextMomentLine(salesContext) {
                 null
   );
   const volumeLabel = (
+    dailyConversationCount > 0 ? `recibís unas ${dailyConversationCount} consultas por día` :
     safeContext.whatsappVolume === 'high' ? 'ya hay bastante movimiento por WhatsApp' :
       safeContext.whatsappVolume === 'low' ? 'todavía estás arrancando con poco volumen' :
         null
   );
   const teamLabel = Number.isInteger(teamSizeValue) && teamSizeValue > 1
     ? `ya tenés ${teamSizeValue} personas atendiendo`
-    : safeContext.teamSizeSignal === 'team'
+    : Number.isInteger(teamSizeValue) && teamSizeValue === 1
+      ? 'lo atiende una sola persona'
+      : safeContext.teamSizeSignal === 'team'
       ? 'ya tenés equipo atendiendo'
       : safeContext.teamSizeSignal === 'multi_branch'
         ? 'ya tenés varios frentes atendiendo'
@@ -5984,6 +6088,12 @@ function buildRecommendationReasonSummary(product, salesContext, allPlans = []) 
   const normalizedName = normalizeCommandText(safeProduct.name || '');
   const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
   const painPoints = Array.isArray(safeContext.painPoints) ? safeContext.painPoints : [];
+  const estimatedDailyConversations = Number.parseInt(String(safeContext.estimatedDailyConversations || ''), 10);
+  const peakDailyConversations = Number.parseInt(String(safeContext.peakDailyConversations || ''), 10);
+  const dailyConversationCount = Math.max(
+    Number.isInteger(estimatedDailyConversations) ? estimatedDailyConversations : 0,
+    Number.isInteger(peakDailyConversations) ? peakDailyConversations : 0
+  );
   const enterprisePlan = findPlanByNeedHint(allPlans, 'enterprise');
 
   if (normalizedName.includes('inicial')) {
@@ -5991,6 +6101,9 @@ function buildRecommendationReasonSummary(product, salesContext, allPlans = []) 
   }
 
   if (normalizedName.includes('empresa')) {
+    if (dailyConversationCount >= 100) {
+      return 'con ese volumen ya conviene mirar una configuración más completa, con más control y acompañamiento';
+    }
     return safeContext.teamSizeSignal === 'multi_branch' || safeContext.teamSizeSignal === 'team'
       ? 'ya necesitás más control, más equipo y una operación más acompañada'
       : 'solo vale la pena cuando ya tenés más equipo, más volumen o necesitás algo más personalizado';
@@ -8794,6 +8907,12 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       effectiveSalesContext.lastRecommendationReason
     )
   );
+  const hasOperationalDiscoveryAnswer = Boolean(
+    detectedSalesContext &&
+    effectiveSalesContext &&
+    (effectiveSalesContext.whatsappVolume || effectiveSalesContext.estimatedDailyConversations || effectiveSalesContext.peakDailyConversations) &&
+    (effectiveSalesContext.teamSizeSignal || effectiveSalesContext.teamSizeValue)
+  );
   const businessProfile = getClinicBusinessProfile(clinic);
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
@@ -8991,7 +9110,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     (activePlanContext || (activeShortMemory && activeShortMemory.topic === 'plans')) &&
     !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntry &&
-    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    (!looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) || hasOperationalDiscoveryAnswer) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
     !isLoyaltyIntent(inboundText) &&
@@ -9034,7 +9153,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
 
   if (
     !isCatalogItemDetailIntent(inboundText) &&
-    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    (!looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) || hasOperationalDiscoveryAnswer) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
     !isLoyaltyIntent(inboundText) &&
@@ -9218,19 +9337,19 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   }
 
   if (
-    (activeSalesContext || activePlanContext) &&
+    (activeSalesContext || activePlanContext || activeCommercialDiscoveryPending || (safeContext.activeBotDomain === 'commerce' && detectedSalesContext)) &&
     detectedSalesContext &&
     !hasPlanComparisonSemanticCue(inboundText) &&
     !isPlanWorthItIntent(inboundText) &&
     !isRecommendationWhyFollowUpIntent(inboundText) &&
     !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntry &&
-    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    (!looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) || hasOperationalDiscoveryAnswer) &&
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
     !isLoyaltyIntent(inboundText) &&
     effectiveBusinessContext &&
-    hasEnoughCommercialSignalsForSoftRecommendation(effectiveSalesContext)
+    (hasEnoughCommercialSignalsForSoftRecommendation(effectiveSalesContext) || hasOperationalDiscoveryAnswer)
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);

@@ -220,10 +220,13 @@ async function run() {
 
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('mi esposa y yo'), { teamSizeValue: 2, teamSizeSignal: 'team' });
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('atiendo yo solo'), { teamSizeValue: 1, teamSizeSignal: 'solo' });
+  assert.deepStrictEqual(parseCommercialTeamSizeAnswer('100 mensajes por dia y tengo 3 vendedores'), { teamSizeValue: 3, teamSizeSignal: 'team' });
+  assert.deepStrictEqual(parseCommercialTeamSizeAnswer('una secretaria agenda todo'), { teamSizeValue: 1, teamSizeSignal: 'solo' });
   assert.strictEqual(parseCommercialTeamSizeAnswer('Tengo una distribuidora'), null);
   assert.strictEqual(parseCommercialWhatsAppAccountTypeAnswer('Uso WhatsApp Business'), 'business');
   assert.strictEqual(parseCommercialOfferTypeAnswer('Productos'), 'products');
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('30 por dia'), 'high');
+  assert.strictEqual(parseCommercialWhatsappVolumeAnswer('30/40 por dia y las atiende una sola persona'), 'high');
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('10 por dia'), 'low');
   assert.strictEqual(parseCommercialWhatsappVolumeAnswer('Somos 3 vendedores y recibimos unas 80 consultas por dia'), 'high');
   assert.strictEqual(isPlanPriceComparisonIntent('Y cuanto mas caro es Empresa?'), true);
@@ -760,6 +763,121 @@ async function run() {
   assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.businessType, 'distribution');
   assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.teamSizeValue, 3);
   assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.whatsappVolume, 'high');
+
+  const planDiscoveryStartReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'soy podologo de manana y masajista de tarde, me sirve su software?'
+  });
+  assert.match(planDiscoveryStartReply.replyText, /puede servirte|consultas|seguimiento/i);
+  let planDiscoveryContext = applyContextPatch({ activeBotDomain: 'commerce' }, planDiscoveryStartReply.contextPatch);
+
+  const planDiscoveryNeedReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: planDiscoveryContext
+    },
+    inboundText: 'Las consultas y el seguimiento'
+  });
+  assert.doesNotMatch(planDiscoveryNeedReply.replyText, /humano|fallback|no te entend/i);
+  assert.match(planDiscoveryNeedReply.replyText, /consultas|seguimiento/i);
+  planDiscoveryContext = applyContextPatch(planDiscoveryContext, planDiscoveryNeedReply.contextPatch);
+
+  const planDiscoveryQuestionReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: planDiscoveryContext
+    },
+    inboundText: 'Perfecto, que plan me recomendarias?'
+  });
+  assert.match(planDiscoveryQuestionReply.replyText, /cuantas|consultas|personas|atienden/i);
+  planDiscoveryContext = applyContextPatch(planDiscoveryContext, planDiscoveryQuestionReply.contextPatch);
+
+  const planDiscoveryRecommendationReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: planDiscoveryContext
+    },
+    inboundText: '30/40 por dia y las atiende una sola persona'
+  });
+  assert.doesNotMatch(planDiscoveryRecommendationReply.replyText, /humano|fallback|no te entend/i);
+  assert.match(planDiscoveryRecommendationReply.replyText, /Plan Crecimiento|intermedia|intermedio|Crecimiento/i);
+  assert.match(planDiscoveryRecommendationReply.replyText, /una sola persona|1 persona|lo atiende una sola persona/i);
+  assert.strictEqual(planDiscoveryRecommendationReply.contextPatch.commercialSalesContext.teamSizeValue, 1);
+  assert.strictEqual(planDiscoveryRecommendationReply.contextPatch.commercialSalesContext.whatsappVolume, 'high');
+  assert.strictEqual(planDiscoveryRecommendationReply.contextPatch.commercialSalesContext.estimatedDailyConversations, 40);
+
+  const starterPlanQuestionReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'que plan me conviene?'
+  });
+  const starterPlanContext = applyContextPatch({ activeBotDomain: 'commerce' }, starterPlanQuestionReply.contextPatch);
+  const starterPlanReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: starterPlanContext
+    },
+    inboundText: '10 consultas por dia y trabajo solo'
+  });
+  assert.doesNotMatch(starterPlanReply.replyText, /humano|fallback|no te entend/i);
+  assert.match(starterPlanReply.replyText, /Plan Inicial|tipo Inicial|algo simple/i);
+
+  const enterprisePlanContext = applyContextPatch({ activeBotDomain: 'commerce' }, starterPlanQuestionReply.contextPatch);
+  const enterprisePlanReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: enterprisePlanContext
+    },
+    inboundText: '100 mensajes por dia y tengo 3 vendedores'
+  });
+  assert.doesNotMatch(enterprisePlanReply.replyText, /humano|fallback|no te entend/i);
+  assert.match(enterprisePlanReply.replyText, /tipo Empresa|Empresa|mas completa|m.s completa|avanzada/i);
+  assert.strictEqual(enterprisePlanReply.contextPatch.commercialSalesContext.teamSizeValue, 3);
+  assert.strictEqual(enterprisePlanReply.contextPatch.commercialSalesContext.estimatedDailyConversations, 100);
+
+  const twoPeopleReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'somos dos personas respondiendo y recibimos 40 consultas'
+  });
+  assert.doesNotMatch(twoPeopleReply.replyText, /humano|fallback|no te entend/i);
+  assert.match(twoPeopleReply.replyText, /Plan Crecimiento|intermedia|intermedio|Crecimiento/i);
+  assert.strictEqual(twoPeopleReply.contextPatch.commercialSalesContext.teamSizeValue, 2);
+
+  const secretaryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'una secretaria agenda todo y recibe muchas consultas'
+  });
+  assert.doesNotMatch(secretaryReply.replyText, /humano|fallback|no te entend/i);
+  assert.match(secretaryReply.replyText, /agenda|consultas|seguimiento|Plan Crecimiento|Crecimiento/i);
+  assert.strictEqual(secretaryReply.contextPatch.commercialSalesContext.teamSizeValue, 1);
 
   const contextAfterRecommendation = applyContextPatch(contextAfterBusinessType, finalRecommendationReply.contextPatch);
   const enterpriseDefenseReply = await buildSafeCommercialIntentReply({
