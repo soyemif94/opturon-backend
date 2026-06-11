@@ -59,6 +59,7 @@ stubModule('src/repositories/conversation-events.repository.js', {
 });
 
 const worker = require('../../src/worker.js');
+const { findCommercialKnowledgeMatch } = require('../../src/ai/commercial-knowledge-base');
 const {
   isGreetingIntent,
   isCommercialSoftFollowUpIntent,
@@ -245,7 +246,7 @@ async function run() {
   });
   assert.strictEqual(openBusinessAiInvocation.ok, true);
   assert.strictEqual(openBusinessAiInvocation.reason, 'commercial_weak_signal');
-  assert.strictEqual(openBusinessAiInvocation.signal, 'open_business_phrase');
+  assert.strictEqual(openBusinessAiInvocation.signal, 'commercial_kb:business_fit_by_industry');
 
   const commerceContextIndustryAiInvocation = shouldInvokeAiAssist({
     botRoute: { domain: 'commerce' },
@@ -916,6 +917,90 @@ async function run() {
   assert.strictEqual(parseTransferPaymentIntent('te mando comprobante'), 'proof_notice');
   assert.strictEqual(isLoyaltyIntent('cuantos puntos tengo'), true);
   assert.strictEqual(detectCommercialIntent('quiero hablar con una persona').type, 'human_handoff');
+
+  const commercialKbFixturePhrases = [
+    ['vendo por instagram', 'instagram_sales'],
+    ['puedo usar mi numero actual?', 'existing_whatsapp_number'],
+    ['esto reemplaza a mis vendedores?', 'replaces_secretary_or_seller'],
+    ['sirve para una rotiseria?', 'business_fit_by_industry'],
+    ['soy podologa a la manana y masajista a la tarde', 'multi_service'],
+    ['tengo dos emprendimientos', 'multi_business'],
+    ['mi mujer atiende un consultorio y yo tengo una distribuidora', 'multi_business'],
+    ['tengo una casa de repuestos', 'business_fit_by_industry'],
+    ['tengo inmobiliaria', 'business_fit_by_industry'],
+    ['trabajo con turnos', 'appointment_business'],
+    ['vendo productos', 'product_catalog_business'],
+    ['tengo delivery', 'delivery_or_distribution_business'],
+    ['ya uso excel', 'excel_import'],
+    ['tengo muchos mensajes y se me pierden', 'scaling_business_fit'],
+    ['tengo varios vendedores', 'multi_user_sellers'],
+    ['quiero que conteste cuando yo no estoy', 'business_fit_general'],
+    ['quiero que derive a una persona', 'human_takeover'],
+    ['me sirve si soy chico?', 'small_business_fit'],
+    ['tengo pocos clientes todavia', 'small_business_fit'],
+    ['tengo muchos clientes', 'scaling_business_fit'],
+    ['tengo una estetica', 'business_fit_by_industry'],
+    ['tengo lubricentro', 'business_fit_by_industry'],
+    ['tengo tienda de ropa', 'business_fit_by_industry'],
+    ['tengo distribuidora', 'delivery_or_distribution_business'],
+    ['tengo local y vendo online', 'multi_business'],
+    ['atiendo por whatsapp y por instagram', 'instagram_sales'],
+    ['necesito agenda', 'appointment_business'],
+    ['necesito pedidos', 'product_catalog_business'],
+    ['necesito seguimiento', 'crm_and_follow_up'],
+    ['el bot aprende solo?', 'limitations_or_edge_cases'],
+    ['puedo pausar el bot?', 'human_takeover'],
+    ['puedo hablar yo si quiero?', 'human_takeover'],
+    ['que pasa si no entiende?', 'limitations_or_edge_cases'],
+    ['que plan me conviene?', 'plan_recommendation'],
+    ['como empiezo?', 'onboarding_how_to_start'],
+    ['cuanto tarda en implementarse?', 'onboarding_how_to_start'],
+    ['necesito cargar mis productos', 'excel_import'],
+    ['puedo tener usuarios?', 'multi_user_sellers'],
+    ['puedo ver metricas?', 'multi_user_sellers'],
+    ['sirve para servicios y productos?', 'business_fit_by_industry']
+  ];
+
+  for (const [phrase, expectedCategory] of commercialKbFixturePhrases) {
+    const match = findCommercialKnowledgeMatch(phrase);
+    assert.ok(match, `Expected commercial KB match for "${phrase}"`);
+    assert.strictEqual(match.category, expectedCategory, `Unexpected KB category for "${phrase}"`);
+
+    const reply = await buildSafeCommercialIntentReply({
+      clinic,
+      conversation: {
+        ...conversation,
+        context: {
+          activeBotDomain: 'commerce'
+        }
+      },
+      inboundText: phrase
+    });
+    assert.ok(reply && reply.replyText, `Expected controlled reply for "${phrase}"`);
+    assert.doesNotMatch(reply.replyText, /fallback|no te entend/i, `Unexpected fallback reply for "${phrase}"`);
+  }
+
+  const expectedControlledReplies = [
+    ['soy podologa a la manana y masajista a la tarde', /m.s de una actividad/i],
+    ['tengo una distribuidora y tambien vendo por instagram', /consultas que llegan desde Instagram/i],
+    ['esto reemplaza a mis vendedores?', /no est. pensado para sacar vendedores/i],
+    ['ya tengo mi numero de whatsapp, lo puedo usar?', /compatible con la conexi.n de WhatsApp Business\/API/i],
+    ['ya uso excel', /no te lo vender.a como algo 100% autom.tico/i]
+  ];
+
+  for (const [phrase, expectedPattern] of expectedControlledReplies) {
+    const reply = await buildSafeCommercialIntentReply({
+      clinic,
+      conversation: {
+        ...conversation,
+        context: {
+          activeBotDomain: 'commerce'
+        }
+      },
+      inboundText: phrase
+    });
+    assert.match(reply.replyText, expectedPattern, `Controlled reply mismatch for "${phrase}"`);
+  }
 
   console.log('BOT.UNIVERSAL.BRAIN.1 validation passed');
 }

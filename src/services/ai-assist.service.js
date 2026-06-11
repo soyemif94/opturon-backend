@@ -1,5 +1,9 @@
 const env = require('../config/env');
 const {
+  findCommercialKnowledgeMatch,
+  getCommercialKnowledgePromptContext
+} = require('../ai/commercial-knowledge-base');
+const {
   addEvent,
   countEventsByType,
   countClinicEventsByTypeCurrentMonth
@@ -14,6 +18,25 @@ let aiAssistRuntimeConfigLogged = false;
 const SUPPORTED_DOMAINS = new Set(['commerce', 'unknown']);
 const SUPPORTED_INTENTS = new Set([
   'unknown',
+  'business_fit_general',
+  'business_fit_by_industry',
+  'multi_business',
+  'multi_service',
+  'multi_user_sellers',
+  'existing_whatsapp_number',
+  'instagram_sales',
+  'excel_import',
+  'replaces_secretary_or_seller',
+  'appointment_business',
+  'product_catalog_business',
+  'delivery_or_distribution_business',
+  'small_business_fit',
+  'scaling_business_fit',
+  'crm_and_follow_up',
+  'human_takeover',
+  'pricing_interest',
+  'onboarding_how_to_start',
+  'limitations_or_edge_cases',
   'plan_recommendation',
   'plan_comparison',
   'objection',
@@ -35,6 +58,25 @@ const SUPPORTED_ROUTING_DECISIONS = new Set([
 ]);
 const SUPPORTED_REPLY_INTENTS = new Set([
   'unknown',
+  'business_fit_general',
+  'business_fit_by_industry',
+  'multi_business',
+  'multi_service',
+  'multi_user_sellers',
+  'existing_whatsapp_number',
+  'instagram_sales',
+  'excel_import',
+  'replaces_secretary_or_seller',
+  'appointment_business',
+  'product_catalog_business',
+  'delivery_or_distribution_business',
+  'small_business_fit',
+  'scaling_business_fit',
+  'crm_and_follow_up',
+  'human_takeover',
+  'pricing_interest',
+  'onboarding_how_to_start',
+  'limitations_or_edge_cases',
   'recommend_plan_starter',
   'recommend_plan_growth',
   'recommend_plan_enterprise',
@@ -132,6 +174,7 @@ function logAiAssistRuntimeConfigOnce() {
 }
 
 function buildAiAssistSystemPrompt() {
+  const kb = getCommercialKnowledgePromptContext();
   return [
     'Sos AI Assist de Opturon.',
     'No respondas al usuario final libremente.',
@@ -142,6 +185,9 @@ function buildAiAssistSystemPrompt() {
     'Si no hay suficiente confianza, devolve confidence baja e intent=unknown.',
     'Dominio permitido principal: commerce.',
     'SuggestedReplyIntent debe ser uno de los permitidos por el integrador.',
+    `Usa esta Commercial Knowledge Base versionada como fuente de verdad para dudas comerciales: ${JSON.stringify(kb)}`,
+    'Si el mensaje coincide con una category de la KB, usa intent igual a esa category, routingDecision=use_existing_commerce_reply y suggestedReplyIntent igual al replyIntent de la KB.',
+    'Si coincide parcialmente con la KB dentro del universo comercio/empresa/emprendimiento/WhatsApp/ventas/turnos/clientes/productos, preferi clasificar como duda comercial con confianza razonable antes que fallback_current.',
     'Entities debe incluir solo inferencias razonables y conservadoras.',
     'Para rubros abiertos o no hardcodeados, usa entities.businessTypeRaw con el texto del rubro mencionado, intenta inferir entities.businessCategory y propone likelyNeeds conservadores.',
     'businessCategory debe ser una categoria amplia, por ejemplo: automotive, healthcare, wellness, retail, professional_services, wholesale_distribution o fitness.',
@@ -186,9 +232,13 @@ function buildAiAssistUserPrompt(input) {
         .slice(-6)
     : [];
 
+  const kbMatch = findCommercialKnowledgeMatch(input && input.message);
+
   return JSON.stringify({
     task: 'classify_commerce_intent_for_routing',
     allowedReplyIntents: Array.from(SUPPORTED_REPLY_INTENTS),
+    commercialKnowledgeBaseVersion: getCommercialKnowledgePromptContext().version,
+    commercialKnowledgeMatch: kbMatch,
     message: String(input.message || '').trim(),
     recentMessages,
     context: {

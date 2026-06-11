@@ -24,6 +24,7 @@ const { listProductsByClinicId, findProductById } = require('./repositories/prod
 const { createOrderForClinic, patchOrderStatusForClinic } = require('./services/portal-orders.service');
 const { generateReply } = require('./ai/openai.client');
 const { buildAiMessages } = require('./ai/context.builder');
+const { findCommercialKnowledgeMatch } = require('./ai/commercial-knowledge-base');
 const {
   upsertLeadForConversation,
   updateLeadStatus,
@@ -1339,6 +1340,8 @@ function isCommerceEntryIntent(rawText) {
 function detectWeakCommercialSignal(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return null;
+  const kbMatch = findCommercialKnowledgeMatch(rawText);
+  if (kbMatch) return `commercial_kb:${kbMatch.category}`;
   const detectedIntent = detectIntent(text);
   const openBusinessTypeRaw = extractOpenBusinessTypeRaw(rawText);
 
@@ -1937,6 +1940,7 @@ function extractOpenBusinessTypeRaw(rawText) {
     /\bsoy\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
     /\btrabajo\s+con\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
     /\bvendo\s+(?!por\b)([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con | me sirve| sirve para)/,
+    /\bsirve\s+para\s+(?:una|un)\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/,
     /\bes\s+(?:una|un)\s+([a-z0-9\s]{3,40}?)(?=$|[,.!?]| y | pero | porque | por que | donde | que | con )/
   ];
 
@@ -2778,10 +2782,18 @@ function resolveCommercialDiscoveryPendingReply({
   }
 
   if (pending.field === 'offer_type') {
-    const offerTypeSignal = parseCommercialOfferTypeAnswer(inboundText);
+    const pendingDetectedSalesContext = detectCommercialSalesContext(inboundText);
+    const offerTypeSignal = parseCommercialOfferTypeAnswer(inboundText) ||
+      (pendingDetectedSalesContext && ['distribution', 'fashion_retail', 'accessories_retail', 'food_business', 'small_store'].includes(pendingDetectedSalesContext.businessType)
+        ? 'products'
+        : null) ||
+      (pendingDetectedSalesContext && ['healthcare', 'wellness', 'beauty_business', 'services'].includes(pendingDetectedSalesContext.businessCategory)
+        ? 'services'
+        : null);
     if (!offerTypeSignal) return null;
     const nextSalesContext = {
       ...currentSalesContext,
+      ...(pendingDetectedSalesContext || {}),
       offerTypeSignal
     };
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
@@ -4592,6 +4604,197 @@ function buildAiAssistFeatureContextPatch({ safeContext, effectiveSalesContext, 
   };
 }
 
+function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
+  const match = kbMatch && typeof kbMatch === 'object' ? kbMatch : null;
+  if (!match) return null;
+  const category = String(match.category || '').trim();
+  const rawBusinessType = effectiveSalesContext && effectiveSalesContext.businessTypeRaw
+    ? String(effectiveSalesContext.businessTypeRaw).trim()
+    : null;
+
+  if (category === 'multi_service') {
+    return [
+      'Sí, podés usar Opturon para organizar más de una actividad.',
+      '',
+      'En ese caso te ayudaría a centralizar mensajes, contactos, turnos y seguimiento en un solo lugar, separando la atención por tipo de servicio cuando lo necesites.'
+    ].join('\n');
+  }
+
+  if (category === 'multi_business') {
+    return [
+      'Sí, podés centralizar más de un negocio o frente comercial en Opturon.',
+      '',
+      'La idea es ordenar mensajes, contactos, pedidos, turnos o seguimiento en un solo lugar, y separar la atención por actividad cuando haga falta.',
+      '',
+      'Para hacerlo prolijo, en la implementación se revisa cómo conviene organizar usuarios, etiquetas, flujos y canales.'
+    ].join('\n');
+  }
+
+  if (category === 'instagram_sales') {
+    return [
+      'Sí, te sirve.',
+      '',
+      'Opturon está pensado para negocios que atienden consultas por WhatsApp, venden productos o servicios y necesitan ordenar conversaciones, clientes, pedidos y seguimiento comercial.',
+      '',
+      'También puede acompañar consultas que llegan desde Instagram, sin prometer una integración profunda si no está configurada.'
+    ].join('\n');
+  }
+
+  if (category === 'existing_whatsapp_number') {
+    return [
+      'Sí, la idea es que puedas trabajar con tu número actual comercial siempre que sea compatible con la conexión de WhatsApp Business/API.',
+      '',
+      'En la implementación se revisa ese punto para hacerlo de la forma más prolija posible.'
+    ].join('\n');
+  }
+
+  if (category === 'replaces_secretary_or_seller') {
+    return [
+      'No necesariamente. No, no busca reemplazar a tu equipo.',
+      '',
+      'Opturon no está pensado para sacar vendedores, sino para ayudarlos a trabajar mejor: ordenar consultas, no perder clientes, responder más rápido y hacer seguimiento.',
+      '',
+      'La atención humana puede intervenir cuando haga falta.'
+    ].join('\n');
+  }
+
+  if (category === 'excel_import') {
+    return [
+      'Sí, se puede trabajar con catálogo y carga masiva para ordenar tus productos.',
+      '',
+      'Si hoy usás Excel, lo revisamos en la implementación para pasar la información de la forma más prolija posible. También estamos avanzando para facilitar importaciones desde Excel, pero no te lo vendería como algo 100% automático para cualquier archivo sin revisarlo.'
+    ].join('\n');
+  }
+
+  if (category === 'human_takeover') {
+    return [
+      'Sí, la atención humana puede intervenir cuando haga falta.',
+      '',
+      'La idea es que el bot ayude con lo repetitivo y ordene la conversación, pero que una persona pueda tomar o continuar el caso cuando conviene.'
+    ].join('\n');
+  }
+
+  if (category === 'limitations_or_edge_cases') {
+    return [
+      'El bot no debería responder cualquier cosa ni prometer de más.',
+      '',
+      'Opturon trabaja con flujos y respuestas controladas. Si algo requiere revisión o no se entiende bien, se puede guiar la conversación o derivar a una persona.'
+    ].join('\n');
+  }
+
+  if (category === 'onboarding_how_to_start') {
+    return [
+      'Para empezar, primero se releva cómo atendés hoy: WhatsApp, catálogo, turnos, pedidos, clientes y equipo.',
+      '',
+      'Con eso se define el flujo inicial y se conecta lo necesario. El tiempo de implementación depende del alcance, por eso conviene revisarlo caso por caso.'
+    ].join('\n');
+  }
+
+  if (category === 'small_business_fit') {
+    return [
+      'Sí, también puede servir si estás empezando o todavía sos chico.',
+      '',
+      'En ese caso la idea no es armar algo pesado, sino ordenar WhatsApp, no perder consultas y dejar una base lista para crecer.'
+    ].join('\n');
+  }
+
+  if (category === 'scaling_business_fit' || category === 'crm_and_follow_up') {
+    return [
+      'Sí, ahí Opturon suele aportar bastante.',
+      '',
+      'Cuando hay muchos mensajes, clientes o seguimiento pendiente, ayuda a ordenar conversaciones, registrar oportunidades y no dejar consultas perdidas.',
+      '',
+      'También permite trabajar con más claridad cuando interviene más de una persona.'
+    ].join('\n');
+  }
+
+  if (category === 'multi_user_sellers') {
+    return [
+      'Sí, se puede organizar una operación con varios usuarios o vendedores.',
+      '',
+      'La idea es ordenar conversaciones, seguimiento y responsabilidades para que el equipo trabaje con más claridad y no se pisen los casos.',
+      '',
+      'Según el plan y la implementación se revisan roles, permisos y métricas disponibles.'
+    ].join('\n');
+  }
+
+  if (category === 'product_catalog_business') {
+    return [
+      'Sí, si vendés productos puede ayudarte a ordenar catálogo, consultas, pedidos y seguimiento.',
+      '',
+      'Para hacerlo bien, se revisa cómo tenés hoy los productos, precios y stock, y desde ahí se define la carga más prolija.'
+    ].join('\n');
+  }
+
+  if (category === 'appointment_business') {
+    return [
+      'Sí, para negocios con turnos o agenda puede servir.',
+      '',
+      'Opturon puede ayudar a ordenar consultas, solicitudes de turno y seguimiento por WhatsApp. La disponibilidad y reglas de agenda se configuran según cómo trabaje cada negocio.'
+    ].join('\n');
+  }
+
+  if (category === 'delivery_or_distribution_business') {
+    return [
+      'Sí, te sirve.',
+      '',
+      `Opturon puede ayudar${rawBusinessType ? ` en ${rawBusinessType}` : ''} a ordenar consultas, clientes, catálogo, productos, registrar pedidos y seguimiento comercial, especialmente cuando entran mensajes por WhatsApp y hay operación diaria para coordinar.`
+    ].join('\n');
+  }
+
+  return null;
+}
+
+const COMMERCIAL_KB_CONTROLLED_CATEGORIES = new Set([
+  'multi_service',
+  'multi_business',
+  'instagram_sales',
+  'existing_whatsapp_number',
+  'replaces_secretary_or_seller',
+  'excel_import',
+  'human_takeover',
+  'limitations_or_edge_cases',
+  'onboarding_how_to_start',
+  'small_business_fit',
+  'scaling_business_fit',
+  'crm_and_follow_up',
+  'multi_user_sellers',
+  'product_catalog_business',
+  'appointment_business',
+  'delivery_or_distribution_business'
+]);
+
+function resolveCommercialKbCategoryFromAiDecision(decision) {
+  const suggestedReplyIntent = String(decision && decision.suggestedReplyIntent ? decision.suggestedReplyIntent : '').trim().toLowerCase();
+  const intent = String(decision && decision.intent ? decision.intent : '').trim().toLowerCase();
+  if (COMMERCIAL_KB_CONTROLLED_CATEGORIES.has(suggestedReplyIntent)) return suggestedReplyIntent;
+  if (COMMERCIAL_KB_CONTROLLED_CATEGORIES.has(intent)) return intent;
+  return null;
+}
+
+function buildCommercialKbDiscoveryPendingPatch(category) {
+  const safeCategory = String(category || '').trim().toLowerCase();
+  if (safeCategory === 'existing_whatsapp_number') {
+    return buildCommercialDiscoveryPendingPatch({
+      field: 'whatsapp_account_type',
+      sourceIntent: safeCategory
+    });
+  }
+  if (safeCategory === 'instagram_sales') {
+    return buildCommercialDiscoveryPendingPatch({
+      field: 'offer_type',
+      sourceIntent: safeCategory
+    });
+  }
+  if (['replaces_secretary_or_seller', 'multi_user_sellers'].includes(safeCategory)) {
+    return buildCommercialDiscoveryPendingPatch({
+      field: 'team_size',
+      sourceIntent: safeCategory
+    });
+  }
+  return null;
+}
+
 function scopeSalesContextByIntent(intent, salesContext = {}) {
   const safeIntent = String(intent || '').trim().toLowerCase();
   const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
@@ -4834,6 +5037,10 @@ function inferWeakSignalChannels(inboundText) {
 function inferWeakSignalReplyIntent(inboundText, signal) {
   const text = normalizeCommandText(inboundText);
   const safeSignal = String(signal || '').trim().toLowerCase();
+  const kbMatch = findCommercialKnowledgeMatch(inboundText);
+  if (kbMatch && kbMatch.replyIntent) {
+    return kbMatch.replyIntent;
+  }
   const explicitBusinessType = normalizeAiAssistBusinessType(text);
   const openBusinessTypeRaw = extractOpenBusinessTypeRaw(inboundText);
 
@@ -4890,6 +5097,7 @@ function shouldUseWeakSignalCommercialFallback(aiAssistInvocation, aiAssistResul
 }
 
 function buildWeakSignalCommercialFallback({ inboundText, safeContext, signal }) {
+  const kbMatch = findCommercialKnowledgeMatch(inboundText);
   const currentSalesContext = getActiveCommercialSalesContext(safeContext);
   const openBusinessTypeRaw = extractOpenBusinessTypeRaw(inboundText);
   const openBusinessCategory = inferBusinessCategoryFromRawBusinessType(openBusinessTypeRaw);
@@ -4906,12 +5114,28 @@ function buildWeakSignalCommercialFallback({ inboundText, safeContext, signal })
   const derivedBusinessContext =
     deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) ||
     getActiveBusinessRecommendationContext(safeContext);
-  const replyIntent = inferWeakSignalReplyIntent(inboundText, signal);
+  const replyIntent = kbMatch ? kbMatch.replyIntent : inferWeakSignalReplyIntent(inboundText, signal);
   const contextPatch = buildAiAssistFeatureContextPatch({
     safeContext,
     effectiveSalesContext,
     derivedBusinessContext
   });
+  const kbControlledReply = buildCommercialKbControlledReply(kbMatch, effectiveSalesContext);
+
+  if (
+    kbControlledReply &&
+    !(kbMatch.category === 'delivery_or_distribution_business' && isIndustryOrientationQuestion(inboundText))
+  ) {
+    return {
+      type: 'recommendation',
+      source: 'commercial_kb_controlled_reply',
+      replyText: kbControlledReply,
+      contextPatch: mergeContextPatches(
+        contextPatch,
+        buildCommercialKbDiscoveryPendingPatch(kbMatch.category)
+      )
+    };
+  }
 
   if (replyIntent === 'channel_compatibility') {
     return {
@@ -5070,7 +5294,27 @@ const SAFE_LOW_CONFIDENCE_AI_ASSIST_REPLY_INTENTS = new Set([
   'seller_replacement',
   'industry_fit',
   'feature_fit',
-  'catalog_import_fit'
+  'catalog_import_fit',
+  'business_fit_general',
+  'business_fit_by_industry',
+  'multi_business',
+  'multi_service',
+  'multi_user_sellers',
+  'existing_whatsapp_number',
+  'instagram_sales',
+  'excel_import',
+  'replaces_secretary_or_seller',
+  'appointment_business',
+  'product_catalog_business',
+  'delivery_or_distribution_business',
+  'small_business_fit',
+  'scaling_business_fit',
+  'crm_and_follow_up',
+  'human_takeover',
+  'pricing_interest',
+  'plan_recommendation',
+  'onboarding_how_to_start',
+  'limitations_or_edge_cases'
 ]);
 
 function canUseSafeLowConfidenceAiAssistDecision(aiAssistDecision) {
@@ -5130,6 +5374,9 @@ function buildAiAssistSalesContext(entities = {}, currentContext = null) {
   const teamSizeSignal = normalizeAiAssistTeamSizeSignal(entities.teamSize) || baseContext.teamSizeSignal || null;
   const stage = normalizeCommandText(entities.stage);
   const channels = Array.isArray(entities.channels) ? entities.channels.map((item) => normalizeCommandText(item)).filter(Boolean) : [];
+  const channelMixSignal = channels.includes('whatsapp') && channels.includes('instagram')
+    ? 'multi_channel'
+    : (channels.length >= 2 ? 'multi_channel' : baseContext.channelMixSignal || null);
   const whatsappVolume =
     stage.includes('arranco') || stage.includes('empiezo')
       ? 'low'
@@ -5151,6 +5398,7 @@ function buildAiAssistSalesContext(entities = {}, currentContext = null) {
     businessCategory,
     whatsappVolume,
     teamSizeSignal,
+    channelMixSignal,
     painPoints,
     likelyNeeds,
     commercialFit,
@@ -5315,6 +5563,27 @@ async function resolveAiAssistDecision({
       })
     });
     return buildForcedIndustryDiscoveryDecision();
+  }
+
+  const aiKbCategory = resolveCommercialKbCategoryFromAiDecision(decision);
+  if (aiKbCategory) {
+    const kbControlledReply = buildCommercialKbControlledReply({
+      category: aiKbCategory
+    }, effectiveSalesContext);
+    if (kbControlledReply) {
+      return {
+        type: 'recommendation',
+        replyText: kbControlledReply,
+        contextPatch: mergeContextPatches(
+          buildAiAssistFeatureContextPatch({
+            safeContext,
+            effectiveSalesContext,
+            derivedBusinessContext
+          }),
+          buildCommercialKbDiscoveryPendingPatch(aiKbCategory)
+        )
+      };
+    }
   }
 
   if (decision.suggestedReplyIntent === 'compare_plans') {
@@ -8482,6 +8751,7 @@ function getClinicTransferConfig(clinic) {
 async function buildSafeCommercialIntentReply({ clinic, conversation, inboundText }) {
   const commercialIntent = detectCommercialIntent(inboundText);
   const normalizedText = normalizeCommandText(inboundText);
+  const kbMatch = findCommercialKnowledgeMatch(inboundText);
   const weakCommercialSignal = detectWeakCommercialSignal(inboundText);
   const inferredDiscoveryIntent = inferWeakSignalReplyIntent(inboundText, weakCommercialSignal);
   const transferPaymentIntent = parseTransferPaymentIntent(inboundText);
@@ -8536,6 +8806,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     intent: detectIntent(inboundText),
     managementIntent: detectTurnManagementIntent(inboundText)
   });
+  const isCommercialAppointmentBusinessQuestion = kbMatch && kbMatch.category === 'appointment_business';
 
   if (
     activeCommercialDiscoveryPending &&
@@ -8592,6 +8863,83 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       type: 'thanks',
       replyText: buildCommercialThanksReply(safeContext)
     };
+  }
+
+  if (
+    kbMatch &&
+    !transferPaymentIntent &&
+    !isLoyaltyIntent(inboundText) &&
+    (!isAgendaLike || isCommercialAppointmentBusinessQuestion) &&
+    commercialIntent.type !== 'payment' &&
+    commercialIntent.type !== 'human_handoff'
+  ) {
+    const kbEffectiveSalesContext = buildAiAssistSalesContext({
+      businessType: normalizeAiAssistBusinessType(inboundText),
+      businessTypeRaw: extractOpenBusinessTypeRaw(inboundText),
+      businessCategory: inferBusinessCategoryFromRawBusinessType(extractOpenBusinessTypeRaw(inboundText)),
+      teamSize: normalizeAiAssistTeamSizeSignal(inboundText),
+      channels: inferWeakSignalChannels(inboundText),
+      likelyNeeds: inferLikelyNeedsFromBusinessCategory(
+        inferBusinessCategoryFromRawBusinessType(extractOpenBusinessTypeRaw(inboundText)),
+        extractOpenBusinessTypeRaw(inboundText)
+      ),
+      commercialFit: inferCommercialFitFromBusinessCategory(
+        inferBusinessCategoryFromRawBusinessType(extractOpenBusinessTypeRaw(inboundText)),
+        extractOpenBusinessTypeRaw(inboundText)
+      ),
+      nextDiscoveryField: inferNextDiscoveryFieldFromBusinessCategory(
+        inferBusinessCategoryFromRawBusinessType(extractOpenBusinessTypeRaw(inboundText))
+      ),
+      confidence: kbMatch.confidence
+    }, activeSalesContext);
+    const kbControlledReply = buildCommercialKbControlledReply(kbMatch, kbEffectiveSalesContext);
+    if (
+      kbControlledReply &&
+      !(kbMatch.category === 'delivery_or_distribution_business' && isIndustryOrientationQuestion(inboundText))
+    ) {
+      return {
+        type: 'recommendation',
+        source: 'commercial_kb_controlled_reply',
+        replyText: kbControlledReply,
+        contextPatch: mergeContextPatches(
+          buildAiAssistFeatureContextPatch({
+            safeContext,
+            effectiveSalesContext: kbEffectiveSalesContext,
+            derivedBusinessContext:
+              deriveBusinessRecommendationContextFromSalesContext(kbEffectiveSalesContext) ||
+              effectiveBusinessContext
+          }),
+          buildCommercialKbDiscoveryPendingPatch(kbMatch.category)
+        )
+      };
+    }
+
+    if (kbMatch.replyIntent === 'industry_fit' || kbMatch.replyIntent === 'feature_fit' || kbMatch.replyIntent === 'catalog_import_fit') {
+      if (kbMatch.replyIntent === 'industry_fit' && isIndustryOrientationQuestion(inboundText)) {
+        return {
+          type: 'recommendation',
+          replyText: buildIndustryDiscoveryReply(kbEffectiveSalesContext),
+          contextPatch: mergeContextPatches(
+            buildAiAssistFeatureContextPatch({
+              safeContext,
+              effectiveSalesContext: kbEffectiveSalesContext,
+              derivedBusinessContext:
+                deriveBusinessRecommendationContextFromSalesContext(kbEffectiveSalesContext) ||
+                effectiveBusinessContext
+            }),
+            buildCommercialDiscoveryPendingPatch({
+              field: 'team_size',
+              sourceIntent: kbMatch.category
+            })
+          )
+        };
+      }
+      return buildWeakSignalCommercialFallback({
+        inboundText,
+        safeContext,
+        signal: `commercial_kb:${kbMatch.category}`
+      });
+    }
   }
 
   if (shouldForceIndustryDiscoveryBeforePlanRecommendation(inboundText, effectiveSalesContext, effectiveBusinessContext)) {
