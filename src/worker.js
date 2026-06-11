@@ -1573,6 +1573,8 @@ function buildCommercialSalesContextPatch({
   peakDailyConversations = null,
   teamSizeSignal = null,
   teamSizeValue = null,
+  handlesAppointments = null,
+  currentTools = [],
   whatsappAccountTypeSignal = null,
   offerTypeSignal = null,
   channelMixSignal = null,
@@ -1598,6 +1600,10 @@ function buildCommercialSalesContextPatch({
       peakDailyConversations: Number.isInteger(normalizedPeakDailyConversations) && normalizedPeakDailyConversations > 0 ? normalizedPeakDailyConversations : null,
       teamSizeSignal: teamSizeSignal ? String(teamSizeSignal).trim().toLowerCase() : null,
       teamSizeValue: Number.isInteger(normalizedTeamSizeValue) && normalizedTeamSizeValue > 0 ? normalizedTeamSizeValue : null,
+      handlesAppointments: handlesAppointments === true ? true : null,
+      currentTools: Array.isArray(currentTools)
+        ? [...new Set(currentTools.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 6)
+        : [],
       whatsappAccountTypeSignal: whatsappAccountTypeSignal ? String(whatsappAccountTypeSignal).trim().toLowerCase() : null,
       offerTypeSignal: offerTypeSignal ? String(offerTypeSignal).trim().toLowerCase() : null,
       channelMixSignal: channelMixSignal ? String(channelMixSignal).trim().toLowerCase() : null,
@@ -1696,9 +1702,17 @@ function getActiveCommercialSalesContext(context) {
   const businessTypeRaw = String(stored.businessTypeRaw || '').trim().toLowerCase() || null;
   const businessCategory = String(stored.businessCategory || '').trim().toLowerCase() || null;
   const whatsappVolume = String(stored.whatsappVolume || '').trim().toLowerCase() || null;
+  const estimatedDailyConversationsRaw = Number.parseInt(String(stored.estimatedDailyConversations || ''), 10);
+  const estimatedDailyConversations = Number.isInteger(estimatedDailyConversationsRaw) && estimatedDailyConversationsRaw > 0 ? estimatedDailyConversationsRaw : null;
+  const peakDailyConversationsRaw = Number.parseInt(String(stored.peakDailyConversations || ''), 10);
+  const peakDailyConversations = Number.isInteger(peakDailyConversationsRaw) && peakDailyConversationsRaw > 0 ? peakDailyConversationsRaw : null;
   const teamSizeSignal = String(stored.teamSizeSignal || '').trim().toLowerCase() || null;
   const teamSizeValueRaw = Number.parseInt(String(stored.teamSizeValue || ''), 10);
   const teamSizeValue = Number.isInteger(teamSizeValueRaw) && teamSizeValueRaw > 0 ? teamSizeValueRaw : null;
+  const handlesAppointments = stored.handlesAppointments === true ? true : null;
+  const currentTools = Array.isArray(stored.currentTools)
+    ? [...new Set(stored.currentTools.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))]
+    : [];
   const whatsappAccountTypeSignal = String(stored.whatsappAccountTypeSignal || '').trim().toLowerCase() || null;
   const offerTypeSignal = String(stored.offerTypeSignal || '').trim().toLowerCase() || null;
   const channelMixSignal = String(stored.channelMixSignal || '').trim().toLowerCase() || null;
@@ -1723,7 +1737,11 @@ function getActiveCommercialSalesContext(context) {
     !painPoints.length &&
     !businessTypeRaw &&
     !businessCategory &&
+    !estimatedDailyConversations &&
+    !peakDailyConversations &&
     !likelyNeeds.length &&
+    !handlesAppointments &&
+    !currentTools.length &&
     !commercialFit &&
     !nextDiscoveryField &&
     !lastRecommendedPlan
@@ -1737,8 +1755,12 @@ function getActiveCommercialSalesContext(context) {
     businessTypeRaw,
     businessCategory,
     whatsappVolume,
+    estimatedDailyConversations,
+    peakDailyConversations,
     teamSizeSignal,
     teamSizeValue,
+    handlesAppointments,
+    currentTools,
     whatsappAccountTypeSignal,
     offerTypeSignal,
     channelMixSignal,
@@ -1912,6 +1934,8 @@ function detectCommercialSalesContext(rawText) {
     peakDailyConversations: discoveryEntities.peakDailyConversations,
     teamSizeSignal: discoveryEntities.teamAnswer ? discoveryEntities.teamAnswer.teamSizeSignal : (parsedTeamSize ? parsedTeamSize.teamSizeSignal : teamSizeSignal),
     teamSizeValue: discoveryEntities.teamAnswer ? discoveryEntities.teamAnswer.teamSizeValue : (parsedTeamSize ? parsedTeamSize.teamSizeValue : null),
+    handlesAppointments: discoveryEntities.handlesAppointments,
+    currentTools: discoveryEntities.currentTools,
     offerTypeSignal: parsedOfferTypeSignal || null,
     channelMixSignal: parsedChannelMixSignal || null,
     painPoints: mergedPainPoints
@@ -2027,6 +2051,8 @@ function mergeCommercialSalesContext(baseContext, incomingContext = null) {
     peakDailyConversations: incoming.peakDailyConversations || base.peakDailyConversations || null,
     teamSizeSignal: incoming.teamSizeSignal || base.teamSizeSignal || null,
     teamSizeValue: incoming.teamSizeValue || base.teamSizeValue || null,
+    handlesAppointments: incoming.handlesAppointments === true || base.handlesAppointments === true ? true : null,
+    currentTools: [...new Set([...(Array.isArray(base.currentTools) ? base.currentTools : []), ...(Array.isArray(incoming.currentTools) ? incoming.currentTools : [])])],
     whatsappAccountTypeSignal: incoming.whatsappAccountTypeSignal || base.whatsappAccountTypeSignal || null,
     offerTypeSignal: incoming.offerTypeSignal || base.offerTypeSignal || null,
     channelMixSignal: incoming.channelMixSignal || base.channelMixSignal || null,
@@ -2147,6 +2173,8 @@ function parseCommercialTeamSizeAnswer(rawText) {
     text.includes('una en atencion') ||
     text.includes('un vendedor') ||
     text.includes('una secretaria') ||
+    text.includes('una sola secretaria') ||
+    text.includes('un solo secretario') ||
     text.includes('un secretario')
   ) {
     return { teamSizeValue: 1, teamSizeSignal: 'solo' };
@@ -2316,9 +2344,27 @@ function extractCommercialDiscoveryEntities(rawText) {
   const volumeCount = extractCommercialWhatsappVolumeCount(text);
   const whatsappVolume = parseCommercialWhatsappVolumeAnswer(rawText, { strict: true });
   const painPoints = [];
+  const currentTools = [];
+  const handlesAppointments = /\b(agenda|agendan|agendar|turnos?|calendario)\b/.test(text);
+
+  if (/\bexcel\b/.test(text)) {
+    currentTools.push('excel');
+  }
+  if (/\b(planilla|planillas)\b/.test(text)) {
+    currentTools.push('spreadsheet');
+  }
+  if (/\b(calendario|calendar)\b/.test(text)) {
+    currentTools.push('calendar');
+  }
 
   if (/\b(secretaria|secretario|agenda|agendan|turnos?|consultas?|seguimiento)\b/.test(text)) {
     painPoints.push('sales_organization');
+  }
+  if (currentTools.length >= 2) {
+    painPoints.push('scattered_tools');
+  }
+  if (currentTools.length || /\b(anoto|anotamos|registramos|tenemos todo|llevamos clientes|manual)\b/.test(text)) {
+    painPoints.push('manual_tracking');
   }
   if (/\bseguimiento|seguir|retomar\b/.test(text)) {
     painPoints.push('follow_up');
@@ -2331,6 +2377,8 @@ function extractCommercialDiscoveryEntities(rawText) {
       ? volumeCount
       : null,
     whatsappVolume,
+    handlesAppointments,
+    currentTools: [...new Set(currentTools)],
     painPoints: [...new Set(painPoints)]
   };
 }
@@ -2812,6 +2860,13 @@ function resolveCommercialDiscoveryPendingReply({
       ...(hasVolumeAnswer ? { whatsappVolume: discoveryEntities.whatsappVolume } : null),
       ...(discoveryEntities.estimatedDailyConversations ? { estimatedDailyConversations: discoveryEntities.estimatedDailyConversations } : null),
       ...(discoveryEntities.peakDailyConversations ? { peakDailyConversations: discoveryEntities.peakDailyConversations } : null),
+      ...(discoveryEntities.handlesAppointments ? { handlesAppointments: true } : null),
+      currentTools: [
+        ...new Set([
+          ...(Array.isArray(currentSalesContext.currentTools) ? currentSalesContext.currentTools : []),
+          ...(Array.isArray(discoveryEntities.currentTools) ? discoveryEntities.currentTools : [])
+        ])
+      ],
       painPoints: [
         ...new Set([
           ...(Array.isArray(currentSalesContext.painPoints) ? currentSalesContext.painPoints : []),
@@ -2974,7 +3029,7 @@ function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
   const isProductsFlow = safeContext.offerTypeSignal === 'products' || safeContext.businessType === 'food_business';
   const isMultiChannel = safeContext.channelMixSignal === 'multi_channel';
   const hasControlSignals = painPoints.includes('team_control') || painPoints.includes('complex_operation');
-  const hasGrowthPains = painPoints.includes('lead_loss') || painPoints.includes('follow_up') || painPoints.includes('response_delay') || painPoints.includes('sales_organization');
+  const hasGrowthPains = painPoints.includes('lead_loss') || painPoints.includes('follow_up') || painPoints.includes('response_delay') || painPoints.includes('sales_organization') || painPoints.includes('scattered_tools') || painPoints.includes('manual_tracking');
 
   let starterScore = 0;
   let growthScore = 0;
@@ -6079,8 +6134,16 @@ function buildSalesContextMomentLine(salesContext) {
       : safeContext.teamSizeSignal === 'multi_branch'
         ? 'ya tenés varios frentes atendiendo'
         : null;
+  const tools = Array.isArray(safeContext.currentTools) ? safeContext.currentTools : [];
+  const toolsLabel = tools.includes('excel') && tools.includes('calendar')
+    ? 'la gestión está repartida entre Excel y calendario'
+    : tools.includes('excel') || tools.includes('spreadsheet')
+      ? 'la gestión está apoyada en planillas'
+      : tools.includes('calendar')
+        ? 'la gestión de turnos está apoyada en calendario'
+        : null;
 
-  return [businessLabel, teamLabel, volumeLabel].filter(Boolean).slice(0, 3).join(' y ') || null;
+  return [businessLabel, teamLabel, volumeLabel, toolsLabel].filter(Boolean).slice(0, 4).join(' y ') || null;
 }
 
 function buildRecommendationReasonSummary(product, salesContext, allPlans = []) {
@@ -8899,6 +8962,10 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       effectiveSalesContext.whatsappAccountTypeSignal ||
       effectiveSalesContext.offerTypeSignal ||
       effectiveSalesContext.channelMixSignal ||
+      effectiveSalesContext.estimatedDailyConversations ||
+      effectiveSalesContext.peakDailyConversations ||
+      effectiveSalesContext.handlesAppointments ||
+      (Array.isArray(effectiveSalesContext.currentTools) && effectiveSalesContext.currentTools.length) ||
       (Array.isArray(effectiveSalesContext.painPoints) && effectiveSalesContext.painPoints.length) ||
       (Array.isArray(effectiveSalesContext.likelyNeeds) && effectiveSalesContext.likelyNeeds.length) ||
       effectiveSalesContext.commercialFit ||
@@ -8931,7 +8998,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     activeCommercialDiscoveryPending &&
     !transferPaymentIntent &&
     !isLoyaltyIntent(inboundText) &&
-    !isAgendaLike &&
+    (!isAgendaLike || hasOperationalDiscoveryAnswer) &&
     normalizeCommandText(inboundText) !== 'cancelar'
   ) {
     const discoveryReply = resolveCommercialDiscoveryPendingReply({
@@ -14682,6 +14749,14 @@ async function processConversationReplyJob(job) {
   const inboundLooksLikeCommerce = isCommerceEntryIntent(inboundText);
   const inboundLooksLikeCommerceCancel = isCommerceCancelIntent(inboundText);
   const commerceContextActive = hasCommerceContext(safeContext);
+  const activeCommercialDiscoveryPendingAtLoad = getActiveCommercialDiscoveryPending(safeContext);
+  const routeDetectedSalesContext = detectCommercialSalesContext(inboundText);
+  const routeHasOperationalCommercialAnswer = Boolean(
+    routeDetectedSalesContext &&
+    (commerceContextActive || activeCommercialDiscoveryPendingAtLoad) &&
+    (routeDetectedSalesContext.whatsappVolume || routeDetectedSalesContext.estimatedDailyConversations || routeDetectedSalesContext.peakDailyConversations) &&
+    (routeDetectedSalesContext.teamSizeSignal || routeDetectedSalesContext.teamSizeValue)
+  );
   const activeBotDomain = String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase();
   const appointmentFlowPhase = String(safeContext && safeContext.appointmentFlowPhase ? safeContext.appointmentFlowPhase : '').trim().toLowerCase();
   logInfo('worker_runtime_inbound_loaded', {
@@ -14891,6 +14966,7 @@ async function processConversationReplyJob(job) {
 
   const shouldRouteDirectToAgenda =
     botRoute.domain === 'agenda' &&
+    !routeHasOperationalCommercialAnswer &&
     (
       botRoute.overrideDomain === 'agenda' ||
       botRoute.botMode === 'agenda' ||

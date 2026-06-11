@@ -806,14 +806,74 @@ async function run() {
       ...conversation,
       context: planDiscoveryContext
     },
-    inboundText: '30/40 por dia y las atiende una sola persona'
+    inboundText: '30/40 por día, agenda una sola persona y tenemos todo en un excel y una calendario'
   });
   assert.doesNotMatch(planDiscoveryRecommendationReply.replyText, /humano|fallback|no te entend/i);
   assert.match(planDiscoveryRecommendationReply.replyText, /Plan Crecimiento|intermedia|intermedio|Crecimiento/i);
   assert.match(planDiscoveryRecommendationReply.replyText, /una sola persona|1 persona|lo atiende una sola persona/i);
+  assert.match(planDiscoveryRecommendationReply.replyText, /consultas|seguimiento|turnos|Excel|calendario/i);
   assert.strictEqual(planDiscoveryRecommendationReply.contextPatch.commercialSalesContext.teamSizeValue, 1);
   assert.strictEqual(planDiscoveryRecommendationReply.contextPatch.commercialSalesContext.whatsappVolume, 'high');
   assert.strictEqual(planDiscoveryRecommendationReply.contextPatch.commercialSalesContext.estimatedDailyConversations, 40);
+  assert.strictEqual(planDiscoveryRecommendationReply.contextPatch.commercialSalesContext.handlesAppointments, true);
+  assert.deepStrictEqual(planDiscoveryRecommendationReply.contextPatch.commercialSalesContext.currentTools, ['excel', 'calendar']);
+
+  const commercialDiscoveryVariantInputs = [
+    {
+      text: '30 o 40 por dia, responde una sola secretaria y usamos excel y calendario',
+      plan: /Plan Crecimiento|intermedia|intermedio|Crecimiento/i,
+      teamSizeValue: 1,
+      estimatedDailyConversations: 40
+    },
+    {
+      text: 'unas 40 consultas, las agenda una persona y anotamos todo en planillas',
+      plan: /Plan Crecimiento|intermedia|intermedio|Crecimiento/i,
+      teamSizeValue: 1,
+      estimatedDailyConversations: 40
+    },
+    {
+      text: '100 mensajes por dia, 3 vendedores y usamos excel',
+      plan: /tipo Empresa|Empresa|mas completa|m.s completa|avanzada/i,
+      teamSizeValue: 3,
+      estimatedDailyConversations: 100
+    },
+    {
+      text: '10 consultas por dia, trabajo solo y anoto en calendario',
+      plan: /Plan Inicial|tipo Inicial|algo simple/i,
+      teamSizeValue: 1,
+      estimatedDailyConversations: 10
+    },
+    {
+      text: 'somos dos, 50 consultas por WhatsApp y llevamos clientes en Excel',
+      plan: /Plan Crecimiento|intermedia|intermedio|Crecimiento/i,
+      teamSizeValue: 2,
+      estimatedDailyConversations: 50
+    }
+  ];
+
+  for (const variant of commercialDiscoveryVariantInputs) {
+    const variantContext = {
+      activeBotDomain: 'commerce',
+      commercialDiscoveryPending: {
+        field: 'team_size',
+        askedAt: new Date().toISOString(),
+        sourceIntent: 'plan_recommendation',
+        meta: null
+      }
+    };
+    const variantReply = await buildSafeCommercialIntentReply({
+      clinic,
+      conversation: {
+        ...conversation,
+        context: variantContext
+      },
+      inboundText: variant.text
+    });
+    assert.doesNotMatch(variantReply.replyText, /te derivamos|humano|fallback|no te entend/i, variant.text);
+    assert.match(variantReply.replyText, variant.plan, variant.text);
+    assert.strictEqual(variantReply.contextPatch.commercialSalesContext.teamSizeValue, variant.teamSizeValue, variant.text);
+    assert.strictEqual(variantReply.contextPatch.commercialSalesContext.estimatedDailyConversations, variant.estimatedDailyConversations, variant.text);
+  }
 
   const starterPlanQuestionReply = await buildSafeCommercialIntentReply({
     clinic,
