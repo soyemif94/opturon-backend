@@ -1,5 +1,6 @@
 const assert = require('assert');
 const path = require('path');
+const { DateTime } = require('luxon');
 
 const samplePlans = [
   {
@@ -86,9 +87,12 @@ const {
   shouldInvokeAiAssist,
   shouldUseWeakSignalCommercialFallback,
   buildWeakSignalCommercialFallback,
+  buildIntelligentFallbackReply,
   resolveAiAssistDecision,
   buildAiAssistSalesContext,
-  getActiveCommercialShortMemory
+  getActiveCommercialShortMemory,
+  resolveConfiguredOutOfHoursReply,
+  parseOpeningHoursWindowForCurrentTime
 } = worker.__private__;
 
 const clinic = {
@@ -106,6 +110,55 @@ const clinic = {
         alias: 'OPTURON.PAGOS',
         cbu: '0000003100000000000001',
         holderName: 'Opturon SAS'
+      }
+    }
+  }
+};
+
+const clinicWithBotConfig = {
+  ...clinic,
+  settings: {
+    ...clinic.settings,
+    bot: {
+      ...clinic.settings.bot,
+      config: {
+        name: 'Alma',
+        greetingMessage: 'Hola, soy Alma. Estoy para ayudarte con este WhatsApp.',
+        tone: 'profesional',
+        treatment: 'usted',
+        outOfHoursMessage: 'Ahora estamos fuera de horario. Apenas retomemos seguimos por aca.',
+        fallbackMessage: 'No llegue a entender bien su mensaje. Si quiere, cuenteme si busca ayuda con ventas, agenda o pagos.',
+        handoffMessage: 'Le paso con una persona del equipo para continuar por ahi.'
+      }
+    }
+  }
+};
+
+const clinicWithoutBotConfig = {
+  ...clinic,
+  settings: {
+    ...clinic.settings,
+    bot: {
+      ...clinic.settings.bot
+    }
+  }
+};
+
+const clinicWithOtherBotConfig = {
+  ...clinic,
+  id: 'clinic-2',
+  settings: {
+    ...clinic.settings,
+    bot: {
+      ...clinic.settings.bot,
+      config: {
+        name: 'Bruna',
+        greetingMessage: 'Hola, soy Bruna.',
+        tone: 'amigable',
+        treatment: 'vos',
+        outOfHoursMessage: '',
+        fallbackMessage: '',
+        handoffMessage: 'Te paso con otra persona.'
       }
     }
   }
@@ -317,6 +370,91 @@ async function run() {
   });
   assert.match(helloCommercialReply.replyText, /Contame un poco de tu negocio/i);
   assert.doesNotMatch(helloCommercialReply.replyText, /planes|precios/i);
+
+  const defaultGreetingReply = await buildSafeCommercialIntentReply({
+    clinic: clinicWithoutBotConfig,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'Hola'
+  });
+  assert.match(defaultGreetingReply.replyText, /Contame un poco de tu negocio/i);
+  assert.doesNotMatch(defaultGreetingReply.replyText, /soy Alma/i);
+
+  const customGreetingReply = await buildSafeCommercialIntentReply({
+    clinic: clinicWithBotConfig,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'Hola'
+  });
+  assert.strictEqual(customGreetingReply.type, 'greeting');
+  assert.match(customGreetingReply.replyText, /soy Alma/i);
+
+  const customFallbackReply = buildIntelligentFallbackReply({
+    activeBotDomain: 'commerce'
+  }, 'blabla sin sentido', clinicWithBotConfig);
+  assert.match(customFallbackReply.replyText, /No llegue a entender bien su mensaje/i);
+
+  const currentWindow = parseOpeningHoursWindowForCurrentTime(
+    'Lunes a viernes de 9 a 18 hs',
+    'America/Argentina/Buenos_Aires',
+    DateTime.fromISO('2026-06-12T01:30:00Z')
+  );
+  assert.strictEqual(currentWindow.known, true);
+  assert.strictEqual(currentWindow.isOpen, false);
+
+  const outOfHoursReply = resolveConfiguredOutOfHoursReply({
+    clinic: {
+      ...clinicWithBotConfig,
+      settings: {
+        ...clinicWithBotConfig.settings,
+        businessProfile: {
+          ...clinicWithBotConfig.settings.businessProfile,
+          openingHours: 'Lunes a viernes de 9 a 18 hs'
+        }
+      }
+    },
+    conversation: {
+      ...conversation,
+      context: {}
+    },
+    inboundText: 'Hola',
+    nowUtc: DateTime.fromISO('2026-06-12T01:30:00Z')
+  });
+  assert.strictEqual(outOfHoursReply, 'Ahora estamos fuera de horario. Apenas retomemos seguimos por aca.');
+
+  const customHumanReply = await buildSafeCommercialIntentReply({
+    clinic: clinicWithBotConfig,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'quiero hablar con una persona'
+  });
+  assert.strictEqual(customHumanReply.type, 'human_handoff');
+  assert.strictEqual(customHumanReply.replyText, 'Le paso con una persona del equipo para continuar por ahi.');
+
+  const tenantIsolationGreetingReply = await buildSafeCommercialIntentReply({
+    clinic: clinicWithOtherBotConfig,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'Hola'
+  });
+  assert.match(tenantIsolationGreetingReply.replyText, /soy Bruna/i);
+  assert.doesNotMatch(tenantIsolationGreetingReply.replyText, /soy Alma/i);
 
   const transferAiInvocation = shouldInvokeAiAssist({
     botRoute: null,

@@ -4005,7 +4005,10 @@ async function patchPortalBotSettingsController(req, res) {
     const result = await updatePortalBotSettings(tenantId, req.body || {});
     if (!result.ok) {
       const status =
-        result.reason === 'missing_tenant_id' || result.reason === 'invalid_bot_mode'
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_bot_mode' ||
+        result.reason === 'invalid_bot_config' ||
+        result.reason === 'invalid_bot_settings_payload'
           ? 400
           : result.reason === 'bot_settings_not_saved'
             ? 500

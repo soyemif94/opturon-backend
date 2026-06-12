@@ -71,6 +71,7 @@ const {
   hasConfiguredTransferData,
   normalizeTransferConfig
 } = require('./utils/transfer-config');
+const { DEFAULT_BOT_CONFIG, normalizeBotConfig } = require('./utils/bot-config');
 const { maybeRunArchivedContactCleanup } = require('./services/contact-archive-cleanup.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
@@ -975,6 +976,198 @@ function resolveClinicBotMode(clinic) {
   }
 
   return 'automatic';
+}
+
+function getClinicBotConfig(clinic) {
+  const settings = parseClinicSettingsObject(clinic);
+  const config = settings && settings.bot && settings.bot.config && typeof settings.bot.config === 'object'
+    ? settings.bot.config
+    : null;
+  return normalizeBotConfig(config, DEFAULT_BOT_CONFIG);
+}
+
+function hasCustomBotConfigValue(value) {
+  return Boolean(String(value || '').trim());
+}
+
+function isDefaultBotVoiceConfig(botConfig) {
+  const config = botConfig && typeof botConfig === 'object' ? botConfig : DEFAULT_BOT_CONFIG;
+  return (
+    !hasCustomBotConfigValue(config.name) &&
+    !hasCustomBotConfigValue(config.greetingMessage) &&
+    !hasCustomBotConfigValue(config.outOfHoursMessage) &&
+    !hasCustomBotConfigValue(config.fallbackMessage) &&
+    !hasCustomBotConfigValue(config.handoffMessage) &&
+    String(config.tone || '').trim().toLowerCase() === DEFAULT_BOT_CONFIG.tone &&
+    String(config.treatment || '').trim().toLowerCase() === DEFAULT_BOT_CONFIG.treatment
+  );
+}
+
+function usesFormalBotTreatment(botConfig) {
+  return String(botConfig && botConfig.treatment ? botConfig.treatment : '').trim().toLowerCase() === 'usted';
+}
+
+function usesProfessionalBotTone(botConfig) {
+  return String(botConfig && botConfig.tone ? botConfig.tone : '').trim().toLowerCase() === 'profesional';
+}
+
+function buildBotPresentationLead(botConfig) {
+  const name = String(botConfig && botConfig.name ? botConfig.name : '').trim();
+  if (!name) return null;
+  if (usesFormalBotTreatment(botConfig)) {
+    return `Hola, soy ${name}.`;
+  }
+  return `Hola, soy ${name} 😊`;
+}
+
+function buildConfiguredGreetingCopy(botConfig) {
+  if (hasCustomBotConfigValue(botConfig && botConfig.greetingMessage)) {
+    return String(botConfig.greetingMessage).trim();
+  }
+  if (isDefaultBotVoiceConfig(botConfig)) {
+    return null;
+  }
+
+  const presentation = buildBotPresentationLead(botConfig);
+  if (usesFormalBotTreatment(botConfig)) {
+    return [
+      presentation || 'Hola.',
+      'Cuenteme un poco de su negocio o que esta buscando resolver y le doy una mano.'
+    ].join('\n');
+  }
+
+  if (usesProfessionalBotTone(botConfig)) {
+    return [
+      presentation || 'Hola.',
+      'Contame un poco de tu negocio o que estas buscando resolver y te doy una mano.'
+    ].join('\n');
+  }
+
+  return [
+    presentation || '¡Hola! 😊',
+    'Contame un poco de tu negocio o qué estás buscando resolver y te doy una mano.'
+  ].join('\n');
+}
+
+function buildConfiguredHandoffMessage(botConfig) {
+  if (hasCustomBotConfigValue(botConfig && botConfig.handoffMessage)) {
+    return String(botConfig.handoffMessage).trim();
+  }
+  if (usesFormalBotTreatment(botConfig)) {
+    return usesProfessionalBotTone(botConfig)
+      ? 'Le paso con una persona del equipo. En breve lo contactamos.'
+      : 'Lo derivo con una persona del equipo. En breve lo contactamos.';
+  }
+  if (usesProfessionalBotTone(botConfig)) {
+    return 'Te paso con una persona del equipo. En breve te contactamos.';
+  }
+  return 'Te derivamos con un humano. En breve te contactamos.';
+}
+
+function buildConfiguredOutOfHoursMessage(botConfig, openingHours = '') {
+  if (hasCustomBotConfigValue(botConfig && botConfig.outOfHoursMessage)) {
+    return String(botConfig.outOfHoursMessage).trim();
+  }
+  const safeHours = String(openingHours || '').trim();
+  if (usesFormalBotTreatment(botConfig)) {
+    return safeHours
+      ? `Ahora estamos fuera de horario. Nuestro horario habitual es ${safeHours}. En cuanto retomemos, continuamos por aca.`
+      : 'Ahora estamos fuera de horario. En cuanto retomemos, continuamos por aca.';
+  }
+  return safeHours
+    ? `Ahora estamos fuera de horario 😊\n\nNuestro horario habitual es ${safeHours}. En cuanto retomemos, seguimos por aca.`
+    : 'Ahora estamos fuera de horario 😊\n\nEn cuanto retomemos, seguimos por aca.';
+}
+
+function parseOpeningHoursWindowForCurrentTime(openingHours, timezone, nowUtc = DateTime.utc()) {
+  const normalized = normalizeCommandText(openingHours);
+  if (!normalized) return { known: false, isOpen: null };
+
+  const timeMatch = normalized.match(/(\d{1,2})(?::(\d{2}))?\s*(?:hs?|horas?)?\s*(?:a|-)\s*(\d{1,2})(?::(\d{2}))?/i);
+  if (!timeMatch) return { known: false, isOpen: null };
+
+  const startHour = Number.parseInt(timeMatch[1], 10);
+  const startMinute = Number.parseInt(timeMatch[2] || '0', 10);
+  const endHour = Number.parseInt(timeMatch[3], 10);
+  const endMinute = Number.parseInt(timeMatch[4] || '0', 10);
+  if (![startHour, startMinute, endHour, endMinute].every(Number.isFinite)) {
+    return { known: false, isOpen: null };
+  }
+
+  const dayRanges = [
+    { tokens: ['lunes a viernes', 'lun a vie'], days: [1, 2, 3, 4, 5] },
+    { tokens: ['lunes a sabado', 'lun a sab'], days: [1, 2, 3, 4, 5, 6] },
+    { tokens: ['lunes a domingo', 'lun a dom'], days: [1, 2, 3, 4, 5, 6, 7] },
+    { tokens: ['sabados', 'sabado'], days: [6] },
+    { tokens: ['domingos', 'domingo'], days: [7] }
+  ];
+  let allowedDays = null;
+  for (const range of dayRanges) {
+    if (range.tokens.some((token) => normalized.includes(token))) {
+      allowedDays = range.days;
+      break;
+    }
+  }
+
+  if (!allowedDays) {
+    const directDays = [];
+    if (normalized.includes('lunes')) directDays.push(1);
+    if (normalized.includes('martes')) directDays.push(2);
+    if (normalized.includes('miercoles') || normalized.includes('miércoles')) directDays.push(3);
+    if (normalized.includes('jueves')) directDays.push(4);
+    if (normalized.includes('viernes')) directDays.push(5);
+    if (normalized.includes('sabado') || normalized.includes('sábado')) directDays.push(6);
+    if (normalized.includes('domingo')) directDays.push(7);
+    allowedDays = directDays.length ? [...new Set(directDays)] : [1, 2, 3, 4, 5, 6, 7];
+  }
+
+  const zone = resolveClinicTimezone({ timezone });
+  const nowLocal = nowUtc.setZone(zone);
+  if (!nowLocal.isValid) return { known: false, isOpen: null };
+  const currentMinutes = nowLocal.hour * 60 + nowLocal.minute;
+  const startMinutes = startHour * 60 + startMinute;
+  const endMinutes = endHour * 60 + endMinute;
+  const sameDayWindow = endMinutes > startMinutes;
+  const dayAllowed = allowedDays.includes(nowLocal.weekday);
+  const isWithinTime = sameDayWindow
+    ? currentMinutes >= startMinutes && currentMinutes <= endMinutes
+    : currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+
+  return {
+    known: true,
+    isOpen: dayAllowed && isWithinTime,
+    timezone: zone
+  };
+}
+
+function resolveConfiguredOutOfHoursReply({ clinic, conversation, inboundText, nowUtc = DateTime.utc() } = {}) {
+  const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
+    ? conversation.context
+    : {};
+  if (
+    hasAgendaContext(safeContext) ||
+    getActiveCommercialDiscoveryPending(safeContext) ||
+    getActiveCommercialShortMemory(safeContext) ||
+    getActiveCommercialPlanContext(safeContext) ||
+    getPendingPlanComparisonAction(safeContext)
+  ) {
+    return null;
+  }
+
+  if (!isGreetingIntent(inboundText)) {
+    return null;
+  }
+
+  const businessProfile = getClinicBusinessProfile(clinic);
+  const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
+  if (!openingHours) return null;
+
+  const evaluatedWindow = parseOpeningHoursWindowForCurrentTime(openingHours, clinic && clinic.timezone, nowUtc);
+  if (!evaluatedWindow.known || evaluatedWindow.isOpen !== false) {
+    return null;
+  }
+
+  return buildConfiguredOutOfHoursMessage(getClinicBotConfig(clinic), openingHours);
 }
 
 function hasAgendaContext(safeContext) {
@@ -3616,12 +3809,23 @@ function buildIntelligentFallbackReply(safeContext) {
   const fallbackState = getIntelligentFallbackState(safeContext);
   const nextCount = fallbackState.active ? fallbackState.count + 1 : 1;
   const inboundText = arguments.length > 1 ? arguments[1] : '';
+  const clinic = arguments.length > 2 ? arguments[2] : null;
   const looksCommercial = hasWeakCommercialSignal(inboundText) ||
     String(safeContext && safeContext.activeBotDomain ? safeContext.activeBotDomain : '').trim().toLowerCase() === 'commerce' ||
     Boolean(getActiveCommercialDiscoveryPending(safeContext)) ||
     Boolean(getActiveCommercialShortMemory(safeContext)) ||
     Boolean(getActiveCommercialPlanContext(safeContext)) ||
     Boolean(getPendingPlanComparisonAction(safeContext));
+  const botConfig = getClinicBotConfig(clinic);
+  if (hasCustomBotConfigValue(botConfig.fallbackMessage)) {
+    return {
+      replyText: String(botConfig.fallbackMessage).trim(),
+      contextPatch: {
+        intelligentFallbackCount: Math.min(nextCount, 2),
+        intelligentFallbackAt: new Date().toISOString()
+      }
+    };
+  }
   const softLead = pickTextVariant(`fallback_soft:${normalizeCommandText(inboundText)}`, looksCommercial
     ? [
       'No estoy seguro de haberte entendido del todo 😅',
@@ -3668,6 +3872,37 @@ function buildIntelligentFallbackReply(safeContext) {
       '- turnos, fidelización u horarios',
       '- hablar con alguien'
     ].join('\n');
+  if (!isDefaultBotVoiceConfig(botConfig)) {
+    const softReplyCustomized = usesFormalBotTreatment(botConfig)
+      ? [
+        'No estoy seguro de haber entendido bien su mensaje.',
+        '',
+        looksCommercial
+          ? 'Puedo ayudarlo con planes, catalogo, precios, pagos o con una recomendacion segun su negocio.'
+          : 'Puedo ayudarlo con productos, precios, fidelizacion, turnos, pagos o con una persona del equipo.',
+        '',
+        'Cuenteme que necesita y seguimos.'
+      ].join('\n')
+      : softReply;
+    const guidedReplyCustomized = usesFormalBotTreatment(botConfig)
+      ? [
+        'Todavia no logre entender bien que necesita.',
+        '',
+        'Puede decirme algo como:',
+        looksCommercial ? '- ver planes o productos' : '- ver productos',
+        looksCommercial ? '- consultar precios' : '- consultar precios',
+        looksCommercial ? '- recomendarme una opcion' : '- turnos, fidelizacion u horarios',
+        looksCommercial ? '- pagar por transferencia' : '- hablar con alguien'
+      ].join('\n')
+      : guidedReply;
+    return {
+      replyText: nextCount >= 2 ? guidedReplyCustomized : softReplyCustomized,
+      contextPatch: {
+        intelligentFallbackCount: Math.min(nextCount, 2),
+        intelligentFallbackAt: new Date().toISOString()
+      }
+    };
+  }
 
   return {
     replyText: nextCount >= 2 ? guidedReply : softReply,
@@ -6386,7 +6621,7 @@ function detectCommercialIndecisionIntent(rawText) {
   return null;
 }
 
-function buildCommercialGreetingReply(safeContext, rawText = '') {
+function buildCommercialGreetingReply(safeContext, rawText = '', clinic = null) {
   const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
   const hasOngoingCommercialFlow = Boolean(
     getActiveCommercialPlanContext(context) ||
@@ -6394,6 +6629,11 @@ function buildCommercialGreetingReply(safeContext, rawText = '') {
     getActiveCommercialShortMemory(context) ||
     (context.activeBotDomain && String(context.activeBotDomain).trim().toLowerCase() === 'commerce')
   );
+  const botConfig = getClinicBotConfig(clinic);
+  const configuredGreeting = buildConfiguredGreetingCopy(botConfig);
+  if (configuredGreeting) {
+    return configuredGreeting;
+  }
   const greeting = pickTextVariant(`commercial_greeting:${context.activeBotDomain || 'neutral'}:${normalizeCommandText(rawText)}`, [
     '¡Hola! 😊',
     '¡Buenas! 👋',
@@ -9382,6 +9622,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     (effectiveSalesContext.teamSizeSignal || effectiveSalesContext.teamSizeValue)
   );
   const businessProfile = getClinicBusinessProfile(clinic);
+  const botConfig = getClinicBotConfig(clinic);
   const address = normalizeBusinessProfileText(businessProfile.address);
   const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
   const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
@@ -9493,7 +9734,9 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       const result = activationContinuationIntent === 'human_contact'
         ? {
           type: 'human_handoff',
-          replyText: `Perfecto 😊 Te derivo con alguien del equipo para ayudarte a activar ${selectedPlan.name || 'ese plan'}.`,
+          replyText: hasCustomBotConfigValue(botConfig.handoffMessage)
+            ? String(botConfig.handoffMessage).trim()
+            : `Perfecto 😊 Te derivo con alguien del equipo para ayudarte a activar ${selectedPlan.name || 'ese plan'}.`,
           triggerHandoff: true,
           contextPatch: {
             ...buildCommercialShortMemoryPatch({
@@ -9585,7 +9828,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     return {
       type: 'greeting',
-      replyText: buildCommercialGreetingReply(safeContext, inboundText)
+      replyText: buildCommercialGreetingReply(safeContext, inboundText, clinic)
     };
   }
 
@@ -10548,10 +10791,16 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
 
   if (commercialIntent.type === 'hours') {
     const looksLikeSimpleHoursRange = /^(de\s*)?\d/.test(openingHours.toLowerCase()) && !/(lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)/i.test(openingHours);
+    const currentWindow = openingHours
+      ? parseOpeningHoursWindowForCurrentTime(openingHours, clinic && clinic.timezone, DateTime.utc())
+      : { known: false, isOpen: null };
     return {
       type: commercialIntent.type,
       replyText: openingHours
         ? (
+          currentWindow.known && currentWindow.isOpen === false
+            ? buildConfiguredOutOfHoursMessage(botConfig, openingHours)
+            :
           normalizedText.includes('hoy') && looksLikeSimpleHoursRange
             ? `Hoy estamos atendiendo ${openingHours} 😊\n\nSi querés, también puedo ayudarte con productos, precios o cualquier consulta.`
             : `Nuestros horarios son:\n${openingHours} 😊\n\nSi querés, también puedo ayudarte con productos, precios o cualquier consulta.`
@@ -10608,7 +10857,9 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   if (commercialIntent.type === 'human_handoff') {
     return {
       type: commercialIntent.type,
-      replyText: 'Claro 😊 Te paso con alguien del equipo para que te ayude mejor.',
+      replyText: hasCustomBotConfigValue(botConfig.handoffMessage)
+        ? String(botConfig.handoffMessage).trim()
+        : 'Claro 😊 Te paso con alguien del equipo para que te ayude mejor.',
       triggerHandoff: true
     };
   }
@@ -10758,6 +11009,7 @@ async function buildCommercialShortMemoryReply({ clinic, conversation, inboundTe
   const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
     ? conversation.context
     : {};
+  const botConfig = getClinicBotConfig(clinic);
   if (getPendingLoyaltyOfferedAction(safeContext)) return null;
   const memory = getActiveCommercialShortMemory(safeContext);
   const activationContinuationIntent = memory && memory.pendingCommercialActivation === true
@@ -10780,7 +11032,9 @@ async function buildCommercialShortMemoryReply({ clinic, conversation, inboundTe
     if (activationContinuationIntent === 'human_contact') {
       return {
         type: 'human_handoff',
-        replyText: `Perfecto 😊 Te derivo con alguien del equipo para ayudarte a activar ${selectedPlan.name || 'ese plan'}.`,
+        replyText: hasCustomBotConfigValue(botConfig.handoffMessage)
+          ? String(botConfig.handoffMessage).trim()
+          : `Perfecto 😊 Te derivo con alguien del equipo para ayudarte a activar ${selectedPlan.name || 'ese plan'}.`,
         triggerHandoff: true,
         contextPatch: {
           ...buildCommercialShortMemoryPatch({
@@ -14778,8 +15032,9 @@ async function openHandoffFlow({
 
   const handoffMessage =
     String(customMessage || '').trim() ||
+    getClinicBotConfig({ settings: clinicSettings }).handoffMessage ||
     (clinicSettings && clinicSettings.handoffMessage) ||
-    'Te derivamos con un humano. En breve te contactamos.';
+    buildConfiguredHandoffMessage(getClinicBotConfig({ settings: clinicSettings }));
 
   await sendAndPersistReply({
     clinicId,
@@ -15267,6 +15522,28 @@ async function processInboundJob(job) {
     return;
   }
 
+  const configuredOutOfHoursReply = resolveConfiguredOutOfHoursReply({
+    clinic,
+    conversation,
+    inboundText,
+    nowUtc: DateTime.utc()
+  });
+  if (configuredOutOfHoursReply) {
+    await sendAndPersistReply({
+      clinicId,
+      channel,
+      conversationId: conversation.id,
+      contact,
+      text: configuredOutOfHoursReply,
+      automation: inboundAutomationMeta
+        ? { ...inboundAutomationMeta, source: 'configured_out_of_hours' }
+        : null,
+      requestId,
+      correlationMessageId: messageId
+    });
+    return;
+  }
+
   if (intent === 'urgent' || intent === 'human') {
     await openHandoffFlow({
       clinicId,
@@ -15410,7 +15687,7 @@ async function processInboundJob(job) {
     commercialIntent.type === 'unknown' &&
     !isGreetingIntent(inboundText)
   ) {
-    const intelligentFallback = buildIntelligentFallbackReply(conversation.context, inboundText);
+      const intelligentFallback = buildIntelligentFallbackReply(conversation.context, inboundText, clinic);
     await updateLeadStatus(lead.id, 'qualifying', 'unknown_intent');
     await updateConversationStage(conversation.id, 'qualifying');
     await conversationRepo.updateConversationState({
@@ -16032,7 +16309,7 @@ async function processConversationReplyJob(job) {
       !transferPaymentIntent &&
       !isGreetingIntent(inboundText)
     ) {
-      const intelligentFallback = buildIntelligentFallbackReply(safeContext, inboundText);
+      const intelligentFallback = buildIntelligentFallbackReply(safeContext, inboundText, clinic);
       await conversationRepo.updateConversationState({
         conversationId: conversation.id,
         state: conversation.state || 'READY',
@@ -17632,6 +17909,9 @@ module.exports = {
     buildIntelligentFallbackReply,
     buildCommercialGreetingReply,
     buildCommercialIndecisionReply,
+    getClinicBotConfig,
+    resolveConfiguredOutOfHoursReply,
+    parseOpeningHoursWindowForCurrentTime,
     hasWeakCommercialSignal,
     detectWeakCommercialSignal,
     extractOpenBusinessTypeRaw,
