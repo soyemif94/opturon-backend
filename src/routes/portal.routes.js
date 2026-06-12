@@ -106,6 +106,7 @@ const {
   postPortalWhatsAppEmbeddedSignupFinalize,
   postPortalWhatsAppManualConnect,
   postPortalWhatsAppDiscoverAssets,
+  getPortalWhatsAppStatusController,
   getPortalInstagramStatus,
   postPortalInstagramConnect,
   getPortalBotSettingsController,
@@ -318,6 +319,7 @@ router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePort
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/finalize', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupFinalize);
 router.post('/tenants/:tenantId/whatsapp/manual-connect', requirePortalInternalAuth, postPortalWhatsAppManualConnect);
 router.post('/tenants/:tenantId/whatsapp/discover-assets', requirePortalInternalAuth, postPortalWhatsAppDiscoverAssets);
+router.get('/tenants/:tenantId/whatsapp/status', requirePortalInternalAuth, getPortalWhatsAppStatusController);
 router.get('/tenants/:tenantId/instagram/status', requirePortalInternalAuth, getPortalInstagramStatus);
 router.post('/tenants/:tenantId/instagram/connect', requirePortalInternalAuth, postPortalInstagramConnect);
 router.get('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalAuth, getPortalWhatsAppDefaultChannel);

@@ -150,6 +150,7 @@ const {
   getPortalWhatsAppChannelSettings,
   updatePortalWhatsAppDefaultChannel
 } = require('../services/portal-whatsapp-channel-settings.service');
+const { getPortalWhatsAppStatus } = require('../services/portal-whatsapp-status.service');
 const {
   listPortalWhatsAppTemplateBlueprints,
   listPortalWhatsAppTemplates,
@@ -3998,6 +3999,29 @@ async function getPortalBotSettingsController(req, res) {
   }
 }
 
+async function getPortalWhatsAppStatusController(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await getPortalWhatsAppStatus(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_status_failed',
+      details: error.message
+    });
+  }
+}
+
 async function patchPortalBotSettingsController(req, res) {
   const tenantId = getRequestTenantId(req);
 
@@ -4202,6 +4226,7 @@ module.exports = {
   postPortalWhatsAppDiscoverAssets,
   getPortalInstagramStatus,
   postPortalInstagramConnect,
+  getPortalWhatsAppStatusController,
   getPortalBotSettingsController,
   patchPortalBotSettingsController,
   getPortalBotTransferConfigController,
