@@ -1588,11 +1588,18 @@ function buildCommercialShortMemoryPatch({
   lastObjectionType = null,
   lastReplyKey = null,
   pendingCommercialExplanation = null,
-  explanationReasonBasis = null
+  explanationReasonBasis = null,
+  pendingCommercialActivation = null,
+  activationSelectedPlanId = null,
+  activationOptions = null,
+  lastCommercialStage = null
 } = {}) {
   const safeExplanationReasonBasis = explanationReasonBasis && typeof explanationReasonBasis === 'object'
     ? explanationReasonBasis
     : null;
+  const safeActivationOptions = Array.isArray(activationOptions)
+    ? [...new Set(activationOptions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 4)
+    : [];
   return {
     commercialShortMemory: {
       activeAt: new Date().toISOString(),
@@ -1603,6 +1610,10 @@ function buildCommercialShortMemoryPatch({
       lastObjectionType: lastObjectionType ? String(lastObjectionType).trim().toLowerCase() : null,
       lastReplyKey: lastReplyKey ? String(lastReplyKey).trim().toLowerCase() : null,
       pendingCommercialExplanation: pendingCommercialExplanation === true ? true : null,
+      pendingCommercialActivation: pendingCommercialActivation === true ? true : null,
+      activationSelectedPlanId: activationSelectedPlanId ? String(activationSelectedPlanId).trim() : null,
+      activationOptions: safeActivationOptions,
+      lastCommercialStage: lastCommercialStage ? String(lastCommercialStage).trim().toLowerCase() : null,
       explanationReasonBasis: safeExplanationReasonBasis
         ? {
           estimatedDailyConversations: Number.isInteger(Number.parseInt(String(safeExplanationReasonBasis.estimatedDailyConversations || ''), 10))
@@ -3221,6 +3232,12 @@ function getActiveCommercialShortMemory(context) {
     lastObjectionType: memory.lastObjectionType ? String(memory.lastObjectionType).trim().toLowerCase() : null,
     lastReplyKey: memory.lastReplyKey ? String(memory.lastReplyKey).trim().toLowerCase() : null,
     pendingCommercialExplanation: memory.pendingCommercialExplanation === true,
+    pendingCommercialActivation: memory.pendingCommercialActivation === true,
+    activationSelectedPlanId: memory.activationSelectedPlanId ? String(memory.activationSelectedPlanId).trim() : null,
+    activationOptions: Array.isArray(memory.activationOptions)
+      ? [...new Set(memory.activationOptions.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 4)
+      : [],
+    lastCommercialStage: memory.lastCommercialStage ? String(memory.lastCommercialStage).trim().toLowerCase() : null,
     explanationReasonBasis: memory.explanationReasonBasis && typeof memory.explanationReasonBasis === 'object'
       ? {
         estimatedDailyConversations: Number.isInteger(Number.parseInt(String(memory.explanationReasonBasis.estimatedDailyConversations || ''), 10))
@@ -3662,6 +3679,7 @@ function buildIntelligentFallbackReply(safeContext) {
 }
 
 const LOYALTY_FOLLOW_UP_TTL_MS = 10 * 60 * 1000;
+const LOYALTY_OFFERED_ACTION_EXPLAIN_PROGRAM = 'loyalty_explain_program';
 const LOYALTY_OFFERED_ACTION_RECOMMEND_REWARD = 'loyalty_recommend_reward';
 
 function getContactFirstName(contact) {
@@ -4963,6 +4981,47 @@ function detectCommercialDirectCheckoutIntent(rawText) {
   );
 }
 
+function detectCommercialActivationContinuationIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  if (
+    text.includes('que me contacte alguien') ||
+    text.includes('quiero hablar con alguien') ||
+    text.includes('hablar con el equipo') ||
+    text.includes('que me llamen') ||
+    text.includes('llamame') ||
+    text.includes('asesor') ||
+    text.includes('vendedor')
+  ) {
+    return 'human_contact';
+  }
+
+  if (
+    text === 'si' ||
+    text === 'dale' ||
+    text === 'ok' ||
+    text.includes('pasame los datos') ||
+    text.includes('pasamelos') ||
+    text.includes('compartime los datos') ||
+    text.includes('me compartis los datos') ||
+    text.includes('por aca') ||
+    text.includes('quiero avanzar') ||
+    text.includes('avancemos') ||
+    text.includes('quiero contratar') ||
+    text.includes('quiero activarlo') ||
+    text.includes('activar por aca') ||
+    text.includes('pasame el link') ||
+    text.includes('enviame el link') ||
+    text.includes('donde pago') ||
+    text.includes('como pago')
+  ) {
+    return 'self_service';
+  }
+
+  return null;
+}
+
 function buildCommercialPurchaseDebugSnapshot({
   inboundText,
   safeContext = null,
@@ -5001,6 +5060,22 @@ function buildCommercialPlanActivationReply(selectedPlan, transferConfig = null)
       ? '¿Preferís que te comparta los datos para activarlo por acá o que te contacte alguien del equipo?'
       : '¿Preferís que te comparta el siguiente paso de activación o que te contacte alguien del equipo?'
   ].join('\n');
+}
+
+function buildCommercialActivationMemoryPatch(plan, orderedPlans = [], stage = 'commercial_plan_activation') {
+  const planId = plan && (plan.id || plan.productId) ? (plan.id || plan.productId) : null;
+  return buildCommercialShortMemoryPatch({
+    topic: 'plans',
+    lastSuggestedProductId: planId,
+    recommendationType: normalizeProductRecommendationType(plan, orderedPlans),
+    pendingCommercialExplanation: false,
+    explanationReasonBasis: null,
+    pendingCommercialActivation: true,
+    activationSelectedPlanId: planId,
+    activationOptions: ['self_service', 'human_contact'],
+    lastCommercialStage: stage,
+    lastReplyKey: stage
+  });
 }
 
 function buildBusinessContextPlanRecommendationReply(product, businessContext, allPlans = []) {
@@ -9352,16 +9427,20 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
           ? buildTransferInstructionsWithPlanReply(transferConfig, normalizePaymentPlan(contextualPlan))
           : buildCommercialPlanActivationReply(contextualPlan, transferConfig),
         contextPatch: {
-          ...buildCommercialShortMemoryPatch({
-            topic: 'plans',
-            lastSuggestedProductId: contextualPlan.id || contextualPlan.productId,
-            recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans),
-            pendingCommercialExplanation: false,
-            explanationReasonBasis: null,
-            lastReplyKey: detectCommercialDirectCheckoutIntent(inboundText)
-              ? 'commercial_purchase_intent'
-              : 'commercial_plan_activation'
-          }),
+          ...(detectCommercialDirectCheckoutIntent(inboundText)
+            ? buildCommercialShortMemoryPatch({
+              topic: 'plans',
+              lastSuggestedProductId: contextualPlan.id || contextualPlan.productId,
+              recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans),
+              pendingCommercialExplanation: false,
+              explanationReasonBasis: null,
+              pendingCommercialActivation: null,
+              activationSelectedPlanId: null,
+              activationOptions: [],
+              lastCommercialStage: 'commercial_purchase_intent',
+              lastReplyKey: 'commercial_purchase_intent'
+            })
+            : buildCommercialActivationMemoryPatch(contextualPlan, orderedPlans, 'commercial_plan_activation')),
           ...buildCommercialPlanContextPatch({
             topic: detectCommercialDirectCheckoutIntent(inboundText) ? 'plan_checkout' : 'plan_activation',
             lastDiscussedPlanId: contextualPlan.id || contextualPlan.productId,
@@ -9382,6 +9461,88 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         inboundText: normalizedText,
         matchedIntent: commercialIntent.type,
         recommendedPlanId: contextualPlan.id || contextualPlan.productId || null,
+        pendingOfferedActionBefore: pendingBeforeLog,
+        pendingOfferedActionAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
+    }
+  }
+
+  const activationContinuationIntent = activeShortMemory && activeShortMemory.pendingCommercialActivation === true
+    ? detectCommercialActivationContinuationIntent(inboundText)
+    : null;
+  if (
+    activationContinuationIntent &&
+    activeShortMemory &&
+    activeShortMemory.pendingCommercialActivation === true &&
+    !isCatalogItemDetailIntent(inboundText) &&
+    !isCommerceEntry &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !isLoyaltyIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const selectedPlan =
+      findPlanByStoredId(orderedPlans, activeShortMemory.activationSelectedPlanId) ||
+      findReferencedPlan(orderedPlans, inboundText) ||
+      findPlanByStoredId(orderedPlans, activePlanContext && activePlanContext.lastDiscussedPlanId) ||
+      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
+
+    if (selectedPlan) {
+      const result = activationContinuationIntent === 'human_contact'
+        ? {
+          type: 'human_handoff',
+          replyText: `Perfecto 😊 Te derivo con alguien del equipo para ayudarte a activar ${selectedPlan.name || 'ese plan'}.`,
+          triggerHandoff: true,
+          contextPatch: {
+            ...buildCommercialShortMemoryPatch({
+              topic: 'plans',
+              lastSuggestedProductId: selectedPlan.id || selectedPlan.productId,
+              recommendationType: normalizeProductRecommendationType(selectedPlan, orderedPlans),
+              pendingCommercialActivation: null,
+              activationSelectedPlanId: null,
+              activationOptions: [],
+              lastCommercialStage: 'commercial_activation_human_contact',
+              lastReplyKey: 'commercial_activation_human_contact'
+            }),
+            ...buildCommercialPlanContextPatch({
+              topic: 'plan_activation',
+              lastDiscussedPlanId: selectedPlan.id || selectedPlan.productId,
+              lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+              recommendationType: normalizeProductRecommendationType(selectedPlan, orderedPlans)
+            })
+          }
+        }
+        : {
+          type: 'payment',
+          replyText: buildTransferInstructionsWithPlanReply(transferConfig, normalizePaymentPlan(selectedPlan)),
+          contextPatch: {
+            ...buildCommercialShortMemoryPatch({
+              topic: 'plans',
+              lastSuggestedProductId: selectedPlan.id || selectedPlan.productId,
+              recommendationType: normalizeProductRecommendationType(selectedPlan, orderedPlans),
+              pendingCommercialActivation: null,
+              activationSelectedPlanId: null,
+              activationOptions: [],
+              lastCommercialStage: 'commercial_activation_continuation',
+              lastReplyKey: 'commercial_activation_continuation'
+            }),
+            ...buildCommercialPlanContextPatch({
+              topic: 'plan_checkout',
+              lastDiscussedPlanId: selectedPlan.id || selectedPlan.productId,
+              lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+              recommendationType: normalizeProductRecommendationType(selectedPlan, orderedPlans)
+            })
+          }
+        };
+      logInfo('commercial_reply_trace', {
+        stage: activationContinuationIntent === 'human_contact'
+          ? 'commercial_activation_human_contact'
+          : 'commercial_activation_continuation',
+        inboundText: normalizedText,
+        matchedIntent: commercialIntent.type,
+        recommendedPlanId: selectedPlan.id || selectedPlan.productId || null,
         pendingOfferedActionBefore: pendingBeforeLog,
         pendingOfferedActionAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
         ...summarizeVisibleReplyForLog(result)
@@ -10599,6 +10760,89 @@ async function buildCommercialShortMemoryReply({ clinic, conversation, inboundTe
     : {};
   if (getPendingLoyaltyOfferedAction(safeContext)) return null;
   const memory = getActiveCommercialShortMemory(safeContext);
+  const activationContinuationIntent = memory && memory.pendingCommercialActivation === true
+    ? detectCommercialActivationContinuationIntent(inboundText)
+    : null;
+  const activePlanContext = getActiveCommercialPlanContext(safeContext);
+  const effectiveSalesContext = getActiveCommercialSalesContext(safeContext);
+  if (memory && memory.pendingCommercialActivation === true && activationContinuationIntent) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const orderedPlans = getOrderedPlanProducts(eligibleProducts);
+    const selectedPlan =
+      findPlanByStoredId(orderedPlans, memory.activationSelectedPlanId) ||
+      findReferencedPlan(orderedPlans, inboundText) ||
+      findPlanByStoredId(orderedPlans, activePlanContext && activePlanContext.lastDiscussedPlanId) ||
+      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, memory);
+
+    if (!selectedPlan) return null;
+
+    if (activationContinuationIntent === 'human_contact') {
+      return {
+        type: 'human_handoff',
+        replyText: `Perfecto 😊 Te derivo con alguien del equipo para ayudarte a activar ${selectedPlan.name || 'ese plan'}.`,
+        triggerHandoff: true,
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: selectedPlan.id || selectedPlan.productId,
+            recommendationType: normalizeProductRecommendationType(selectedPlan, orderedPlans),
+            pendingCommercialActivation: null,
+            activationSelectedPlanId: null,
+            activationOptions: [],
+            lastCommercialStage: 'commercial_activation_human_contact',
+            lastReplyKey: 'commercial_activation_human_contact'
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_activation',
+            lastDiscussedPlanId: selectedPlan.id || selectedPlan.productId,
+            lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+            recommendationType: normalizeProductRecommendationType(selectedPlan, orderedPlans)
+          })
+        }
+      };
+    }
+
+    return {
+      type: 'payment',
+      replyText: buildTransferInstructionsWithPlanReply(
+        clinic && clinic.settings && clinic.settings.bot ? clinic.settings.bot.transferConfig : null,
+        normalizePaymentPlan(selectedPlan)
+      ),
+      newState: 'PAYMENT_TRANSFER',
+      contextPatch: {
+        ...buildCommercialShortMemoryPatch({
+          topic: 'plans',
+          lastSuggestedProductId: selectedPlan.id || selectedPlan.productId,
+          recommendationType: normalizeProductRecommendationType(selectedPlan, orderedPlans),
+          pendingCommercialActivation: null,
+          activationSelectedPlanId: null,
+          activationOptions: [],
+          lastCommercialStage: 'commercial_activation_continuation',
+          lastReplyKey: 'commercial_activation_continuation'
+        }),
+        ...buildCommercialPlanContextPatch({
+          topic: 'plan_checkout',
+          lastDiscussedPlanId: selectedPlan.id || selectedPlan.productId,
+          lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+          recommendationType: normalizeProductRecommendationType(selectedPlan, orderedPlans)
+        }),
+        transferPayment: {
+          orderId: null,
+          status: hasConfiguredTransferData(clinic && clinic.settings && clinic.settings.bot ? clinic.settings.bot.transferConfig : null)
+            ? 'payment_requested'
+            : 'missing_transfer_config',
+          paymentMethod: 'bank_transfer',
+          source: 'whatsapp_payment',
+          selectedPlan: normalizePaymentPlan(selectedPlan),
+          destinationId: clinic && clinic.settings && clinic.settings.bot && clinic.settings.bot.transferConfig && clinic.settings.bot.transferConfig.destinationId
+            ? clinic.settings.bot.transferConfig.destinationId
+            : null,
+          requestedAt: new Date().toISOString()
+        }
+      }
+    };
+  }
   const followUpType = resolveCommercialShortMemoryFollowUpType(inboundText);
   if (!memory || !followUpType) return null;
 
@@ -11717,14 +11961,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       newStage: 'commercial_plan_activation',
       contextPatch: {
         activeBotDomain: 'commerce',
-        ...buildCommercialShortMemoryPatch({
-          topic: 'plans',
-          lastSuggestedProductId: normalizedPlan && (normalizedPlan.productId || normalizedPlan.id),
-          recommendationType: normalizeProductRecommendationType(selectedPlan, plans),
-          pendingCommercialExplanation: false,
-          explanationReasonBasis: null,
-          lastReplyKey: 'commercial_plan_activation'
-        }),
+        ...buildCommercialActivationMemoryPatch(selectedPlan, plans, 'commercial_plan_activation'),
         ...buildCommercialPlanContextPatch({
           topic: 'plan_activation',
           lastDiscussedPlanId: normalizedPlan && (normalizedPlan.productId || normalizedPlan.id),

@@ -649,6 +649,7 @@ async function run() {
   assert.doesNotMatch(purchaseIntentReply.replyText, /Plan elegido:|que parte te gustaria ordenar|contame un poco de tu negocio|creo que el plan crecimiento puede irte muy bien|te cuento la diferencia con (el )?plan empresa|seguimiento comercial real|mas control|mas contexto/i);
   assert.ok(!purchaseIntentReply.outboundMedia || purchaseIntentReply.outboundMedia.length === 0);
   assert.strictEqual(getActiveCommercialShortMemory(purchaseIntentReply.contextPatch).lastReplyKey, 'commercial_plan_activation');
+  assert.strictEqual(getActiveCommercialShortMemory(purchaseIntentReply.contextPatch).pendingCommercialActivation, true);
 
   const purchaseIntentDecision = await resolveCommerceDecision({
     conversation: {
@@ -662,6 +663,50 @@ async function run() {
   assert.strictEqual(purchaseIntentDecision.newStage, 'commercial_plan_activation');
   assert.match(purchaseIntentDecision.replyText, /activarlo|activacion|activación/i);
   assert.doesNotMatch(purchaseIntentDecision.replyText, /Plan elegido:|Te puede servir|Diferencia con Empresa|seguimiento comercial real|mas control|mas contexto/i);
+
+  const activationContext = applyContextPatch(explanationContext, purchaseIntentReply.contextPatch);
+  const activationContinuationReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: activationContext
+    },
+    inboundText: 'Me compartis los datos para activarlo por aca?'
+  });
+  assert.strictEqual(activationContinuationReply.type, 'payment');
+  assert.match(activationContinuationReply.replyText, /Alias: OPTURON\.PAGOS/i);
+  assert.match(activationContinuationReply.replyText, /Plan Crecimiento/i);
+  assert.doesNotMatch(activationContinuationReply.replyText, /Plan ideal para|Te puede servir|Diferencia con Empresa|seguimiento comercial real|mas control|mas contexto/i);
+  assert.ok(!activationContinuationReply.outboundMedia || activationContinuationReply.outboundMedia.length === 0);
+  assert.strictEqual(getActiveCommercialShortMemory(activationContinuationReply.contextPatch).pendingCommercialActivation, false);
+  assert.strictEqual(getActiveCommercialShortMemory(activationContinuationReply.contextPatch).lastReplyKey, 'commercial_activation_continuation');
+
+  const activationContinuationDecision = await resolveCommerceDecision({
+    conversation: {
+      ...conversation,
+      context: activationContext
+    },
+    clinic,
+    contact,
+    inboundText: 'Me compartis los datos para activarlo por aca?'
+  });
+  assert.strictEqual(activationContinuationDecision.newState, 'PAYMENT_TRANSFER');
+  assert.match(activationContinuationDecision.replyText, /Alias: OPTURON\.PAGOS/i);
+  assert.doesNotMatch(activationContinuationDecision.replyText, /Plan ideal para|Te puede servir|Diferencia con Empresa/i);
+
+  const activationHumanReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: activationContext
+    },
+    inboundText: 'Que me contacte alguien del equipo'
+  });
+  assert.strictEqual(activationHumanReply.type, 'human_handoff');
+  assert.strictEqual(activationHumanReply.triggerHandoff, true);
+  assert.match(activationHumanReply.replyText, /derivo con alguien del equipo/i);
+  assert.strictEqual(getActiveCommercialShortMemory(activationHumanReply.contextPatch).pendingCommercialActivation, false);
+  assert.strictEqual(getActiveCommercialShortMemory(activationHumanReply.contextPatch).lastReplyKey, 'commercial_activation_human_contact');
 
   for (const phrase of ['si contame', 'ok dale', 'por que?', 'como seria?']) {
     const variantReply = await buildSafeCommercialIntentReply({
