@@ -87,7 +87,8 @@ const {
   shouldUseWeakSignalCommercialFallback,
   buildWeakSignalCommercialFallback,
   resolveAiAssistDecision,
-  buildAiAssistSalesContext
+  buildAiAssistSalesContext,
+  getActiveCommercialShortMemory
 } = worker.__private__;
 
 const clinic = {
@@ -563,6 +564,88 @@ async function run() {
   assert.strictEqual(sellerDiscoveryReply.contextPatch.commercialSalesContext.teamSizeSignal, 'team');
   assert.strictEqual(sellerDiscoveryReply.contextPatch.commercialSalesContext.teamSizeValue, 2);
   assert.strictEqual(getActiveCommercialDiscoveryPending(sellerDiscoveryReply.contextPatch).field, 'whatsapp_volume');
+
+  const explanationDiscoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce',
+        commercialSalesContext: {
+          updatedAt: new Date().toISOString(),
+          businessType: 'services'
+        },
+        commercialDiscoveryPending: {
+          field: 'team_size',
+          askedAt: new Date().toISOString(),
+          sourceIntent: 'seller_replacement'
+        }
+      }
+    },
+    inboundText: '30/40 por dia, agenda una sola persona y tenemos todo en un excel y un calendario'
+  });
+  assert.match(explanationDiscoveryReply.replyText, /opci[oÃ³]n intermedia|Crecimiento/i);
+  assert.match(explanationDiscoveryReply.replyText, /te explico r[aá]pido por qu[eé]/i);
+  assert.strictEqual(explanationDiscoveryReply.contextPatch.commercialSalesContext.estimatedDailyConversations, 40);
+  assert.strictEqual(explanationDiscoveryReply.contextPatch.commercialSalesContext.teamSizeValue, 1);
+  assert.strictEqual(explanationDiscoveryReply.contextPatch.commercialSalesContext.handlesAppointments, true);
+  assert.deepStrictEqual(explanationDiscoveryReply.contextPatch.commercialSalesContext.currentTools, ['excel', 'calendar']);
+  assert.strictEqual(explanationDiscoveryReply.contextPatch.commercialShortMemory.pendingCommercialExplanation, true);
+
+  const explanationContext = applyContextPatch(conversation.context, explanationDiscoveryReply.contextPatch);
+  const explanationFollowUpReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: explanationContext
+    },
+    inboundText: 'Dale, explicame'
+  });
+  assert.match(explanationFollowUpReply.replyText, /Te lo pondr[ií]a por encima/i);
+  assert.match(explanationFollowUpReply.replyText, /40 consultas por d[ií]a/i);
+  assert.match(explanationFollowUpReply.replyText, /una sola persona/i);
+  assert.match(explanationFollowUpReply.replyText, /Excel y calendario/i);
+  assert.match(explanationFollowUpReply.replyText, /clientes, pedidos, agenda, pagos y seguimiento/i);
+  assert.doesNotMatch(explanationFollowUpReply.replyText, /fallback|no te entend/i);
+  assert.strictEqual(getActiveCommercialShortMemory(explanationFollowUpReply.contextPatch).pendingCommercialExplanation, false);
+
+  for (const phrase of ['si contame', 'ok dale', 'por que?', 'como seria?']) {
+    const variantReply = await buildSafeCommercialIntentReply({
+      clinic,
+      conversation: {
+        ...conversation,
+        context: explanationContext
+      },
+      inboundText: phrase
+    });
+    assert.match(variantReply.replyText, /Te lo pondr[ií]a por encima/i, phrase);
+    assert.doesNotMatch(variantReply.replyText, /fallback|no te entend/i, phrase);
+  }
+
+  const noPendingExplanationReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: 'dale'
+  });
+  if (noPendingExplanationReply) {
+    assert.doesNotMatch(noPendingExplanationReply.replyText, /Te lo pondr[ií]a por encima/i);
+  }
+
+  const protectedCatalogReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: explanationContext
+    },
+    inboundText: 'que planes tienen'
+  });
+  assert.match(protectedCatalogReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.doesNotMatch(protectedCatalogReply.replyText, /Te lo pondr[ií]a por encima/i);
 
   const portabilityDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,

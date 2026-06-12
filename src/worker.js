@@ -1534,8 +1534,13 @@ function buildCommercialShortMemoryPatch({
   lastSuggestedProductId = null,
   recommendationType = 'general',
   lastObjectionType = null,
-  lastReplyKey = null
+  lastReplyKey = null,
+  pendingCommercialExplanation = null,
+  explanationReasonBasis = null
 } = {}) {
+  const safeExplanationReasonBasis = explanationReasonBasis && typeof explanationReasonBasis === 'object'
+    ? explanationReasonBasis
+    : null;
   return {
     commercialShortMemory: {
       activeAt: new Date().toISOString(),
@@ -1544,7 +1549,22 @@ function buildCommercialShortMemoryPatch({
       lastSuggestedProductId: lastSuggestedProductId ? String(lastSuggestedProductId).trim() : null,
       recommendationType: String(recommendationType || 'general').trim().toLowerCase() || 'general',
       lastObjectionType: lastObjectionType ? String(lastObjectionType).trim().toLowerCase() : null,
-      lastReplyKey: lastReplyKey ? String(lastReplyKey).trim().toLowerCase() : null
+      lastReplyKey: lastReplyKey ? String(lastReplyKey).trim().toLowerCase() : null,
+      pendingCommercialExplanation: pendingCommercialExplanation === true ? true : null,
+      explanationReasonBasis: safeExplanationReasonBasis
+        ? {
+          estimatedDailyConversations: Number.isInteger(Number.parseInt(String(safeExplanationReasonBasis.estimatedDailyConversations || ''), 10))
+            ? Number.parseInt(String(safeExplanationReasonBasis.estimatedDailyConversations || ''), 10)
+            : null,
+          operatorCount: Number.isInteger(Number.parseInt(String(safeExplanationReasonBasis.operatorCount || ''), 10))
+            ? Number.parseInt(String(safeExplanationReasonBasis.operatorCount || ''), 10)
+            : null,
+          currentTools: Array.isArray(safeExplanationReasonBasis.currentTools)
+            ? [...new Set(safeExplanationReasonBasis.currentTools.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 6)
+            : [],
+          handlesAppointments: safeExplanationReasonBasis.handlesAppointments === true ? true : null
+        }
+        : null
     }
   };
 }
@@ -3147,7 +3167,22 @@ function getActiveCommercialShortMemory(context) {
     lastSuggestedProductId,
     recommendationType: String(memory.recommendationType || 'general').trim().toLowerCase() || 'general',
     lastObjectionType: memory.lastObjectionType ? String(memory.lastObjectionType).trim().toLowerCase() : null,
-    lastReplyKey: memory.lastReplyKey ? String(memory.lastReplyKey).trim().toLowerCase() : null
+    lastReplyKey: memory.lastReplyKey ? String(memory.lastReplyKey).trim().toLowerCase() : null,
+    pendingCommercialExplanation: memory.pendingCommercialExplanation === true,
+    explanationReasonBasis: memory.explanationReasonBasis && typeof memory.explanationReasonBasis === 'object'
+      ? {
+        estimatedDailyConversations: Number.isInteger(Number.parseInt(String(memory.explanationReasonBasis.estimatedDailyConversations || ''), 10))
+          ? Number.parseInt(String(memory.explanationReasonBasis.estimatedDailyConversations || ''), 10)
+          : null,
+        operatorCount: Number.isInteger(Number.parseInt(String(memory.explanationReasonBasis.operatorCount || ''), 10))
+          ? Number.parseInt(String(memory.explanationReasonBasis.operatorCount || ''), 10)
+          : null,
+        currentTools: Array.isArray(memory.explanationReasonBasis.currentTools)
+          ? [...new Set(memory.explanationReasonBasis.currentTools.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 6)
+          : [],
+        handlesAppointments: memory.explanationReasonBasis.handlesAppointments === true ? true : null
+      }
+      : null
   };
 }
 
@@ -3167,6 +3202,156 @@ function isCommercialShortMemoryProtectedIntent(input) {
     text.includes('comprobante') ||
     text.includes('factura')
   );
+}
+
+function buildCommercialExplanationReasonBasis(salesContext = {}) {
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const estimatedDailyConversations = Number.parseInt(String(safeContext.estimatedDailyConversations || ''), 10);
+  const peakDailyConversations = Number.parseInt(String(safeContext.peakDailyConversations || ''), 10);
+  const operatorCount = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+
+  return {
+    estimatedDailyConversations: Math.max(
+      Number.isInteger(estimatedDailyConversations) ? estimatedDailyConversations : 0,
+      Number.isInteger(peakDailyConversations) ? peakDailyConversations : 0
+    ) || null,
+    operatorCount: Number.isInteger(operatorCount) && operatorCount > 0 ? operatorCount : null,
+    currentTools: Array.isArray(safeContext.currentTools)
+      ? [...new Set(safeContext.currentTools.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))].slice(0, 6)
+      : [],
+    handlesAppointments: safeContext.handlesAppointments === true ? true : null
+  };
+}
+
+function isCommercialExplanationContinuationIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text || isCommercialShortMemoryProtectedIntent(text)) return false;
+  const compactText = text.replace(/[,:;]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+  return (
+    compactText === 'dale' ||
+    compactText === 'si' ||
+    compactText === 'ok' ||
+    compactText === 'explicame' ||
+    compactText === 'contame' ||
+    compactText === 'a ver' ||
+    compactText === 'por que' ||
+    compactText === 'como seria' ||
+    compactText.includes('dale explicame') ||
+    compactText.includes('si contame') ||
+    compactText.includes('ok dale') ||
+    compactText.includes('por que') ||
+    compactText.includes('como seria')
+  );
+}
+
+function buildCommercialRecommendationExplanationReply(product, salesContext = {}, allPlans = []) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const normalizedName = normalizeCommandText(safeProduct.name || '');
+  const estimatedDailyConversations = Number.parseInt(String(safeContext.estimatedDailyConversations || ''), 10);
+  const peakDailyConversations = Number.parseInt(String(safeContext.peakDailyConversations || ''), 10);
+  const dailyConversationCount = Math.max(
+    Number.isInteger(estimatedDailyConversations) ? estimatedDailyConversations : 0,
+    Number.isInteger(peakDailyConversations) ? peakDailyConversations : 0
+  );
+  const operatorCount = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
+  const tools = Array.isArray(safeContext.currentTools) ? safeContext.currentTools : [];
+  const comparedPlan = findLowerPlan(allPlans, safeProduct);
+  const planLabel = safeProduct.name || (
+    normalizedName.includes('empresa')
+      ? 'Plan Empresa'
+      : normalizedName.includes('inicial')
+        ? 'Plan Inicial'
+        : 'Plan Crecimiento'
+  );
+  const lowerOptionLabel = comparedPlan && comparedPlan.name
+    ? comparedPlan.name
+    : (normalizedName.includes('inicial') ? 'una opción más chica' : 'una opción más básica');
+
+  const volumeLead = dailyConversationCount >= 30
+    ? `con unas ${dailyConversationCount} consultas por día ya no alcanza solo con responder mensajes`
+    : safeContext.whatsappVolume === 'high'
+      ? 'cuando ya hay bastante movimiento por WhatsApp no alcanza solo con responder mensajes'
+      : 'cuando se empiezan a juntar varias conversaciones ya no alcanza solo con responder mensajes';
+  const operatorLead = Number.isInteger(operatorCount) && operatorCount === 1
+    ? 'Además, si hoy lo maneja una sola persona'
+    : Number.isInteger(operatorCount) && operatorCount > 1
+      ? `Además, si hoy lo maneja un equipo de ${operatorCount} personas`
+      : safeContext.teamSizeSignal === 'solo'
+        ? 'Además, si hoy lo maneja una sola persona'
+        : 'Además, si hoy ya hay más de una conversación abierta al mismo tiempo';
+  const toolsLead = tools.includes('excel') && tools.includes('calendar')
+    ? 'y lo tienen repartido entre Excel y calendario'
+    : tools.includes('excel') || tools.includes('spreadsheet')
+      ? 'y hoy parte del seguimiento sigue en planillas'
+      : tools.includes('calendar')
+        ? 'y parte de la organización pasa por calendario'
+        : '';
+  const appointmentLead = safeContext.handlesAppointments === true
+    ? 'qué turno o agenda hay que controlar'
+    : 'qué seguimiento comercial quedó pendiente';
+  const planScope = normalizedName.includes('empresa')
+    ? `${planLabel} empieza a justificar mejor una operación con más control, más personalización y más acompañamiento.`
+    : normalizedName.includes('inicial')
+      ? `${planLabel} te alcanza para ordenar la base sin meterte en una estructura más grande de entrada.`
+      : `${planLabel} te ordena el trabajo sin irse a algo enorme: centraliza clientes, pedidos, agenda, pagos y seguimiento en un solo lugar.`;
+
+  return [
+    `Te lo pondría por encima de ${lowerOptionLabel} porque ${volumeLead}.`,
+    '',
+    `Ahí empezás a necesitar seguimiento: saber quién preguntó, qué quedó pendiente, qué pedido se armó, qué pago falta y ${appointmentLead}.`,
+    '',
+    `${operatorLead}${toolsLead ? ` ${toolsLead}` : ''}, ${planScope}`
+  ].join('\n');
+}
+
+async function enrichCommercialRecommendationWithExplanationMemory({
+  clinicId,
+  reply,
+  salesContext,
+  businessContext
+}) {
+  const safeReply = reply && typeof reply === 'object' ? reply : null;
+  const safeSalesContext = salesContext && typeof salesContext === 'object' ? salesContext : null;
+  const safeBusinessContext = businessContext && typeof businessContext === 'object' ? businessContext : null;
+  if (!safeReply || !safeSalesContext || !safeBusinessContext) return safeReply;
+  if (!safeReply.replyText || !/te explico rapido por que|te explico rápido por qué/i.test(String(safeReply.replyText))) {
+    return safeReply;
+  }
+
+  const clinicProducts = await listProductsByClinicId(clinicId);
+  const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+  const suggestedPlan = findPlanByBusinessRecommendationContext(orderedPlans, safeBusinessContext);
+  const comparedPlan = safeBusinessContext.recommendationLevel === 'growth'
+    ? findPlanByNeedHint(orderedPlans, 'enterprise')
+    : null;
+  if (!suggestedPlan) return safeReply;
+
+  return {
+    ...safeReply,
+    contextPatch: mergeContextPatches(
+      safeReply.contextPatch || null,
+      buildCommercialShortMemoryPatch({
+        topic: 'plans',
+        lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+        recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans),
+        pendingCommercialExplanation: true,
+        explanationReasonBasis: buildCommercialExplanationReasonBasis(safeSalesContext)
+      }),
+      buildCommercialPlanContextPatch({
+        topic: 'plan_recommendation',
+        lastDiscussedPlanId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+        lastComparedPlanId: comparedPlan && (comparedPlan.id || comparedPlan.productId),
+        recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+      }),
+      buildCommercialSalesContextPatch({
+        ...safeSalesContext,
+        lastRecommendedPlan: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
+        lastRecommendationReason: buildRecommendationReasonSummary(suggestedPlan, safeSalesContext, orderedPlans)
+      })
+    )
+  };
 }
 
 function resolveCommercialShortMemoryFollowUpType(input) {
@@ -9007,7 +9192,16 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       effectiveSalesContext
     });
     if (discoveryReply) {
-      return discoveryReply;
+      const discoveryReplySalesContext = getActiveCommercialSalesContext(discoveryReply.contextPatch) || effectiveSalesContext;
+      const discoveryReplyBusinessContext =
+        deriveBusinessRecommendationContextFromSalesContext(discoveryReplySalesContext) ||
+        effectiveBusinessContext;
+      return enrichCommercialRecommendationWithExplanationMemory({
+        clinicId: conversation.clinicId,
+        reply: discoveryReply,
+        salesContext: discoveryReplySalesContext,
+        businessContext: discoveryReplyBusinessContext
+      });
     }
   }
 
@@ -9439,7 +9633,9 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
           ...buildCommercialShortMemoryPatch({
             topic: 'plans',
             lastSuggestedProductId: suggestedPlan && (suggestedPlan.id || suggestedPlan.productId),
-            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans)
+            recommendationType: normalizeProductRecommendationType(suggestedPlan, orderedPlans),
+            pendingCommercialExplanation: true,
+            explanationReasonBasis: buildCommercialExplanationReasonBasis(effectiveSalesContext)
           }),
           ...buildCommercialPlanContextPatch({
             topic: 'plan_recommendation',
@@ -9553,6 +9749,72 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         stage: 'pending_plan_comparison',
         inboundText: normalizedText,
         matchedIntent: commercialIntent.type,
+        pendingOfferedActionBefore: pendingBeforeLog,
+        pendingOfferedActionAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
+    }
+  }
+
+  if (
+    activeShortMemory &&
+    activeShortMemory.topic === 'plans' &&
+    activeShortMemory.pendingCommercialExplanation === true &&
+    !isCatalogItemDetailIntent(inboundText) &&
+    !isCommerceEntry &&
+    !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
+    !parseTransferPaymentIntent(inboundText) &&
+    normalizeCommandText(inboundText) !== 'cancelar' &&
+    !isLoyaltyIntent(inboundText) &&
+    isCommercialExplanationContinuationIntent(inboundText)
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const recommendedPlan = resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory) ||
+      findPlanByStoredId(orderedPlans, activeShortMemory.lastSuggestedProductId);
+
+    if (recommendedPlan) {
+      const explanationSalesContext = {
+        ...effectiveSalesContext,
+        ...(activeShortMemory.explanationReasonBasis && typeof activeShortMemory.explanationReasonBasis === 'object'
+          ? {
+            estimatedDailyConversations: activeShortMemory.explanationReasonBasis.estimatedDailyConversations || effectiveSalesContext.estimatedDailyConversations || null,
+            teamSizeValue: activeShortMemory.explanationReasonBasis.operatorCount || effectiveSalesContext.teamSizeValue || null,
+            currentTools: Array.isArray(activeShortMemory.explanationReasonBasis.currentTools) && activeShortMemory.explanationReasonBasis.currentTools.length
+              ? activeShortMemory.explanationReasonBasis.currentTools
+              : effectiveSalesContext.currentTools,
+            handlesAppointments: activeShortMemory.explanationReasonBasis.handlesAppointments === true || effectiveSalesContext.handlesAppointments === true
+              ? true
+              : null
+          }
+          : null)
+      };
+      const result = {
+        type: 'recommendation',
+        replyText: buildCommercialRecommendationExplanationReply(recommendedPlan, explanationSalesContext, orderedPlans),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
+            recommendationType: normalizeProductRecommendationType(recommendedPlan, orderedPlans),
+            pendingCommercialExplanation: false,
+            explanationReasonBasis: null,
+            lastReplyKey: 'commercial_explanation_followup'
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_recommendation',
+            lastDiscussedPlanId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
+            lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+            recommendationType: normalizeProductRecommendationType(recommendedPlan, orderedPlans)
+          })
+        }
+      };
+      logInfo('commercial_reply_trace', {
+        stage: 'commercial_explanation_continuation',
+        inboundText: normalizedText,
+        matchedIntent: commercialIntent.type,
+        recommendedPlanId: recommendedPlan && (recommendedPlan.id || recommendedPlan.productId),
         pendingOfferedActionBefore: pendingBeforeLog,
         pendingOfferedActionAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
         ...summarizeVisibleReplyForLog(result)
