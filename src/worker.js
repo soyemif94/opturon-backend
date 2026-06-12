@@ -2425,8 +2425,6 @@ function parseCommercialTeamSizeAnswer(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return null;
   const standaloneCountPattern = /^(?:\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)$/;
-  const teamContextPattern = /\b(persona|personas|vendedor|vendedores|asesor|asesores|equipo|atienden|atendiendo|atencion|atención|publico|público)\b/;
-  const somosCountPattern = /\bsomos\s+(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/;
 
   if (text === 'mi esposa y yo') {
     return { teamSizeValue: 2, teamSizeSignal: 'team' };
@@ -2457,8 +2455,9 @@ function parseCommercialTeamSizeAnswer(rawText) {
   }
 
   const contextualCountPatterns = [
-    /\b(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+(?:personas|vendedores|asesores|secretarias|secretarios)\b/,
-    /\b(?:somos|son|atienden|atiende|responden|responde|tengo|tenemos)\s+(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/,
+    /\b(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+(?:persona|personas|vendedor|vendedores|asesor|asesores|secretaria|secretarias|secretario|secretarios)\b/,
+    /\b(?:somos|son|tengo|tenemos)\s+(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+(?:persona|personas|vendedor|vendedores|asesor|asesores|secretaria|secretarias|secretario|secretarios)\b/,
+    /\b(?:somos|son)\s+(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b(?=$|[\s,.;:])/,
     /\b(?:lo|la|las|los)\s+(?:atiende|atienden|responde|responden|agenda|agendan)\s+(\d{1,2}|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/
   ];
   for (const pattern of contextualCountPatterns) {
@@ -2475,12 +2474,8 @@ function parseCommercialTeamSizeAnswer(rawText) {
     }
   }
 
-  const digitsMatch = text.match(/\b(\d{1,2})\b/);
-  const numericValue = digitsMatch ? Number.parseInt(digitsMatch[1], 10) : parseSpelledSmallNumber(text, { includeArticles: false });
-  const looksLikeStandaloneCount = standaloneCountPattern.test(text);
-  const hasTeamContext = teamContextPattern.test(text) || somosCountPattern.test(text);
-
-  if (Number.isInteger(numericValue) && numericValue > 0 && (looksLikeStandaloneCount || hasTeamContext)) {
+  if (standaloneCountPattern.test(text)) {
+    const numericValue = /^\d+$/.test(text) ? Number.parseInt(text, 10) : parseSpelledSmallNumber(text, { includeArticles: false });
     return {
       teamSizeValue: numericValue,
       teamSizeSignal: numericValue === 1 ? 'solo' : 'team'

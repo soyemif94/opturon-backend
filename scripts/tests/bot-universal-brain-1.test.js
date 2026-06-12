@@ -301,6 +301,8 @@ async function run() {
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('mi esposa y yo'), { teamSizeValue: 2, teamSizeSignal: 'team' });
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('atiendo yo solo'), { teamSizeValue: 1, teamSizeSignal: 'solo' });
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('100 mensajes por dia y tengo 3 vendedores'), { teamSizeValue: 3, teamSizeSignal: 'team' });
+  assert.deepStrictEqual(parseCommercialTeamSizeAnswer('somos 2 vendedores'), { teamSizeValue: 2, teamSizeSignal: 'team' });
+  assert.deepStrictEqual(parseCommercialTeamSizeAnswer('tenemos unas 30 consultas diarias y 1 persona atiende el whatsapp'), { teamSizeValue: 1, teamSizeSignal: 'solo' });
   assert.deepStrictEqual(parseCommercialTeamSizeAnswer('una secretaria agenda todo'), { teamSizeValue: 1, teamSizeSignal: 'solo' });
   assert.strictEqual(parseCommercialTeamSizeAnswer('Tengo una distribuidora'), null);
   assert.strictEqual(parseCommercialWhatsAppAccountTypeAnswer('Uso WhatsApp Business'), 'business');
@@ -819,6 +821,19 @@ async function run() {
   assert.strictEqual(getActiveCommercialShortMemory(activationContinuationReply.contextPatch).pendingCommercialActivation, false);
   assert.strictEqual(getActiveCommercialShortMemory(activationContinuationReply.contextPatch).lastReplyKey, 'commercial_activation_continuation');
 
+  const activationContinuationShortReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: activationContext
+    },
+    inboundText: 'compartime los datos'
+  });
+  assert.strictEqual(activationContinuationShortReply.type, 'payment');
+  assert.match(activationContinuationShortReply.replyText, /Alias: OPTURON\.PAGOS/i);
+  assert.doesNotMatch(activationContinuationShortReply.replyText, /Plan ideal para|Te puede servir|Diferencia con Empresa|compar/i);
+  assert.strictEqual(getActiveCommercialShortMemory(activationContinuationShortReply.contextPatch).lastReplyKey, 'commercial_activation_continuation');
+
   const activationContinuationDecision = await resolveCommerceDecision({
     conversation: {
       ...conversation,
@@ -1244,6 +1259,35 @@ async function run() {
   assert.doesNotMatch(twoPeopleReply.replyText, /humano|fallback|no te entend/i);
   assert.match(twoPeopleReply.replyText, /Plan Crecimiento|intermedia|intermedio|Crecimiento/i);
   assert.strictEqual(twoPeopleReply.contextPatch.commercialSalesContext.teamSizeValue, 2);
+
+  const accessoriesSoloReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce',
+        commercialSalesContext: {
+          businessType: 'accessories_retail',
+          offerTypeSignal: 'products'
+        },
+        commercialDiscoveryPending: {
+          field: 'team_size',
+          askedAt: new Date().toISOString(),
+          sourceIntent: 'plan_recommendation',
+          meta: null
+        }
+      }
+    },
+    inboundText: 'tenemos unas 30 consultas diarias, 1 persona atiende el whatsapp y registramos los pedidos en una planilla de excel'
+  });
+  assert.doesNotMatch(accessoriesSoloReply.replyText, /humano|fallback|no te entend/i);
+  assert.match(accessoriesSoloReply.replyText, /Plan Crecimiento|intermedia|intermedio|Crecimiento/i);
+  assert.match(accessoriesSoloReply.replyText, /30 consultas por d[ií]a|unas 30 consultas/i);
+  assert.match(accessoriesSoloReply.replyText, /1 persona|una sola persona/i);
+  assert.doesNotMatch(accessoriesSoloReply.replyText, /30 personas/i);
+  assert.strictEqual(accessoriesSoloReply.contextPatch.commercialSalesContext.teamSizeValue, 1);
+  assert.strictEqual(accessoriesSoloReply.contextPatch.commercialSalesContext.estimatedDailyConversations, 30);
+  assert.deepStrictEqual(accessoriesSoloReply.contextPatch.commercialSalesContext.currentTools, ['excel', 'spreadsheet']);
 
   const secretaryReply = await buildSafeCommercialIntentReply({
     clinic,
