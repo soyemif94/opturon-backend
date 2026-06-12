@@ -211,8 +211,8 @@ async function run() {
     contact,
     inboundText: 'me interesa'
   });
-  assert.strictEqual(nextStepDecision.newState, 'PAYMENT_TRANSFER');
-  assert.strictEqual(nextStepDecision.contextPatch.transferPayment.selectedPlan.name, 'Plan Crecimiento');
+  assert.strictEqual(nextStepDecision.newStage, 'commercial_plan_activation');
+  assert.match(nextStepDecision.replyText, /activarlo/i);
 
   const hireDecision = await resolveCommerceDecision({
     conversation,
@@ -220,8 +220,9 @@ async function run() {
     contact,
     inboundText: 'como hago para contratar'
   });
-  assert.strictEqual(hireDecision.newState, 'PAYMENT_TRANSFER');
-  assert.strictEqual(hireDecision.contextPatch.transferPayment.selectedPlan.name, 'Plan Crecimiento');
+  assert.strictEqual(hireDecision.newStage, 'commercial_plan_activation');
+  assert.match(hireDecision.replyText, /activarlo/i);
+  assert.doesNotMatch(hireDecision.replyText, /Plan ideal|Te puede servir|Diferencia con Empresa/i);
 
   const linkDecision = await resolveCommerceDecision({
     conversation,
@@ -643,10 +644,24 @@ async function run() {
     inboundText: 'Ok, como contrato plan crecimiento?'
   });
   assert.strictEqual(purchaseIntentReply.type, 'payment');
-  assert.match(purchaseIntentReply.replyText, /Plan elegido: Plan Crecimiento/i);
-  assert.match(purchaseIntentReply.replyText, /mandame el comprobante|te va a contactar una persona/i);
-  assert.doesNotMatch(purchaseIntentReply.replyText, /que parte te gustaria ordenar|contame un poco de tu negocio|creo que el plan crecimiento puede irte muy bien|te cuento la diferencia con (el )?plan empresa/i);
-  assert.strictEqual(getActiveCommercialShortMemory(purchaseIntentReply.contextPatch).lastReplyKey, 'commercial_purchase_intent');
+  assert.match(purchaseIntentReply.replyText, /activarlo|activacion|activación/i);
+  assert.match(purchaseIntentReply.replyText, /contacte alguien del equipo|siguiente paso de activacion|datos para activarlo/i);
+  assert.doesNotMatch(purchaseIntentReply.replyText, /Plan elegido:|que parte te gustaria ordenar|contame un poco de tu negocio|creo que el plan crecimiento puede irte muy bien|te cuento la diferencia con (el )?plan empresa|seguimiento comercial real|mas control|mas contexto/i);
+  assert.ok(!purchaseIntentReply.outboundMedia || purchaseIntentReply.outboundMedia.length === 0);
+  assert.strictEqual(getActiveCommercialShortMemory(purchaseIntentReply.contextPatch).lastReplyKey, 'commercial_plan_activation');
+
+  const purchaseIntentDecision = await resolveCommerceDecision({
+    conversation: {
+      ...conversation,
+      context: explanationContext
+    },
+    clinic,
+    contact,
+    inboundText: 'Ok, como contrato plan crecimiento?'
+  });
+  assert.strictEqual(purchaseIntentDecision.newStage, 'commercial_plan_activation');
+  assert.match(purchaseIntentDecision.replyText, /activarlo|activacion|activación/i);
+  assert.doesNotMatch(purchaseIntentDecision.replyText, /Plan elegido:|Te puede servir|Diferencia con Empresa|seguimiento comercial real|mas control|mas contexto/i);
 
   for (const phrase of ['si contame', 'ok dale', 'por que?', 'como seria?']) {
     const variantReply = await buildSafeCommercialIntentReply({

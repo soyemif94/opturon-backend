@@ -4949,6 +4949,20 @@ function isStrongCommercialPurchaseIntent(rawText) {
   return detectCommercialNextStepIntent(rawText) === 'advance';
 }
 
+function detectCommercialDirectCheckoutIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('pasame el link') ||
+    text.includes('enviame el link') ||
+    text.includes('donde pago') ||
+    text.includes('como me suscribo') ||
+    text.includes('suscribirme') ||
+    text.includes('suscribir')
+  );
+}
+
 function buildCommercialPurchaseDebugSnapshot({
   inboundText,
   safeContext = null,
@@ -4971,6 +4985,22 @@ function buildCommercialPurchaseDebugSnapshot({
     pendingCommercialExplanation: Boolean(activeShortMemory && activeShortMemory.pendingCommercialExplanation === true),
     branch: branch || null
   };
+}
+
+function buildCommercialPlanActivationReply(selectedPlan, transferConfig = null) {
+  const normalizedPlan = normalizePaymentPlan(selectedPlan);
+  const planName = normalizedPlan && normalizedPlan.name ? normalizedPlan.name : 'ese plan';
+  const hasTransferOption = hasConfiguredTransferData(transferConfig);
+
+  return [
+    'Perfecto 😊',
+    '',
+    `Si querés avanzar con ${planName} puedo ayudarte a activarlo.`,
+    '',
+    hasTransferOption
+      ? '¿Preferís que te comparta los datos para activarlo por acá o que te contacte alguien del equipo?'
+      : '¿Preferís que te comparta el siguiente paso de activación o que te contacte alguien del equipo?'
+  ].join('\n');
 }
 
 function buildBusinessContextPlanRecommendationReply(product, businessContext, allPlans = []) {
@@ -9318,8 +9348,9 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     if (contextualPlan) {
       const result = {
         type: 'payment',
-        replyText: buildTransferInstructionsWithPlanReply(transferConfig, normalizePaymentPlan(contextualPlan)),
-        outboundMedia: [buildCatalogProductImageMessage(contextualPlan)].filter(Boolean),
+        replyText: detectCommercialDirectCheckoutIntent(inboundText)
+          ? buildTransferInstructionsWithPlanReply(transferConfig, normalizePaymentPlan(contextualPlan))
+          : buildCommercialPlanActivationReply(contextualPlan, transferConfig),
         contextPatch: {
           ...buildCommercialShortMemoryPatch({
             topic: 'plans',
@@ -9327,10 +9358,12 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
             recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans),
             pendingCommercialExplanation: false,
             explanationReasonBasis: null,
-            lastReplyKey: 'commercial_purchase_intent'
+            lastReplyKey: detectCommercialDirectCheckoutIntent(inboundText)
+              ? 'commercial_purchase_intent'
+              : 'commercial_plan_activation'
           }),
           ...buildCommercialPlanContextPatch({
-            topic: 'plan_checkout',
+            topic: detectCommercialDirectCheckoutIntent(inboundText) ? 'plan_checkout' : 'plan_activation',
             lastDiscussedPlanId: contextualPlan.id || contextualPlan.productId,
             lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
             recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans)
@@ -9343,7 +9376,9 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         }
       };
       logInfo('commercial_reply_trace', {
-        stage: 'commercial_purchase_intent',
+        stage: detectCommercialDirectCheckoutIntent(inboundText)
+          ? 'commercial_purchase_intent'
+          : 'commercial_plan_activation',
         inboundText: normalizedText,
         matchedIntent: commercialIntent.type,
         recommendedPlanId: contextualPlan.id || contextualPlan.productId || null,
@@ -11655,7 +11690,6 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
     return {
       replyText: buildTransferInstructionsWithPlanReply(transferConfig, normalizedPlan),
-      outboundMedia: [buildCatalogProductImageMessage(selectedPlan)].filter(Boolean),
       newState: hasTransferData ? 'PAYMENT_TRANSFER' : 'IDLE',
       newStage: hasTransferData ? 'payment_requested' : 'handoff',
       contextPatch: {
@@ -11669,6 +11703,40 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           selectedPlan: normalizedPlan,
           destinationId: transferConfig && transferConfig.destinationId ? transferConfig.destinationId : null,
           requestedAt: new Date().toISOString()
+        }
+      }
+    };
+  };
+  const buildCommercialPlanActivationDecision = async ({ selectedPlan } = {}) => {
+    const normalizedPlan = normalizePaymentPlan(selectedPlan);
+    const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
+
+    return {
+      replyText: buildCommercialPlanActivationReply(normalizedPlan, transferConfig),
+      newState: currentState || 'READY',
+      newStage: 'commercial_plan_activation',
+      contextPatch: {
+        activeBotDomain: 'commerce',
+        ...buildCommercialShortMemoryPatch({
+          topic: 'plans',
+          lastSuggestedProductId: normalizedPlan && (normalizedPlan.productId || normalizedPlan.id),
+          recommendationType: normalizeProductRecommendationType(selectedPlan, plans),
+          pendingCommercialExplanation: false,
+          explanationReasonBasis: null,
+          lastReplyKey: 'commercial_plan_activation'
+        }),
+        ...buildCommercialPlanContextPatch({
+          topic: 'plan_activation',
+          lastDiscussedPlanId: normalizedPlan && (normalizedPlan.productId || normalizedPlan.id),
+          lastComparedPlanId: safeContext && safeContext.commercialPlanContext && safeContext.commercialPlanContext.lastComparedPlanId
+            ? safeContext.commercialPlanContext.lastComparedPlanId
+            : null,
+          recommendationType: normalizeProductRecommendationType(selectedPlan, plans)
+        }),
+        pendingOfferedAction: {
+          type: null,
+          activeAt: null,
+          completedAt: new Date().toISOString()
         }
       }
     };
@@ -11771,10 +11839,14 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       findPlanByBusinessRecommendationContext(plans, getActiveBusinessRecommendationContext(safeContext));
 
     if (contextualPlan) {
-      return buildPaymentInstructionsDecision({
-        selectedPlan: contextualPlan,
-        source: 'whatsapp_payment'
-      });
+      return detectCommercialDirectCheckoutIntent(inboundText)
+        ? buildPaymentInstructionsDecision({
+          selectedPlan: contextualPlan,
+          source: 'whatsapp_payment'
+        })
+        : buildCommercialPlanActivationDecision({
+          selectedPlan: contextualPlan
+        });
     }
 
     if (plans.length) {
