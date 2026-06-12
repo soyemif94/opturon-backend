@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { query } = require('../db/client');
 const { findContactByIdAndClinicId, upsertContact } = require('../repositories/contact.repository');
-const { listEvents } = require('../repositories/conversation-events.repository');
+const { addEvent, listEvents } = require('../repositories/conversation-events.repository');
 const {
   findPortalUserByIdAndClinicId,
   findPortalUserByNameAndClinicId,
@@ -9,6 +9,7 @@ const {
 } = require('../repositories/portal-users.repository');
 const { findLatestOrderByConversationId, findOrderById } = require('../repositories/orders.repository');
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
+const { getOpenHandoff, resolveOpenHandoffByConversation } = require('../repositories/handoff.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const graphClient = require('../whatsapp/whatsapp-graph.client');
@@ -481,6 +482,33 @@ async function resolveRuntimeContext(tenantId) {
       : null,
     reason: channel ? context.reason || 'resolved' : context.reason || 'mapped_clinic_without_whatsapp_channel'
   };
+}
+
+async function releaseConversationHandoff({ clinicId, conversationId, resolutionReason }) {
+  const openHandoff = await getOpenHandoff(clinicId, conversationId);
+  if (!openHandoff) {
+    return null;
+  }
+
+  const resolvedHandoff = await resolveOpenHandoffByConversation(clinicId, conversationId);
+  if (!resolvedHandoff) {
+    return null;
+  }
+
+  await addEvent({
+    clinicId,
+    conversationId,
+    type: 'HANDOFF_RESOLVED',
+    data: {
+      handoffId: resolvedHandoff.id,
+      resolutionReason: normalizeString(resolutionReason) || 'manual',
+      previousStatus: openHandoff.status || null,
+      originalReason: openHandoff.reason || null,
+      assignedTo: openHandoff.assignedTo || null
+    }
+  });
+
+  return resolvedHandoff;
 }
 
 function buildOwnershipSnapshot({ context, conversation, runtimeChannel }) {
@@ -1031,11 +1059,18 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
       };
     }
 
+    const resolvedHandoff = await releaseConversationHandoff({
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      resolutionReason: 'conversation_reset'
+    });
+
     logInfo('portal_conversation_reset', {
       tenantId: context.tenantId,
       clinicId: context.clinic.id,
       conversationId: conversation.id,
-      invalidatedConversationReplyJobs: cancelledReplyJobsResult.rowCount || 0
+      invalidatedConversationReplyJobs: cancelledReplyJobsResult.rowCount || 0,
+      resolvedHandoffId: resolvedHandoff ? resolvedHandoff.id : null
     });
 
     return {
@@ -1063,6 +1098,22 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
   });
 
   let invalidatedConversationReplyJobs = 0;
+  let resolvedHandoff = null;
+  if (action === 'toggle_bot' && nextContext.portalBotEnabled === true) {
+    resolvedHandoff = await releaseConversationHandoff({
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      resolutionReason: 'bot_reactivated'
+    });
+
+    logInfo('portal_conversation_bot_reactivated', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      resolvedHandoffId: resolvedHandoff ? resolvedHandoff.id : null
+    });
+  }
+
   if (action === 'toggle_bot' && nextContext.portalBotEnabled === false) {
     const cancelledReplyJobsResult = await query(
       `UPDATE jobs
@@ -1094,7 +1145,8 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     clinic: context.clinic,
     channel: toPortalChannel(context.channel),
     reason: 'updated',
-    invalidatedConversationReplyJobs
+    invalidatedConversationReplyJobs,
+    resolvedHandoffId: resolvedHandoff ? resolvedHandoff.id : null
   };
 }
 

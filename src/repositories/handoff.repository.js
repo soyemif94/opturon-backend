@@ -60,6 +60,21 @@ async function resolveHandoff(handoffId, client = null) {
   return result.rows[0] || null;
 }
 
+async function resolveOpenHandoffByConversation(clinicId, conversationId, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE handoff_requests
+     SET status = 'resolved', "updatedAt" = NOW()
+     WHERE "clinicId" = $1
+       AND "conversationId" = $2
+       AND status IN ('open', 'assigned')
+     RETURNING id, "clinicId", "conversationId", status, reason, "assignedTo"`,
+    [clinicId, conversationId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function getOpenHandoff(clinicId, conversationId, client = null) {
   const result = await dbQuery(
     client,
@@ -78,6 +93,7 @@ module.exports = {
   openHandoff,
   assignHandoff,
   resolveHandoff,
+  resolveOpenHandoffByConversation,
   getOpenHandoff
 };
 
