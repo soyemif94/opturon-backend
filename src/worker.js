@@ -700,6 +700,57 @@ const COMMERCIAL_INTENT_MAP = {
       /\bya\s+(?:transferi|pague)\b/
     ]
   }),
+  purchase_intent: buildCommercialIntentSpec({
+    exact: [
+      'como contrato',
+      'como lo contrato',
+      'como contrato plan crecimiento',
+      'quiero contratar',
+      'quiero el plan',
+      'quiero ese plan',
+      'me interesa',
+      'quiero arrancar',
+      'quiero empezar',
+      'vamos con ese plan',
+      'me quedo con crecimiento',
+      'quiero crecimiento',
+      'donde pago',
+      'como me suscribo',
+      'pasame el link',
+      'enviame el link'
+    ],
+    includes: [
+      'como contrato',
+      'como lo contrato',
+      'quiero contratar',
+      'quiero el plan',
+      'quiero ese plan',
+      'me interesa',
+      'quiero arrancar',
+      'quiero empezar',
+      'vamos con ese plan',
+      'vamos con el plan',
+      'me quedo con',
+      'donde pago',
+      'como me suscribo',
+      'pasame el link',
+      'enviame el link',
+      'quiero avanzar',
+      'quiero seguir'
+    ],
+    patterns: [
+      /\bcomo\s+(?:lo\s+)?contrat[oa]\b/,
+      /\bquiero\s+contratar\b/,
+      /\bquiero\s+(?:el|ese)\s+plan\b/,
+      /\bme\s+interesa\b/,
+      /\bquiero\s+(?:arrancar|empezar|avanzar|seguir)\b/,
+      /\bvamos\s+con\s+(?:ese|el)\s+plan\b/,
+      /\bme\s+quedo\s+con\b/,
+      /\bdonde\s+pago\b/,
+      /\bcomo\s+me\s+suscribo\b/,
+      /\b(?:pasame|enviame)\s+el\s+link\b/
+    ]
+  }),
   delivery: buildCommercialIntentSpec({
     exact: ['hacen envios', 'hacen delivery', 'envian', 'envio', 'mandan', 'reparten'],
     includes: ['envio', 'envian', 'delivery', 'mandan', 'reparten'],
@@ -778,6 +829,7 @@ const COMMERCIAL_INTENT_MAP = {
 const COMMERCIAL_INTENT_PRIORITY = [
   'loyalty',
   'human_handoff',
+  'purchase_intent',
   'payment',
   'delivery',
   'stock',
@@ -4831,16 +4883,36 @@ function detectCommercialNextStepIntent(rawText) {
   if (!text) return null;
 
   if (
+    text.includes('como funciona') ||
+    text.includes('explicame') ||
+    text.includes('explicame') ||
+    text.includes('que incluye') ||
+    text.includes('que trae') ||
+    text.includes('que ofrece') ||
+    text.includes('quiero saber')
+  ) {
+    return null;
+  }
+
+  if (
     text === 'me interesa' ||
     text === 'quiero contratar' ||
     text === 'quiero comprar' ||
     text === 'quiero arrancar' ||
+    text === 'quiero empezar' ||
     text === 'quiero ese plan' ||
+    text === 'quiero el plan' ||
     text === 'me convenciste' ||
     text === 'avancemos' ||
     text === 'como sigo' ||
     text === 'como hago' ||
-    text === 'como hago para contratar'
+    text === 'como hago para contratar' ||
+    text === 'como contrato' ||
+    text === 'como lo contrato' ||
+    text === 'donde pago' ||
+    text === 'como me suscribo' ||
+    text === 'pasame el link' ||
+    text === 'enviame el link'
   ) {
     return 'advance';
   }
@@ -4850,16 +4922,55 @@ function detectCommercialNextStepIntent(rawText) {
     text.includes('quiero contratar') ||
     text.includes('quiero comprar') ||
     text.includes('quiero arrancar') ||
+    text.includes('quiero empezar') ||
     text.includes('quiero ese plan') ||
+    text.includes('quiero el plan') ||
     text.includes('me convenciste') ||
     text.includes('avancemos') ||
     text.includes('como sigo') ||
-    text.includes('como hago para contratar')
+    text.includes('como hago para contratar') ||
+    text.includes('como contrato') ||
+    text.includes('como lo contrato') ||
+    text.includes('vamos con ese plan') ||
+    text.includes('vamos con el plan') ||
+    text.includes('me quedo con') ||
+    text.includes('donde pago') ||
+    text.includes('como me suscribo') ||
+    text.includes('pasame el link') ||
+    text.includes('enviame el link')
   ) {
     return 'advance';
   }
 
   return null;
+}
+
+function isStrongCommercialPurchaseIntent(rawText) {
+  return detectCommercialNextStepIntent(rawText) === 'advance';
+}
+
+function buildCommercialPurchaseDebugSnapshot({
+  inboundText,
+  safeContext = null,
+  recommendedPlanDetected = null,
+  branch = null
+} = {}) {
+  const context = safeContext && typeof safeContext === 'object' ? safeContext : {};
+  const activeShortMemory = getActiveCommercialShortMemory(context);
+  const activePlanContext = getActiveCommercialPlanContext(context);
+  const normalizedText = normalizeCommandText(inboundText);
+
+  return {
+    normalizedText,
+    purchaseIntentDetected: isStrongCommercialPurchaseIntent(inboundText),
+    recommendedPlanDetected: recommendedPlanDetected ||
+      (activeShortMemory && activeShortMemory.lastSuggestedProductId) ||
+      (activePlanContext && activePlanContext.lastDiscussedPlanId) ||
+      null,
+    commercialFollowUpDetected: isCommercialSoftFollowUpIntent(inboundText),
+    pendingCommercialExplanation: Boolean(activeShortMemory && activeShortMemory.pendingCommercialExplanation === true),
+    branch: branch || null
+  };
 }
 
 function buildBusinessContextPlanRecommendationReply(product, businessContext, allPlans = []) {
@@ -9180,6 +9291,71 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const isCommercialAppointmentBusinessQuestion = kbMatch && kbMatch.category === 'appointment_business';
 
   if (
+    nextStepIntent === 'advance' &&
+    !transferPaymentIntent &&
+    !isLoyaltyIntent(inboundText) &&
+    !isAgendaLike
+  ) {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const contextualPlan =
+      resolveExistingPaymentPlan(safeContext, orderedPlans) ||
+      findReferencedPlan(orderedPlans, inboundText) ||
+      parsePaymentPlanSelection(inboundText, orderedPlans) ||
+      findPlanByStoredId(orderedPlans, activePlanContext && activePlanContext.lastDiscussedPlanId) ||
+      findPlanByStoredId(orderedPlans, activeShortMemory && activeShortMemory.lastSuggestedProductId) ||
+      findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText) ||
+      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory) ||
+      findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext);
+
+    logInfo('commercial_purchase_debug', buildCommercialPurchaseDebugSnapshot({
+      inboundText,
+      safeContext,
+      recommendedPlanDetected: contextualPlan && (contextualPlan.id || contextualPlan.productId || contextualPlan.name) || null,
+      branch: contextualPlan ? 'purchase_intent_candidate_matched' : 'purchase_intent_candidate_missing_plan'
+    }));
+
+    if (contextualPlan) {
+      const result = {
+        type: 'payment',
+        replyText: buildTransferInstructionsWithPlanReply(transferConfig, normalizePaymentPlan(contextualPlan)),
+        outboundMedia: [buildCatalogProductImageMessage(contextualPlan)].filter(Boolean),
+        contextPatch: {
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: contextualPlan.id || contextualPlan.productId,
+            recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans),
+            pendingCommercialExplanation: false,
+            explanationReasonBasis: null,
+            lastReplyKey: 'commercial_purchase_intent'
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'plan_checkout',
+            lastDiscussedPlanId: contextualPlan.id || contextualPlan.productId,
+            lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+            recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans)
+          }),
+          pendingOfferedAction: {
+            type: null,
+            activeAt: null,
+            completedAt: new Date().toISOString()
+          }
+        }
+      };
+      logInfo('commercial_reply_trace', {
+        stage: 'commercial_purchase_intent',
+        inboundText: normalizedText,
+        matchedIntent: commercialIntent.type,
+        recommendedPlanId: contextualPlan.id || contextualPlan.productId || null,
+        pendingOfferedActionBefore: pendingBeforeLog,
+        pendingOfferedActionAfter: summarizePendingOfferedActionForLog(result.contextPatch && result.contextPatch.pendingOfferedAction),
+        ...summarizeVisibleReplyForLog(result)
+      });
+      return result;
+    }
+  }
+
+  if (
     activeCommercialDiscoveryPending &&
     !transferPaymentIntent &&
     !isLoyaltyIntent(inboundText) &&
@@ -10862,7 +11038,21 @@ function resolveConfiguredSalesBotReply({ clinic, inboundText, currentState, saf
   if (activeBotDomain === 'agenda') return null;
   if (!['READY', 'NEW', 'IDLE'].includes(String(currentState || '').toUpperCase())) return null;
 
+  if (isStrongCommercialPurchaseIntent(inboundText)) {
+    logInfo('commercial_purchase_debug', buildCommercialPurchaseDebugSnapshot({
+      inboundText,
+      safeContext,
+      branch: 'configured_bot_bypassed_for_purchase_intent'
+    }));
+    return null;
+  }
+
   if (isGreeting(inboundText)) {
+    logInfo('commercial_purchase_debug', buildCommercialPurchaseDebugSnapshot({
+      inboundText,
+      safeContext,
+      branch: 'configured_bot_greeting'
+    }));
     return {
       replyText: buildBotWelcomeReply(config),
       newState: 'READY',
@@ -10872,6 +11062,11 @@ function resolveConfiguredSalesBotReply({ clinic, inboundText, currentState, saf
   }
 
   if (isConfiguredBotOfferIntent(inboundText)) {
+    logInfo('commercial_purchase_debug', buildCommercialPurchaseDebugSnapshot({
+      inboundText,
+      safeContext,
+      branch: 'configured_bot_offer'
+    }));
     return {
       replyText: buildBotOfferReply(config),
       newState: 'READY',
@@ -10881,6 +11076,11 @@ function resolveConfiguredSalesBotReply({ clinic, inboundText, currentState, saf
   }
 
   if (isConfiguredBotRecommendationIntent(inboundText)) {
+    logInfo('commercial_purchase_debug', buildCommercialPurchaseDebugSnapshot({
+      inboundText,
+      safeContext,
+      branch: 'configured_bot_recommendation'
+    }));
     return {
       replyText: buildBotRecommendationReply(config),
       newState: 'READY',
@@ -15701,6 +15901,11 @@ async function processConversationReplyJob(job) {
     if (configuredBotDecision) {
       decision = configuredBotDecision;
       decisionSource = 'configured_bot';
+      logInfo('commercial_purchase_debug', buildCommercialPurchaseDebugSnapshot({
+        inboundText,
+        safeContext,
+        branch: 'configured_bot_selected'
+      }));
     }
   }
   if (!decision && !qaAgendaBypassActive && !shouldPrioritizeAgendaFlow) {
@@ -15722,6 +15927,19 @@ async function processConversationReplyJob(job) {
       });
       if (decision) {
         decisionSource = botRoute.domain === 'demo' ? 'demo' : 'commerce';
+        logInfo('commercial_purchase_debug', buildCommercialPurchaseDebugSnapshot({
+          inboundText,
+          safeContext,
+          recommendedPlanDetected:
+            decision &&
+            decision.contextPatch &&
+            decision.contextPatch.transferPayment &&
+            decision.contextPatch.transferPayment.selectedPlan &&
+            (decision.contextPatch.transferPayment.selectedPlan.productId || decision.contextPatch.transferPayment.selectedPlan.name)
+              ? (decision.contextPatch.transferPayment.selectedPlan.productId || decision.contextPatch.transferPayment.selectedPlan.name)
+              : null,
+          branch: 'resolve_commerce_decision_selected'
+        }));
         logInfo(botRoute.domain === 'demo' ? 'demo_flow_entered' : 'commerce_flow_entered', {
           requestId,
           jobId: job.id,

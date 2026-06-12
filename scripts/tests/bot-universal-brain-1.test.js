@@ -157,10 +157,17 @@ async function run() {
   assert.strictEqual(isCommercialSoftFollowUpIntent('contame'), true);
 
   assert.strictEqual(detectCommercialIntent('que planes tienen').type, 'products');
+  assert.strictEqual(detectCommercialIntent('como contrato plan crecimiento').type, 'purchase_intent');
   assert.strictEqual(detectBusinessRecommendationContext('tengo un local de ropa').recommendationLevel, 'growth');
   assert.strictEqual(detectCommercialIntent('que me recomendas').type, 'recommendation');
   assert.strictEqual(detectCommercialNextStepIntent('me interesa'), 'advance');
   assert.strictEqual(detectCommercialNextStepIntent('como hago para contratar'), 'advance');
+  assert.strictEqual(detectCommercialNextStepIntent('quiero ese plan'), 'advance');
+  assert.strictEqual(detectCommercialNextStepIntent('me interesa crecimiento'), 'advance');
+  assert.strictEqual(detectCommercialNextStepIntent('donde pago'), 'advance');
+  assert.strictEqual(detectCommercialNextStepIntent('pasame el link'), 'advance');
+  assert.strictEqual(detectCommercialNextStepIntent('como funciona crecimiento'), null);
+  assert.strictEqual(detectCommercialNextStepIntent('explicame crecimiento'), null);
 
   const productsReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -215,6 +222,24 @@ async function run() {
   });
   assert.strictEqual(hireDecision.newState, 'PAYMENT_TRANSFER');
   assert.strictEqual(hireDecision.contextPatch.transferPayment.selectedPlan.name, 'Plan Crecimiento');
+
+  const linkDecision = await resolveCommerceDecision({
+    conversation,
+    clinic,
+    contact,
+    inboundText: 'pasame el link'
+  });
+  assert.strictEqual(linkDecision.newState, 'PAYMENT_TRANSFER');
+  assert.strictEqual(linkDecision.contextPatch.transferPayment.selectedPlan.name, 'Plan Crecimiento');
+
+  const whereToPayDecision = await resolveCommerceDecision({
+    conversation,
+    clinic,
+    contact,
+    inboundText: 'donde pago'
+  });
+  assert.strictEqual(whereToPayDecision.newState, 'PAYMENT_TRANSFER');
+  assert.strictEqual(whereToPayDecision.contextPatch.transferPayment.selectedPlan.name, 'Plan Crecimiento');
 
   assert.strictEqual(detectCommercialPlanObjection('es caro'), 'price_high');
   assert.strictEqual(detectCommercialPlanObjection('algo mas barato'), 'cheaper_option');
@@ -608,6 +633,20 @@ async function run() {
   assert.match(explanationFollowUpReply.replyText, /clientes, pedidos, agenda, pagos y seguimiento/i);
   assert.doesNotMatch(explanationFollowUpReply.replyText, /fallback|no te entend/i);
   assert.strictEqual(getActiveCommercialShortMemory(explanationFollowUpReply.contextPatch).pendingCommercialExplanation, false);
+
+  const purchaseIntentReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: explanationContext
+    },
+    inboundText: 'Ok, como contrato plan crecimiento?'
+  });
+  assert.strictEqual(purchaseIntentReply.type, 'payment');
+  assert.match(purchaseIntentReply.replyText, /Plan elegido: Plan Crecimiento/i);
+  assert.match(purchaseIntentReply.replyText, /mandame el comprobante|te va a contactar una persona/i);
+  assert.doesNotMatch(purchaseIntentReply.replyText, /que parte te gustaria ordenar|contame un poco de tu negocio|creo que el plan crecimiento puede irte muy bien|te cuento la diferencia con (el )?plan empresa/i);
+  assert.strictEqual(getActiveCommercialShortMemory(purchaseIntentReply.contextPatch).lastReplyKey, 'commercial_purchase_intent');
 
   for (const phrase of ['si contame', 'ok dale', 'por que?', 'como seria?']) {
     const variantReply = await buildSafeCommercialIntentReply({
