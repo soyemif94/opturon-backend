@@ -25,6 +25,24 @@ function maskToken(value) {
   return `${safe.slice(0, 4)}***${safe.slice(-4)}`;
 }
 
+function buildSafeChannelPayload(channel) {
+  if (!channel) return null;
+  return {
+    id: channel.id || null,
+    clinicId: channel.clinicId || null,
+    provider: channel.provider || 'whatsapp_cloud',
+    phoneNumberId: channel.phoneNumberId || null,
+    wabaId: channel.wabaId || null,
+    displayPhoneNumber: channel.displayPhoneNumber || null,
+    verifiedName: channel.verifiedName || null,
+    status: channel.status || null,
+    connectionSource: channel.connectionSource || null,
+    connectionMetadata: channel.connectionMetadata || null,
+    updatedAt: channel.updatedAt || null,
+    createdAt: channel.createdAt || null
+  };
+}
+
 async function subscribeCurrentAppToWaba(accessToken, wabaId, requestId) {
   const result = await graphClient.request('POST', `/${wabaId}/subscribed_apps`, {
     requestId,
@@ -238,7 +256,7 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     clinicId: context.clinic.id,
     status: 'connected',
     channelAction,
-    channel: persisted,
+    channel: buildSafeChannelPayload(persisted),
     validation: {
       wabaName: matchedPhone.wabaName || null,
       displayPhoneNumber: matchedPhone.displayPhoneNumber || null,

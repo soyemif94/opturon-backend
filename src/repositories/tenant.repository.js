@@ -1,5 +1,7 @@
 ﻿const { query } = require('../db/client');
 
+const { maybeDecryptSecret, maybeEncryptSecret } = require('../utils/secret-crypto');
+
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') {
     return client.query(text, params);
@@ -35,6 +37,26 @@ function parseNonNegativeLimit(value) {
 
 function normalizeString(value) {
   return String(value || '').trim();
+}
+
+function mapChannelTokenRecord(record) {
+  if (!record || typeof record !== 'object') return record;
+  if (!Object.prototype.hasOwnProperty.call(record, 'accessToken')) {
+    return record;
+  }
+
+  return {
+    ...record,
+    accessToken: maybeDecryptSecret(record.accessToken)
+  };
+}
+
+function mapChannelTokenRows(rows) {
+  return Array.isArray(rows) ? rows.map(mapChannelTokenRecord) : [];
+}
+
+function prepareAccessTokenForStorage(value) {
+  return maybeEncryptSecret(value);
 }
 
 function normalizePortalAccountScope(settings) {
@@ -94,7 +116,7 @@ async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
     [phoneNumberId]
   );
 
-  return result.rows[0] || null;
+  return mapChannelTokenRecord(result.rows[0] || null);
 }
 
 async function findChannelById(channelId, client = null) {
@@ -107,7 +129,7 @@ async function findChannelById(channelId, client = null) {
     [channelId]
   );
 
-  return result.rows[0] || null;
+  return mapChannelTokenRecord(result.rows[0] || null);
 }
 
 async function findChannelByIdAndClinicId(channelId, clinicId, client = null) {
@@ -121,7 +143,7 @@ async function findChannelByIdAndClinicId(channelId, clinicId, client = null) {
     [channelId, clinicId]
   );
 
-  return result.rows[0] || null;
+  return mapChannelTokenRecord(result.rows[0] || null);
 }
 
 async function findClinicByExternalTenantId(externalTenantId, client = null) {
@@ -321,12 +343,12 @@ async function listWhatsAppChannelsByClinicId(clinicId, client = null) {
        AND provider = 'whatsapp_cloud'
      ORDER BY
        CASE WHEN LOWER(COALESCE(status, '')) = 'active' THEN 0 ELSE 1 END,
-       "updatedAt" DESC,
-       "createdAt" DESC`,
+      "updatedAt" DESC,
+      "createdAt" DESC`,
     [clinicId]
   );
 
-  return result.rows;
+  return mapChannelTokenRows(result.rows);
 }
 
 async function findInstagramChannelByExternalId(externalId, client = null) {
@@ -349,7 +371,7 @@ async function findInstagramChannelByExternalId(externalId, client = null) {
     [safeExternalId]
   );
 
-  return result.rows[0] || null;
+  return mapChannelTokenRecord(result.rows[0] || null);
 }
 
 async function findInstagramChannelByPageId(pageId, client = null) {
@@ -369,7 +391,7 @@ async function findInstagramChannelByPageId(pageId, client = null) {
     [safePageId]
   );
 
-  return result.rows[0] || null;
+  return mapChannelTokenRecord(result.rows[0] || null);
 }
 
 async function listInstagramChannelsByClinicId(clinicId, client = null) {
@@ -382,12 +404,12 @@ async function listInstagramChannelsByClinicId(clinicId, client = null) {
        AND provider = 'instagram_graph'
      ORDER BY
        CASE WHEN LOWER(COALESCE(status, '')) = 'active' THEN 0 ELSE 1 END,
-       "updatedAt" DESC,
-       "createdAt" DESC`,
+      "updatedAt" DESC,
+      "createdAt" DESC`,
     [clinicId]
   );
 
-  return result.rows;
+  return mapChannelTokenRows(result.rows);
 }
 
 async function upsertInstagramChannel(input, client = null) {
@@ -454,14 +476,14 @@ async function upsertInstagramChannel(input, client = null) {
         input.externalPageName || null,
         String(input.instagramUserId || '').trim() || null,
         String(input.instagramUsername || '').trim() || null,
-        input.accessToken || null,
+        prepareAccessTokenForStorage(input.accessToken),
         input.status || 'active',
         input.connectionSource || 'instagram_oauth',
         input.connectionMetadata || null
       ]
     );
 
-    return result.rows[0] || null;
+    return mapChannelTokenRecord(result.rows[0] || null);
   }
 
   const result = await dbQuery(
@@ -491,14 +513,14 @@ async function upsertInstagramChannel(input, client = null) {
       input.externalPageName || null,
       String(input.instagramUserId || '').trim() || null,
       String(input.instagramUsername || '').trim() || null,
-      input.accessToken || null,
+      prepareAccessTokenForStorage(input.accessToken),
       input.status || 'active',
       input.connectionSource || 'instagram_oauth',
       input.connectionMetadata || null
     ]
   );
 
-  return result.rows[0] || null;
+  return mapChannelTokenRecord(result.rows[0] || null);
 }
 
 async function getClinicBusinessProfileById(clinicId, client = null) {

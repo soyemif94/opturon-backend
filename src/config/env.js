@@ -1,5 +1,6 @@
 ﻿const dotenv = require('dotenv');
 const { logError, logWarn } = require('../utils/logger');
+const { validateConfiguredTokensEncryptionKey } = require('../utils/secret-crypto');
 
 dotenv.config();
 
@@ -75,6 +76,7 @@ const env = {
   metaAppSecret: String(process.env.META_APP_SECRET || '').trim(),
   verifySignature: parseBoolean(process.env.VERIFY_SIGNATURE, false),
   whatsappSandboxArNormalize: parseBoolean(process.env.WHATSAPP_SANDBOX_AR_NORMALIZE, false),
+  tokensEncryptionKey: String(process.env.TOKENS_ENCRYPTION_KEY || '').trim(),
 
   openaiApiKey: String(process.env.OPENAI_API_KEY || '').trim(),
   openaiModel: String(process.env.OPENAI_MODEL || 'gpt-4o-mini').trim(),
@@ -157,6 +159,9 @@ function collectEnvValidation() {
   if (!env.whatsappPhoneNumberId) warnings.push('WHATSAPP_PHONE_NUMBER_ID');
   if (!env.metaVerifyToken) warnings.push('META_VERIFY_TOKEN');
   if (!env.databaseUrl) warnings.push('DATABASE_URL');
+  if (env.databaseUrl && !env.tokensEncryptionKey) {
+    missing.push('TOKENS_ENCRYPTION_KEY (required when DATABASE_URL is configured)');
+  }
 
   return {
     missing,
@@ -185,6 +190,17 @@ function validateEnvOrExit() {
 
   if (!env.metaAppSecret && env.verifySignature) {
     logWarn('VERIFY_SIGNATURE=true but META_APP_SECRET is empty. Signature validation will fail.');
+  }
+
+  if (env.tokensEncryptionKey) {
+    try {
+      validateConfiguredTokensEncryptionKey();
+    } catch (error) {
+      logError('TOKENS_ENCRYPTION_KEY validation failed', {
+        error: error && error.message ? error.message : 'invalid_tokens_encryption_key'
+      });
+      process.exit(1);
+    }
   }
 
   const configuredGraphVersion = whatsAppGraphVersionConfig.configuredGraphVersion;

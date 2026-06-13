@@ -1,6 +1,7 @@
 const env = require('../config/env');
 const { query } = require('../db/client');
 const { findChannelByPhoneNumberId } = require('../repositories/tenant.repository');
+const { maybeEncryptSecret } = require('../utils/secret-crypto');
 
 function summarizeChannel(channel) {
   if (!channel) return null;
@@ -65,7 +66,7 @@ async function upsertConfiguredChannel(clinicId) {
        status = 'active',
        "updatedAt" = NOW()
      RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", status`,
-    [clinicId, env.whatsappPhoneNumberId, env.whatsappWabaId || null, env.whatsappAccessToken || null]
+    [clinicId, env.whatsappPhoneNumberId, env.whatsappWabaId || null, maybeEncryptSecret(env.whatsappAccessToken)]
   );
 
   return result.rows[0] || null;
@@ -94,7 +95,7 @@ async function updateExistingChannelMetadata(channel) {
          "updatedAt" = NOW()
      WHERE id = $1
      RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", status`,
-    [channel.id, configuredWabaId, configuredAccessToken]
+    [channel.id, configuredWabaId, maybeEncryptSecret(configuredAccessToken)]
   );
 
   return {

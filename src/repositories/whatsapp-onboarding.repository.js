@@ -1,10 +1,30 @@
 const { query, withTransaction } = require('../db/client');
+const { maybeDecryptSecret, maybeEncryptSecret } = require('../utils/secret-crypto');
 
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') {
     return client.query(text, params);
   }
   return query(text, params);
+}
+
+function mapOnboardingSessionRecord(record) {
+  if (!record || typeof record !== 'object') return record;
+
+  return {
+    ...record,
+    metaCode: maybeDecryptSecret(record.metaCode),
+    metaAccessToken: maybeDecryptSecret(record.metaAccessToken)
+  };
+}
+
+function mapChannelRecord(record) {
+  if (!record || typeof record !== 'object') return record;
+
+  return {
+    ...record,
+    accessToken: maybeDecryptSecret(record.accessToken)
+  };
 }
 
 async function createOnboardingSession(input, client = null) {
@@ -37,7 +57,7 @@ async function createOnboardingSession(input, client = null) {
     ]
   );
 
-  return result.rows[0] || null;
+  return mapOnboardingSessionRecord(result.rows[0] || null);
 }
 
 async function expirePreviousPendingSessions(clinicId, client = null) {
@@ -63,7 +83,7 @@ async function findOnboardingSessionByStateToken(stateToken, client = null) {
     [stateToken]
   );
 
-  return result.rows[0] || null;
+  return mapOnboardingSessionRecord(result.rows[0] || null);
 }
 
 async function findLatestOnboardingSessionByClinicId(clinicId, client = null) {
@@ -77,7 +97,7 @@ async function findLatestOnboardingSessionByClinicId(clinicId, client = null) {
     [clinicId]
   );
 
-  return result.rows[0] || null;
+  return mapOnboardingSessionRecord(result.rows[0] || null);
 }
 
 async function markOnboardingSessionFailed(sessionId, data, client = null) {
@@ -94,7 +114,7 @@ async function markOnboardingSessionFailed(sessionId, data, client = null) {
     [sessionId, data.errorCode || null, data.errorMessage || null, data.metadata || null]
   );
 
-  return result.rows[0] || null;
+  return mapOnboardingSessionRecord(result.rows[0] || null);
 }
 
 async function markOnboardingSessionPending(sessionId, data, client = null) {
@@ -119,8 +139,8 @@ async function markOnboardingSessionPending(sessionId, data, client = null) {
      RETURNING *`,
     [
       sessionId,
-      data.metaCode || null,
-      data.metaAccessToken || null,
+      maybeEncryptSecret(data.metaCode),
+      maybeEncryptSecret(data.metaAccessToken),
       data.metaTokenType || null,
       data.metaTokenExpiresAt || null,
       data.metaBusinessId || null,
@@ -134,7 +154,7 @@ async function markOnboardingSessionPending(sessionId, data, client = null) {
     ]
   );
 
-  return result.rows[0] || null;
+  return mapOnboardingSessionRecord(result.rows[0] || null);
 }
 
 async function markOnboardingSessionCompleted(sessionId, data, client = null) {
@@ -142,10 +162,10 @@ async function markOnboardingSessionCompleted(sessionId, data, client = null) {
     client,
     `UPDATE channel_onboarding_sessions
      SET status = 'completed',
-         "metaCode" = COALESCE($2, "metaCode"),
-         "metaAccessToken" = COALESCE($3, "metaAccessToken"),
-         "metaTokenType" = COALESCE($4, "metaTokenType"),
-         "metaTokenExpiresAt" = COALESCE($5, "metaTokenExpiresAt"),
+         "metaCode" = NULL,
+         "metaAccessToken" = NULL,
+         "metaTokenType" = NULL,
+         "metaTokenExpiresAt" = NULL,
          "metaBusinessId" = COALESCE($6, "metaBusinessId"),
          "wabaId" = COALESCE($7, "wabaId"),
          "phoneNumberId" = COALESCE($8, "phoneNumberId"),
@@ -161,8 +181,8 @@ async function markOnboardingSessionCompleted(sessionId, data, client = null) {
      RETURNING *`,
     [
       sessionId,
-      data.metaCode || null,
-      data.metaAccessToken || null,
+      null,
+      null,
       data.metaTokenType || null,
       data.metaTokenExpiresAt || null,
       data.metaBusinessId || null,
@@ -175,7 +195,7 @@ async function markOnboardingSessionCompleted(sessionId, data, client = null) {
     ]
   );
 
-  return result.rows[0] || null;
+  return mapOnboardingSessionRecord(result.rows[0] || null);
 }
 
 async function findWhatsAppChannelByPhoneNumberId(phoneNumberId, client = null) {
@@ -204,7 +224,7 @@ async function findWhatsAppChannelByPhoneNumberId(phoneNumberId, client = null) 
     [phoneNumberId]
   );
 
-  return result.rows[0] || null;
+  return mapChannelRecord(result.rows[0] || null);
 }
 
 async function upsertWhatsAppChannel(input, client = null) {
@@ -240,7 +260,7 @@ async function upsertWhatsAppChannel(input, client = null) {
       input.clinicId,
       input.phoneNumberId,
       input.wabaId || null,
-      input.accessToken || null,
+      maybeEncryptSecret(input.accessToken),
       input.displayPhoneNumber || null,
       input.verifiedName || null,
       input.status || 'active',
@@ -249,7 +269,7 @@ async function upsertWhatsAppChannel(input, client = null) {
     ]
   );
 
-  return result.rows[0] || null;
+  return mapChannelRecord(result.rows[0] || null);
 }
 
 async function reassignWhatsAppChannelToClinic(channelId, input, client = null) {
@@ -271,7 +291,7 @@ async function reassignWhatsAppChannelToClinic(channelId, input, client = null) 
       channelId,
       input.clinicId,
       input.wabaId || null,
-      input.accessToken || null,
+      maybeEncryptSecret(input.accessToken),
       input.displayPhoneNumber || null,
       input.verifiedName || null,
       input.status || 'active',
@@ -280,7 +300,7 @@ async function reassignWhatsAppChannelToClinic(channelId, input, client = null) 
     ]
   );
 
-  return result.rows[0] || null;
+  return mapChannelRecord(result.rows[0] || null);
 }
 
 async function deactivateOtherClinicWhatsAppChannels(clinicId, keepChannelId, client = null) {

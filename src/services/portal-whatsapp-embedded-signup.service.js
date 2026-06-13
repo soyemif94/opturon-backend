@@ -167,6 +167,24 @@ function summarizeSession(session) {
   };
 }
 
+function buildSafeChannelPayload(channel) {
+  if (!channel) return null;
+  return {
+    id: channel.id || null,
+    clinicId: channel.clinicId || null,
+    provider: channel.provider || 'whatsapp_cloud',
+    phoneNumberId: channel.phoneNumberId || null,
+    wabaId: channel.wabaId || null,
+    displayPhoneNumber: channel.displayPhoneNumber || null,
+    verifiedName: channel.verifiedName || null,
+    status: channel.status || null,
+    connectionSource: channel.connectionSource || null,
+    connectionMetadata: channel.connectionMetadata || null,
+    updatedAt: channel.updatedAt || null,
+    createdAt: channel.createdAt || null
+  };
+}
+
 function buildStatusPayload(context, session) {
   return {
     tenantId: context.tenantId,
@@ -745,7 +763,7 @@ async function finalizePortalWhatsAppSignup({
       tenantId: session.externalTenantId,
       clinicId: session.clinicId,
       status: persisted.channelStatus === 'active' ? 'connected' : 'pending_meta',
-      channel: persisted.channel,
+      channel: buildSafeChannelPayload(persisted.channel),
       session: summarizeSession(latestSession)
     };
   } catch (finalizeError) {

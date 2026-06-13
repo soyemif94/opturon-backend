@@ -1,5 +1,6 @@
 ﻿const env = require('../config/env');
 const { query, closePool } = require('./client');
+const { maybeEncryptSecret } = require('../utils/secret-crypto');
 
 async function ensureSeedInputs() {
   const clinicName = String(process.env.SEED_CLINIC_NAME || 'Clinica Demo').trim();
@@ -115,7 +116,7 @@ async function upsertChannel({ clinicId, phoneNumberId, wabaId, accessToken }) {
        status = 'active',
        "updatedAt" = NOW()
      RETURNING id, "clinicId", "phoneNumberId"`,
-    [clinicId, phoneNumberId, wabaId, accessToken]
+    [clinicId, phoneNumberId, wabaId, maybeEncryptSecret(accessToken)]
   );
 
   return result.rows[0];
