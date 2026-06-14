@@ -206,7 +206,7 @@ async function getMetaEmbeddedSignupReadiness(options = {}) {
   const validateEncryptionKey = options.validateEncryptionKey || validateConfiguredTokensEncryptionKey;
   const resolvedEnv = options.envOverride || env;
 
-  const appId = firstNonEmpty([resolvedEnv.whatsappAppId, process.env.META_APP_ID]);
+  const appId = firstNonEmpty([resolvedEnv.whatsappAppId, process.env.WHATSAPP_APP_ID]);
   const appSecret = firstNonEmpty([resolvedEnv.metaAppSecret, process.env.META_APP_SECRET]);
   const configId = firstNonEmpty([
     process.env.META_EMBEDDED_SIGNUP_CONFIG_ID,
@@ -334,6 +334,11 @@ async function getMetaEmbeddedSignupReadiness(options = {}) {
       configured: Boolean(appId && configId),
       safe: true,
       deliveryMode: 'server_side_payload',
+      fields: ['appId', 'configId', 'graphVersion', 'redirectUri', 'state'],
+      missingConfig: [
+        ...(appId ? [] : ['WHATSAPP_APP_ID']),
+        ...(configId ? [] : ['META_EMBEDDED_SIGNUP_CONFIG_ID'])
+      ],
       blocking: !(appId && configId)
     }
   };

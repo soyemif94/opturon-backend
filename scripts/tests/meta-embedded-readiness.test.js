@@ -65,12 +65,14 @@ function loadService({
 
 async function testMissingAppIdBlocks() {
   process.env.META_EMBEDDED_SIGNUP_CONFIG_ID = 'config-id';
+  process.env.META_APP_ID = 'legacy-meta-app-id';
   const { getMetaEmbeddedSignupReadiness } = loadService({
     envOverride: { whatsappAppId: '' }
   });
   const result = await getMetaEmbeddedSignupReadiness();
   assert.strictEqual(result.readyForTest, false);
   assert.ok(result.blockingChecks.includes('appId'));
+  assert.deepStrictEqual(result.checks.frontendLaunchPayload.missingConfig, ['WHATSAPP_APP_ID']);
 }
 
 async function testMissingAppSecretBlocks() {
@@ -115,6 +117,19 @@ async function testMissingEncryptionKeyBlocks() {
   assert.ok(result.blockingChecks.includes('tokenEncryption'));
 }
 
+async function testInvalidEncryptionKeyStaysBlocking() {
+  process.env.META_EMBEDDED_SIGNUP_CONFIG_ID = 'config-id';
+  const { getMetaEmbeddedSignupReadiness } = loadService({
+    validateEncryptionKey: () => {
+      throw new Error('TOKENS_ENCRYPTION_KEY invalid');
+    }
+  });
+  const result = await getMetaEmbeddedSignupReadiness();
+  assert.strictEqual(result.checks.tokenEncryption.configured, true);
+  assert.strictEqual(result.checks.tokenEncryption.valid, false);
+  assert.ok(result.blockingChecks.includes('tokenEncryption'));
+}
+
 async function testAllTechnicalChecksReady() {
   process.env.META_EMBEDDED_SIGNUP_CONFIG_ID = 'config-id';
   let fetchCalls = 0;
@@ -129,6 +144,8 @@ async function testAllTechnicalChecksReady() {
   assert.strictEqual(result.readyForTest, true);
   assert.strictEqual(result.status, 'ready_for_test');
   assert.strictEqual(fetchCalls, 1);
+  assert.strictEqual(result.checks.frontendLaunchPayload.blocking, false);
+  assert.deepStrictEqual(result.checks.frontendLaunchPayload.missingConfig, []);
 }
 
 async function testManualChecksKeepProductionFalse() {
@@ -156,6 +173,16 @@ async function testResponseDoesNotExposeSecrets() {
   assert.ok(!serialized.includes('encryption-secret-value'));
 }
 
+async function testPayloadFrontendBlocksWithoutConfigId() {
+  delete process.env.META_EMBEDDED_SIGNUP_CONFIG_ID;
+  const { getMetaEmbeddedSignupReadiness } = loadService();
+  const result = await getMetaEmbeddedSignupReadiness();
+  assert.ok(result.blockingChecks.includes('configId'));
+  assert.ok(result.blockingChecks.includes('frontendLaunchPayload'));
+  assert.deepStrictEqual(result.checks.frontendLaunchPayload.missingConfig, ['META_EMBEDDED_SIGNUP_CONFIG_ID']);
+  assert.ok(!JSON.stringify(result).includes('configured-secret'));
+}
+
 async function testExternalFailureDoesNotThrow() {
   process.env.META_EMBEDDED_SIGNUP_CONFIG_ID = 'config-id';
   const { getMetaEmbeddedSignupReadiness } = loadService();
@@ -181,11 +208,15 @@ async function run() {
   resetProcessEnv();
   await testMissingEncryptionKeyBlocks();
   resetProcessEnv();
+  await testInvalidEncryptionKeyStaysBlocking();
+  resetProcessEnv();
   await testAllTechnicalChecksReady();
   resetProcessEnv();
   await testManualChecksKeepProductionFalse();
   resetProcessEnv();
   await testResponseDoesNotExposeSecrets();
+  resetProcessEnv();
+  await testPayloadFrontendBlocksWithoutConfigId();
   resetProcessEnv();
   await testExternalFailureDoesNotThrow();
   console.log('meta-embedded-readiness.test.js: ok');
