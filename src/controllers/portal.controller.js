@@ -3545,8 +3545,10 @@ async function getPortalWhatsAppEmbeddedSignupStatus(req, res) {
 }
 
 async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
+  const tenantId = getRequestTenantId(req);
   try {
     const result = await finalizePortalWhatsAppSignup({
+      expectedTenantId: tenantId,
       stateToken: req.body && req.body.stateToken,
       code: req.body && req.body.code,
       redirectUri: req.body && req.body.redirectUri,
@@ -3884,7 +3886,9 @@ function mapPortalWhatsAppConnectReasonToStatus(reason, fallbackStatus = 422) {
 
   if (
     reason === 'WHATSAPP_CHANNEL_ALREADY_CONNECTED' ||
-    reason === 'channel_belongs_to_another_workspace'
+    reason === 'channel_belongs_to_another_workspace' ||
+    reason === 'embedded_signup_session_tenant_mismatch' ||
+    reason === 'embedded_signup_state_already_consumed'
   ) {
     return 409;
   }

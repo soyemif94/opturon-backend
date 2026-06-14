@@ -523,6 +523,7 @@ async function getPortalWhatsAppSignupStatus(tenantId) {
 }
 
 async function finalizePortalWhatsAppSignup({
+  expectedTenantId = null,
   stateToken,
   code,
   redirectUri,
@@ -544,6 +545,20 @@ async function finalizePortalWhatsAppSignup({
     return withReason('embedded_signup_session_not_found', 'No encontramos una sesion activa para el state recibido desde Meta.');
   }
 
+  const safeExpectedTenantId = String(expectedTenantId || '').trim();
+  if (safeExpectedTenantId && safeExpectedTenantId !== String(session.externalTenantId || '').trim()) {
+    logWarn('portal_whatsapp_embedded_signup_tenant_mismatch', {
+      expectedTenantId: safeExpectedTenantId,
+      sessionTenantId: session.externalTenantId || null,
+      clinicId: session.clinicId,
+      sessionId: session.id
+    });
+    return withReason(
+      'embedded_signup_session_tenant_mismatch',
+      'La sesion de Meta no pertenece al tenant seleccionado.'
+    );
+  }
+
   logInfo('portal_whatsapp_embedded_signup_callback_received', {
     tenantId: session.externalTenantId,
     clinicId: session.clinicId,
@@ -555,14 +570,10 @@ async function finalizePortalWhatsAppSignup({
   });
 
   if (session.status === 'completed') {
-    return {
-      ok: true,
-      tenantId: session.externalTenantId,
-      clinicId: session.clinicId,
-      status: 'connected',
-      channelId: session.channelId || null,
-      session: summarizeSession(session)
-    };
+    return withReason(
+      'embedded_signup_state_already_consumed',
+      'La sesion de Meta ya fue finalizada y no puede reutilizarse.'
+    );
   }
 
   if (isExpired(session)) {
