@@ -13,6 +13,7 @@ const {
   sendSaasSubscriptionAuthorizationLinkEmail
 } = require('../services/saas-billing.service');
 const { getAiAssistRuntimeDiagnostics } = require('../services/ai-assist.service');
+const { getMetaEmbeddedSignupReadiness } = require('../services/meta-embedded-readiness.service');
 const { logError } = require('../utils/logger');
 
 function sanitizeBillingPayload(payload) {
@@ -245,6 +246,19 @@ async function getAdminBillingSubscriptions(req, res) {
   }
 }
 
+async function getAdminMetaEmbeddedSignupReadiness(req, res) {
+  try {
+    const result = await getMetaEmbeddedSignupReadiness();
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'meta_embedded_signup_readiness_failed',
+      details: error && error.message ? error.message : 'unknown_error'
+    });
+  }
+}
+
 async function postAdminBillingSubscription(req, res) {
   const payload = req.body || {};
   const safePayload = sanitizeBillingPayload(payload);
@@ -373,5 +387,6 @@ module.exports = {
   getAdminBillingSubscription,
   postAdminBillingSubscriptionAction,
   postAdminBillingSubscriptionSendLink,
-  getAdminAiAssistDiagnostics
+  getAdminAiAssistDiagnostics,
+  getAdminMetaEmbeddedSignupReadiness
 };
