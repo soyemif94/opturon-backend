@@ -14,6 +14,9 @@ const {
   findOnboardingSessionByStateToken,
   findLatestOnboardingSessionByClinicId,
   markOnboardingSessionFailed,
+  markOnboardingSessionCancelled,
+  markOnboardingSessionExpired,
+  markOnboardingSessionProcessing,
   markOnboardingSessionPending,
   markOnboardingSessionCompleted,
   findWhatsAppChannelByPhoneNumberId,
@@ -21,10 +24,16 @@ const {
   deactivateOtherClinicWhatsAppChannels,
   withOnboardingTransaction
 } = require('../repositories/whatsapp-onboarding.repository');
+const { createPortalUserAuditEvent } = require('../repositories/portal-user-audit.repository');
 
 const DEFAULT_PROVIDER = 'meta_embedded_signup';
 const DEFAULT_GRAPH_VERSION = String(env.getWhatsAppGraphVersion()).trim();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ONBOARDING_SESSION_TTL_MS = 60 * 60 * 1000;
+const RECOVERABLE_SESSION_STATUSES = new Set(['created', 'launching', 'awaiting_callback']);
+const PROCESSING_SESSION_STATUSES = new Set(['exchanging_code', 'discovering_assets', 'subscribing_app', 'persisting_channel']);
+const ACTIVE_SESSION_STATUSES = new Set([...RECOVERABLE_SESSION_STATUSES, ...PROCESSING_SESSION_STATUSES]);
+const TERMINAL_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled', 'expired']);
 
 function buildMetaConfigStatus() {
   const appId = String(env.whatsappAppId || '').trim();
@@ -44,6 +53,64 @@ function randomToken(size = 32) {
 function normalizeActorUserId(value) {
   const safeValue = String(value || '').trim();
   return UUID_PATTERN.test(safeValue) ? safeValue : null;
+}
+
+function normalizeSessionStatus(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildSessionSafeErrorMessage(reason) {
+  if (reason === 'popup_closed_without_callback') {
+    return 'El popup de Meta se cerro antes de completar la conexion.';
+  }
+  if (reason === 'meta_flow_not_completed') {
+    return 'Meta no completo el flujo de conexion para este intento.';
+  }
+  if (reason === 'embedded_signup_session_expired') {
+    return 'La sesion de conexion con Meta expiro antes de completarse.';
+  }
+  if (reason === 'meta_embedded_signup_not_available_for_bsp_or_tp') {
+    return 'Meta rechazo la conexion porque Opturon todavia no esta habilitado como Tech Provider o BSP.';
+  }
+  return 'No pudimos completar la conexion con Meta.';
+}
+
+function isMetaBlockedMessage(message) {
+  const normalized = String(message || '').trim().toLowerCase();
+  if (!normalized) return false;
+
+  return [
+    'embedded signup is only available for bsps or tps',
+    'only available for bsps or tps',
+    'only available for tech providers',
+    'tech provider',
+    'business solution provider',
+    'bsp'
+  ].some((pattern) => normalized.includes(pattern));
+}
+
+function buildSessionAuditAction(status) {
+  if (status === 'cancelled') return 'whatsapp_embedded_signup_session_cancelled';
+  if (status === 'expired') return 'whatsapp_embedded_signup_session_expired';
+  if (status === 'failed') return 'whatsapp_embedded_signup_session_failed';
+  if (status === 'completed') return 'whatsapp_embedded_signup_session_completed';
+  return 'whatsapp_embedded_signup_session_updated';
+}
+
+function isRecoverableSessionStatus(status) {
+  return RECOVERABLE_SESSION_STATUSES.has(normalizeSessionStatus(status));
+}
+
+function isProcessingSessionStatus(status) {
+  return PROCESSING_SESSION_STATUSES.has(normalizeSessionStatus(status));
+}
+
+function isActiveSessionStatus(status) {
+  return ACTIVE_SESSION_STATUSES.has(normalizeSessionStatus(status));
+}
+
+function isTerminalSessionStatus(status) {
+  return TERMINAL_SESSION_STATUSES.has(normalizeSessionStatus(status));
 }
 
 function redactToken(value) {
@@ -140,9 +207,15 @@ function normalizeMetaEventPayload(rawPayload) {
 }
 
 function isExpired(session) {
-  if (!session || !session.expiresAt) return false;
-  const expiresAt = new Date(session.expiresAt).getTime();
-  return Number.isFinite(expiresAt) && expiresAt <= Date.now();
+  if (!session) return false;
+  const explicitExpiresAt = new Date(session.expiresAt || '').getTime();
+  if (Number.isFinite(explicitExpiresAt)) {
+    return explicitExpiresAt <= Date.now();
+  }
+
+  const createdAt = new Date(session.createdAt || '').getTime();
+  if (!Number.isFinite(createdAt)) return false;
+  return createdAt + ONBOARDING_SESSION_TTL_MS <= Date.now();
 }
 
 function summarizeSession(session) {
@@ -185,19 +258,125 @@ function buildSafeChannelPayload(channel) {
   };
 }
 
+async function writeOnboardingAuditEvent({
+  tenantId,
+  clinicId,
+  actorUserId = null,
+  session,
+  action,
+  reason = null,
+  detail = null,
+  client = null
+}) {
+  if (!tenantId || !clinicId || !session || !session.id) return null;
+
+  return createPortalUserAuditEvent(
+    {
+      tenantId,
+      clinicId,
+      actorUserId: normalizeActorUserId(actorUserId),
+      targetUserId: null,
+      action: action || buildSessionAuditAction(session.status),
+      payload: {
+        sessionId: session.id,
+        sessionStatus: session.status || null,
+        reason: reason || null,
+        detail: detail || null,
+        createdAt: session.createdAt || null,
+        updatedAt: session.updatedAt || null,
+        channelId: session.channelId || null
+      }
+    },
+    client
+  );
+}
+
+async function normalizeLatestOnboardingSession({
+  tenantId,
+  clinicId,
+  session,
+  actorUserId = null,
+  reason = null
+}) {
+  if (!session) return null;
+
+  const normalizedStatus = normalizeSessionStatus(session.status);
+  if (!isRecoverableSessionStatus(normalizedStatus)) {
+    return session;
+  }
+
+  if (!isExpired(session)) {
+    return session;
+  }
+
+  const expiredSession = await withOnboardingTransaction(async (client) => {
+    const updated = await markOnboardingSessionExpired(
+      session.id,
+      {
+        errorCode: 'embedded_signup_session_expired',
+        errorMessage: buildSessionSafeErrorMessage('embedded_signup_session_expired'),
+        metadata: {
+          ...(session.metadata && typeof session.metadata === 'object' ? session.metadata : {}),
+          recovery: {
+            reason: reason || 'status_refresh_timeout',
+            expiredAt: new Date().toISOString()
+          }
+        }
+      },
+      client
+    );
+
+    await writeOnboardingAuditEvent({
+      tenantId,
+      clinicId,
+      actorUserId,
+      session: updated,
+      reason: 'embedded_signup_session_expired',
+      detail: reason || 'status_refresh_timeout',
+      client
+    });
+
+    return updated;
+  });
+
+  logInfo('portal_whatsapp_embedded_signup_session_expired', {
+    tenantId,
+    clinicId,
+    sessionId: session.id,
+    previousStatus: normalizedStatus,
+    reason: reason || 'status_refresh_timeout'
+  });
+
+  return expiredSession;
+}
+
+function buildOnboardingUiState(session) {
+  const status = normalizeSessionStatus(session && session.status);
+
+  if (status === 'completed') return 'connected';
+  if (status === 'failed') return 'error';
+  if (status === 'cancelled' || status === 'expired') return 'idle';
+  if (isActiveSessionStatus(status) || status === 'pending_meta') return 'pending_meta';
+  return 'idle';
+}
+
 function buildStatusPayload(context, session) {
+  const normalizedStatus = normalizeSessionStatus(session && session.status);
+  const isActive = isActiveSessionStatus(normalizedStatus);
+  const isRecoverable = isRecoverableSessionStatus(normalizedStatus);
+  const isProcessing = isProcessingSessionStatus(normalizedStatus);
+  const canStartNewAttempt = !session || normalizedStatus === 'completed' || normalizedStatus === 'failed' || normalizedStatus === 'cancelled' || normalizedStatus === 'expired' || normalizedStatus === 'pending_meta';
+
   return {
     tenantId: context.tenantId,
     clinicId: context.clinic && context.clinic.id ? context.clinic.id : null,
     session: summarizeSession(session),
-    onboardingState:
-      session && session.status === 'completed'
-        ? 'connected'
-        : session && (session.status === 'launching' || session.status === 'pending_meta')
-          ? 'pending_meta'
-          : session && session.status === 'failed'
-            ? 'error'
-            : 'idle'
+    onboardingState: buildOnboardingUiState(session),
+    activeSession: isActive,
+    recoverableSession: isRecoverable,
+    processingSession: isProcessing,
+    canCancel: isRecoverable,
+    canStartNewAttempt
   };
 }
 
@@ -468,6 +647,7 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
         createdByUserId: normalizeActorUserId(actorUserId),
         redirectUri: safeRedirectUri,
         graphVersion: DEFAULT_GRAPH_VERSION,
+        status: 'awaiting_callback',
         stateToken: randomToken(24),
         nonce: randomToken(16),
         metadata: metadata || null
@@ -491,7 +671,7 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
     tenantId: safeTenantId,
     clinicId: context.clinic.id,
     ready: true,
-    status: 'launching',
+    status: 'awaiting_callback',
     reason: context.reason,
     session: summarizeSession(session),
     backendMetaReady: metaConfig.ready
@@ -509,7 +689,13 @@ async function getPortalWhatsAppSignupStatus(tenantId) {
     return context;
   }
 
-  const session = await findLatestOnboardingSessionByClinicId(context.clinic.id);
+  const latestSession = await findLatestOnboardingSessionByClinicId(context.clinic.id);
+  const session = await normalizeLatestOnboardingSession({
+    tenantId: safeTenantId,
+    clinicId: context.clinic.id,
+    session: latestSession,
+    reason: 'status_poll'
+  });
   logInfo('portal_whatsapp_embedded_signup_status_loaded', {
     tenantId: safeTenantId,
     clinicId: context.clinic.id,
@@ -540,7 +726,15 @@ async function finalizePortalWhatsAppSignup({
     return withReason('missing_state_token', 'No recibimos el state del onboarding para correlacionar el callback de Meta.');
   }
 
-  const session = await findOnboardingSessionByStateToken(safeStateToken);
+  const rawSession = await findOnboardingSessionByStateToken(safeStateToken);
+  const session = rawSession
+    ? await normalizeLatestOnboardingSession({
+        tenantId: rawSession.externalTenantId,
+        clinicId: rawSession.clinicId,
+        session: rawSession,
+        reason: 'finalize_received'
+      })
+    : null;
   if (!session) {
     return withReason('embedded_signup_session_not_found', 'No encontramos una sesion activa para el state recibido desde Meta.');
   }
@@ -588,10 +782,26 @@ async function finalizePortalWhatsAppSignup({
   }
 
   if (error) {
+    const normalizedExternalReason = isMetaBlockedMessage(`${error} ${errorDescription || ''}`)
+      ? 'meta_embedded_signup_not_available_for_bsp_or_tp'
+      : String(error).trim() || 'meta_embedded_signup_error';
     const failed = await markOnboardingSessionFailed(session.id, {
-      errorCode: String(error).trim() || 'meta_embedded_signup_error',
-      errorMessage: String(errorDescription || error).trim() || 'Meta devolvio un error al finalizar el Embedded Signup.',
-      metadata: metaPayload || null
+      errorCode: normalizedExternalReason,
+      errorMessage:
+        normalizedExternalReason === 'meta_embedded_signup_not_available_for_bsp_or_tp'
+          ? buildSessionSafeErrorMessage('meta_embedded_signup_not_available_for_bsp_or_tp')
+          : String(errorDescription || error).trim() || 'Meta devolvio un error al finalizar el Embedded Signup.',
+      metadata: {
+        metaPayload: metaPayload || null
+      }
+    });
+    await writeOnboardingAuditEvent({
+      tenantId: session.externalTenantId,
+      clinicId: session.clinicId,
+      actorUserId: session.createdByUserId || null,
+      session: failed || session,
+      reason: normalizedExternalReason,
+      detail: 'meta_callback_error'
     });
     return withReason(
       failed && failed.errorCode ? failed.errorCode : 'meta_embedded_signup_error',
@@ -600,6 +810,21 @@ async function finalizePortalWhatsAppSignup({
   }
 
   if (!safeCode) {
+    const cancelled = await markOnboardingSessionCancelled(session.id, {
+      errorCode: 'meta_flow_not_completed',
+      errorMessage: buildSessionSafeErrorMessage('meta_flow_not_completed'),
+      metadata: {
+        metaPayload: metaPayload || null
+      }
+    });
+    await writeOnboardingAuditEvent({
+      tenantId: session.externalTenantId,
+      clinicId: session.clinicId,
+      actorUserId: session.createdByUserId || null,
+      session: cancelled || session,
+      reason: 'meta_flow_not_completed',
+      detail: 'finalize_without_code'
+    });
     return withReason('missing_meta_code', 'Meta no devolvio el code de autorizacion necesario para finalizar la conexion.');
   }
 
@@ -611,10 +836,29 @@ async function finalizePortalWhatsAppSignup({
   }
 
   try {
+    await markOnboardingSessionProcessing(session.id, {
+      status: 'exchanging_code',
+      metadata: {
+        ...(session.metadata && typeof session.metadata === 'object' ? session.metadata : {}),
+        processing: {
+          stage: 'exchanging_code',
+          updatedAt: new Date().toISOString()
+        }
+      }
+    });
     const token = await exchangeMetaCodeForAccessToken({
       code: safeCode,
       redirectUri: safeRedirectUri,
       requestId
+    });
+    await markOnboardingSessionProcessing(session.id, {
+      status: 'discovering_assets',
+      metadata: {
+        processing: {
+          stage: 'discovering_assets',
+          updatedAt: new Date().toISOString()
+        }
+      }
     });
     const assets = await resolveMetaAssets({
       accessToken: token.accessToken,
@@ -656,6 +900,15 @@ async function finalizePortalWhatsAppSignup({
       );
     }
 
+    await markOnboardingSessionProcessing(session.id, {
+      status: 'subscribing_app',
+      metadata: {
+        processing: {
+          stage: 'subscribing_app',
+          updatedAt: new Date().toISOString()
+        }
+      }
+    });
     const subscription = await subscribeCurrentAppToWaba({
       accessToken: token.accessToken,
       wabaId: assets.wabaId,
@@ -680,6 +933,19 @@ async function finalizePortalWhatsAppSignup({
     }
 
     const persisted = await withOnboardingTransaction(async (client) => {
+      await markOnboardingSessionProcessing(
+        session.id,
+        {
+          status: 'persisting_channel',
+          metadata: {
+            processing: {
+              stage: 'persisting_channel',
+              updatedAt: new Date().toISOString()
+            }
+          }
+        },
+        client
+      );
       const channelStatus = subscription.ok ? 'active' : 'pending';
       const channel = await upsertWhatsAppChannel(
         {
@@ -757,6 +1023,14 @@ async function finalizePortalWhatsAppSignup({
     });
 
     const latestSession = await findOnboardingSessionByStateToken(safeStateToken);
+    await writeOnboardingAuditEvent({
+      tenantId: session.externalTenantId,
+      clinicId: session.clinicId,
+      actorUserId: session.createdByUserId || null,
+      session: latestSession || session,
+      reason: subscription.ok ? 'embedded_signup_completed' : 'meta_app_subscription_failed',
+      detail: subscription.ok ? 'finalize_success' : 'finalize_pending_subscription'
+    });
     logInfo('portal_whatsapp_embedded_signup_finalize_succeeded', {
       requestId,
       tenantId: session.externalTenantId,
@@ -779,13 +1053,30 @@ async function finalizePortalWhatsAppSignup({
     };
   } catch (finalizeError) {
     const reason = String(finalizeError.reason || finalizeError.message || 'meta_embedded_signup_finalize_failed').trim();
+    const normalizedFailureReason = isMetaBlockedMessage(`${reason} ${finalizeError.message || ''}`)
+      ? 'meta_embedded_signup_not_available_for_bsp_or_tp'
+      : reason;
     await markOnboardingSessionFailed(session.id, {
-      errorCode: reason,
-      errorMessage: String(finalizeError.message || reason).trim(),
+      errorCode: normalizedFailureReason,
+      errorMessage:
+        normalizedFailureReason === 'meta_embedded_signup_not_available_for_bsp_or_tp'
+          ? buildSessionSafeErrorMessage('meta_embedded_signup_not_available_for_bsp_or_tp')
+          : String(finalizeError.message || reason).trim(),
       metadata: {
         body: finalizeError.body || null,
         details: finalizeError.details || null
       }
+    });
+    await writeOnboardingAuditEvent({
+      tenantId: session.externalTenantId,
+      clinicId: session.clinicId,
+      actorUserId: session.createdByUserId || null,
+      session: {
+        ...session,
+        status: 'failed'
+      },
+      reason: normalizedFailureReason,
+      detail: 'finalize_exception'
     });
 
     logError('portal_whatsapp_embedded_signup_finalize_failed', {
@@ -800,15 +1091,174 @@ async function finalizePortalWhatsAppSignup({
 
     return {
       ok: false,
-      reason,
-      detail: String(finalizeError.message || reason).trim()
+      reason: normalizedFailureReason,
+      detail:
+        normalizedFailureReason === 'meta_embedded_signup_not_available_for_bsp_or_tp'
+          ? buildSessionSafeErrorMessage('meta_embedded_signup_not_available_for_bsp_or_tp')
+          : String(finalizeError.message || reason).trim()
     };
   }
+}
+
+async function refreshPortalWhatsAppSignupSession(tenantId, options = {}) {
+  const safeTenantId = String(tenantId || '').trim();
+  if (!safeTenantId) {
+    return withReason('missing_tenant_id', 'No recibimos el tenantId para refrescar la sesion de onboarding.');
+  }
+
+  const context = await resolvePortalTenantContext(safeTenantId);
+  if (!context.ok) {
+    return context;
+  }
+
+  const latestSession = await findLatestOnboardingSessionByClinicId(context.clinic.id);
+  let session = await normalizeLatestOnboardingSession({
+    tenantId: safeTenantId,
+    clinicId: context.clinic.id,
+    session: latestSession,
+    actorUserId: options.actorUserId || null,
+    reason: options.reason || 'manual_refresh'
+  });
+
+  const normalizedStatus = normalizeSessionStatus(session && session.status);
+  const requestedReason = String(options.reason || '').trim() || 'manual_refresh';
+  const safeMessage = buildSessionSafeErrorMessage(
+    requestedReason === 'popup_closed_without_callback' ? 'popup_closed_without_callback' : 'meta_flow_not_completed'
+  );
+
+  if (
+    session &&
+    !isTerminalSessionStatus(normalizedStatus) &&
+    !isProcessingSessionStatus(normalizedStatus) &&
+    isRecoverableSessionStatus(normalizedStatus) &&
+    (requestedReason === 'popup_closed_without_callback' || requestedReason === 'meta_flow_not_completed')
+  ) {
+    session = await withOnboardingTransaction(async (client) => {
+      const updated = await markOnboardingSessionCancelled(
+        session.id,
+        {
+          errorCode: requestedReason,
+          errorMessage: safeMessage,
+          metadata: {
+            ...(session.metadata && typeof session.metadata === 'object' ? session.metadata : {}),
+            recovery: {
+              reason: requestedReason,
+              source: options.source || 'admin_refresh',
+              detectedAt: new Date().toISOString()
+            }
+          }
+        },
+        client
+      );
+
+      await writeOnboardingAuditEvent({
+        tenantId: safeTenantId,
+        clinicId: context.clinic.id,
+        actorUserId: options.actorUserId || null,
+        session: updated,
+        reason: requestedReason,
+        detail: options.source || 'admin_refresh',
+        client
+      });
+
+      return updated;
+    });
+  }
+
+  return {
+    ok: true,
+    ...buildStatusPayload(context, session)
+  };
+}
+
+async function cancelPortalWhatsAppSignupSession(tenantId, options = {}) {
+  const safeTenantId = String(tenantId || '').trim();
+  if (!safeTenantId) {
+    return withReason('missing_tenant_id', 'No recibimos el tenantId para cancelar la sesion de onboarding.');
+  }
+
+  const context = await resolvePortalTenantContext(safeTenantId);
+  if (!context.ok) {
+    return context;
+  }
+
+  const latestSession = await findLatestOnboardingSessionByClinicId(context.clinic.id);
+  const session = await normalizeLatestOnboardingSession({
+    tenantId: safeTenantId,
+    clinicId: context.clinic.id,
+    session: latestSession,
+    actorUserId: options.actorUserId || null,
+    reason: 'cancel_request'
+  });
+
+  if (!session) {
+    return withReason('embedded_signup_session_not_found', 'No encontramos una sesion activa para cancelar.');
+  }
+
+  const normalizedStatus = normalizeSessionStatus(session.status);
+  if (normalizedStatus === 'completed') {
+    return withReason('embedded_signup_session_already_completed', 'La sesion ya fue completada y no se puede cancelar.');
+  }
+
+  if (isProcessingSessionStatus(normalizedStatus)) {
+    return withReason('embedded_signup_session_processing', 'La sesion esta siendo procesada por backend y no se cancela de forma preventiva.');
+  }
+
+  if (!isRecoverableSessionStatus(normalizedStatus)) {
+    return withReason('embedded_signup_session_not_cancelable', 'La sesion actual no esta en un estado recuperable para cancelar.');
+  }
+
+  const cancelledSession = await withOnboardingTransaction(async (client) => {
+    const updated = await markOnboardingSessionCancelled(
+      session.id,
+      {
+        errorCode: 'popup_closed_without_callback',
+        errorMessage: buildSessionSafeErrorMessage('popup_closed_without_callback'),
+        metadata: {
+          ...(session.metadata && typeof session.metadata === 'object' ? session.metadata : {}),
+          recovery: {
+            reason: 'popup_closed_without_callback',
+            source: options.source || 'admin_cancel',
+            cancelledAt: new Date().toISOString()
+          }
+        }
+      },
+      client
+    );
+
+    await writeOnboardingAuditEvent({
+      tenantId: safeTenantId,
+      clinicId: context.clinic.id,
+      actorUserId: options.actorUserId || null,
+      session: updated,
+      reason: 'popup_closed_without_callback',
+      detail: options.source || 'admin_cancel',
+      client
+    });
+
+    return updated;
+  });
+
+  return {
+    ok: true,
+    ...buildStatusPayload(context, cancelledSession)
+  };
 }
 
 module.exports = {
   createPortalWhatsAppSignupSession,
   getPortalWhatsAppSignupStatus,
+  refreshPortalWhatsAppSignupSession,
+  cancelPortalWhatsAppSignupSession,
   finalizePortalWhatsAppSignup,
-  buildMetaConfigStatus
+  buildMetaConfigStatus,
+  __private__: {
+    ONBOARDING_SESSION_TTL_MS,
+    buildOnboardingUiState,
+    isRecoverableSessionStatus,
+    isProcessingSessionStatus,
+    isActiveSessionStatus,
+    isMetaBlockedMessage,
+    buildSessionSafeErrorMessage
+  }
 };

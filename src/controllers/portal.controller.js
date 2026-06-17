@@ -138,6 +138,8 @@ const { provisionPortalTenant } = require('../services/portal-provisioning.servi
 const {
   createPortalWhatsAppSignupSession,
   getPortalWhatsAppSignupStatus,
+  refreshPortalWhatsAppSignupSession,
+  cancelPortalWhatsAppSignupSession,
   finalizePortalWhatsAppSignup
 } = require('../services/portal-whatsapp-embedded-signup.service');
 const {
@@ -3544,6 +3546,73 @@ async function getPortalWhatsAppEmbeddedSignupStatus(req, res) {
   }
 }
 
+async function postPortalWhatsAppEmbeddedSignupRefresh(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
+
+  try {
+    const result = await refreshPortalWhatsAppSignupSession(tenantId, {
+      actorUserId,
+      reason: req.body && req.body.reason ? String(req.body.reason).trim() : 'manual_refresh',
+      source: req.body && req.body.source ? String(req.body.source).trim() : 'portal_controller_refresh'
+    });
+
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_embedded_signup_refresh_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalWhatsAppEmbeddedSignupCancel(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actorUserId = String(req.get('x-portal-actor-id') || '').trim() || null;
+
+  try {
+    const result = await cancelPortalWhatsAppSignupSession(tenantId, {
+      actorUserId,
+      source: req.body && req.body.source ? String(req.body.source).trim() : 'portal_controller_cancel'
+    });
+
+    if (!result.ok) {
+      const status = mapPortalWhatsAppConnectReasonToStatus(result.reason, 422);
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        detail: result.detail || null,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_embedded_signup_cancel_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
   const tenantId = getRequestTenantId(req);
   try {
@@ -3901,7 +3970,11 @@ function mapPortalWhatsAppConnectReasonToStatus(reason, fallbackStatus = 422) {
     reason === 'meta_app_subscription_failed' ||
     reason === 'meta_business_assets_not_found' ||
     reason === 'meta_embedded_signup_not_configured' ||
-    reason === 'meta_debug_token_not_configured'
+    reason === 'meta_debug_token_not_configured' ||
+    reason === 'meta_embedded_signup_not_available_for_bsp_or_tp' ||
+    reason === 'embedded_signup_session_not_cancelable' ||
+    reason === 'embedded_signup_session_processing' ||
+    reason === 'embedded_signup_session_already_completed'
   ) {
     return 422;
   }
@@ -4225,6 +4298,8 @@ module.exports = {
   getPortalAuthUser,
   postPortalWhatsAppEmbeddedSignupBootstrap,
   getPortalWhatsAppEmbeddedSignupStatus,
+  postPortalWhatsAppEmbeddedSignupRefresh,
+  postPortalWhatsAppEmbeddedSignupCancel,
   postPortalWhatsAppEmbeddedSignupFinalize,
   postPortalWhatsAppManualConnect,
   postPortalWhatsAppDiscoverAssets,

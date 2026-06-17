@@ -65,9 +65,17 @@ async function expirePreviousPendingSessions(clinicId, client = null) {
     client,
     `UPDATE channel_onboarding_sessions
      SET status = 'expired',
+         "errorCode" = CASE
+           WHEN COALESCE("errorCode", '') = '' THEN 'embedded_signup_session_expired'
+           ELSE "errorCode"
+         END,
+         "errorMessage" = CASE
+           WHEN COALESCE("errorMessage", '') = '' THEN 'La sesion de conexion con Meta expiro antes de completarse.'
+           ELSE "errorMessage"
+         END,
          "updatedAt" = NOW()
      WHERE "clinicId" = $1
-       AND status IN ('launching', 'pending_meta')
+       AND status IN ('created', 'launching', 'awaiting_callback')
        AND "completedAt" IS NULL`,
     [clinicId]
   );
@@ -115,6 +123,74 @@ async function markOnboardingSessionFailed(sessionId, data, client = null) {
   );
 
   return mapOnboardingSessionRecord(result.rows[0] || null);
+}
+
+async function updateOnboardingSessionStatus(sessionId, data, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE channel_onboarding_sessions
+     SET status = COALESCE($2, status),
+         "errorCode" = CASE
+           WHEN $3::text = '__CLEAR__' THEN NULL
+           ELSE COALESCE($3, "errorCode")
+         END,
+         "errorMessage" = CASE
+           WHEN $4::text = '__CLEAR__' THEN NULL
+           ELSE COALESCE($4, "errorMessage")
+         END,
+         metadata = COALESCE($5, metadata),
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [
+      sessionId,
+      data.status || null,
+      Object.prototype.hasOwnProperty.call(data, 'errorCode') ? data.errorCode : null,
+      Object.prototype.hasOwnProperty.call(data, 'errorMessage') ? data.errorMessage : null,
+      data.metadata || null
+    ]
+  );
+
+  return mapOnboardingSessionRecord(result.rows[0] || null);
+}
+
+async function markOnboardingSessionCancelled(sessionId, data, client = null) {
+  return updateOnboardingSessionStatus(
+    sessionId,
+    {
+      status: 'cancelled',
+      errorCode: data && Object.prototype.hasOwnProperty.call(data, 'errorCode') ? data.errorCode : null,
+      errorMessage: data && Object.prototype.hasOwnProperty.call(data, 'errorMessage') ? data.errorMessage : null,
+      metadata: data && data.metadata ? data.metadata : null
+    },
+    client
+  );
+}
+
+async function markOnboardingSessionExpired(sessionId, data, client = null) {
+  return updateOnboardingSessionStatus(
+    sessionId,
+    {
+      status: 'expired',
+      errorCode: data && Object.prototype.hasOwnProperty.call(data, 'errorCode') ? data.errorCode : null,
+      errorMessage: data && Object.prototype.hasOwnProperty.call(data, 'errorMessage') ? data.errorMessage : null,
+      metadata: data && data.metadata ? data.metadata : null
+    },
+    client
+  );
+}
+
+async function markOnboardingSessionProcessing(sessionId, data, client = null) {
+  return updateOnboardingSessionStatus(
+    sessionId,
+    {
+      status: data.status,
+      errorCode: Object.prototype.hasOwnProperty.call(data, 'errorCode') ? data.errorCode : '__CLEAR__',
+      errorMessage: Object.prototype.hasOwnProperty.call(data, 'errorMessage') ? data.errorMessage : '__CLEAR__',
+      metadata: data.metadata || null
+    },
+    client
+  );
 }
 
 async function markOnboardingSessionPending(sessionId, data, client = null) {
@@ -327,6 +403,9 @@ module.exports = {
   findOnboardingSessionByStateToken,
   findLatestOnboardingSessionByClinicId,
   markOnboardingSessionFailed,
+  markOnboardingSessionCancelled,
+  markOnboardingSessionExpired,
+  markOnboardingSessionProcessing,
   markOnboardingSessionPending,
   markOnboardingSessionCompleted,
   findWhatsAppChannelByPhoneNumberId,

@@ -103,6 +103,8 @@ const {
   getPortalAuthUser,
   postPortalWhatsAppEmbeddedSignupBootstrap,
   getPortalWhatsAppEmbeddedSignupStatus,
+  postPortalWhatsAppEmbeddedSignupRefresh,
+  postPortalWhatsAppEmbeddedSignupCancel,
   postPortalWhatsAppEmbeddedSignupFinalize,
   postPortalWhatsAppManualConnect,
   postPortalWhatsAppDiscoverAssets,
@@ -315,6 +317,8 @@ router.patch('/tenants/:tenantId/bot-settings', requirePortalInternalAuth, patch
 router.get('/tenants/:tenantId/bot/transfer-config', requirePortalInternalAuth, getPortalBotTransferConfigController);
 router.post('/tenants/:tenantId/bot/transfer-config', requirePortalInternalAuth, postPortalBotTransferConfigController);
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);
+router.post('/tenants/:tenantId/whatsapp/embedded-signup/refresh', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupRefresh);
+router.post('/tenants/:tenantId/whatsapp/embedded-signup/cancel', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupCancel);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupBootstrap);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/finalize', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupFinalize);
 router.post('/tenants/:tenantId/whatsapp/manual-connect', requirePortalInternalAuth, postPortalWhatsAppManualConnect);
