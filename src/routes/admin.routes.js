@@ -11,9 +11,23 @@ const {
   postAdminBillingSubscriptionAction,
   postAdminBillingSubscriptionSendLink,
   getAdminAiAssistDiagnostics,
-  getAdminMetaEmbeddedSignupReadiness
+  getAdminMetaEmbeddedSignupReadiness,
+  getAdminPartners,
+  postAdminPartner,
+  getAdminPartner,
+  patchAdminPartnerStatus,
+  postAdminPartnerSponsor,
+  postAdminPartnerAttribution,
+  postAdminPartnerRankEvaluation,
+  getAdminPartnerCommissionPlans,
+  postAdminPartnerCommissionPlan,
+  postAdminPartnerCommissionPlanVersion,
+  postAdminPartnerCommissionSimulation,
+  postAdminPartnerCommissionGeneration,
+  postAdminPartnerCommissionReverse
 } = require('../controllers/admin.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
+const { requireAdminInternalActor } = require('../middlewares/partner-auth.middleware');
 
 const router = express.Router();
 
@@ -29,5 +43,18 @@ router.post('/billing/subscriptions/:id/:action(cancel|pause|reactivate)', requi
 router.post('/tenants/:tenantId/billing/subscription/send-link', requirePortalInternalAuth, postAdminBillingSubscriptionSendLink);
 router.get('/diagnostics/ai-assist', requirePortalInternalAuth, getAdminAiAssistDiagnostics);
 router.get('/meta/embedded-signup/readiness', requirePortalInternalAuth, getAdminMetaEmbeddedSignupReadiness);
+router.get('/partners', requireAdminInternalActor, getAdminPartners);
+router.post('/partners', requireAdminInternalActor, postAdminPartner);
+router.get('/partners/commission-plans', requireAdminInternalActor, getAdminPartnerCommissionPlans);
+router.post('/partners/commission-plans', requireAdminInternalActor, postAdminPartnerCommissionPlan);
+router.post('/partners/commission-plans/:planCode/versions', requireAdminInternalActor, postAdminPartnerCommissionPlanVersion);
+router.post('/partners/commissions/simulate', requireAdminInternalActor, postAdminPartnerCommissionSimulation);
+router.post('/partners/commissions/generate-controlled', requireAdminInternalActor, postAdminPartnerCommissionGeneration);
+router.post('/partners/commissions/reverse-controlled', requireAdminInternalActor, postAdminPartnerCommissionReverse);
+router.get('/partners/:partnerId', requireAdminInternalActor, getAdminPartner);
+router.patch('/partners/:partnerId/status', requireAdminInternalActor, patchAdminPartnerStatus);
+router.post('/partners/:partnerId/sponsor', requireAdminInternalActor, postAdminPartnerSponsor);
+router.post('/partners/:partnerId/attributions', requireAdminInternalActor, postAdminPartnerAttribution);
+router.post('/partners/:partnerId/rank/evaluate', requireAdminInternalActor, postAdminPartnerRankEvaluation);
 
 module.exports = router;

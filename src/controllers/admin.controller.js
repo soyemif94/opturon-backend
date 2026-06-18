@@ -14,6 +14,20 @@ const {
 } = require('../services/saas-billing.service');
 const { getAiAssistRuntimeDiagnostics } = require('../services/ai-assist.service');
 const { getMetaEmbeddedSignupReadiness } = require('../services/meta-embedded-readiness.service');
+const {
+  createPartner,
+  listPartnersForAdmin,
+  getPartnerDetails,
+  changePartnerStatus,
+  assignPartnerSponsor,
+  attributeTenantToPartner,
+  createCommissionPlanWithVersion,
+  addCommissionPlanVersion,
+  listCommissionPlansForAdmin,
+  simulateCommissionEntries,
+  reverseCommissionEntries,
+  evaluatePartnerRank
+} = require('../services/partners.service');
 const { logError } = require('../utils/logger');
 
 function sanitizeBillingPayload(payload) {
@@ -39,6 +53,13 @@ function sanitizeBackendErrorBody(body) {
 
 function normalizeErrorCode(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function getAdminActor(req) {
+  return {
+    actorUserId: String(req.get('x-portal-actor-id') || '').trim() || null,
+    actorRole: String(req.get('x-portal-actor-role') || '').trim().toLowerCase() || null
+  };
 }
 
 function mapBillingSubscriptionCreateError(error) {
@@ -376,6 +397,185 @@ async function getAdminAiAssistDiagnostics(req, res) {
   }
 }
 
+async function getAdminPartners(req, res) {
+  try {
+    return res.status(200).json({ success: true, data: await listPartnersForAdmin() });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_list_failed', details: error.message });
+  }
+}
+
+async function postAdminPartner(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await createPartner(req.body || {}, { actorStaffUserId: actorUserId });
+    if (!result.ok) {
+      return res.status(400).json({ success: false, error: result.reason });
+    }
+    return res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_create_failed', details: error.message });
+  }
+}
+
+async function getAdminPartner(req, res) {
+  try {
+    const result = await getPartnerDetails(String(req.params.partnerId || '').trim());
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_read_failed', details: error.message });
+  }
+}
+
+async function patchAdminPartnerStatus(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await changePartnerStatus(String(req.params.partnerId || '').trim(), req.body && req.body.status, {
+      actorStaffUserId: actorUserId
+    });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_status_update_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerSponsor(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await assignPartnerSponsor(
+      String(req.params.partnerId || '').trim(),
+      String((req.body && req.body.sponsorPartnerId) || '').trim() || null,
+      { actorStaffUserId: actorUserId }
+    );
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' || result.reason === 'partner_sponsor_not_found' ? 404 : 400).json({
+        success: false,
+        error: result.reason
+      });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_sponsor_update_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerAttribution(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await attributeTenantToPartner(String(req.params.partnerId || '').trim(), req.body || {}, {
+      actorStaffUserId: actorUserId
+    });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' || result.reason === 'tenant_not_found' ? 404 : 400).json({
+        success: false,
+        error: result.reason,
+        partnerId: result.partnerId || undefined
+      });
+    }
+    return res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_attribution_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerRankEvaluation(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await evaluatePartnerRank(String(req.params.partnerId || '').trim(), req.body || {}, {
+      actorStaffUserId: actorUserId
+    });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' || result.reason === 'partner_commission_plan_version_not_found' ? 404 : 400).json({
+        success: false,
+        error: result.reason
+      });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_rank_evaluation_failed', details: error.message });
+  }
+}
+
+async function getAdminPartnerCommissionPlans(req, res) {
+  try {
+    return res.status(200).json({ success: true, data: await listCommissionPlansForAdmin() });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_commission_plan_list_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerCommissionPlan(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await createCommissionPlanWithVersion(req.body || {}, { actorStaffUserId: actorUserId });
+    if (!result.ok) {
+      return res.status(400).json({ success: false, error: result.reason });
+    }
+    return res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_commission_plan_create_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerCommissionPlanVersion(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await addCommissionPlanVersion(String(req.params.planCode || '').trim(), req.body || {}, {
+      actorStaffUserId: actorUserId
+    });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_commission_plan_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_commission_plan_version_create_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerCommissionSimulation(req, res) {
+  try {
+    const result = await simulateCommissionEntries(req.body || {}, { persist: false });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_commission_plan_version_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_commission_simulation_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerCommissionGeneration(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await simulateCommissionEntries(req.body || {}, { persist: true, actorStaffUserId: actorUserId });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_commission_plan_version_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_commission_generation_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerCommissionReverse(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await reverseCommissionEntries(req.body || {}, { actorStaffUserId: actorUserId });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_commission_entry_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_commission_reverse_failed', details: error.message });
+  }
+}
+
 module.exports = {
   postSetActiveTenant,
   getTenants,
@@ -388,5 +588,18 @@ module.exports = {
   postAdminBillingSubscriptionAction,
   postAdminBillingSubscriptionSendLink,
   getAdminAiAssistDiagnostics,
-  getAdminMetaEmbeddedSignupReadiness
+  getAdminMetaEmbeddedSignupReadiness,
+  getAdminPartners,
+  postAdminPartner,
+  getAdminPartner,
+  patchAdminPartnerStatus,
+  postAdminPartnerSponsor,
+  postAdminPartnerAttribution,
+  postAdminPartnerRankEvaluation,
+  getAdminPartnerCommissionPlans,
+  postAdminPartnerCommissionPlan,
+  postAdminPartnerCommissionPlanVersion,
+  postAdminPartnerCommissionSimulation,
+  postAdminPartnerCommissionGeneration,
+  postAdminPartnerCommissionReverse
 };
