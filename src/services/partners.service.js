@@ -43,6 +43,8 @@ const {
 const PARTNER_STATUSES = new Set(['invited', 'active', 'suspended', 'disabled']);
 const DEFAULT_COMMISSION_CAP_PERCENT = '15.00';
 const SUPPORTED_EVENT_TYPES = new Set(['subscription_signup_accredited', 'subscription_recurring_accredited']);
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+let savepointSequence = 0;
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -85,14 +87,19 @@ function parseMoneyToCents(value) {
   const negative = normalized.startsWith('-');
   const unsigned = negative ? normalized.slice(1) : normalized;
   const [wholePart, decimalPart = ''] = unsigned.split('.');
-  const cents = (Number(wholePart) * 100) + Number((decimalPart + '00').slice(0, 2));
-  return negative ? -cents : cents;
+  const cents = (BigInt(wholePart) * 100n) + BigInt((decimalPart + '00').slice(0, 2));
+  const signed = negative ? -cents : cents;
+  if (signed > MAX_SAFE_INTEGER_BIGINT || signed < -MAX_SAFE_INTEGER_BIGINT) {
+    return null;
+  }
+  return Number(signed);
 }
 
 function centsToMoney(cents) {
-  const sign = cents < 0 ? '-' : '';
-  const safe = Math.abs(Number(cents) || 0);
-  return `${sign}${Math.floor(safe / 100)}.${String(safe % 100).padStart(2, '0')}`;
+  const normalized = typeof cents === 'bigint' ? cents : BigInt(Number(cents) || 0);
+  const sign = normalized < 0n ? '-' : '';
+  const safe = normalized < 0n ? -normalized : normalized;
+  return `${sign}${safe / 100n}.${String(Number(safe % 100n)).padStart(2, '0')}`;
 }
 
 function parsePercentToBasisPoints(value) {
@@ -111,6 +118,12 @@ function compareMoneyStrings(a, b) {
   if (left === null || right === null) return 0;
   if (left === right) return 0;
   return left > right ? 1 : -1;
+}
+
+function assertSafeNonNegativeInteger(value, errorCode) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(errorCode);
+  }
 }
 
 function isUniqueViolation(error) {
@@ -457,7 +470,7 @@ async function attributeTenantToPartner(partnerId, payload, options = {}) {
 
     let attribution;
     try {
-      attribution = await createPartnerAttribution(
+      attribution = await withSavepoint(client, () => createPartnerAttribution(
         {
           partnerId,
           clinicId: clinic.id,
@@ -467,7 +480,7 @@ async function attributeTenantToPartner(partnerId, payload, options = {}) {
           createdByStaffUserId: actorStaffUserId
         },
         client
-      );
+      ));
     } catch (error) {
       if (isUniqueViolation(error)) {
         const concurrentActive = await findActiveAttributionByTenantId(tenantId, client);
@@ -649,7 +662,36 @@ function buildPeriodKey(eventAt) {
 }
 
 function calculateCommissionAmountCents(basisAmountCents, rateBasisPoints) {
-  return Math.round((basisAmountCents * rateBasisPoints) / 10000);
+  assertSafeNonNegativeInteger(basisAmountCents, 'partner_commission_amount_out_of_range');
+  assertSafeNonNegativeInteger(rateBasisPoints, 'partner_commission_amount_out_of_range');
+  const rounded = ((BigInt(basisAmountCents) * BigInt(rateBasisPoints)) + 5000n) / 10000n;
+  if (rounded > MAX_SAFE_INTEGER_BIGINT) {
+    throw new Error('partner_commission_amount_out_of_range');
+  }
+  return Number(rounded);
+}
+
+async function acquireTransactionAdvisoryLock(client, scope, key) {
+  if (!client || typeof client.query !== 'function') return;
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [scope, key]);
+}
+
+async function withSavepoint(client, operation) {
+  if (!client || typeof client.query !== 'function') {
+    return operation();
+  }
+  savepointSequence += 1;
+  const savepointName = `sp_partner_${savepointSequence}`;
+  await client.query(`SAVEPOINT ${savepointName}`);
+  try {
+    const result = await operation();
+    await client.query(`RELEASE SAVEPOINT ${savepointName}`);
+    return result;
+  } catch (error) {
+    await client.query(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+    await client.query(`RELEASE SAVEPOINT ${savepointName}`);
+    throw error;
+  }
 }
 
 async function buildPartnerChain(rootPartnerId, client = null) {
@@ -744,6 +786,16 @@ async function simulateCommissionEntries(payload, options = {}) {
         }
       }
 
+      let commissionAmount;
+      try {
+        commissionAmount = centsToMoney(calculateCommissionAmountCents(basisAmountCents, rateBasisPoints));
+      } catch (error) {
+        if (error && error.message === 'partner_commission_amount_out_of_range') {
+          return { ok: false, reason: 'partner_commission_amount_out_of_range' };
+        }
+        throw error;
+      }
+
       entries.push({
         partnerId: partner.id,
         attributionId: context.attribution.id,
@@ -764,7 +816,7 @@ async function simulateCommissionEntries(payload, options = {}) {
         paymentStatus: 'accredited',
         basisAmount: centsToMoney(basisAmountCents),
         commissionRate: basisPointsToPercentString(rateBasisPoints),
-        commissionAmount: centsToMoney(calculateCommissionAmountCents(basisAmountCents, rateBasisPoints)),
+        commissionAmount,
         depthLevel: index,
         idempotencyKey: `${sourceType}:${sourceRef}:${sourceEventId}:${partner.id}:${index}:${options.persist ? 'generated' : 'simulated'}`,
         details: {
@@ -782,6 +834,7 @@ async function simulateCommissionEntries(payload, options = {}) {
 
     const persistedEntries = [];
     if (options.persist) {
+      await acquireTransactionAdvisoryLock(client, 'partner_commission_source', `${sourceType}:${sourceRef}:${sourceEventId}`);
       const existing = await findCommissionEntriesBySource(sourceType, sourceRef, sourceEventId, client);
       if (existing.length > 0) {
         return { ok: true, simulation: existing, planVersion, reusedExisting: true };
@@ -790,13 +843,13 @@ async function simulateCommissionEntries(payload, options = {}) {
       for (const entry of entries) {
         // Idempotency is also enforced by SQL, but we keep write ordering explicit.
         try {
-          persistedEntries.push(await createCommissionEntry(
+          persistedEntries.push(await withSavepoint(client, () => createCommissionEntry(
             {
               ...entry,
               createdByStaffUserId: isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null
             },
             client
-          ));
+          )));
         } catch (error) {
           if (isUniqueViolation(error)) {
             const concurrentExisting = await findCommissionEntriesBySource(sourceType, sourceRef, sourceEventId, client);
@@ -848,7 +901,7 @@ async function reverseCommissionEntries(payload, options = {}) {
 
     let reversal;
     try {
-      reversal = await createCommissionEntry(
+      reversal = await withSavepoint(client, () => createCommissionEntry(
         {
           partnerId: entry.partnerId,
           attributionId: entry.attributionId,
@@ -880,7 +933,7 @@ async function reverseCommissionEntries(payload, options = {}) {
           createdByStaffUserId: actorStaffUserId
         },
         client
-      );
+      ));
     } catch (error) {
       if (isUniqueViolation(error)) {
         const existingReversal = await findReversalEntryByOriginalEntryId(entry.id, client);

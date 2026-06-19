@@ -602,8 +602,8 @@ async function createCommissionEntry(input, client = null) {
   const result = await dbQuery(
     client,
     `INSERT INTO partner_commission_entries
-      ("partnerId", "attributionId", "planVersionId", "clinicId", "tenantId", "sourceType", "sourceRef", "sourceEventId", "eventType", "eventAt", "periodKey", currency, "planCodeSnapshot", "planVersionNumberSnapshot", "payoutKind", "paymentStatus", status, "basisAmount", "commissionRate", "commissionAmount", "depthLevel", "idempotencyKey", "reversalOfEntryId", details, "createdByStaffUserId", "updatedAt")
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25::jsonb, $26::uuid, NOW())
+      ("partnerId", "attributionId", "planVersionId", "clinicId", "tenantId", "sourceType", "sourceRef", "sourceEventId", "eventType", "eventAt", "periodKey", currency, "planCodeSnapshot", "planVersionNumberSnapshot", "payoutKind", "paymentStatus", status, "basisAmount", "commissionRate", "commissionAmount", "depthLevel", "idempotencyKey", "reversalOfEntryId", details, "createdByStaffUserId")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25::uuid)
      RETURNING id,
                "partnerId",
                "attributionId",

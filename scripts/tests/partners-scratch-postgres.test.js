@@ -52,9 +52,10 @@ async function waitForPostgres(dbUrl, timeoutMs = 60000) {
 }
 
 async function withScratchDatabase(testFn) {
+  const containerName = `partners-scratch-${Date.now()}`;
   const containerId = execFileSync(
     'docker',
-    ['run', '-d', '-e', `POSTGRES_PASSWORD=${SCRATCH_PASSWORD}`, '-e', `POSTGRES_DB=${SCRATCH_DB}`, '-P', POSTGRES_IMAGE],
+    ['run', '--name', containerName, '-d', '-e', `POSTGRES_PASSWORD=${SCRATCH_PASSWORD}`, '-e', `POSTGRES_DB=${SCRATCH_DB}`, '-P', POSTGRES_IMAGE],
     { cwd: rootDir, encoding: 'utf8' }
   ).trim();
 
@@ -64,10 +65,16 @@ async function withScratchDatabase(testFn) {
     const dbUrl = `postgresql://${SCRATCH_USER}:${SCRATCH_PASSWORD}@127.0.0.1:${mappedPort}/${SCRATCH_DB}`;
 
     await waitForPostgres(dbUrl);
-    await testFn(dbUrl);
+    await testFn(dbUrl, {
+      containerName,
+      containerId,
+      image: POSTGRES_IMAGE,
+      mappedPort,
+      database: SCRATCH_DB
+    });
   } finally {
     try {
-      execFileSync('docker', ['rm', '-f', containerId], { cwd: rootDir, encoding: 'utf8' });
+      execFileSync('docker', ['rm', '-f', '-v', containerId], { cwd: rootDir, encoding: 'utf8' });
     } catch {}
   }
 }
@@ -246,7 +253,7 @@ async function exerciseScratchDomain(dbUrl) {
     await rankClient.connect();
     await setPartnerRank(rankClient, partnerA.partner.id, 'lider', seed.adminActorId);
     await setPartnerRank(rankClient, partnerB.partner.id, 'emperador', seed.adminActorId);
-    await setPartnerRank(rankClient, partnerC.partner.id, 'coordinador', seed.adminActorId);
+    await setPartnerRank(rankClient, partnerC.partner.id, 'asesor', seed.adminActorId);
     await rankClient.end();
 
     const planV1 = await service.createCommissionPlanWithVersion(
@@ -324,6 +331,30 @@ async function exerciseScratchDomain(dbUrl) {
     assert.strictEqual(pending.ok, false);
     assert.strictEqual(pending.reason, 'partner_commission_payment_not_eligible');
 
+    const rejected = await service.simulateCommissionEntries(
+      {
+        ...generationPayload,
+        sourceRef: 'payment-rejected',
+        sourceEventId: 'payment-rejected-evt',
+        paymentStatus: 'rejected'
+      },
+      { persist: false }
+    );
+    assert.strictEqual(rejected.ok, false);
+    assert.strictEqual(rejected.reason, 'partner_commission_payment_not_eligible');
+
+    const reversedPayment = await service.simulateCommissionEntries(
+      {
+        ...generationPayload,
+        sourceRef: 'payment-reversed',
+        sourceEventId: 'payment-reversed-evt',
+        reversed: true
+      },
+      { persist: false }
+    );
+    assert.strictEqual(reversedPayment.ok, false);
+    assert.strictEqual(reversedPayment.reason, 'partner_commission_payment_not_eligible');
+
     const rulesV2 = {
       ...rulesV1,
       rankConfigs: rulesV1.rankConfigs.map((config) =>
@@ -352,6 +383,18 @@ async function exerciseScratchDomain(dbUrl) {
     assert.strictEqual(historicalEntry.rows[0].planVersionNumberSnapshot, 1);
     assert.strictEqual(historicalEntry.rows[0].planCodeSnapshot, 'partners-v1');
     assert.strictEqual(historicalEntry.rows[0].commissionRate, '11.00');
+
+    const capExceededRecurring = await service.simulateCommissionEntries(
+      {
+        ...generationPayload,
+        sourceRef: 'payment-cap-exceeded',
+        sourceEventId: 'payment-cap-exceeded-evt',
+        planVersionId: planV2.version.id
+      },
+      { persist: false }
+    );
+    assert.strictEqual(capExceededRecurring.ok, false);
+    assert.strictEqual(capExceededRecurring.reason, 'partner_commission_cap_exceeded');
 
     const [attrRace1, attrRace2] = await Promise.all([
       service.attributeTenantToPartner(partnerA.partner.id, { tenantId: seed.tenantIds.b }, { actorStaffUserId: seed.adminActorId }),
@@ -397,8 +440,12 @@ async function exerciseScratchDomain(dbUrl) {
 }
 
 async function main() {
-  await withScratchDatabase(async (dbUrl) => {
+  await withScratchDatabase(async (dbUrl, scratchMeta) => {
     console.log(JSON.stringify({
+      containerName: scratchMeta.containerName,
+      image: scratchMeta.image,
+      localPort: scratchMeta.mappedPort,
+      database: scratchMeta.database,
       scratchDatabase: sanitizeDbUrl(dbUrl),
       note: 'scratch_only_not_production'
     }));

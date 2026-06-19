@@ -21,33 +21,8 @@ function clearModule(relativePath) {
   delete require.cache[modulePath(relativePath)];
 }
 
-function setup() {
-  clearModule('src/services/partners.service.js');
-
-  mockModule('src/db/client.js', {
-    withTransaction: async (fn) => fn({})
-  });
-
-  const partners = {
-    'partner-root': {
-      id: 'partner-root',
-      email: 'root@test.com',
-      status: 'active',
-      sponsorPartnerId: 'partner-sponsor',
-      currentRankCode: 'lider',
-      profile: { displayName: 'Root' }
-    },
-    'partner-sponsor': {
-      id: 'partner-sponsor',
-      email: 'sponsor@test.com',
-      status: 'active',
-      sponsorPartnerId: null,
-      currentRankCode: 'coordinador',
-      profile: { displayName: 'Sponsor' }
-    }
-  };
-
-  const explicitRules = {
+function buildRules(overrides = {}) {
+  const rules = {
     recurringCapPercent: '15.00',
     rankConfigs: [
       {
@@ -75,6 +50,42 @@ function setup() {
       { code: 'coordinador', minActiveClients: 2, minGeneratedCommission: '1.00' }
     ]
   };
+  return {
+    ...rules,
+    ...overrides,
+    rankConfigs: overrides.rankConfigs || rules.rankConfigs,
+    rankThresholds: overrides.rankThresholds || rules.rankThresholds
+  };
+}
+
+function setup(options = {}) {
+  clearModule('src/services/partners.service.js');
+
+  mockModule('src/db/client.js', {
+    withTransaction: async (fn) => fn({})
+  });
+
+  const partners = {
+    'partner-root': {
+      id: 'partner-root',
+      email: 'root@test.com',
+      status: 'active',
+      sponsorPartnerId: 'partner-sponsor',
+      currentRankCode: 'lider',
+      profile: { displayName: 'Root' }
+    },
+    'partner-sponsor': {
+      id: 'partner-sponsor',
+      email: 'sponsor@test.com',
+      status: 'active',
+      sponsorPartnerId: null,
+      currentRankCode: 'coordinador',
+      profile: { displayName: 'Sponsor' }
+    }
+  };
+
+  const explicitRules = buildRules(options.rules || {});
+  const maxPayoutPercent = options.maxPayoutPercent || '15.00';
 
   mockModule('src/repositories/partners.repository.js', {
     listPartners: async () => [],
@@ -112,7 +123,7 @@ function setup() {
       versionNumber: 1,
       currency: 'ARS',
       rules: explicitRules,
-      maxPayoutPercent: '15.00'
+      maxPayoutPercent
     }),
     findPublishedCommissionPlanVersion: async () => ({
       id: 'version-1',
@@ -122,7 +133,7 @@ function setup() {
       versionNumber: 1,
       currency: 'ARS',
       rules: explicitRules,
-      maxPayoutPercent: '15.00'
+      maxPayoutPercent
     }),
     listPartnerCommissionEntries: async () => [],
     findCommissionEntriesBySource: async () => [],
@@ -141,8 +152,8 @@ function setup() {
   });
 }
 
-async function simulateRecurring(basisAmount) {
-  setup();
+async function simulateRecurring(basisAmount, options = {}) {
+  setup(options);
   const service = require(modulePath('src/services/partners.service.js'));
   return service.simulateCommissionEntries({
     tenantId: 'tenant-decimal',
@@ -157,8 +168,8 @@ async function simulateRecurring(basisAmount) {
   }, { persist: false });
 }
 
-async function simulateSignup(basisAmount) {
-  setup();
+async function simulateSignup(basisAmount, options = {}) {
+  setup(options);
   const service = require(modulePath('src/services/partners.service.js'));
   return service.simulateCommissionEntries({
     tenantId: 'tenant-signup',
@@ -207,11 +218,101 @@ async function testTooManyInputDecimalsRejected() {
   assert.strictEqual(result.reason, 'invalid_partner_commission_basis_amount');
 }
 
+async function testLineDepthOnePointFivePercent() {
+  const result = await simulateRecurring('100.00', {
+    rules: buildRules({
+      rankConfigs: [
+        {
+          code: 'asesor',
+          ownSignupRatePercent: '25.00',
+          ownRecurringRatePercent: '10.00',
+          lineRecurringRatePercentByDepth: ['0.00', '0.00', '0.00']
+        },
+        {
+          code: 'lider',
+          ownSignupRatePercent: '27.50',
+          ownRecurringRatePercent: '11.00',
+          lineRecurringRatePercentByDepth: ['2.00', '0.00', '0.00']
+        },
+        {
+          code: 'coordinador',
+          ownSignupRatePercent: '30.00',
+          ownRecurringRatePercent: '12.00',
+          lineRecurringRatePercentByDepth: ['1.50', '0.00', '0.00']
+        }
+      ]
+    })
+  });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.simulation[1].commissionRate, '1.50');
+  assert.strictEqual(result.simulation[1].commissionAmount, '1.50');
+}
+
+async function testHalfCentRoundsUp() {
+  const result = await simulateSignup('0.02', {
+    rules: buildRules({
+      rankConfigs: [
+        {
+          code: 'lider',
+          ownSignupRatePercent: '25.00',
+          ownRecurringRatePercent: '11.00',
+          lineRecurringRatePercentByDepth: ['0.00', '0.00', '0.00']
+        }
+      ],
+      rankThresholds: [{ code: 'lider', minActiveClients: 0, minGeneratedCommission: '0.00' }]
+    })
+  });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.simulation[0].commissionAmount, '0.01');
+}
+
+async function testHighSafeAmountAccepted() {
+  const result = await simulateSignup('90071992547409.91', {
+    maxPayoutPercent: '15.00',
+    rules: buildRules({
+      rankConfigs: [
+        {
+          code: 'lider',
+          ownSignupRatePercent: '100.00',
+          ownRecurringRatePercent: '11.00',
+          lineRecurringRatePercentByDepth: ['0.00', '0.00', '0.00']
+        }
+      ],
+      rankThresholds: [{ code: 'lider', minActiveClients: 0, minGeneratedCommission: '0.00' }]
+    })
+  });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.simulation[0].commissionAmount, '90071992547409.91');
+}
+
+async function testUnsafeBasisRejected() {
+  const result = await simulateSignup('90071992547409.92', {
+    maxPayoutPercent: '15.00',
+    rules: buildRules({
+      rankConfigs: [
+        {
+          code: 'lider',
+          ownSignupRatePercent: '100.00',
+          ownRecurringRatePercent: '11.00',
+          lineRecurringRatePercentByDepth: ['0.00', '0.00', '0.00']
+        }
+      ],
+      rankThresholds: [{ code: 'lider', minActiveClients: 0, minGeneratedCommission: '0.00' }]
+    })
+  });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'invalid_partner_commission_basis_amount');
+}
+
 async function run() {
   await testBase010Recurring();
   await testBase029Recurring();
   await testBase10005Signup275();
   await testLineDepth15Percent();
+  await testLineDepthOnePointFivePercent();
+  await testHalfCentRoundsUp();
+  await testHighSafeAmountAccepted();
+  await testUnsafeBasisRejected();
   await testTooManyInputDecimalsRejected();
   console.log('partners-decimal-rounding.test.js: ok');
 }
