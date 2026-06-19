@@ -63,6 +63,7 @@ const {
   authenticatePortalUser,
   getPortalAuthUserByEmail
 } = require('../services/portal-users.service');
+const { resolveAdminPortalActor } = require('../services/portal-active-tenant.service');
 const {
   listPortalPayments,
   getPortalPaymentDetail,
@@ -3479,6 +3480,29 @@ async function getPortalAuthUser(req, res) {
   }
 }
 
+async function getPortalAuthAdminActor(req, res) {
+  const tenantId = String(req.query.tenantId || '').trim();
+  const email = String(req.query.email || '').trim() || null;
+
+  try {
+    const result = await resolveAdminPortalActor({ tenantId, email });
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ success: false, error: result.reason });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.actor
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_auth_admin_actor_lookup_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalWhatsAppEmbeddedSignupBootstrap(req, res) {
   const tenantId = getRequestTenantId(req);
   const redirectUri = String((req.body && req.body.redirectUri) || '').trim();
@@ -3541,6 +3565,29 @@ async function getPortalWhatsAppEmbeddedSignupStatus(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_whatsapp_embedded_signup_status_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalAuthAdminActor(req, res) {
+  const tenantId = String(req.query.tenantId || '').trim();
+  const email = String(req.query.email || '').trim() || null;
+
+  try {
+    const result = await resolveAdminPortalActor({ tenantId, email });
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ success: false, error: result.reason });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.actor
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_auth_admin_actor_lookup_failed',
       details: error.message
     });
   }
@@ -4296,6 +4343,7 @@ module.exports = {
   postPortalInvitationAccept,
   postPortalAuthLogin,
   getPortalAuthUser,
+  getPortalAuthAdminActor,
   postPortalWhatsAppEmbeddedSignupBootstrap,
   getPortalWhatsAppEmbeddedSignupStatus,
   postPortalWhatsAppEmbeddedSignupRefresh,

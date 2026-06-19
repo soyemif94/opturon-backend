@@ -1,5 +1,8 @@
 const env = require('../config/env');
 const { query } = require('../db/client');
+const { listActiveStaff } = require('../repositories/staff.repository');
+const { findPortalUserById } = require('../repositories/portal-users.repository');
+const { getClinicPortalAccountConfigById } = require('../repositories/tenant.repository');
 const { findClinicByExternalTenantId } = require('../repositories/tenant.repository');
 
 function normalizeString(value) {
@@ -66,6 +69,108 @@ async function findPortalActorContext(actorUserId) {
     tenantId: actor.tenantId || null,
     accountScope: actor.accountScope || 'client',
     isAdmin: actor.accountScope === 'opturon_admin'
+  };
+}
+
+function normalizeEmail(value) {
+  return normalizeString(value).toLowerCase();
+}
+
+function mapActorRecord(actor, clinic, accountScope) {
+  if (!actor || !clinic) return null;
+  return {
+    id: actor.id,
+    clinicId: actor.clinicId || clinic.id,
+    name: actor.name || null,
+    email: actor.email || null,
+    role: actor.role || null,
+    tenantId: clinic.externalTenantId || null,
+    accountScope: accountScope || 'client',
+    isAdmin: accountScope === 'opturon_admin'
+  };
+}
+
+function selectAdminActorCandidate(candidates, options = {}) {
+  const safeCandidates = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+  if (safeCandidates.length === 0) {
+    return { ok: false, reason: 'admin_actor_not_found' };
+  }
+
+  const primaryPortalUserId = normalizeString(options.primaryPortalUserId);
+  if (primaryPortalUserId) {
+    const primaryCandidate = safeCandidates.find((candidate) => String(candidate.id || '') === primaryPortalUserId);
+    if (primaryCandidate) {
+      return { ok: true, actor: primaryCandidate, source: 'primary_portal_user_id' };
+    }
+  }
+
+  const safeEmail = normalizeEmail(options.email);
+  if (safeEmail) {
+    const emailMatches = safeCandidates.filter((candidate) => normalizeEmail(candidate.email) === safeEmail);
+    if (emailMatches.length === 1) {
+      return { ok: true, actor: emailMatches[0], source: 'email_match' };
+    }
+    if (emailMatches.length > 1) {
+      return { ok: false, reason: 'admin_actor_email_ambiguous' };
+    }
+  }
+
+  if (safeCandidates.length === 1) {
+    return { ok: true, actor: safeCandidates[0], source: 'single_internal_staff_actor' };
+  }
+
+  return { ok: false, reason: 'admin_actor_ambiguous' };
+}
+
+async function resolveAdminPortalActor({ tenantId, email = null }) {
+  const safeTenantId = normalizeString(tenantId);
+  if (!safeTenantId) {
+    return { ok: false, reason: 'missing_tenant_id', status: 400 };
+  }
+
+  const clinic = await findClinicByExternalTenantId(safeTenantId);
+  if (!clinic) {
+    return { ok: false, reason: 'tenant_not_found', status: 404 };
+  }
+
+  const accountConfig = await getClinicPortalAccountConfigById(clinic.id);
+  if (!accountConfig || accountConfig.accountScope !== 'opturon_admin') {
+    return { ok: false, reason: 'admin_scope_required', status: 403 };
+  }
+
+  const candidates = [];
+  const primaryPortalUserId = normalizeString(accountConfig.primaryPortalUserId);
+  if (primaryPortalUserId) {
+    const primaryPortalUser = await findPortalUserById(primaryPortalUserId);
+    if (primaryPortalUser && String(primaryPortalUser.clinicId || '') === String(clinic.id)) {
+      candidates.push(primaryPortalUser);
+    }
+  }
+
+  const activeStaff = await listActiveStaff(clinic.id);
+  for (const actor of activeStaff) {
+    if (!candidates.find((candidate) => String(candidate.id || '') === String(actor.id || ''))) {
+      candidates.push(actor);
+    }
+  }
+
+  const selected = selectAdminActorCandidate(candidates, {
+    primaryPortalUserId,
+    email
+  });
+
+  if (!selected.ok) {
+    return {
+      ok: false,
+      reason: selected.reason,
+      status: selected.reason === 'admin_actor_not_found' ? 404 : 409
+    };
+  }
+
+  return {
+    ok: true,
+    actor: mapActorRecord(selected.actor, clinic, accountConfig.accountScope),
+    source: selected.source
   };
 }
 
@@ -154,6 +259,8 @@ async function setActiveTenantForAdmin(actorUserId, tenantId) {
 
 module.exports = {
   findPortalActorContext,
+  resolveAdminPortalActor,
+  selectAdminActorCandidate,
   resolveActiveTenantForRequest,
   setActiveTenantForAdmin
 };

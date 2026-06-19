@@ -101,6 +101,7 @@ const {
   destroyPortalUser,
   postPortalAuthLogin,
   getPortalAuthUser,
+  getPortalAuthAdminActor,
   postPortalWhatsAppEmbeddedSignupBootstrap,
   getPortalWhatsAppEmbeddedSignupStatus,
   postPortalWhatsAppEmbeddedSignupRefresh,
@@ -341,5 +342,6 @@ router.get('/auth/invitations', getPortalInvitation);
 router.post('/auth/invitations/accept', postPortalInvitationAccept);
 router.post('/auth/login', postPortalAuthLogin);
 router.get('/auth/users/by-email', requirePortalInternalAuth, getPortalAuthUser);
+router.get('/auth/admin-actor', requirePortalInternalAuth, getPortalAuthAdminActor);
 
 module.exports = router;

@@ -10,7 +10,7 @@ function dbQuery(client, text, params) {
 async function listActiveStaff(clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", name, role, active
+    `SELECT id, "clinicId", name, email, role, active
      FROM staff_users
      WHERE "clinicId" = $1
        AND "accountType" = 'internal_staff'
@@ -25,7 +25,7 @@ async function listActiveStaff(clinicId, client = null) {
 async function getDefaultAssignee(clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", name, role, active
+    `SELECT id, "clinicId", name, email, role, active
      FROM staff_users
      WHERE "clinicId" = $1
        AND "accountType" = 'internal_staff'
