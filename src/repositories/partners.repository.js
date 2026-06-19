@@ -669,10 +669,49 @@ async function markCommissionEntryReversed(entryId, client = null) {
      SET status = 'reversed',
          "updatedAt" = NOW()
      WHERE id = $1
+       AND status = 'generated'
      RETURNING id`,
     [entryId]
   );
   return result.rowCount > 0;
+}
+
+async function findReversalEntryByOriginalEntryId(entryId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            "partnerId",
+            "attributionId",
+            "planVersionId",
+            "clinicId",
+            "tenantId",
+            "sourceType",
+            "sourceRef",
+            "sourceEventId",
+            "eventType",
+            "eventAt",
+            "periodKey",
+            currency,
+            "planCodeSnapshot",
+            "planVersionNumberSnapshot",
+            "payoutKind",
+            "paymentStatus",
+            status,
+            "basisAmount",
+            "commissionRate",
+            "commissionAmount",
+            "depthLevel",
+            "idempotencyKey",
+            "reversalOfEntryId",
+            details,
+            "createdAt",
+            "updatedAt"
+     FROM partner_commission_entries
+     WHERE "reversalOfEntryId" = $1
+     LIMIT 1`,
+    [entryId]
+  );
+  return result.rows[0] || null;
 }
 
 async function sumGeneratedCommissionsForPartner(partnerId, windowStart, windowEnd, client = null) {
@@ -841,6 +880,7 @@ module.exports = {
   listPartnerCommissionEntries,
   findCommissionEntriesBySource,
   findCommissionEntryById,
+  findReversalEntryByOriginalEntryId,
   createCommissionEntry,
   markCommissionEntryReversed,
   sumGeneratedCommissionsForPartner,

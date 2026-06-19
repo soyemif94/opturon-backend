@@ -27,6 +27,7 @@ const {
   listPartnerCommissionEntries,
   findCommissionEntriesBySource,
   findCommissionEntryById,
+  findReversalEntryByOriginalEntryId,
   createCommissionEntry,
   markCommissionEntryReversed,
   sumGeneratedCommissionsForPartner,
@@ -788,13 +789,21 @@ async function simulateCommissionEntries(payload, options = {}) {
 
       for (const entry of entries) {
         // Idempotency is also enforced by SQL, but we keep write ordering explicit.
-        persistedEntries.push(await createCommissionEntry(
-          {
-            ...entry,
-            createdByStaffUserId: isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null
-          },
-          client
-        ));
+        try {
+          persistedEntries.push(await createCommissionEntry(
+            {
+              ...entry,
+              createdByStaffUserId: isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null
+            },
+            client
+          ));
+        } catch (error) {
+          if (isUniqueViolation(error)) {
+            const concurrentExisting = await findCommissionEntriesBySource(sourceType, sourceRef, sourceEventId, client);
+            return { ok: true, simulation: concurrentExisting, planVersion, reusedExisting: true };
+          }
+          throw error;
+        }
       }
 
       await appendAuditLog(
@@ -832,41 +841,56 @@ async function reverseCommissionEntries(payload, options = {}) {
     if (!entry) return { ok: false, reason: 'partner_commission_entry_not_found' };
     if (entry.status === 'reversed') return { ok: false, reason: 'partner_commission_entry_already_reversed' };
 
-    const reversal = await createCommissionEntry(
-      {
-        partnerId: entry.partnerId,
-        attributionId: entry.attributionId,
-        planVersionId: entry.planVersionId,
-        clinicId: entry.clinicId,
-        tenantId: entry.tenantId,
-        sourceType: entry.sourceType,
-        sourceRef: entry.sourceRef,
-        sourceEventId: `${entry.sourceEventId}:reversal`,
-        eventType: `${entry.eventType}_reversal`,
-        eventAt: new Date().toISOString(),
-        periodKey: buildPeriodKey(new Date().toISOString()),
-        status: 'reversed',
-        currency: entry.currency,
-        planCodeSnapshot: entry.planCodeSnapshot,
-        planVersionNumberSnapshot: entry.planVersionNumberSnapshot,
-        payoutKind: entry.payoutKind,
-        paymentStatus: 'accredited',
-        basisAmount: entry.basisAmount,
-        commissionRate: entry.commissionRate,
-        commissionAmount: centsToMoney(-Math.abs(parseMoneyToCents(entry.commissionAmount) || 0)),
-        depthLevel: entry.depthLevel,
-        idempotencyKey: `${entry.idempotencyKey}:reversal`,
-        reversalOfEntryId: entry.id,
-        details: {
-          reversedEntryId: entry.id,
-          reason: normalizeString(payload && payload.reason) || 'manual_reverse'
-        },
-        createdByStaffUserId: actorStaffUserId
-      },
-      client
-    );
+    const marked = await markCommissionEntryReversed(entry.id, client);
+    if (!marked) {
+      return { ok: false, reason: 'partner_commission_entry_already_reversed' };
+    }
 
-    await markCommissionEntryReversed(entry.id, client);
+    let reversal;
+    try {
+      reversal = await createCommissionEntry(
+        {
+          partnerId: entry.partnerId,
+          attributionId: entry.attributionId,
+          planVersionId: entry.planVersionId,
+          clinicId: entry.clinicId,
+          tenantId: entry.tenantId,
+          sourceType: entry.sourceType,
+          sourceRef: entry.sourceRef,
+          sourceEventId: `${entry.sourceEventId}:reversal`,
+          eventType: `${entry.eventType}_reversal`,
+          eventAt: new Date().toISOString(),
+          periodKey: buildPeriodKey(new Date().toISOString()),
+          status: 'reversed',
+          currency: entry.currency,
+          planCodeSnapshot: entry.planCodeSnapshot,
+          planVersionNumberSnapshot: entry.planVersionNumberSnapshot,
+          payoutKind: entry.payoutKind,
+          paymentStatus: 'accredited',
+          basisAmount: entry.basisAmount,
+          commissionRate: entry.commissionRate,
+          commissionAmount: centsToMoney(-Math.abs(parseMoneyToCents(entry.commissionAmount) || 0)),
+          depthLevel: entry.depthLevel,
+          idempotencyKey: `${entry.idempotencyKey}:reversal`,
+          reversalOfEntryId: entry.id,
+          details: {
+            reversedEntryId: entry.id,
+            reason: normalizeString(payload && payload.reason) || 'manual_reverse'
+          },
+          createdByStaffUserId: actorStaffUserId
+        },
+        client
+      );
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        const existingReversal = await findReversalEntryByOriginalEntryId(entry.id, client);
+        if (existingReversal) {
+          return { ok: false, reason: 'partner_commission_entry_already_reversed', reversalEntry: existingReversal };
+        }
+      }
+      throw error;
+    }
+
     await appendAuditLog(
       {
         partnerId: entry.partnerId,

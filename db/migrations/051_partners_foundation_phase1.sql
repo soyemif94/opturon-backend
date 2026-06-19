@@ -155,12 +155,16 @@ CREATE TABLE IF NOT EXISTS partner_commission_entries (
   CONSTRAINT partner_commission_entries_status_check CHECK (status IN ('simulated', 'generated', 'reversed')),
   CONSTRAINT partner_commission_entries_payout_kind_check CHECK ("payoutKind" IN ('own_signup', 'own_recurring', 'line_recurring_rebate')),
   CONSTRAINT partner_commission_entries_payment_status_check CHECK ("paymentStatus" IN ('accredited')),
-  CONSTRAINT partner_commission_entries_amounts_check CHECK ("basisAmount" >= 0 AND "commissionRate" >= 0 AND "commissionRate" <= 15.00),
+  CONSTRAINT partner_commission_entries_amounts_check CHECK ("basisAmount" >= 0 AND "commissionRate" >= 0 AND "commissionRate" <= 100.00),
   CONSTRAINT partner_commission_entries_depth_level_check CHECK ("depthLevel" >= 0)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS partner_commission_entries_idempotency_unique_idx
   ON partner_commission_entries ("idempotencyKey");
+
+CREATE UNIQUE INDEX IF NOT EXISTS partner_commission_entries_reversal_unique_idx
+  ON partner_commission_entries ("reversalOfEntryId")
+  WHERE "reversalOfEntryId" IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS partner_commission_entries_partner_period_idx
   ON partner_commission_entries ("partnerId", "periodKey", status, "eventAt" DESC);
