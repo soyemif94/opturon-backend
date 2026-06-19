@@ -56,9 +56,11 @@ function normalizeErrorCode(value) {
 }
 
 function getAdminActor(req) {
+  const resolvedActor = req.adminActor || null;
   return {
-    actorUserId: String(req.get('x-portal-actor-id') || '').trim() || null,
-    actorRole: String(req.get('x-portal-actor-role') || '').trim().toLowerCase() || null
+    actorUserId: resolvedActor && resolvedActor.id ? String(resolvedActor.id) : null,
+    actorRole: resolvedActor && resolvedActor.role ? String(resolvedActor.role).toLowerCase() : null,
+    actorScope: resolvedActor && resolvedActor.accountScope ? String(resolvedActor.accountScope) : null
   };
 }
 

@@ -29,29 +29,71 @@ function setup(overrides = {}) {
     withTransaction: async (fn) => fn({})
   });
 
+  const partnerMap = {
+    'partner-1': {
+      id: 'partner-1',
+      email: 'partner1@test.com',
+      status: 'active',
+      sponsorPartnerId: 'partner-2',
+      currentRankCode: 'lider',
+      profile: { displayName: 'Partner Uno' }
+    },
+    'partner-2': {
+      id: 'partner-2',
+      email: 'partner2@test.com',
+      status: 'active',
+      sponsorPartnerId: null,
+      currentRankCode: 'emperador',
+      profile: { displayName: 'Partner Dos' }
+    },
+    'partner-3': {
+      id: 'partner-3',
+      email: 'partner3@test.com',
+      status: 'active',
+      sponsorPartnerId: null,
+      currentRankCode: 'coordinador',
+      profile: { displayName: 'Partner Tres' }
+    }
+  };
+
+  const planRules = {
+    recurringCapPercent: '15.00',
+    rankConfigs: [
+      {
+        code: 'asesor',
+        ownSignupRatePercent: '25.00',
+        ownRecurringRatePercent: '10.00',
+        lineRecurringRatePercentByDepth: ['0.00', '0.00', '0.00']
+      },
+      {
+        code: 'lider',
+        ownSignupRatePercent: '27.50',
+        ownRecurringRatePercent: '11.00',
+        lineRecurringRatePercentByDepth: ['2.00', '0.00', '0.00']
+      },
+      {
+        code: 'coordinador',
+        ownSignupRatePercent: '30.00',
+        ownRecurringRatePercent: '12.00',
+        lineRecurringRatePercentByDepth: ['3.00', '1.50', '0.00']
+      },
+      {
+        code: 'emperador',
+        ownSignupRatePercent: '32.50',
+        ownRecurringRatePercent: '12.00',
+        lineRecurringRatePercentByDepth: ['4.00', '2.00', '1.00']
+      }
+    ],
+    rankThresholds: [
+      { code: 'asesor', minActiveClients: 0, minGeneratedCommission: '0.00' },
+      { code: 'lider', minActiveClients: 3, minGeneratedCommission: '50000.00' },
+      { code: 'emperador', minActiveClients: 8, minGeneratedCommission: '150000.00' }
+    ]
+  };
+
   const repo = {
     listPartners: async () => [],
-    findPartnerById: async (partnerId) => {
-      if (partnerId === 'partner-1') {
-        return {
-          id: 'partner-1',
-          email: 'partner1@test.com',
-          status: 'active',
-          sponsorPartnerId: 'partner-2',
-          profile: { displayName: 'Partner Uno' }
-        };
-      }
-      if (partnerId === 'partner-2') {
-        return {
-          id: 'partner-2',
-          email: 'partner2@test.com',
-          status: 'active',
-          sponsorPartnerId: null,
-          profile: { displayName: 'Partner Dos' }
-        };
-      }
-      return null;
-    },
+    findPartnerById: async (partnerId) => partnerMap[partnerId] || null,
     findPartnerByEmail: async (email) => (email === 'existing@test.com' ? { id: 'existing-1', status: 'active', profile: { displayName: 'Existing' } } : null),
     findRawPartnerAuthByEmail: async (email) => (email === 'partner1@test.com'
       ? { id: 'partner-1', email, status: 'active', passwordHash: hashSync('password123', 10) }
@@ -99,16 +141,20 @@ function setup(overrides = {}) {
       id: 'version-1',
       planId: 'plan-1',
       planCode: 'default',
+      planName: 'Default',
+      currency: 'ARS',
       versionNumber: 1,
-      rules: { directRatePercent: '10.00', indirectRatePercent: '2.50' },
+      rules: planRules,
       maxPayoutPercent: '15.00'
     }),
     findPublishedCommissionPlanVersion: async () => ({
       id: 'version-1',
       planId: 'plan-1',
       planCode: 'default',
+      planName: 'Default',
+      currency: 'ARS',
       versionNumber: 1,
-      rules: { directRatePercent: '10.00', indirectRatePercent: '2.50' },
+      rules: planRules,
       maxPayoutPercent: '15.00'
     }),
     listPartnerCommissionEntries: async () => [],
@@ -124,9 +170,14 @@ function setup(overrides = {}) {
         sourceType: 'subscription',
         sourceRef: 'sub-1',
         sourceEventId: 'evt-1',
-        eventType: 'subscription_payment',
+        eventType: 'subscription_recurring_accredited',
         eventAt: new Date().toISOString(),
         periodKey: '2026-06',
+        currency: 'ARS',
+        planCodeSnapshot: 'default',
+        planVersionNumberSnapshot: 1,
+        payoutKind: 'own_recurring',
+        paymentStatus: 'accredited',
         status: 'generated',
         basisAmount: '1000.00',
         commissionRate: '10.00',
@@ -175,15 +226,19 @@ async function testSimulateCommissionEntriesBuildsDirectAndIndirectPayouts() {
     sourceType: 'subscription',
     sourceRef: 'sub-1',
     sourceEventId: 'evt-1',
-    eventType: 'subscription_payment',
+    eventType: 'subscription_recurring_accredited',
     eventAt: '2026-06-18T12:00:00.000Z',
-    basisAmount: '1000.00'
+    basisAmount: '1000.00',
+    paymentStatus: 'accredited',
+    reversed: false
   }, { persist: false });
 
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.simulation.length, 2);
-  assert.strictEqual(result.simulation[0].commissionAmount, '100.00');
-  assert.strictEqual(result.simulation[1].commissionAmount, '25.00');
+  assert.strictEqual(result.simulation[0].commissionAmount, '110.00');
+  assert.strictEqual(result.simulation[1].commissionAmount, '40.00');
+  assert.strictEqual(result.simulation[0].currency, 'ARS');
+  assert.strictEqual(result.simulation[1].payoutKind, 'line_recurring_rebate');
 }
 
 async function testReverseCommissionEntryCreatesNegativeReversal() {
@@ -200,8 +255,8 @@ async function testEvaluateRankUsesThresholds() {
   const service = require(modulePath('src/services/partners.service.js'));
   const result = await service.evaluatePartnerRank('partner-1', {}, {});
   assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.evaluation.currentRankCode, 'builder');
-  assert.strictEqual(result.evaluation.nextRankCode, 'elite');
+  assert.strictEqual(result.evaluation.currentRankCode, 'lider');
+  assert.strictEqual(result.evaluation.nextRankCode, 'emperador');
 }
 
 async function testAuthenticatePartnerUserReturnsPartnerIdentity() {
@@ -213,6 +268,185 @@ async function testAuthenticatePartnerUserReturnsPartnerIdentity() {
   assert.strictEqual(result.user.accountScope, 'partner');
 }
 
+async function testCreateCommissionPlanRejectsMissingExplicitRules() {
+  setup();
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.createCommissionPlanWithVersion({
+    code: 'plan-missing-rules',
+    name: 'Plan Missing Rules',
+    maxPayoutPercent: '15.00'
+  }, {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'invalid_partner_commission_rules');
+}
+
+async function testCreateCommissionPlanRejectsRecurringCapAbove15() {
+  setup();
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.createCommissionPlanWithVersion({
+    code: 'plan-cap-over',
+    name: 'Plan Cap Over',
+    maxPayoutPercent: '15.00',
+    rules: {
+      recurringCapPercent: '16.00',
+      rankConfigs: [
+        {
+          code: 'asesor',
+          ownSignupRatePercent: '25.00',
+          ownRecurringRatePercent: '10.00',
+          lineRecurringRatePercentByDepth: ['0.00']
+        }
+      ]
+    }
+  }, {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'invalid_partner_commission_rules');
+}
+
+async function testRecurringCapExact15Allowed() {
+  setup();
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.simulateCommissionEntries({
+    tenantId: 'tenant-a',
+    sourceType: 'subscription',
+    sourceRef: 'sub-cap-ok',
+    sourceEventId: 'evt-cap-ok',
+    eventType: 'subscription_recurring_accredited',
+    eventAt: '2026-06-18T12:00:00.000Z',
+    basisAmount: '1000.00',
+    paymentStatus: 'accredited',
+    reversed: false
+  }, { persist: false });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.simulation.map((item) => item.commissionRate).join(','), '11.00,4.00');
+}
+
+async function testRecurringCapOver15Rejected() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': { id: 'partner-1', email: 'partner1@test.com', status: 'active', sponsorPartnerId: 'partner-2', currentRankCode: 'lider', profile: { displayName: 'One' } },
+      'partner-2': { id: 'partner-2', email: 'partner2@test.com', status: 'active', sponsorPartnerId: 'partner-3', currentRankCode: 'emperador', profile: { displayName: 'Two' } },
+      'partner-3': { id: 'partner-3', email: 'partner3@test.com', status: 'active', sponsorPartnerId: null, currentRankCode: 'emperador', profile: { displayName: 'Three' } }
+    }[partnerId] || null)
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.simulateCommissionEntries({
+    tenantId: 'tenant-a',
+    sourceType: 'subscription',
+    sourceRef: 'sub-cap-bad',
+    sourceEventId: 'evt-cap-bad',
+    eventType: 'subscription_recurring_accredited',
+    eventAt: '2026-06-18T12:00:00.000Z',
+    basisAmount: '1000.00',
+    paymentStatus: 'accredited',
+    reversed: false
+  }, { persist: false });
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_commission_cap_exceeded');
+}
+
+async function testRecurringPaymentMustBeAccredited() {
+  setup();
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.simulateCommissionEntries({
+    tenantId: 'tenant-a',
+    sourceType: 'subscription',
+    sourceRef: 'sub-unpaid',
+    sourceEventId: 'evt-unpaid',
+    eventType: 'subscription_recurring_accredited',
+    eventAt: '2026-06-18T12:00:00.000Z',
+    basisAmount: '1000.00',
+    paymentStatus: 'pending',
+    reversed: false
+  }, { persist: false });
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_commission_payment_not_eligible');
+}
+
+async function testSponsorCycleTwoNodesRejected() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': { id: 'partner-1', email: 'p1@test.com', status: 'active', sponsorPartnerId: 'partner-2', currentRankCode: 'asesor', profile: { displayName: 'One' } },
+      'partner-2': { id: 'partner-2', email: 'p2@test.com', status: 'active', sponsorPartnerId: 'partner-1', currentRankCode: 'asesor', profile: { displayName: 'Two' } }
+    }[partnerId] || null)
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.assignPartnerSponsor('partner-1', 'partner-2', {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_sponsor_cycle_detected');
+}
+
+async function testSponsorCycleThreeNodesRejected() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': { id: 'partner-1', email: 'p1@test.com', status: 'active', sponsorPartnerId: null, currentRankCode: 'asesor', profile: { displayName: 'One' } },
+      'partner-2': { id: 'partner-2', email: 'p2@test.com', status: 'active', sponsorPartnerId: 'partner-3', currentRankCode: 'asesor', profile: { displayName: 'Two' } },
+      'partner-3': { id: 'partner-3', email: 'p3@test.com', status: 'active', sponsorPartnerId: 'partner-1', currentRankCode: 'asesor', profile: { displayName: 'Three' } }
+    }[partnerId] || null)
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.assignPartnerSponsor('partner-1', 'partner-2', {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_sponsor_cycle_detected');
+}
+
+async function testAttributionUniqueViolationReturnsBusinessError() {
+  setup({
+    findActiveAttributionByTenantId: async (tenantId) => {
+      if (tenantId === 'tenant-race') {
+        return { id: 'attr-race', partnerId: 'partner-2', clinicId: 'clinic-2', tenantId, status: 'active' };
+      }
+      return null;
+    },
+    findClinicTenantByExternalTenantId: async (tenantId) => (tenantId === 'tenant-race' ? { id: 'clinic-race', name: 'Clinic Race', externalTenantId: tenantId } : null),
+    createPartnerAttribution: async () => {
+      const error = new Error('duplicate');
+      error.code = '23505';
+      throw error;
+    }
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.attributeTenantToPartner('partner-1', { tenantId: 'tenant-race' }, {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'tenant_already_attributed');
+}
+
+async function testGenerateIsIdempotentForSameEvent() {
+  setup({
+    findCommissionEntriesBySource: async () => ([{ id: 'entry-existing', partnerId: 'partner-1' }])
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.simulateCommissionEntries({
+    tenantId: 'tenant-a',
+    sourceType: 'subscription',
+    sourceRef: 'sub-existing',
+    sourceEventId: 'evt-existing',
+    eventType: 'subscription_recurring_accredited',
+    eventAt: '2026-06-18T12:00:00.000Z',
+    basisAmount: '1000.00',
+    paymentStatus: 'accredited',
+    reversed: false
+  }, { persist: true });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.reusedExisting, true);
+}
+
+async function testDoubleReversalRejected() {
+  setup({
+    findCommissionEntryById: async () => ({
+      id: 'entry-1',
+      status: 'reversed'
+    })
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.reverseCommissionEntries({ entryId: 'entry-1', reason: 'manual_fix' }, {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_commission_entry_already_reversed');
+}
+
 async function run() {
   await testCreatePartnerRejectsDuplicateEmail();
   await testAttributeTenantBlocksOtherPartner();
@@ -220,6 +454,16 @@ async function run() {
   await testReverseCommissionEntryCreatesNegativeReversal();
   await testEvaluateRankUsesThresholds();
   await testAuthenticatePartnerUserReturnsPartnerIdentity();
+  await testCreateCommissionPlanRejectsMissingExplicitRules();
+  await testCreateCommissionPlanRejectsRecurringCapAbove15();
+  await testRecurringCapExact15Allowed();
+  await testRecurringCapOver15Rejected();
+  await testRecurringPaymentMustBeAccredited();
+  await testSponsorCycleTwoNodesRejected();
+  await testSponsorCycleThreeNodesRejected();
+  await testAttributionUniqueViolationReturnsBusinessError();
+  await testGenerateIsIdempotentForSameEvent();
+  await testDoubleReversalRejected();
   console.log('partners-foundation.test.js: ok');
 }
 

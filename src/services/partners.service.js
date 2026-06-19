@@ -40,13 +40,8 @@ const {
 } = require('../repositories/partners.repository');
 
 const PARTNER_STATUSES = new Set(['invited', 'active', 'suspended', 'disabled']);
-const STAFF_GLOBAL_ROLES = new Set(['superadmin', 'ops_admin']);
 const DEFAULT_COMMISSION_CAP_PERCENT = '15.00';
-const DEFAULT_RANK_RULES = [
-  { code: 'starter', minActiveClients: 0, minGeneratedCommission: '0.00' },
-  { code: 'builder', minActiveClients: 3, minGeneratedCommission: '50000.00' },
-  { code: 'elite', minActiveClients: 8, minGeneratedCommission: '150000.00' }
-];
+const SUPPORTED_EVENT_TYPES = new Set(['subscription_signup_accredited', 'subscription_recurring_accredited']);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -117,8 +112,8 @@ function compareMoneyStrings(a, b) {
   return left > right ? 1 : -1;
 }
 
-function ensureStaffActorRole(actorRole) {
-  return STAFF_GLOBAL_ROLES.has(normalizeString(actorRole).toLowerCase());
+function isUniqueViolation(error) {
+  return Boolean(error && typeof error === 'object' && error.code === '23505');
 }
 
 function buildPartnerAuthUser(partner) {
@@ -134,38 +129,71 @@ function buildPartnerAuthUser(partner) {
 }
 
 function normalizePlanRules(rawRules, maxPayoutPercent = DEFAULT_COMMISSION_CAP_PERCENT) {
-  const safeRules = rawRules && typeof rawRules === 'object' && !Array.isArray(rawRules) ? rawRules : {};
-  const directRatePercent = basisPointsToPercentString(parsePercentToBasisPoints(safeRules.directRatePercent ?? '10.00') ?? 1000);
-  const indirectRatePercent = basisPointsToPercentString(parsePercentToBasisPoints(safeRules.indirectRatePercent ?? '2.50') ?? 250);
+  const safeRules = rawRules && typeof rawRules === 'object' && !Array.isArray(rawRules) ? rawRules : null;
   const maxPayoutBasisPoints = parsePercentToBasisPoints(maxPayoutPercent);
-  const directRateBasisPoints = parsePercentToBasisPoints(directRatePercent);
-  const indirectRateBasisPoints = parsePercentToBasisPoints(indirectRatePercent);
-
-  if (
-    maxPayoutBasisPoints === null ||
-    directRateBasisPoints === null ||
-    indirectRateBasisPoints === null ||
-    directRateBasisPoints > maxPayoutBasisPoints ||
-    indirectRateBasisPoints > maxPayoutBasisPoints
-  ) {
+  if (!safeRules || maxPayoutBasisPoints === null) {
     throw new Error('invalid_partner_commission_rules');
   }
 
+  const recurringCapPercent = basisPointsToPercentString(
+    parsePercentToBasisPoints(safeRules.recurringCapPercent ?? maxPayoutPercent) ?? -1
+  );
+  if (parsePercentToBasisPoints(recurringCapPercent) !== maxPayoutBasisPoints) {
+    throw new Error('invalid_partner_commission_rules');
+  }
+
+  const rankConfigsInput = Array.isArray(safeRules.rankConfigs) ? safeRules.rankConfigs : [];
+  if (rankConfigsInput.length === 0) {
+    throw new Error('invalid_partner_commission_rules');
+  }
+
+  const rankConfigs = rankConfigsInput.map((config) => {
+    const code = normalizeString(config && config.code).toLowerCase();
+    const ownSignupBasisPoints = parsePercentToBasisPoints(config && config.ownSignupRatePercent);
+    const ownRecurringBasisPoints = parsePercentToBasisPoints(config && config.ownRecurringRatePercent);
+    const lineRecurringRateBasisPoints = Array.isArray(config && config.lineRecurringRatePercentByDepth)
+      ? config.lineRecurringRatePercentByDepth.map((value) => parsePercentToBasisPoints(value))
+      : [];
+
+    if (
+      !code ||
+      ownSignupBasisPoints === null ||
+      ownRecurringBasisPoints === null ||
+      ownRecurringBasisPoints > maxPayoutBasisPoints ||
+      lineRecurringRateBasisPoints.some((value) => value === null || value < 0 || value > maxPayoutBasisPoints)
+    ) {
+      throw new Error('invalid_partner_commission_rules');
+    }
+
+    return {
+      code,
+      ownSignupRatePercent: basisPointsToPercentString(ownSignupBasisPoints),
+      ownRecurringRatePercent: basisPointsToPercentString(ownRecurringBasisPoints),
+      lineRecurringRatePercentByDepth: lineRecurringRateBasisPoints.map((value) => basisPointsToPercentString(value)),
+      rankOrder: Math.max(0, Number(config && config.rankOrder) || 0)
+    };
+  });
+
   const rankThresholds = Array.isArray(safeRules.rankThresholds) && safeRules.rankThresholds.length > 0
     ? safeRules.rankThresholds.map((threshold) => ({
-      code: normalizeString(threshold && threshold.code) || 'starter',
+      code: normalizeString(threshold && threshold.code).toLowerCase(),
       minActiveClients: Math.max(0, Number(threshold && threshold.minActiveClients) || 0),
       minGeneratedCommission: centsToMoney(Math.max(0, parseMoneyToCents(threshold && threshold.minGeneratedCommission) || 0))
     }))
-    : DEFAULT_RANK_RULES;
+    : rankConfigs.map((config) => ({
+      code: config.code,
+      minActiveClients: 0,
+      minGeneratedCommission: '0.00'
+    }));
 
-  const normalized = {
-    directRatePercent,
-    indirectRatePercent,
+  return {
+    recurringCapPercent,
+    eligibleEventTypes: Array.from(SUPPORTED_EVENT_TYPES),
+    requireAccreditedPayment: true,
+    disallowRecruitmentPayout: true,
+    rankConfigs,
     rankThresholds
   };
-
-  return normalized;
 }
 
 function assertPartnerPassword(password) {
@@ -173,6 +201,33 @@ function assertPartnerPassword(password) {
     return false;
   }
   return true;
+}
+
+function getRankConfigByCode(rules, rankCode) {
+  const safeCode = normalizeString(rankCode).toLowerCase();
+  return rules.rankConfigs.find((config) => config.code === safeCode) || rules.rankConfigs[0] || null;
+}
+
+function getPartnerRankCode(partner) {
+  return normalizeString(partner && partner.currentRankCode).toLowerCase() || 'asesor';
+}
+
+function getPartnerRecurringLineRateBasisPoints(rules, partner, depthFromPartner) {
+  const config = getRankConfigByCode(rules, getPartnerRankCode(partner));
+  if (!config) return null;
+  return parsePercentToBasisPoints(config.lineRecurringRatePercentByDepth[depthFromPartner - 1] || '0.00');
+}
+
+function getPartnerOwnEventRateBasisPoints(rules, partner, eventType) {
+  const config = getRankConfigByCode(rules, getPartnerRankCode(partner));
+  if (!config) return null;
+  if (eventType === 'subscription_signup_accredited') {
+    return parsePercentToBasisPoints(config.ownSignupRatePercent);
+  }
+  if (eventType === 'subscription_recurring_accredited') {
+    return parsePercentToBasisPoints(config.ownRecurringRatePercent);
+  }
+  return null;
 }
 
 async function appendAuditLog(input, client = null) {
@@ -329,6 +384,17 @@ async function assignPartnerSponsor(partnerId, sponsorPartnerId, options = {}) {
       if (!sponsor) return { ok: false, reason: 'partner_sponsor_not_found' };
       if (sponsor.id === partnerId) return { ok: false, reason: 'partner_sponsor_self_reference' };
       if (sponsor.status !== 'active') return { ok: false, reason: 'partner_sponsor_inactive' };
+
+      const visited = new Set([String(partnerId)]);
+      let current = sponsor;
+      while (current) {
+        if (visited.has(String(current.id))) {
+          return { ok: false, reason: 'partner_sponsor_cycle_detected' };
+        }
+        visited.add(String(current.id));
+        if (!current.sponsorPartnerId) break;
+        current = await findPartnerById(current.sponsorPartnerId, client);
+      }
     }
 
     await endActivePartnerRelationship(partnerId, new Date().toISOString(), client);
@@ -388,17 +454,30 @@ async function attributeTenantToPartner(partnerId, payload, options = {}) {
       return { ok: true, attribution: existingActive, partner };
     }
 
-    const attribution = await createPartnerAttribution(
-      {
-        partnerId,
-        clinicId: clinic.id,
-        tenantId,
-        attributionSource,
-        notes,
-        createdByStaffUserId: actorStaffUserId
-      },
-      client
-    );
+    let attribution;
+    try {
+      attribution = await createPartnerAttribution(
+        {
+          partnerId,
+          clinicId: clinic.id,
+          tenantId,
+          attributionSource,
+          notes,
+          createdByStaffUserId: actorStaffUserId
+        },
+        client
+      );
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        const concurrentActive = await findActiveAttributionByTenantId(tenantId, client);
+        return {
+          ok: false,
+          reason: 'tenant_already_attributed',
+          partnerId: concurrentActive ? concurrentActive.partnerId : null
+        };
+      }
+      throw error;
+    }
 
     await appendAuditLog(
       {
@@ -574,14 +653,19 @@ function calculateCommissionAmountCents(basisAmountCents, rateBasisPoints) {
 
 async function buildPartnerChain(rootPartnerId, client = null) {
   const chain = [];
+  const visited = new Set();
   let current = await findPartnerById(rootPartnerId, client);
   if (!current) return chain;
-  chain.push(current);
-  while (current && current.sponsorPartnerId) {
-    current = await findPartnerById(current.sponsorPartnerId, client);
-    if (!current) break;
+  while (current) {
+    if (visited.has(String(current.id))) {
+      const error = new Error('partner_hierarchy_cycle_detected');
+      error.code = 'PARTNER_HIERARCHY_CYCLE_DETECTED';
+      throw error;
+    }
+    visited.add(String(current.id));
     chain.push(current);
-    if (chain.length >= 2) break;
+    if (!current.sponsorPartnerId) break;
+    current = await findPartnerById(current.sponsorPartnerId, client);
   }
   return chain;
 }
@@ -593,36 +677,72 @@ async function simulateCommissionEntries(payload, options = {}) {
   if (!planVersion) return { ok: false, reason: 'partner_commission_plan_version_not_found' };
 
   const rules = normalizePlanRules(planVersion.rules, planVersion.maxPayoutPercent);
-  const eventType = normalizeString(payload && payload.eventType) || 'subscription_payment';
+  const eventType = normalizeString(payload && payload.eventType).toLowerCase();
   const sourceType = normalizeString(payload && payload.sourceType) || 'subscription';
   const sourceRef = normalizeString(payload && payload.sourceRef);
   const sourceEventId = normalizeString(payload && payload.sourceEventId) || sourceRef;
   const eventAt = normalizeString(payload && payload.eventAt) || new Date().toISOString();
   const basisAmountCents = parseMoneyToCents(payload && payload.basisAmount);
+  const paymentStatus = normalizeString(payload && payload.paymentStatus).toLowerCase();
+  const reversed = payload && payload.reversed === true;
 
   if (!sourceRef || !sourceEventId) return { ok: false, reason: 'missing_partner_commission_source_ref' };
   if (basisAmountCents === null || basisAmountCents < 0) return { ok: false, reason: 'invalid_partner_commission_basis_amount' };
+  if (!SUPPORTED_EVENT_TYPES.has(eventType)) return { ok: false, reason: 'unsupported_partner_commission_event_type' };
+  if (paymentStatus !== 'accredited' || reversed) return { ok: false, reason: 'partner_commission_payment_not_eligible' };
 
   return withTransaction(async (client) => {
     const context = await resolveSimulationContext(payload, client);
     if (!context.ok) return context;
 
-    const chain = await buildPartnerChain(context.partner.id, client);
-    const directRateBasisPoints = parsePercentToBasisPoints(rules.directRatePercent);
-    const indirectRateBasisPoints = parsePercentToBasisPoints(rules.indirectRatePercent);
+    let chain;
+    try {
+      chain = await buildPartnerChain(context.partner.id, client);
+    } catch (error) {
+      if (error && error.code === 'PARTNER_HIERARCHY_CYCLE_DETECTED') {
+        return { ok: false, reason: 'partner_hierarchy_cycle_detected' };
+      }
+      throw error;
+    }
     const maxPayoutBasisPoints = parsePercentToBasisPoints(planVersion.maxPayoutPercent);
-
+    const recurringCapBasisPoints = parsePercentToBasisPoints(rules.recurringCapPercent);
     const entries = [];
-    let accumulatedBasisPoints = 0;
+    let accumulatedRecurringBasisPoints = 0;
 
     for (let index = 0; index < chain.length; index += 1) {
       const partner = chain[index];
-      const rateBasisPoints = index === 0 ? directRateBasisPoints : indirectRateBasisPoints;
-      if (rateBasisPoints === null || maxPayoutBasisPoints === null) continue;
-      if (accumulatedBasisPoints + rateBasisPoints > maxPayoutBasisPoints) {
-        break;
+      const isRootPartner = index === 0;
+      const payoutKind = isRootPartner
+        ? (eventType === 'subscription_signup_accredited' ? 'own_signup' : 'own_recurring')
+        : 'line_recurring_rebate';
+      const rateBasisPoints = isRootPartner
+        ? getPartnerOwnEventRateBasisPoints(rules, partner, eventType)
+        : eventType === 'subscription_recurring_accredited'
+          ? getPartnerRecurringLineRateBasisPoints(rules, partner, index)
+          : 0;
+
+      if (rateBasisPoints === null || rateBasisPoints < 0) {
+        return { ok: false, reason: 'invalid_partner_commission_rules' };
       }
-      accumulatedBasisPoints += rateBasisPoints;
+      if (!isRootPartner && eventType === 'subscription_signup_accredited') {
+        continue;
+      }
+      if (rateBasisPoints === 0) {
+        continue;
+      }
+
+      if (eventType === 'subscription_recurring_accredited') {
+        accumulatedRecurringBasisPoints += rateBasisPoints;
+        if (
+          recurringCapBasisPoints === null ||
+          maxPayoutBasisPoints === null ||
+          accumulatedRecurringBasisPoints > recurringCapBasisPoints ||
+          accumulatedRecurringBasisPoints > maxPayoutBasisPoints
+        ) {
+          return { ok: false, reason: 'partner_commission_cap_exceeded' };
+        }
+      }
+
       entries.push({
         partnerId: partner.id,
         attributionId: context.attribution.id,
@@ -636,15 +756,25 @@ async function simulateCommissionEntries(payload, options = {}) {
         eventAt,
         periodKey: buildPeriodKey(eventAt),
         status: options.persist ? 'generated' : 'simulated',
+        currency: planVersion.currency,
+        planCodeSnapshot: planVersion.planCode,
+        planVersionNumberSnapshot: planVersion.versionNumber,
+        payoutKind,
+        paymentStatus: 'accredited',
         basisAmount: centsToMoney(basisAmountCents),
         commissionRate: basisPointsToPercentString(rateBasisPoints),
         commissionAmount: centsToMoney(calculateCommissionAmountCents(basisAmountCents, rateBasisPoints)),
         depthLevel: index,
         idempotencyKey: `${sourceType}:${sourceRef}:${sourceEventId}:${partner.id}:${index}:${options.persist ? 'generated' : 'simulated'}`,
         details: {
-          sponsorPartnerId: index === 0 ? partner.sponsorPartnerId : null,
+          sponsorPartnerId: partner.sponsorPartnerId || null,
           planCode: planVersion.planCode,
-          planVersionNumber: planVersion.versionNumber
+          planVersionNumber: planVersion.versionNumber,
+          planName: planVersion.planName || null,
+          partnerRankCode: getPartnerRankCode(partner),
+          recurringCapPercent: rules.recurringCapPercent,
+          paymentStatus: 'accredited',
+          lineDepth: index
         }
       });
     }
@@ -716,6 +846,11 @@ async function reverseCommissionEntries(payload, options = {}) {
         eventAt: new Date().toISOString(),
         periodKey: buildPeriodKey(new Date().toISOString()),
         status: 'reversed',
+        currency: entry.currency,
+        planCodeSnapshot: entry.planCodeSnapshot,
+        planVersionNumberSnapshot: entry.planVersionNumberSnapshot,
+        payoutKind: entry.payoutKind,
+        paymentStatus: 'accredited',
         basisAmount: entry.basisAmount,
         commissionRate: entry.commissionRate,
         commissionAmount: centsToMoney(-Math.abs(parseMoneyToCents(entry.commissionAmount) || 0)),
@@ -924,7 +1059,6 @@ async function getPartnerRankProgress(partnerId) {
 }
 
 module.exports = {
-  ensureStaffActorRole,
   createPartner,
   listPartnersForAdmin,
   getPartnerDetails,

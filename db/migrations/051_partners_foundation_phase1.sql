@@ -79,6 +79,10 @@ CREATE INDEX IF NOT EXISTS partner_client_attributions_partner_idx
 CREATE INDEX IF NOT EXISTS partner_client_attributions_tenant_idx
   ON partner_client_attributions ("tenantId", status);
 
+CREATE UNIQUE INDEX IF NOT EXISTS partner_client_attributions_active_tenant_idx
+  ON partner_client_attributions ("tenantId")
+  WHERE status = 'active';
+
 CREATE TABLE IF NOT EXISTS partner_commission_plans (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   code TEXT NOT NULL,
@@ -132,6 +136,11 @@ CREATE TABLE IF NOT EXISTS partner_commission_entries (
   "eventType" TEXT NOT NULL,
   "eventAt" TIMESTAMPTZ NOT NULL,
   "periodKey" TEXT NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'ARS',
+  "planCodeSnapshot" TEXT NOT NULL,
+  "planVersionNumberSnapshot" INTEGER NOT NULL,
+  "payoutKind" TEXT NOT NULL,
+  "paymentStatus" TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'generated',
   "basisAmount" NUMERIC(14,2) NOT NULL,
   "commissionRate" NUMERIC(5,2) NOT NULL,
@@ -144,6 +153,8 @@ CREATE TABLE IF NOT EXISTS partner_commission_entries (
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT partner_commission_entries_status_check CHECK (status IN ('simulated', 'generated', 'reversed')),
+  CONSTRAINT partner_commission_entries_payout_kind_check CHECK ("payoutKind" IN ('own_signup', 'own_recurring', 'line_recurring_rebate')),
+  CONSTRAINT partner_commission_entries_payment_status_check CHECK ("paymentStatus" IN ('accredited')),
   CONSTRAINT partner_commission_entries_amounts_check CHECK ("basisAmount" >= 0 AND "commissionRate" >= 0 AND "commissionRate" <= 15.00),
   CONSTRAINT partner_commission_entries_depth_level_check CHECK ("depthLevel" >= 0)
 );

@@ -6,7 +6,7 @@ const {
 } = require('../services/partners.service');
 
 function getPartnerActorId(req) {
-  return String(req.get('x-partner-id') || '').trim();
+  return String((req.partnerAuth && req.partnerAuth.partnerId) || '').trim();
 }
 
 async function getPartnersMe(req, res) {
