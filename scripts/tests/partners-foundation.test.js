@@ -191,6 +191,7 @@ function setup(overrides = {}) {
     sumGeneratedCommissionsForPartner: async () => '60000.00',
     countActivePartnerAttributions: async () => 4,
     createRankEvaluation: async (payload) => ({ id: 'eval-1', evaluatedAt: new Date().toISOString(), ...payload }),
+    findLatestRankEvaluationByPartnerId: async () => null,
     closeActiveRankHistory: async () => 1,
     createRankHistory: async () => ({ id: 'rank-1' }),
     listRankHistory: async () => [],
@@ -516,6 +517,72 @@ async function testGetPartnerClientsKeepsBillingUndefinedWithoutTrustedData() {
   assert.strictEqual(result.clients[0].billing, undefined);
 }
 
+async function testGetPartnerRankProgressExposesTrustedRequirements() {
+  setup({
+    findLatestRankEvaluationByPartnerId: async () => ({
+      id: 'eval-2',
+      partnerId: 'partner-1',
+      planVersionId: 'version-1',
+      status: 'completed',
+      currentRankCode: 'lider',
+      nextRankCode: 'emperador',
+      metrics: {
+        activeClients: 4,
+        generatedCommission: '60000.00',
+        thresholdMatched: {
+          code: 'lider',
+          minActiveClients: 3,
+          minGeneratedCommission: '50000.00'
+        }
+      },
+      windowStart: '2026-05-01T00:00:00.000Z',
+      windowEnd: '2026-05-31T23:59:59.000Z',
+      evaluatedAt: '2026-06-01T12:00:00.000Z',
+      createdAt: '2026-06-01T12:00:00.000Z'
+    }),
+    listRankHistory: async () => ([
+      {
+        id: 'rank-1',
+        partnerId: 'partner-1',
+        rankCode: 'lider',
+        effectiveFrom: '2026-06-01T12:00:00.000Z',
+        effectiveTo: null,
+        evaluationId: 'eval-2',
+        notes: 'partner_rank_evaluated',
+        createdAt: '2026-06-01T12:00:00.000Z'
+      }
+    ])
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.getPartnerRankProgress('partner-1');
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.currentRank, 'lider');
+  assert.strictEqual(result.nextRank, 'emperador');
+  assert.strictEqual(result.evaluationStatus, 'complete');
+  assert.strictEqual(result.progressPercent, 40);
+  assert.strictEqual(result.requirements.length, 2);
+  assert.deepStrictEqual(result.requirements[0], {
+    code: 'active_clients',
+    label: 'Clientes activos',
+    currentValue: 4,
+    targetValue: 8,
+    remainingValue: 4,
+    completed: false,
+    valueType: 'count',
+    currency: null
+  });
+  assert.deepStrictEqual(result.requirements[1], {
+    code: 'generated_commission',
+    label: 'Objetivo comercial acreditado',
+    currentValue: '60000.00',
+    targetValue: '150000.00',
+    remainingValue: '90000.00',
+    completed: false,
+    valueType: 'currency',
+    currency: 'ARS'
+  });
+}
+
 async function run() {
   await testCreatePartnerRejectsDuplicateEmail();
   await testAttributeTenantBlocksOtherPartner();
@@ -535,6 +602,7 @@ async function run() {
   await testDoubleReversalRejected();
   await testGetPartnerClientsAddsTrustedBillingSummary();
   await testGetPartnerClientsKeepsBillingUndefinedWithoutTrustedData();
+  await testGetPartnerRankProgressExposesTrustedRequirements();
   console.log('partners-foundation.test.js: ok');
 }
 

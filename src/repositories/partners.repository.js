@@ -782,6 +782,29 @@ async function createRankEvaluation(input, client = null) {
   return result.rows[0] || null;
 }
 
+async function findLatestRankEvaluationByPartnerId(partnerId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            "partnerId",
+            "planVersionId",
+            status,
+            "currentRankCode",
+            "nextRankCode",
+            metrics,
+            "windowStart",
+            "windowEnd",
+            "evaluatedAt",
+            "createdAt"
+     FROM partner_rank_evaluations
+     WHERE "partnerId" = $1
+     ORDER BY "evaluatedAt" DESC, "createdAt" DESC
+     LIMIT 1`,
+    [partnerId]
+  );
+  return result.rows[0] || null;
+}
+
 async function closeActiveRankHistory(partnerId, effectiveTo, client = null) {
   const result = await dbQuery(
     client,
@@ -906,6 +929,7 @@ module.exports = {
   sumGeneratedCommissionsForPartner,
   countActivePartnerAttributions,
   createRankEvaluation,
+  findLatestRankEvaluationByPartnerId,
   closeActiveRankHistory,
   createRankHistory,
   listRankHistory,

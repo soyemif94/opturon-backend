@@ -34,6 +34,7 @@ const {
   sumGeneratedCommissionsForPartner,
   countActivePartnerAttributions,
   createRankEvaluation,
+  findLatestRankEvaluationByPartnerId,
   closeActiveRankHistory,
   createRankHistory,
   listRankHistory,
@@ -183,6 +184,102 @@ function resolvePartnerClientBilling(row) {
     planName,
     lastAccreditedPaymentAt,
     nextPaymentAt
+  };
+}
+
+function buildRankRequirement(kind, threshold, metrics, currency = 'ARS') {
+  if (!threshold) return null;
+
+  if (kind === 'active_clients') {
+    const currentValue = Math.max(0, Number(metrics && metrics.activeClients) || 0);
+    const targetValue = Math.max(0, Number(threshold.minActiveClients) || 0);
+    const remainingValue = Math.max(0, targetValue - currentValue);
+    return {
+      code: 'active_clients',
+      label: 'Clientes activos',
+      currentValue,
+      targetValue,
+      remainingValue,
+      completed: currentValue >= targetValue,
+      valueType: 'count',
+      currency: null
+    };
+  }
+
+  if (kind === 'generated_commission') {
+    const currentValue = centsToMoney(Math.max(0, parseMoneyToCents(metrics && metrics.generatedCommission) || 0));
+    const targetValue = centsToMoney(Math.max(0, parseMoneyToCents(threshold.minGeneratedCommission) || 0));
+    const remainingValue = centsToMoney(Math.max(0, (parseMoneyToCents(targetValue) || 0) - (parseMoneyToCents(currentValue) || 0)));
+    return {
+      code: 'generated_commission',
+      label: 'Objetivo comercial acreditado',
+      currentValue,
+      targetValue,
+      remainingValue,
+      completed: compareMoneyStrings(currentValue, targetValue) >= 0,
+      valueType: 'currency',
+      currency
+    };
+  }
+
+  return null;
+}
+
+function buildRankProgressSnapshot(evaluation, planVersion) {
+  if (!evaluation) {
+    return {
+      currentRank: null,
+      nextRank: null,
+      progressPercent: null,
+      requirements: [],
+      evaluationStatus: 'missing',
+      evaluatedAt: null,
+      windowStart: null,
+      windowEnd: null
+    };
+  }
+
+  const metrics = evaluation.metrics && typeof evaluation.metrics === 'object' ? evaluation.metrics : {};
+  const rules = planVersion && planVersion.rules ? normalizePlanRules(planVersion.rules, planVersion.maxPayoutPercent) : null;
+  const thresholds = Array.isArray(rules && rules.rankThresholds) ? rules.rankThresholds : [];
+  const nextThreshold = thresholds.find((item) => item.code === evaluation.nextRankCode) || null;
+  const currentThreshold = thresholds.find((item) => item.code === evaluation.currentRankCode) || null;
+  const targetThreshold = nextThreshold || currentThreshold || null;
+  const currency = (planVersion && planVersion.currency) || 'ARS';
+  const requirements = targetThreshold
+    ? [
+      buildRankRequirement('active_clients', targetThreshold, metrics, currency),
+      buildRankRequirement('generated_commission', targetThreshold, metrics, currency)
+    ].filter(Boolean)
+    : [];
+
+  let progressPercent = null;
+  if (requirements.length > 0) {
+    const ratios = requirements.map((requirement) => {
+      if (!requirement || requirement.targetValue === null || requirement.targetValue === undefined) return 0;
+      if (requirement.valueType === 'currency') {
+        const targetCents = parseMoneyToCents(requirement.targetValue) || 0;
+        const currentCents = parseMoneyToCents(requirement.currentValue) || 0;
+        if (targetCents <= 0) return 100;
+        return Math.min(100, Math.round((currentCents / targetCents) * 100));
+      }
+      const targetValue = Number(requirement.targetValue) || 0;
+      const currentValue = Number(requirement.currentValue) || 0;
+      if (targetValue <= 0) return 100;
+      return Math.min(100, Math.round((currentValue / targetValue) * 100));
+    });
+    progressPercent = nextThreshold ? Math.min(...ratios) : 100;
+  }
+
+  return {
+    currentRank: evaluation.currentRankCode || null,
+    nextRank: evaluation.nextRankCode || null,
+    progressPercent,
+    requirements,
+    evaluationStatus: 'complete',
+    evaluatedAt: evaluation.evaluatedAt || null,
+    windowStart: evaluation.windowStart || null,
+    windowEnd: evaluation.windowEnd || null
   };
 }
 
@@ -1190,12 +1287,24 @@ async function getPartnerClients(partnerId) {
 async function getPartnerRankProgress(partnerId) {
   const details = await getPartnerDetails(partnerId);
   if (!details.ok) return details;
-  const latestEvaluation = details.rankHistory[0] || null;
+  const latestEvaluation = await findLatestRankEvaluationByPartnerId(partnerId);
+  const planVersion = latestEvaluation && latestEvaluation.planVersionId
+    ? await findCommissionPlanVersionById(latestEvaluation.planVersionId)
+    : null;
+  const progress = buildRankProgressSnapshot(latestEvaluation, planVersion);
   return {
     ok: true,
     partner: details.partner,
     rankHistory: details.rankHistory,
-    latestEvaluation
+    latestEvaluation,
+    currentRank: progress.currentRank,
+    nextRank: progress.nextRank,
+    progressPercent: progress.progressPercent,
+    requirements: progress.requirements,
+    evaluationStatus: progress.evaluationStatus,
+    evaluatedAt: progress.evaluatedAt,
+    windowStart: progress.windowStart,
+    windowEnd: progress.windowEnd
   };
 }
 
