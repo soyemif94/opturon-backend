@@ -277,10 +277,30 @@ async function listPartnerAttributions(partnerId, client = null) {
             pca."attributedAt",
             pca."endedAt",
             c.name AS "clinicName",
+            ss."planCode" AS "billingPlanCode",
+            ss."localStatus" AS "billingSubscriptionStatus",
+            ss."lastPaymentStatus" AS "billingLastPaymentStatus",
+            ss."nextBillingDate" AS "billingNextPaymentAt",
+            CASE
+              WHEN LOWER(COALESCE(ss."lastPaymentStatus", '')) IN ('approved', 'accredited', 'active', 'authorized')
+                THEN ss.metadata -> 'mercadoPagoPayment' ->> 'dateApproved'
+              ELSE NULL
+            END AS "billingLastAccreditedPaymentAt",
             pca."createdAt",
             pca."updatedAt"
      FROM partner_client_attributions pca
      INNER JOIN clinics c ON c.id = pca."clinicId"
+     LEFT JOIN LATERAL (
+       SELECT ss."planCode",
+              ss."localStatus",
+              ss."lastPaymentStatus",
+              ss."nextBillingDate",
+              ss.metadata
+       FROM saas_subscriptions ss
+       WHERE ss."externalTenantId" = pca."tenantId"
+       ORDER BY ss."createdAt" DESC
+       LIMIT 1
+     ) ss ON TRUE
      WHERE pca."partnerId" = $1
      ORDER BY pca."attributedAt" DESC, pca."createdAt" DESC`,
     [partnerId]

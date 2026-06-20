@@ -447,6 +447,75 @@ async function testDoubleReversalRejected() {
   assert.strictEqual(result.reason, 'partner_commission_entry_already_reversed');
 }
 
+async function testGetPartnerClientsAddsTrustedBillingSummary() {
+  setup({
+    listPartnerAttributions: async () => ([
+      {
+        id: 'attr-1',
+        partnerId: 'partner-1',
+        clinicId: 'clinic-1',
+        tenantId: 'tenant-a',
+        status: 'active',
+        attributionSource: 'manual_admin',
+        notes: 'Cliente con SaaS al dia',
+        attributedAt: '2026-06-18T12:00:00.000Z',
+        endedAt: null,
+        clinicName: 'Clinic Uno',
+        billingPlanCode: 'crecimiento',
+        billingSubscriptionStatus: 'active',
+        billingLastPaymentStatus: 'approved',
+        billingNextPaymentAt: '2026-07-18T12:00:00.000Z',
+        billingLastAccreditedPaymentAt: '2026-06-18T10:00:00.000Z',
+        createdAt: '2026-06-18T12:00:00.000Z',
+        updatedAt: '2026-06-18T12:00:00.000Z'
+      }
+    ])
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.getPartnerClients('partner-1');
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.clients.length, 1);
+  assert.deepStrictEqual(result.clients[0].billing, {
+    subscriptionStatus: 'active',
+    paymentStatus: 'current',
+    planName: 'Plan Crecimiento',
+    lastAccreditedPaymentAt: '2026-06-18T10:00:00.000Z',
+    nextPaymentAt: '2026-07-18T12:00:00.000Z'
+  });
+  assert.strictEqual('billingPlanCode' in result.clients[0], false);
+  assert.strictEqual('billingLastPaymentStatus' in result.clients[0], false);
+}
+
+async function testGetPartnerClientsKeepsBillingUndefinedWithoutTrustedData() {
+  setup({
+    listPartnerAttributions: async () => ([
+      {
+        id: 'attr-2',
+        partnerId: 'partner-1',
+        clinicId: 'clinic-2',
+        tenantId: 'tenant-b',
+        status: 'active',
+        attributionSource: 'referral',
+        notes: null,
+        attributedAt: '2026-06-17T12:00:00.000Z',
+        endedAt: null,
+        clinicName: 'Clinic Dos',
+        billingPlanCode: null,
+        billingSubscriptionStatus: null,
+        billingLastPaymentStatus: null,
+        billingNextPaymentAt: null,
+        billingLastAccreditedPaymentAt: null,
+        createdAt: '2026-06-17T12:00:00.000Z',
+        updatedAt: '2026-06-17T12:00:00.000Z'
+      }
+    ])
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.getPartnerClients('partner-1');
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.clients[0].billing, undefined);
+}
+
 async function run() {
   await testCreatePartnerRejectsDuplicateEmail();
   await testAttributeTenantBlocksOtherPartner();
@@ -464,6 +533,8 @@ async function run() {
   await testAttributionUniqueViolationReturnsBusinessError();
   await testGenerateIsIdempotentForSameEvent();
   await testDoubleReversalRejected();
+  await testGetPartnerClientsAddsTrustedBillingSummary();
+  await testGetPartnerClientsKeepsBillingUndefinedWithoutTrustedData();
   console.log('partners-foundation.test.js: ok');
 }
 

@@ -1,5 +1,6 @@
 const { hashSync, compareSync } = require('bcryptjs');
 const { withTransaction } = require('../db/client');
+const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
 const {
   listPartners,
   findPartnerById,
@@ -44,6 +45,10 @@ const PARTNER_STATUSES = new Set(['invited', 'active', 'suspended', 'disabled'])
 const DEFAULT_COMMISSION_CAP_PERCENT = '15.00';
 const SUPPORTED_EVENT_TYPES = new Set(['subscription_signup_accredited', 'subscription_recurring_accredited']);
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const ACTIVE_BILLING_PAYMENT_STATUSES = new Set(['approved', 'accredited', 'active', 'authorized']);
+const PENDING_BILLING_PAYMENT_STATUSES = new Set(['pending', 'in_process', 'in_mediation', 'authorized']);
+const FAILED_BILLING_PAYMENT_STATUSES = new Set(['payment_failed', 'rejected', 'cancelled', 'cancelled_by_user', 'charged_back', 'refunded']);
+const CANCELED_BILLING_SUBSCRIPTION_STATUSES = new Set(['canceled', 'cancelled', 'suspended']);
 let savepointSequence = 0;
 
 function normalizeString(value) {
@@ -139,6 +144,64 @@ function buildPartnerAuthUser(partner) {
     globalRole: 'partner',
     accountScope: 'partner',
     partnerId: partner.id
+  };
+}
+
+function normalizeBillingStatus(value) {
+  return normalizeString(value).toLowerCase();
+}
+
+function resolvePartnerClientBilling(row) {
+  const subscriptionStatus = normalizeBillingStatus(row && row.billingSubscriptionStatus) || null;
+  const lastPaymentStatus = normalizeBillingStatus(row && row.billingLastPaymentStatus) || null;
+  const nextPaymentAt = row && row.billingNextPaymentAt ? row.billingNextPaymentAt : null;
+  const lastAccreditedPaymentAt = row && row.billingLastAccreditedPaymentAt ? row.billingLastAccreditedPaymentAt : null;
+  const planDefinition = resolveSaasPlanDefinition(row && row.billingPlanCode);
+  const planName = planDefinition ? planDefinition.label : null;
+
+  let paymentStatus = null;
+  if (CANCELED_BILLING_SUBSCRIPTION_STATUSES.has(subscriptionStatus)) {
+    paymentStatus = 'canceled';
+  } else if (subscriptionStatus === 'payment_failed' || FAILED_BILLING_PAYMENT_STATUSES.has(lastPaymentStatus)) {
+    paymentStatus = 'overdue';
+  } else if (subscriptionStatus === 'pending' || subscriptionStatus === 'paused' || PENDING_BILLING_PAYMENT_STATUSES.has(lastPaymentStatus)) {
+    paymentStatus = 'pending';
+  } else if (
+    subscriptionStatus === 'active'
+    && (ACTIVE_BILLING_PAYMENT_STATUSES.has(lastPaymentStatus) || Boolean(lastAccreditedPaymentAt) || Boolean(nextPaymentAt))
+  ) {
+    paymentStatus = 'current';
+  }
+
+  if (!subscriptionStatus && !paymentStatus && !planName && !lastAccreditedPaymentAt && !nextPaymentAt) {
+    return undefined;
+  }
+
+  return {
+    subscriptionStatus,
+    paymentStatus,
+    planName,
+    lastAccreditedPaymentAt,
+    nextPaymentAt
+  };
+}
+
+function mapPartnerClientAttribution(row) {
+  const billing = resolvePartnerClientBilling(row);
+  return {
+    id: row.id,
+    partnerId: row.partnerId,
+    clinicId: row.clinicId,
+    tenantId: row.tenantId,
+    status: row.status,
+    attributionSource: row.attributionSource || null,
+    notes: row.notes || null,
+    attributedAt: row.attributedAt || null,
+    endedAt: row.endedAt || null,
+    clinicName: row.clinicName || null,
+    createdAt: row.createdAt || null,
+    updatedAt: row.updatedAt || null,
+    ...(billing ? { billing } : {})
   };
 }
 
@@ -1116,10 +1179,11 @@ async function getPartnerSummary(partnerId) {
 async function getPartnerClients(partnerId) {
   const partner = await findPartnerById(partnerId);
   if (!partner) return { ok: false, reason: 'partner_not_found' };
+  const clients = await listPartnerAttributions(partnerId);
   return {
     ok: true,
     partner,
-    clients: await listPartnerAttributions(partnerId)
+    clients: clients.map(mapPartnerClientAttribution)
   };
 }
 
