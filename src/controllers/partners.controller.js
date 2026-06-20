@@ -1,4 +1,6 @@
 const {
+  resolvePartnerInvitation,
+  acceptPartnerInvitation,
   getPartnerMe,
   getPartnerSummary,
   getPartnerClients,
@@ -21,6 +23,30 @@ async function getPartnersMe(req, res) {
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
     return res.status(500).json({ success: false, error: 'partner_me_failed', details: error.message });
+  }
+}
+
+async function getPartnerInvitationValidation(req, res) {
+  try {
+    const result = await resolvePartnerInvitation(req.query && req.query.token);
+    if (!result.ok) {
+      return res.status(400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result.invitation });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_invitation_lookup_failed', details: error.message });
+  }
+}
+
+async function postPartnerInvitationAcceptance(req, res) {
+  try {
+    const result = await acceptPartnerInvitation(req.body && req.body.token, req.body && req.body.password);
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_invitation_accept_failed', details: error.message });
   }
 }
 
@@ -90,6 +116,8 @@ async function getPartnersMeCommissions(req, res) {
 }
 
 module.exports = {
+  getPartnerInvitationValidation,
+  postPartnerInvitationAcceptance,
   getPartnersMe,
   getPartnersMeSummary,
   getPartnersMeClients,

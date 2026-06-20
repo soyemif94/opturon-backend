@@ -14,10 +14,12 @@ const {
   getAdminMetaEmbeddedSignupReadiness,
   getAdminPartners,
   postAdminPartner,
+  postAdminPartnerInvite,
   getAdminPartner,
   patchAdminPartnerStatus,
   postAdminPartnerSponsor,
   postAdminPartnerAttribution,
+  postAdminPartnerResendInvite,
   postAdminPartnerRankEvaluation,
   getAdminPartnerCommissionPlans,
   postAdminPartnerCommissionPlan,
@@ -45,6 +47,7 @@ router.get('/diagnostics/ai-assist', requirePortalInternalAuth, getAdminAiAssist
 router.get('/meta/embedded-signup/readiness', requirePortalInternalAuth, getAdminMetaEmbeddedSignupReadiness);
 router.get('/partners', requireAdminInternalActor, getAdminPartners);
 router.post('/partners', requireAdminInternalActor, postAdminPartner);
+router.post('/partners/invite', requireAdminInternalActor, postAdminPartnerInvite);
 router.get('/partners/commission-plans', requireAdminInternalActor, getAdminPartnerCommissionPlans);
 router.post('/partners/commission-plans', requireAdminInternalActor, postAdminPartnerCommissionPlan);
 router.post('/partners/commission-plans/:planCode/versions', requireAdminInternalActor, postAdminPartnerCommissionPlanVersion);
@@ -53,6 +56,7 @@ router.post('/partners/commissions/generate-controlled', requireAdminInternalAct
 router.post('/partners/commissions/reverse-controlled', requireAdminInternalActor, postAdminPartnerCommissionReverse);
 router.get('/partners/:partnerId', requireAdminInternalActor, getAdminPartner);
 router.patch('/partners/:partnerId/status', requireAdminInternalActor, patchAdminPartnerStatus);
+router.post('/partners/:partnerId/resend-invite', requireAdminInternalActor, postAdminPartnerResendInvite);
 router.post('/partners/:partnerId/sponsor', requireAdminInternalActor, postAdminPartnerSponsor);
 router.post('/partners/:partnerId/attributions', requireAdminInternalActor, postAdminPartnerAttribution);
 router.post('/partners/:partnerId/rank/evaluate', requireAdminInternalActor, postAdminPartnerRankEvaluation);

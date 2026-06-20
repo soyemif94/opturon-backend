@@ -85,6 +85,17 @@ async function findPartnerByEmail(email, client = null) {
   return mapPartnerRow(result.rows[0] || null);
 }
 
+async function findPartnerByCode(code, client = null) {
+  const result = await dbQuery(
+    client,
+    `${PARTNER_SELECT}
+     WHERE LOWER(pp.code) = LOWER($1)
+     LIMIT 1`,
+    [code]
+  );
+  return mapPartnerRow(result.rows[0] || null);
+}
+
 async function findRawPartnerAuthByEmail(email, client = null) {
   const result = await dbQuery(
     client,
@@ -190,6 +201,24 @@ async function updatePartnerStatus(partnerId, status, client = null) {
     [partnerId, status]
   );
   return result.rowCount > 0;
+}
+
+async function updatePartnerCredentialsById(input, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE partner_accounts
+     SET "passwordHash" = $2,
+         status = COALESCE($3, status),
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id, email, status, "createdAt", "updatedAt", "lastLoginAt"`,
+    [
+      input.partnerId,
+      input.passwordHash || null,
+      input.status || null
+    ]
+  );
+  return result.rows[0] || null;
 }
 
 async function touchPartnerLogin(partnerId, client = null) {
@@ -1058,12 +1087,14 @@ module.exports = {
   listPartners,
   findPartnerById,
   findPartnerByEmail,
+  findPartnerByCode,
   findRawPartnerAuthByEmail,
   createPartnerAccount,
   createPartnerProfile,
   createPartnerRelationship,
   endActivePartnerRelationship,
   updatePartnerStatus,
+  updatePartnerCredentialsById,
   touchPartnerLogin,
   findClinicTenantByExternalTenantId,
   findActiveAttributionByTenantId,

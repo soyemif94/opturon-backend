@@ -16,8 +16,10 @@ const { getAiAssistRuntimeDiagnostics } = require('../services/ai-assist.service
 const { getMetaEmbeddedSignupReadiness } = require('../services/meta-embedded-readiness.service');
 const {
   createPartner,
+  invitePartner,
   listPartnersForAdmin,
   getPartnerDetails,
+  resendPartnerInvitation,
   changePartnerStatus,
   assignPartnerSponsor,
   attributeTenantToPartner,
@@ -420,6 +422,19 @@ async function postAdminPartner(req, res) {
   }
 }
 
+async function postAdminPartnerInvite(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await invitePartner(req.body || {}, { actorStaffUserId: actorUserId });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_sponsor_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_invitation_create_failed', details: error.message });
+  }
+}
+
 async function getAdminPartner(req, res) {
   try {
     const result = await getPartnerDetails(String(req.params.partnerId || '').trim());
@@ -483,6 +498,21 @@ async function postAdminPartnerAttribution(req, res) {
     return res.status(201).json({ success: true, data: result });
   } catch (error) {
     return res.status(500).json({ success: false, error: 'partner_attribution_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerResendInvite(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await resendPartnerInvitation(String(req.params.partnerId || '').trim(), {
+      actorStaffUserId: actorUserId
+    });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_invitation_resend_failed', details: error.message });
   }
 }
 
@@ -593,10 +623,12 @@ module.exports = {
   getAdminMetaEmbeddedSignupReadiness,
   getAdminPartners,
   postAdminPartner,
+  postAdminPartnerInvite,
   getAdminPartner,
   patchAdminPartnerStatus,
   postAdminPartnerSponsor,
   postAdminPartnerAttribution,
+  postAdminPartnerResendInvite,
   postAdminPartnerRankEvaluation,
   getAdminPartnerCommissionPlans,
   postAdminPartnerCommissionPlan,

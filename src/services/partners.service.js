@@ -1,16 +1,20 @@
+const { createHash, randomBytes } = require('crypto');
 const { hashSync, compareSync } = require('bcryptjs');
 const { withTransaction } = require('../db/client');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
+const { buildPartnerInvitationAcceptLink, sendPartnerInvitationEmail } = require('./partner-invitations-email.service');
 const {
   listPartners,
   findPartnerById,
   findPartnerByEmail,
+  findPartnerByCode,
   findRawPartnerAuthByEmail,
   createPartnerAccount,
   createPartnerProfile,
   createPartnerRelationship,
   endActivePartnerRelationship,
   updatePartnerStatus,
+  updatePartnerCredentialsById,
   touchPartnerLogin,
   findClinicTenantByExternalTenantId,
   findActiveAttributionByTenantId,
@@ -43,9 +47,18 @@ const {
   createPartnerAuditLog,
   listPartnerAuditLog
 } = require('../repositories/partners.repository');
+const {
+  createPartnerInvitation,
+  revokePendingPartnerInvitationsByPartnerId,
+  revokePendingPartnerInvitationsByEmail,
+  listLatestPartnerInvitationsByPartnerIds,
+  findPartnerInvitationByTokenHash,
+  markPartnerInvitationAccepted
+} = require('../repositories/partner-invitations.repository');
 
 const PARTNER_STATUSES = new Set(['invited', 'active', 'suspended', 'disabled']);
 const DEFAULT_COMMISSION_CAP_PERCENT = '15.00';
+const PARTNER_INVITATION_EXPIRES_IN_HOURS = 168;
 const SUPPORTED_EVENT_TYPES = new Set(['subscription_signup_accredited', 'subscription_recurring_accredited']);
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const ACTIVE_BILLING_PAYMENT_STATUSES = new Set(['approved', 'accredited', 'active', 'authorized']);
@@ -66,7 +79,8 @@ function normalizeEmail(value) {
 
 function normalizeStatus(value, fallback = 'active') {
   const normalized = normalizeString(value).toLowerCase();
-  return PARTNER_STATUSES.has(normalized) ? normalized : fallback;
+  if (PARTNER_STATUSES.has(normalized)) return normalized;
+  return fallback || null;
 }
 
 function slugify(value) {
@@ -83,6 +97,18 @@ function buildPartnerCode(displayName, email) {
   const emailLocal = normalizeEmail(email).split('@')[0] || '';
   const base = slugify(displayName) || slugify(emailLocal) || 'partner';
   return `ptn_${base}`;
+}
+
+function hashInvitationToken(token) {
+  return createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function generateInvitationToken() {
+  return randomBytes(32).toString('hex');
+}
+
+function buildInvitationExpiryDate() {
+  return new Date(Date.now() + PARTNER_INVITATION_EXPIRES_IN_HOURS * 60 * 60 * 1000);
 }
 
 function isUuid(value) {
@@ -306,6 +332,31 @@ function mapPartnerClientAttribution(row) {
   };
 }
 
+function buildPartnerInvitationSummary(partner, invitation) {
+  if (!invitation) return null;
+  return {
+    status: invitation.acceptedAt
+      ? 'accepted'
+      : invitation.revokedAt
+        ? 'replaced'
+        : new Date(invitation.expiresAt).getTime() <= Date.now()
+          ? 'expired'
+          : 'pending',
+    expiresAt: invitation.expiresAt || null,
+    sentAt: invitation.createdAt || null
+  };
+}
+
+function enrichPartnerAdminRecord(partner, invitation) {
+  if (!partner) return null;
+  const invitationSummary = buildPartnerInvitationSummary(partner, invitation);
+  if (!invitationSummary) return partner;
+  return {
+    ...partner,
+    invitation: invitationSummary
+  };
+}
+
 function normalizeLedgerDate(value, endOfDay = false) {
   const raw = normalizeString(value);
   if (!raw) return null;
@@ -526,6 +577,7 @@ async function createPartner(input, options = {}) {
   const legalName = normalizeString(input && input.legalName) || null;
   const phone = normalizeString(input && input.phone) || null;
   const notes = normalizeString(input && input.notes) || null;
+  const requestedCode = normalizeString(input && input.code);
   const sponsorPartnerId = normalizeString(input && input.sponsorPartnerId) || null;
   const actorStaffUserId = isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null;
   const status = normalizeStatus(input && input.status, password ? 'active' : 'invited');
@@ -538,6 +590,12 @@ async function createPartner(input, options = {}) {
     const existing = await findPartnerByEmail(email, client);
     if (existing) {
       return { ok: false, reason: 'partner_email_already_exists' };
+    }
+    if (requestedCode) {
+      const existingCode = await findPartnerByCode(requestedCode, client);
+      if (existingCode) {
+        return { ok: false, reason: 'partner_code_already_exists' };
+      }
     }
 
     if (sponsorPartnerId) {
@@ -555,11 +613,11 @@ async function createPartner(input, options = {}) {
       client
     );
 
-    const codeBase = buildPartnerCode(displayName, email);
+    const codeBase = requestedCode || buildPartnerCode(displayName, email);
     await createPartnerProfile(
       {
         partnerId: createdAccount.id,
-        code: `${codeBase}_${createdAccount.id.slice(0, 8)}`,
+        code: requestedCode || `${codeBase}_${createdAccount.id.slice(0, 8)}`,
         displayName,
         legalName,
         phone,
@@ -603,9 +661,14 @@ async function createPartner(input, options = {}) {
 }
 
 async function listPartnersForAdmin() {
+  const partners = await listPartners();
+  const latestInvitations = await listLatestPartnerInvitationsByPartnerIds(partners.map((partner) => partner.id));
+  const invitationsByPartnerId = new Map(
+    latestInvitations.map((invitation) => [String(invitation.partnerId), invitation])
+  );
   return {
     ok: true,
-    partners: await listPartners()
+    partners: partners.map((partner) => enrichPartnerAdminRecord(partner, invitationsByPartnerId.get(String(partner.id)) || null))
   };
 }
 
@@ -613,20 +676,357 @@ async function getPartnerDetails(partnerId) {
   const partner = await findPartnerById(partnerId);
   if (!partner) return { ok: false, reason: 'partner_not_found' };
 
-  const [attributions, commissionEntries, rankHistory, audit] = await Promise.all([
+  const [attributions, commissionEntries, rankHistory, audit, latestInvitations] = await Promise.all([
     listPartnerAttributions(partnerId),
     listPartnerCommissionEntries(partnerId),
     listRankHistory(partnerId),
-    listPartnerAuditLog(partnerId, 30)
+    listPartnerAuditLog(partnerId, 30),
+    listLatestPartnerInvitationsByPartnerIds([partnerId])
   ]);
+  const invitation = latestInvitations[0] || null;
 
   return {
     ok: true,
-    partner,
+    partner: enrichPartnerAdminRecord(partner, invitation),
     attributions,
     commissionEntries,
     rankHistory,
-    audit
+    audit,
+    invitation: buildPartnerInvitationSummary(partner, invitation)
+  };
+}
+
+async function issuePartnerInvitationEmail(partner, invitationToken, expiresAt, options = {}) {
+  const acceptLink = buildPartnerInvitationAcceptLink(invitationToken);
+  return sendPartnerInvitationEmail({
+    email: partner.email,
+    displayName: partner.profile && partner.profile.displayName ? partner.profile.displayName : partner.email,
+    code: partner.profile && partner.profile.code ? partner.profile.code : 'Sin codigo',
+    sponsorDisplayName: normalizeString(options.sponsorDisplayName) || null,
+    acceptLink,
+    expiresAt
+  });
+}
+
+async function invitePartner(input, options = {}) {
+  const email = normalizeEmail(input && input.email);
+  const displayName = normalizeString(input && input.displayName);
+  const legalName = normalizeString(input && input.legalName) || null;
+  const phone = normalizeString(input && input.phone) || null;
+  const notes = normalizeString(input && input.notes) || null;
+  const code = normalizeString(input && input.code);
+  const sponsorPartnerId = normalizeString(input && input.sponsorPartnerId) || null;
+  const actorStaffUserId = isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null;
+
+  if (!email || !email.includes('@')) return { ok: false, reason: 'invalid_partner_email' };
+  if (!displayName || displayName.length < 2) return { ok: false, reason: 'invalid_partner_display_name' };
+  if (!code || code.length < 2) return { ok: false, reason: 'invalid_partner_code' };
+
+  const invitationToken = generateInvitationToken();
+  const invitationTokenHash = hashInvitationToken(invitationToken);
+  const invitationExpiresAt = buildInvitationExpiryDate();
+
+  const created = await withTransaction(async (client) => {
+    const existing = await findPartnerByEmail(email, client);
+    if (existing) return { error: 'partner_email_already_exists' };
+
+    const existingCode = await findPartnerByCode(code, client);
+    if (existingCode) return { error: 'partner_code_already_exists' };
+
+    let sponsor = null;
+    if (sponsorPartnerId) {
+      sponsor = await findPartnerById(sponsorPartnerId, client);
+      if (!sponsor) return { error: 'partner_sponsor_not_found' };
+      if (sponsor.status !== 'active') return { error: 'partner_sponsor_inactive' };
+    }
+
+    const createdAccount = await createPartnerAccount(
+      {
+        email,
+        passwordHash: null,
+        status: 'invited'
+      },
+      client
+    );
+
+    await createPartnerProfile(
+      {
+        partnerId: createdAccount.id,
+        code,
+        displayName,
+        legalName,
+        phone,
+        notes,
+        metadata: {}
+      },
+      client
+    );
+
+    if (sponsorPartnerId) {
+      await createPartnerRelationship(
+        {
+          partnerId: createdAccount.id,
+          sponsorPartnerId,
+          createdByStaffUserId: actorStaffUserId
+        },
+        client
+      );
+    }
+
+    await revokePendingPartnerInvitationsByEmail(email, client);
+    await revokePendingPartnerInvitationsByPartnerId(createdAccount.id, client);
+    const invitation = await createPartnerInvitation(
+      {
+        partnerId: createdAccount.id,
+        email,
+        tokenHash: invitationTokenHash,
+        expiresAt: invitationExpiresAt.toISOString(),
+        createdByStaffUserId: actorStaffUserId
+      },
+      client
+    );
+
+    await appendAuditLog(
+      {
+        partnerId: createdAccount.id,
+        entityType: 'partner_account',
+        entityId: createdAccount.id,
+        action: 'partner_invitation_created',
+        reason: 'invited',
+        actorType: actorStaffUserId ? 'staff' : 'system',
+        actorStaffUserId,
+        metadata: {
+          sponsorPartnerId,
+          email,
+          code,
+          invitationExpiresAt: invitation.expiresAt
+        }
+      },
+      client
+    );
+
+    return {
+      partner: await findPartnerById(createdAccount.id, client),
+      sponsorDisplayName: sponsor && sponsor.profile ? sponsor.profile.displayName : null,
+      invitation
+    };
+  }).catch((error) => {
+    if (isUniqueViolation(error)) {
+      return { error: 'partner_invitation_conflict' };
+    }
+    throw error;
+  });
+
+  if (!created || created.error) {
+    return {
+      ok: false,
+      reason: created && created.error ? created.error : 'partner_invitation_create_failed'
+    };
+  }
+
+  try {
+    const delivery = await issuePartnerInvitationEmail(created.partner, invitationToken, created.invitation.expiresAt, {
+      sponsorDisplayName: created.sponsorDisplayName
+    });
+
+    await appendAuditLog({
+      partnerId: created.partner.id,
+      entityType: 'partner_invitation',
+      entityId: created.invitation.id,
+      action: 'partner_invitation_sent',
+      reason: 'email',
+      actorType: actorStaffUserId ? 'staff' : 'system',
+      actorStaffUserId,
+      metadata: {
+        provider: delivery.provider,
+        deliveryId: delivery.id,
+        expiresAt: created.invitation.expiresAt
+      }
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error && error.code ? error.code : 'partner_invitation_email_failed'
+    };
+  }
+
+  return {
+    ok: true,
+    partner: enrichPartnerAdminRecord(created.partner, created.invitation),
+    invitation: buildPartnerInvitationSummary(created.partner, created.invitation)
+  };
+}
+
+async function resendPartnerInvitation(partnerId, options = {}) {
+  const actorStaffUserId = isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null;
+  const invitationToken = generateInvitationToken();
+  const invitationTokenHash = hashInvitationToken(invitationToken);
+  const invitationExpiresAt = buildInvitationExpiryDate();
+
+  const created = await withTransaction(async (client) => {
+    const partner = await findPartnerById(partnerId, client);
+    if (!partner) return { error: 'partner_not_found' };
+    if (partner.status !== 'invited') return { error: 'partner_invitation_not_pending' };
+
+    const sponsor = partner.sponsorPartnerId ? await findPartnerById(partner.sponsorPartnerId, client) : null;
+    await revokePendingPartnerInvitationsByPartnerId(partnerId, client);
+    await revokePendingPartnerInvitationsByEmail(partner.email, client);
+
+    const invitation = await createPartnerInvitation(
+      {
+        partnerId,
+        email: partner.email,
+        tokenHash: invitationTokenHash,
+        expiresAt: invitationExpiresAt.toISOString(),
+        createdByStaffUserId: actorStaffUserId
+      },
+      client
+    );
+
+    await appendAuditLog(
+      {
+        partnerId,
+        entityType: 'partner_invitation',
+        entityId: invitation.id,
+        action: 'partner_invitation_resent',
+        reason: 'email',
+        actorType: actorStaffUserId ? 'staff' : 'system',
+        actorStaffUserId,
+        metadata: { expiresAt: invitation.expiresAt }
+      },
+      client
+    );
+
+    return {
+      partner,
+      sponsorDisplayName: sponsor && sponsor.profile ? sponsor.profile.displayName : null,
+      invitation
+    };
+  });
+
+  if (!created || created.error) {
+    return { ok: false, reason: created && created.error ? created.error : 'partner_invitation_resend_failed' };
+  }
+
+  try {
+    const delivery = await issuePartnerInvitationEmail(created.partner, invitationToken, created.invitation.expiresAt, {
+      sponsorDisplayName: created.sponsorDisplayName
+    });
+    await appendAuditLog({
+      partnerId,
+      entityType: 'partner_invitation',
+      entityId: created.invitation.id,
+      action: 'partner_invitation_sent',
+      reason: 'email',
+      actorType: actorStaffUserId ? 'staff' : 'system',
+      actorStaffUserId,
+      metadata: {
+        provider: delivery.provider,
+        deliveryId: delivery.id,
+        resent: true,
+        expiresAt: created.invitation.expiresAt
+      }
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error && error.code ? error.code : 'partner_invitation_email_failed'
+    };
+  }
+
+  return {
+    ok: true,
+    partner: enrichPartnerAdminRecord(created.partner, created.invitation),
+    invitation: buildPartnerInvitationSummary(created.partner, created.invitation)
+  };
+}
+
+async function resolvePartnerInvitation(token) {
+  const safeToken = normalizeString(token);
+  if (!safeToken || safeToken.length < 20) {
+    return { ok: false, reason: 'invalid_or_expired_invitation' };
+  }
+
+  const invitation = await findPartnerInvitationByTokenHash(hashInvitationToken(safeToken));
+  if (!invitation) return { ok: false, reason: 'invalid_or_expired_invitation' };
+  if (invitation.acceptedAt || invitation.revokedAt) return { ok: false, reason: 'invalid_or_expired_invitation' };
+
+  const expiresAtMs = new Date(invitation.expiresAt).getTime();
+  if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) {
+    return { ok: false, reason: 'invalid_or_expired_invitation' };
+  }
+
+  return {
+    ok: true,
+    invitation: {
+      partnerId: invitation.partnerId,
+      email: invitation.email,
+      displayName: invitation.displayName || null,
+      code: invitation.code || null,
+      phone: invitation.phone || null,
+      sponsorDisplayName: invitation.sponsorDisplayName || null,
+      expiresAt: invitation.expiresAt
+    }
+  };
+}
+
+async function acceptPartnerInvitation(token, password) {
+  const safeToken = normalizeString(token);
+  const safePassword = String(password || '');
+  if (!safeToken || safeToken.length < 20 || !assertPartnerPassword(safePassword)) {
+    return { ok: false, reason: 'invalid_invitation_acceptance' };
+  }
+
+  const invitationHash = hashInvitationToken(safeToken);
+  const accepted = await withTransaction(async (client) => {
+    const invitation = await findPartnerInvitationByTokenHash(invitationHash, client);
+    if (!invitation) return { error: 'invalid_or_expired_invitation' };
+    if (invitation.acceptedAt || invitation.revokedAt) return { error: 'invalid_or_expired_invitation' };
+
+    const expiresAtMs = new Date(invitation.expiresAt).getTime();
+    if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) {
+      return { error: 'invalid_or_expired_invitation' };
+    }
+
+    const activatedPartner = await updatePartnerCredentialsById(
+      {
+        partnerId: invitation.partnerId,
+        passwordHash: hashSync(safePassword, 10),
+        status: 'active'
+      },
+      client
+    );
+    if (!activatedPartner) return { error: 'partner_not_found' };
+
+    await markPartnerInvitationAccepted(invitation.id, client);
+    await revokePendingPartnerInvitationsByPartnerId(invitation.partnerId, client);
+
+    await appendAuditLog(
+      {
+        partnerId: invitation.partnerId,
+        entityType: 'partner_invitation',
+        entityId: invitation.id,
+        action: 'partner_invitation_accepted',
+        reason: 'active',
+        actorType: 'partner',
+        actorPartnerId: invitation.partnerId,
+        metadata: { email: invitation.email }
+      },
+      client
+    );
+
+    return {
+      partner: await findPartnerById(invitation.partnerId, client)
+    };
+  });
+
+  if (!accepted || accepted.error) {
+    return { ok: false, reason: accepted && accepted.error ? accepted.error : 'invalid_or_expired_invitation' };
+  }
+
+  return {
+    ok: true,
+    partner: accepted.partner
   };
 }
 
@@ -1462,8 +1862,10 @@ async function getPartnerCommissionLedger(partnerId, query = {}) {
 
 module.exports = {
   createPartner,
+  invitePartner,
   listPartnersForAdmin,
   getPartnerDetails,
+  resendPartnerInvitation,
   changePartnerStatus,
   assignPartnerSponsor,
   attributeTenantToPartner,
@@ -1475,6 +1877,8 @@ module.exports = {
   evaluatePartnerRank,
   authenticatePartnerUser,
   getPartnerAuthUserByEmail,
+  resolvePartnerInvitation,
+  acceptPartnerInvitation,
   getPartnerMe,
   getPartnerSummary,
   getPartnerClients,

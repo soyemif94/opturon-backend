@@ -1,5 +1,7 @@
 const express = require('express');
 const {
+  getPartnerInvitationValidation,
+  postPartnerInvitationAcceptance,
   getPartnersMe,
   getPartnersMeSummary,
   getPartnersMeClients,
@@ -24,6 +26,9 @@ router.post('/auth/login', async (req, res) => {
     return res.status(500).json({ success: false, error: 'partner_auth_login_failed', details: error.message });
   }
 });
+
+router.get('/invitations/validate', async (req, res) => getPartnerInvitationValidation(req, res));
+router.post('/invitations/accept', async (req, res) => postPartnerInvitationAcceptance(req, res));
 
 router.get('/auth/users/by-email', requirePortalInternalAuth, async (req, res) => {
   try {

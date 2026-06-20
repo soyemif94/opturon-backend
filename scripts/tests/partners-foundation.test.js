@@ -29,6 +29,11 @@ function setup(overrides = {}) {
     withTransaction: async (fn) => fn({})
   });
 
+  mockModule('src/services/partner-invitations-email.service.js', {
+    buildPartnerInvitationAcceptLink: (token) => `https://www.opturon.com/partners/invite?token=${token}`,
+    sendPartnerInvitationEmail: async () => ({ provider: 'resend', id: 'email-1', to: 'partner@test.com' })
+  });
+
   const partnerMap = {
     'partner-1': {
       id: 'partner-1',
@@ -95,6 +100,7 @@ function setup(overrides = {}) {
     listPartners: async () => [],
     findPartnerById: async (partnerId) => partnerMap[partnerId] || null,
     findPartnerByEmail: async (email) => (email === 'existing@test.com' ? { id: 'existing-1', status: 'active', profile: { displayName: 'Existing' } } : null),
+    findPartnerByCode: async (code) => (code === 'EXISTING-CODE' ? { id: 'existing-2', status: 'active', profile: { displayName: 'Existing Code' } } : null),
     findRawPartnerAuthByEmail: async (email) => (email === 'partner1@test.com'
       ? { id: 'partner-1', email, status: 'active', passwordHash: hashSync('password123', 10) }
       : null),
@@ -103,6 +109,7 @@ function setup(overrides = {}) {
     createPartnerRelationship: async () => ({ id: 'rel-1' }),
     endActivePartnerRelationship: async () => 1,
     updatePartnerStatus: async () => true,
+    updatePartnerCredentialsById: async (payload) => ({ id: payload.partnerId, email: 'partner@test.com', status: payload.status || 'active' }),
     touchPartnerLogin: async () => true,
     findClinicTenantByExternalTenantId: async (tenantId) => (tenantId === 'tenant-a' || tenantId === 'tenant-taken'
       ? { id: 'clinic-1', name: 'Clinic Uno', externalTenantId: tenantId }
@@ -214,6 +221,24 @@ function setup(overrides = {}) {
   };
 
   mockModule('src/repositories/partners.repository.js', repo);
+  mockModule('src/repositories/partner-invitations.repository.js', {
+    createPartnerInvitation: async (payload) => ({
+      id: 'partner-invite-1',
+      partnerId: payload.partnerId,
+      email: payload.email,
+      tokenHash: payload.tokenHash,
+      expiresAt: payload.expiresAt,
+      acceptedAt: null,
+      revokedAt: null,
+      createdAt: '2026-06-20T12:00:00.000Z'
+    }),
+    revokePendingPartnerInvitationsByPartnerId: async () => [],
+    revokePendingPartnerInvitationsByEmail: async () => [],
+    listLatestPartnerInvitationsByPartnerIds: async () => [],
+    findPartnerInvitationByTokenHash: async () => null,
+    markPartnerInvitationAccepted: async () => ({ id: 'partner-invite-1' }),
+    ...(overrides.partnerInvitationRepo || {})
+  });
 }
 
 async function testCreatePartnerRejectsDuplicateEmail() {
@@ -222,6 +247,124 @@ async function testCreatePartnerRejectsDuplicateEmail() {
   const result = await service.createPartner({ email: 'existing@test.com', password: 'password123', displayName: 'Existing' }, {});
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.reason, 'partner_email_already_exists');
+}
+
+async function testInvitePartnerCreatesPendingInvitationWithoutPassword() {
+  setup({
+    createPartnerAccount: async (payload) => {
+      assert.strictEqual(payload.passwordHash, null);
+      assert.strictEqual(payload.status, 'invited');
+      return { id: 'partner-new', email: payload.email, status: 'invited' };
+    },
+    findPartnerById: async (partnerId) => ({
+      'partner-new': {
+        id: 'partner-new',
+        email: 'new@test.com',
+        status: 'invited',
+        sponsorPartnerId: 'partner-2',
+        currentRankCode: null,
+        profile: { displayName: 'Partner Nuevo', code: 'NEW-CODE' }
+      },
+      'partner-2': {
+        id: 'partner-2',
+        email: 'partner2@test.com',
+        status: 'active',
+        sponsorPartnerId: null,
+        currentRankCode: 'emperador',
+        profile: { displayName: 'Partner Dos' }
+      }
+    }[partnerId] || null)
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.invitePartner({
+    email: 'new@test.com',
+    displayName: 'Partner Nuevo',
+    code: 'NEW-CODE',
+    sponsorPartnerId: 'partner-2'
+  }, {});
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.partner.status, 'invited');
+  assert.strictEqual(result.invitation.status, 'pending');
+}
+
+async function testInvitePartnerRejectsDuplicateCode() {
+  setup();
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.invitePartner({
+    email: 'fresh@test.com',
+    displayName: 'Fresh Partner',
+    code: 'EXISTING-CODE'
+  }, {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_code_already_exists');
+}
+
+async function testResolvePartnerInvitationReturnsSafeSummary() {
+  setup({
+    partnerInvitationRepo: {
+      findPartnerInvitationByTokenHash: async () => ({
+        id: 'invite-1',
+        partnerId: 'partner-1',
+        email: 'partner1@test.com',
+        expiresAt: '2099-06-20T12:00:00.000Z',
+        acceptedAt: null,
+        revokedAt: null,
+        displayName: 'Partner Uno',
+        code: 'PARTNER-UNO',
+        phone: '+54 9 11 5555 0001',
+        sponsorDisplayName: 'Partner Dos'
+      })
+    }
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.resolvePartnerInvitation('abcdefghijklmnopqrstuvwxyz123456');
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(result.invitation, {
+    partnerId: 'partner-1',
+    email: 'partner1@test.com',
+    displayName: 'Partner Uno',
+    code: 'PARTNER-UNO',
+    phone: '+54 9 11 5555 0001',
+    sponsorDisplayName: 'Partner Dos',
+    expiresAt: '2099-06-20T12:00:00.000Z'
+  });
+}
+
+async function testAcceptPartnerInvitationActivatesCredentials() {
+  let updatedPayload = null;
+  setup({
+    updatePartnerCredentialsById: async (payload) => {
+      updatedPayload = payload;
+      return { id: payload.partnerId, email: 'partner1@test.com', status: payload.status };
+    },
+    findPartnerById: async (partnerId) => ({
+      'partner-1': {
+        id: 'partner-1',
+        email: 'partner1@test.com',
+        status: 'active',
+        sponsorPartnerId: null,
+        currentRankCode: null,
+        profile: { displayName: 'Partner Uno', code: 'PARTNER-UNO' }
+      }
+    }[partnerId] || null),
+    partnerInvitationRepo: {
+      findPartnerInvitationByTokenHash: async () => ({
+        id: 'invite-1',
+        partnerId: 'partner-1',
+        email: 'partner1@test.com',
+        expiresAt: '2099-06-20T12:00:00.000Z',
+        acceptedAt: null,
+        revokedAt: null
+      })
+    }
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.acceptPartnerInvitation('abcdefghijklmnopqrstuvwxyz123456', 'password123');
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(updatedPayload.partnerId, 'partner-1');
+  assert.strictEqual(updatedPayload.status, 'active');
+  assert.ok(updatedPayload.passwordHash);
+  assert.notStrictEqual(updatedPayload.passwordHash, 'password123');
 }
 
 async function testAttributeTenantBlocksOtherPartner() {
@@ -846,6 +989,10 @@ async function testGetPartnerCommissionLedgerRejectsInvalidQuery() {
 
 async function run() {
   await testCreatePartnerRejectsDuplicateEmail();
+  await testInvitePartnerCreatesPendingInvitationWithoutPassword();
+  await testInvitePartnerRejectsDuplicateCode();
+  await testResolvePartnerInvitationReturnsSafeSummary();
+  await testAcceptPartnerInvitationActivatesCredentials();
   await testAttributeTenantBlocksOtherPartner();
   await testSimulateCommissionEntriesBuildsDirectAndIndirectPayouts();
   await testReverseCommissionEntryCreatesNegativeReversal();
