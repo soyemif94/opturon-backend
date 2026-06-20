@@ -3,7 +3,8 @@ const {
   getPartnerSummary,
   getPartnerClients,
   getPartnerRankProgress,
-  getPartnerNetwork
+  getPartnerNetwork,
+  getPartnerCommissionLedger
 } = require('../services/partners.service');
 
 function getPartnerActorId(req) {
@@ -75,10 +76,24 @@ async function getPartnersMeNetwork(req, res) {
   }
 }
 
+async function getPartnersMeCommissions(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await getPartnerCommissionLedger(partnerId, req.query || {});
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_commissions_failed', details: error.message });
+  }
+}
+
 module.exports = {
   getPartnersMe,
   getPartnersMeSummary,
   getPartnersMeClients,
   getPartnersMeRankProgress,
-  getPartnersMeNetwork
+  getPartnersMeNetwork,
+  getPartnersMeCommissions
 };

@@ -26,6 +26,7 @@ const {
   findCommissionPlanVersionById,
   findPublishedCommissionPlanVersion,
   listPartnerCommissionEntries,
+  listPartnerCommissionLedger,
   findCommissionEntriesBySource,
   findCommissionEntryById,
   findReversalEntryByOriginalEntryId,
@@ -51,6 +52,8 @@ const ACTIVE_BILLING_PAYMENT_STATUSES = new Set(['approved', 'accredited', 'acti
 const PENDING_BILLING_PAYMENT_STATUSES = new Set(['pending', 'in_process', 'in_mediation', 'authorized']);
 const FAILED_BILLING_PAYMENT_STATUSES = new Set(['payment_failed', 'rejected', 'cancelled', 'cancelled_by_user', 'charged_back', 'refunded']);
 const CANCELED_BILLING_SUBSCRIPTION_STATUSES = new Set(['canceled', 'cancelled', 'suspended']);
+const PARTNER_COMMISSION_ENTRY_STATUSES = new Set(['generated', 'reversed']);
+const PARTNER_COMMISSION_PAYOUT_KINDS = new Set(['own_signup', 'own_recurring', 'line_recurring_rebate']);
 let savepointSequence = 0;
 
 function normalizeString(value) {
@@ -300,6 +303,72 @@ function mapPartnerClientAttribution(row) {
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null,
     ...(billing ? { billing } : {})
+  };
+}
+
+function normalizeLedgerDate(value, endOfDay = false) {
+  const raw = normalizeString(value);
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return `${raw}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`;
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function normalizePartnerCommissionLedgerQuery(query = {}) {
+  const rawStatus = normalizeString(query && query.status).toLowerCase();
+  const rawType = normalizeString(query && query.type).toLowerCase();
+  const from = query && query.from ? normalizeLedgerDate(query.from, false) : null;
+  const to = query && query.to ? normalizeLedgerDate(query.to, true) : null;
+  const page = Number.parseInt(normalizeString(query && query.page) || '1', 10);
+
+  if (rawStatus && !PARTNER_COMMISSION_ENTRY_STATUSES.has(rawStatus)) {
+    return { ok: false, reason: 'invalid_partner_commission_query' };
+  }
+  if (rawType && !PARTNER_COMMISSION_PAYOUT_KINDS.has(rawType)) {
+    return { ok: false, reason: 'invalid_partner_commission_query' };
+  }
+  if ((query && query.from && !from) || (query && query.to && !to)) {
+    return { ok: false, reason: 'invalid_partner_commission_query' };
+  }
+  if (!Number.isInteger(page) || page < 1) {
+    return { ok: false, reason: 'invalid_partner_commission_query' };
+  }
+  if (from && to && new Date(from).getTime() > new Date(to).getTime()) {
+    return { ok: false, reason: 'invalid_partner_commission_query' };
+  }
+
+  return {
+    ok: true,
+    filters: {
+      statuses: rawStatus ? [rawStatus] : ['generated', 'reversed'],
+      payoutKind: rawType || null,
+      from,
+      to,
+      page,
+      pageSize: 20
+    }
+  };
+}
+
+function mapPartnerCommissionLedgerEntry(row) {
+  const safeClientName = normalizeString(row && row.clientName);
+  return {
+    type: normalizeString(row && row.payoutKind) || null,
+    status: normalizeString(row && row.status) || null,
+    paymentStatus: normalizeString(row && row.paymentStatus) || null,
+    clientName: safeClientName && !isUuid(safeClientName) ? safeClientName : null,
+    basisAmount: centsToMoney(Math.max(0, parseMoneyToCents(row && row.basisAmount) || 0)),
+    rate: centsToMoney(Math.max(0, parseMoneyToCents(row && row.commissionRate) || 0)),
+    amount: centsToMoney(parseMoneyToCents(row && row.commissionAmount) || 0),
+    currency: normalizeString(row && row.currency) || null,
+    eventAt: row && row.eventAt ? row.eventAt : null,
+    eventType: normalizeString(row && row.eventType) || null,
+    sourceType: normalizeString(row && row.sourceType) || null,
+    depthLevel: Math.max(0, Number(row && row.depthLevel) || 0),
+    reversed: normalizeString(row && row.status).toLowerCase() === 'reversed' || Boolean(row && row.reversalOfEntryId)
   };
 }
 
@@ -1363,6 +1432,34 @@ async function getPartnerNetwork(partnerId) {
   };
 }
 
+async function getPartnerCommissionLedger(partnerId, query = {}) {
+  const partner = await findPartnerById(partnerId);
+  if (!partner) return { ok: false, reason: 'partner_not_found' };
+
+  const normalized = normalizePartnerCommissionLedgerQuery(query);
+  if (!normalized.ok) return normalized;
+
+  const ledger = await listPartnerCommissionLedger(partnerId, normalized.filters);
+  const total = Math.max(0, Number(ledger.summary && ledger.summary.total) || 0);
+  return {
+    ok: true,
+    partner,
+    summary: {
+      totalGenerated: centsToMoney(Math.max(0, parseMoneyToCents(ledger.summary && ledger.summary.totalGenerated) || 0)),
+      totalReversed: centsToMoney(Math.max(0, parseMoneyToCents(ledger.summary && ledger.summary.totalReversed) || 0)),
+      netAmount: centsToMoney(parseMoneyToCents(ledger.summary && ledger.summary.netAmount) || 0),
+      currency: normalizeString(ledger.summary && ledger.summary.currency) || null
+    },
+    entries: Array.isArray(ledger.rows) ? ledger.rows.map(mapPartnerCommissionLedgerEntry) : [],
+    pagination: {
+      page: ledger.page || normalized.filters.page,
+      pageSize: ledger.pageSize || normalized.filters.pageSize,
+      total,
+      totalPages: total > 0 ? Math.ceil(total / (ledger.pageSize || normalized.filters.pageSize)) : 0
+    }
+  };
+}
+
 module.exports = {
   createPartner,
   listPartnersForAdmin,
@@ -1382,5 +1479,6 @@ module.exports = {
   getPartnerSummary,
   getPartnerClients,
   getPartnerRankProgress,
-  getPartnerNetwork
+  getPartnerNetwork,
+  getPartnerCommissionLedger
 };

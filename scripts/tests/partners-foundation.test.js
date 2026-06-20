@@ -158,6 +158,18 @@ function setup(overrides = {}) {
       maxPayoutPercent: '15.00'
     }),
     listPartnerCommissionEntries: async () => [],
+    listPartnerCommissionLedger: async () => ({
+      summary: {
+        total: 0,
+        totalGenerated: '0.00',
+        totalReversed: '0.00',
+        netAmount: '0.00',
+        currency: null
+      },
+      rows: [],
+      page: 1,
+      pageSize: 20
+    }),
     findCommissionEntriesBySource: async () => [],
     findCommissionEntryById: async (entryId) => (entryId === 'entry-1'
       ? {
@@ -687,6 +699,151 @@ async function testGetPartnerNetworkBuildsTrustedThreeLevelView() {
   });
 }
 
+async function testGetPartnerCommissionLedgerExposesRegisteredEntriesOnly() {
+  setup({
+    listPartnerCommissionLedger: async (_partnerId, options) => {
+      assert.deepStrictEqual(options.statuses, ['generated', 'reversed']);
+      assert.strictEqual(options.payoutKind, null);
+      assert.strictEqual(options.page, 1);
+      return {
+        summary: {
+          total: 2,
+          totalGenerated: '140.00',
+          totalReversed: '40.00',
+          netAmount: '100.00',
+          currency: 'ARS'
+        },
+        rows: [
+          {
+            id: 'entry-1',
+            payoutKind: 'own_recurring',
+            status: 'generated',
+            paymentStatus: 'accredited',
+            clientName: 'Clinica Delta',
+            basisAmount: '1000.00',
+            commissionRate: '11.00',
+            commissionAmount: '110.00',
+            currency: 'ARS',
+            eventAt: '2026-06-18T12:00:00.000Z',
+            eventType: 'subscription_recurring_accredited',
+            sourceType: 'subscription',
+            depthLevel: 0,
+            reversalOfEntryId: null
+          },
+          {
+            id: 'entry-2',
+            payoutKind: 'line_recurring_rebate',
+            status: 'reversed',
+            paymentStatus: 'accredited',
+            clientName: 'Clinica Delta',
+            basisAmount: '1000.00',
+            commissionRate: '4.00',
+            commissionAmount: '-40.00',
+            currency: 'ARS',
+            eventAt: '2026-06-19T12:00:00.000Z',
+            eventType: 'subscription_recurring_accredited_reversal',
+            sourceType: 'subscription',
+            depthLevel: 1,
+            reversalOfEntryId: 'entry-1'
+          }
+        ],
+        page: 1,
+        pageSize: 20
+      };
+    }
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.getPartnerCommissionLedger('partner-1', {});
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(result.summary, {
+    totalGenerated: '140.00',
+    totalReversed: '40.00',
+    netAmount: '100.00',
+    currency: 'ARS'
+  });
+  assert.strictEqual(result.entries.length, 2);
+  assert.deepStrictEqual(result.entries[0], {
+    type: 'own_recurring',
+    status: 'generated',
+    paymentStatus: 'accredited',
+    clientName: 'Clinica Delta',
+    basisAmount: '1000.00',
+    rate: '11.00',
+    amount: '110.00',
+    currency: 'ARS',
+    eventAt: '2026-06-18T12:00:00.000Z',
+    eventType: 'subscription_recurring_accredited',
+    sourceType: 'subscription',
+    depthLevel: 0,
+    reversed: false
+  });
+  assert.deepStrictEqual(result.entries[1], {
+    type: 'line_recurring_rebate',
+    status: 'reversed',
+    paymentStatus: 'accredited',
+    clientName: 'Clinica Delta',
+    basisAmount: '1000.00',
+    rate: '4.00',
+    amount: '-40.00',
+    currency: 'ARS',
+    eventAt: '2026-06-19T12:00:00.000Z',
+    eventType: 'subscription_recurring_accredited_reversal',
+    sourceType: 'subscription',
+    depthLevel: 1,
+    reversed: true
+  });
+  assert.deepStrictEqual(result.pagination, {
+    page: 1,
+    pageSize: 20,
+    total: 2,
+    totalPages: 1
+  });
+}
+
+async function testGetPartnerCommissionLedgerSupportsSafeFiltersAndPaging() {
+  setup({
+    listPartnerCommissionLedger: async (_partnerId, options) => {
+      assert.deepStrictEqual(options.statuses, ['reversed']);
+      assert.strictEqual(options.payoutKind, 'line_recurring_rebate');
+      assert.strictEqual(options.from, '2026-06-01T00:00:00.000Z');
+      assert.strictEqual(options.to, '2026-06-30T23:59:59.999Z');
+      assert.strictEqual(options.page, 2);
+      assert.strictEqual(options.pageSize, 20);
+      return {
+        summary: {
+          total: 25,
+          totalGenerated: '0.00',
+          totalReversed: '80.00',
+          netAmount: '-80.00',
+          currency: 'ARS'
+        },
+        rows: [],
+        page: 2,
+        pageSize: 20
+      };
+    }
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.getPartnerCommissionLedger('partner-1', {
+    status: 'reversed',
+    type: 'line_recurring_rebate',
+    from: '2026-06-01',
+    to: '2026-06-30',
+    page: '2'
+  });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.pagination.totalPages, 2);
+  assert.strictEqual(result.summary.netAmount, '-80.00');
+}
+
+async function testGetPartnerCommissionLedgerRejectsInvalidQuery() {
+  setup();
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.getPartnerCommissionLedger('partner-1', { status: 'paid', page: '0' });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'invalid_partner_commission_query');
+}
+
 async function run() {
   await testCreatePartnerRejectsDuplicateEmail();
   await testAttributeTenantBlocksOtherPartner();
@@ -708,6 +865,9 @@ async function run() {
   await testGetPartnerClientsKeepsBillingUndefinedWithoutTrustedData();
   await testGetPartnerRankProgressExposesTrustedRequirements();
   await testGetPartnerNetworkBuildsTrustedThreeLevelView();
+  await testGetPartnerCommissionLedgerExposesRegisteredEntriesOnly();
+  await testGetPartnerCommissionLedgerSupportsSafeFiltersAndPaging();
+  await testGetPartnerCommissionLedgerRejectsInvalidQuery();
   console.log('partners-foundation.test.js: ok');
 }
 

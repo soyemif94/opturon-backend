@@ -540,6 +540,101 @@ async function listPartnerCommissionEntries(partnerId, options = {}, client = nu
   return result.rows;
 }
 
+function buildPartnerCommissionLedgerWhere(partnerId, options = {}) {
+  const params = [partnerId, Array.isArray(options.statuses) && options.statuses.length > 0 ? options.statuses : ['generated', 'reversed']];
+  const where = [`pce."partnerId" = $1`, `pce.status = ANY($2::text[])`];
+
+  if (options.payoutKind) {
+    params.push(options.payoutKind);
+    where.push(`pce."payoutKind" = $${params.length}`);
+  }
+
+  if (options.from) {
+    params.push(options.from);
+    where.push(`pce."eventAt" >= $${params.length}::timestamptz`);
+  }
+
+  if (options.to) {
+    params.push(options.to);
+    where.push(`pce."eventAt" <= $${params.length}::timestamptz`);
+  }
+
+  return { params, where };
+}
+
+async function listPartnerCommissionLedger(partnerId, options = {}, client = null) {
+  const safePage = Math.max(1, Number(options.page) || 1);
+  const safePageSize = Math.max(1, Math.min(50, Number(options.pageSize) || 20));
+  const offset = (safePage - 1) * safePageSize;
+  const { params, where } = buildPartnerCommissionLedgerWhere(partnerId, options);
+  const filteredFrom = `FROM partner_commission_entries pce
+     LEFT JOIN partner_client_attributions pca ON pca.id = pce."attributionId"
+     LEFT JOIN clinics entry_clinic ON entry_clinic.id = pce."clinicId"
+     LEFT JOIN clinics attributed_clinic ON attributed_clinic.id = pca."clinicId"
+     WHERE ${where.join(' AND ')}`;
+
+  const summaryResult = await dbQuery(
+    client,
+    `SELECT COUNT(*)::INT AS total,
+            COALESCE(SUM(CASE WHEN pce.status = 'generated' THEN pce."commissionAmount" ELSE 0 END), 0)::TEXT AS "totalGenerated",
+            COALESCE(SUM(CASE WHEN pce.status = 'reversed' THEN ABS(pce."commissionAmount") ELSE 0 END), 0)::TEXT AS "totalReversed",
+            COALESCE(SUM(pce."commissionAmount"), 0)::TEXT AS "netAmount",
+            CASE WHEN COUNT(DISTINCT pce.currency) = 1 THEN MIN(pce.currency) ELSE NULL END AS currency
+     ${filteredFrom}`,
+    params
+  );
+
+  const rowParams = params.concat([safePageSize, offset]);
+  const rowsResult = await dbQuery(
+    client,
+    `SELECT pce.id,
+            pce."partnerId",
+            pce."attributionId",
+            pce."planVersionId",
+            pce."clinicId",
+            pce."tenantId",
+            pce."sourceType",
+            pce."sourceRef",
+            pce."sourceEventId",
+            pce."eventType",
+            pce."eventAt",
+            pce."periodKey",
+            pce.currency,
+            pce."planCodeSnapshot",
+            pce."planVersionNumberSnapshot",
+            pce."payoutKind",
+            pce."paymentStatus",
+            pce.status,
+            pce."basisAmount",
+            pce."commissionRate",
+            pce."commissionAmount",
+            pce."depthLevel",
+            pce."reversalOfEntryId",
+            pce.details,
+            pce."createdAt",
+            pce."updatedAt",
+            COALESCE(entry_clinic.name, attributed_clinic.name) AS "clientName"
+     ${filteredFrom}
+     ORDER BY pce."eventAt" DESC, pce."createdAt" DESC
+     LIMIT $${rowParams.length - 1}
+     OFFSET $${rowParams.length}`,
+    rowParams
+  );
+
+  return {
+    summary: summaryResult.rows[0] || {
+      total: 0,
+      totalGenerated: '0.00',
+      totalReversed: '0.00',
+      netAmount: '0.00',
+      currency: null
+    },
+    rows: rowsResult.rows,
+    page: safePage,
+    pageSize: safePageSize
+  };
+}
+
 async function findCommissionEntriesBySource(sourceType, sourceRef, sourceEventId, client = null) {
   const result = await dbQuery(
     client,
@@ -984,6 +1079,7 @@ module.exports = {
   findCommissionPlanVersionById,
   findPublishedCommissionPlanVersion,
   listPartnerCommissionEntries,
+  listPartnerCommissionLedger,
   findCommissionEntriesBySource,
   findCommissionEntryById,
   findReversalEntryByOriginalEntryId,
