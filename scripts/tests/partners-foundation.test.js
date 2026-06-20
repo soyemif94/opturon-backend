@@ -192,6 +192,7 @@ function setup(overrides = {}) {
     countActivePartnerAttributions: async () => 4,
     createRankEvaluation: async (payload) => ({ id: 'eval-1', evaluatedAt: new Date().toISOString(), ...payload }),
     findLatestRankEvaluationByPartnerId: async () => null,
+    listPartnerNetworkNodes: async () => [],
     closeActiveRankHistory: async () => 1,
     createRankHistory: async () => ({ id: 'rank-1' }),
     listRankHistory: async () => [],
@@ -583,6 +584,109 @@ async function testGetPartnerRankProgressExposesTrustedRequirements() {
   });
 }
 
+async function testGetPartnerNetworkBuildsTrustedThreeLevelView() {
+  setup({
+    listPartnerNetworkNodes: async () => ([
+      {
+        id: 'network-1',
+        status: 'active',
+        depth: 1,
+        createdAt: '2026-01-10T10:00:00.000Z',
+        displayName: 'Lucia Sponsor',
+        relationshipStartsAt: '2026-02-01T10:00:00.000Z',
+        currentRankCode: 'lider',
+        activeClientCount: 5
+      },
+      {
+        id: 'network-2',
+        status: 'suspended',
+        depth: 2,
+        createdAt: '2026-02-10T10:00:00.000Z',
+        displayName: 'Marco Expansion',
+        relationshipStartsAt: '2026-03-01T10:00:00.000Z',
+        currentRankCode: null,
+        activeClientCount: 2
+      },
+      {
+        id: 'network-3',
+        status: 'active',
+        depth: 3,
+        createdAt: '2026-03-10T10:00:00.000Z',
+        displayName: '',
+        relationshipStartsAt: null,
+        currentRankCode: 'asesor',
+        activeClientCount: 0
+      },
+      {
+        id: 'network-2',
+        status: 'active',
+        depth: 3,
+        createdAt: '2026-03-11T10:00:00.000Z',
+        displayName: 'Duplicado corrupto',
+        relationshipStartsAt: '2026-03-11T10:00:00.000Z',
+        currentRankCode: 'coordinador',
+        activeClientCount: 9
+      },
+      {
+        id: 'network-4',
+        status: 'active',
+        depth: 4,
+        createdAt: '2026-04-10T10:00:00.000Z',
+        displayName: 'Fuera de alcance',
+        relationshipStartsAt: '2026-04-11T10:00:00.000Z',
+        currentRankCode: 'emperador',
+        activeClientCount: 9
+      }
+    ])
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.getPartnerNetwork('partner-1');
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(result.summary, {
+    firstLineCount: 1,
+    secondLineCount: 1,
+    thirdLineCount: 1,
+    activeNetworkCount: 2
+  });
+  assert.strictEqual(result.levels.length, 3);
+  assert.deepStrictEqual(result.levels[0], {
+    depth: 1,
+    partners: [
+      {
+        displayName: 'Lucia Sponsor',
+        status: 'active',
+        rankCode: 'lider',
+        activeClientCount: 5,
+        joinedAt: '2026-02-01T10:00:00.000Z'
+      }
+    ]
+  });
+  assert.deepStrictEqual(result.levels[1], {
+    depth: 2,
+    partners: [
+      {
+        displayName: 'Marco Expansion',
+        status: 'suspended',
+        rankCode: null,
+        activeClientCount: 2,
+        joinedAt: '2026-03-01T10:00:00.000Z'
+      }
+    ]
+  });
+  assert.deepStrictEqual(result.levels[2], {
+    depth: 3,
+    partners: [
+      {
+        displayName: 'Asesor de red 3',
+        status: 'active',
+        rankCode: 'asesor',
+        activeClientCount: 0,
+        joinedAt: '2026-03-10T10:00:00.000Z'
+      }
+    ]
+  });
+}
+
 async function run() {
   await testCreatePartnerRejectsDuplicateEmail();
   await testAttributeTenantBlocksOtherPartner();
@@ -603,6 +707,7 @@ async function run() {
   await testGetPartnerClientsAddsTrustedBillingSummary();
   await testGetPartnerClientsKeepsBillingUndefinedWithoutTrustedData();
   await testGetPartnerRankProgressExposesTrustedRequirements();
+  await testGetPartnerNetworkBuildsTrustedThreeLevelView();
   console.log('partners-foundation.test.js: ok');
 }
 

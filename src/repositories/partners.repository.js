@@ -805,6 +805,69 @@ async function findLatestRankEvaluationByPartnerId(partnerId, client = null) {
   return result.rows[0] || null;
 }
 
+async function listPartnerNetworkNodes(partnerId, maxDepth = 3, client = null) {
+  const safeDepth = Math.max(1, Math.min(3, Number(maxDepth) || 3));
+  const result = await dbQuery(
+    client,
+    `WITH RECURSIVE partner_network AS (
+       SELECT child.id,
+              child.status,
+              child."createdAt",
+              pp."displayName",
+              rel."startsAt" AS "relationshipStartsAt",
+              1 AS depth,
+              ARRAY[$1::uuid, child.id] AS path
+       FROM partner_relationships rel
+       INNER JOIN partner_accounts child ON child.id = rel."partnerId"
+       INNER JOIN partner_profiles pp ON pp."partnerId" = child.id
+       WHERE rel.status = 'active'
+         AND rel."sponsorPartnerId" = $1
+
+       UNION ALL
+
+       SELECT child.id,
+              child.status,
+              child."createdAt",
+              pp."displayName",
+              rel."startsAt" AS "relationshipStartsAt",
+              network.depth + 1 AS depth,
+              network.path || child.id
+       FROM partner_network network
+       INNER JOIN partner_relationships rel
+         ON rel."sponsorPartnerId" = network.id
+        AND rel.status = 'active'
+       INNER JOIN partner_accounts child ON child.id = rel."partnerId"
+       INNER JOIN partner_profiles pp ON pp."partnerId" = child.id
+       WHERE network.depth < $2
+         AND NOT (child.id = ANY(network.path))
+     )
+     SELECT network.id,
+            network.status,
+            network.depth,
+            network."createdAt",
+            network."displayName",
+            network."relationshipStartsAt",
+            (
+              SELECT prh."rankCode"
+              FROM partner_rank_history prh
+              WHERE prh."partnerId" = network.id
+                AND prh."effectiveTo" IS NULL
+              ORDER BY prh."effectiveFrom" DESC
+              LIMIT 1
+            ) AS "currentRankCode",
+            (
+              SELECT COUNT(*)::INT
+              FROM partner_client_attributions pca
+              WHERE pca."partnerId" = network.id
+                AND pca.status = 'active'
+            ) AS "activeClientCount"
+     FROM partner_network network
+     ORDER BY network.depth ASC, network."relationshipStartsAt" ASC NULLS LAST, network."createdAt" ASC`,
+    [partnerId, safeDepth]
+  );
+  return result.rows;
+}
+
 async function closeActiveRankHistory(partnerId, effectiveTo, client = null) {
   const result = await dbQuery(
     client,
@@ -930,6 +993,7 @@ module.exports = {
   countActivePartnerAttributions,
   createRankEvaluation,
   findLatestRankEvaluationByPartnerId,
+  listPartnerNetworkNodes,
   closeActiveRankHistory,
   createRankHistory,
   listRankHistory,

@@ -35,6 +35,7 @@ const {
   countActivePartnerAttributions,
   createRankEvaluation,
   findLatestRankEvaluationByPartnerId,
+  listPartnerNetworkNodes,
   closeActiveRankHistory,
   createRankHistory,
   listRankHistory,
@@ -299,6 +300,47 @@ function mapPartnerClientAttribution(row) {
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null,
     ...(billing ? { billing } : {})
+  };
+}
+
+function buildPartnerNetworkMember(row, fallbackIndex = 0) {
+  const rawName = normalizeString(row && row.displayName);
+  return {
+    displayName: rawName || `Asesor de red ${fallbackIndex + 1}`,
+    status: normalizeString(row && row.status) || 'unknown',
+    rankCode: normalizeString(row && row.currentRankCode).toLowerCase() || null,
+    activeClientCount: Math.max(0, Number(row && row.activeClientCount) || 0),
+    joinedAt: (row && (row.relationshipStartsAt || row.createdAt)) || null
+  };
+}
+
+function buildPartnerNetworkSnapshot(rows) {
+  const levels = [
+    { depth: 1, partners: [] },
+    { depth: 2, partners: [] },
+    { depth: 3, partners: [] }
+  ];
+  const seenPartnerIds = new Set();
+
+  (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+    const depth = Number(row && row.depth);
+    const partnerId = normalizeString(row && row.id);
+    if (!partnerId || seenPartnerIds.has(partnerId) || depth < 1 || depth > 3) {
+      return;
+    }
+    seenPartnerIds.add(partnerId);
+    levels[depth - 1].partners.push(buildPartnerNetworkMember(row, index));
+  });
+
+  const allPartners = levels.flatMap((level) => level.partners);
+  return {
+    summary: {
+      firstLineCount: levels[0].partners.length,
+      secondLineCount: levels[1].partners.length,
+      thirdLineCount: levels[2].partners.length,
+      activeNetworkCount: allPartners.filter((partner) => partner.status === 'active').length
+    },
+    levels
   };
 }
 
@@ -1308,6 +1350,19 @@ async function getPartnerRankProgress(partnerId) {
   };
 }
 
+async function getPartnerNetwork(partnerId) {
+  const partner = await findPartnerById(partnerId);
+  if (!partner) return { ok: false, reason: 'partner_not_found' };
+
+  const snapshot = buildPartnerNetworkSnapshot(await listPartnerNetworkNodes(partnerId, 3));
+  return {
+    ok: true,
+    partner,
+    summary: snapshot.summary,
+    levels: snapshot.levels
+  };
+}
+
 module.exports = {
   createPartner,
   listPartnersForAdmin,
@@ -1326,5 +1381,6 @@ module.exports = {
   getPartnerMe,
   getPartnerSummary,
   getPartnerClients,
-  getPartnerRankProgress
+  getPartnerRankProgress,
+  getPartnerNetwork
 };

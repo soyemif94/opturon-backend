@@ -3,7 +3,8 @@ const {
   getPartnersMe,
   getPartnersMeSummary,
   getPartnersMeClients,
-  getPartnersMeRankProgress
+  getPartnersMeRankProgress,
+  getPartnersMeNetwork
 } = require('../controllers/partners.controller');
 const { authenticatePartnerUser, getPartnerAuthUserByEmail } = require('../services/partners.service');
 const { requirePartnerInternalAuth } = require('../middlewares/partner-auth.middleware');
@@ -39,5 +40,6 @@ router.get('/me', requirePartnerInternalAuth, getPartnersMe);
 router.get('/me/summary', requirePartnerInternalAuth, getPartnersMeSummary);
 router.get('/me/clients', requirePartnerInternalAuth, getPartnersMeClients);
 router.get('/me/rank-progress', requirePartnerInternalAuth, getPartnersMeRankProgress);
+router.get('/me/network', requirePartnerInternalAuth, getPartnersMeNetwork);
 
 module.exports = router;
