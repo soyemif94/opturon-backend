@@ -21,6 +21,8 @@ const {
   getPartnerDetails,
   resendPartnerInvitation,
   changePartnerStatus,
+  cancelPartnerInvitation,
+  deactivatePartner,
   assignPartnerSponsor,
   attributeTenantToPartner,
   createCommissionPlanWithVersion,
@@ -516,6 +518,39 @@ async function postAdminPartnerResendInvite(req, res) {
   }
 }
 
+async function postAdminPartnerCancelInvitation(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await cancelPartnerInvitation(String(req.params.partnerId || '').trim(), {
+      actorStaffUserId: actorUserId,
+      reason: req.body && req.body.reason
+    });
+    if (!result.ok) {
+      return res.status(result.reason === 'partner_not_found' ? 404 : 409).json({ success: false, error: result.reason, lifecycle: result.lifecycle });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_invitation_cancel_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerDeactivate(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await deactivatePartner(String(req.params.partnerId || '').trim(), {
+      actorStaffUserId: actorUserId,
+      reason: req.body && req.body.reason
+    });
+    if (!result.ok) {
+      const status = result.reason === 'partner_not_found' ? 404 : result.reason === 'partner_deactivation_reason_required' ? 400 : 409;
+      return res.status(status).json({ success: false, error: result.reason, lifecycle: result.lifecycle });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_deactivation_failed', details: error.message });
+  }
+}
+
 async function postAdminPartnerRankEvaluation(req, res) {
   const { actorUserId } = getAdminActor(req);
   try {
@@ -629,6 +664,8 @@ module.exports = {
   postAdminPartnerSponsor,
   postAdminPartnerAttribution,
   postAdminPartnerResendInvite,
+  postAdminPartnerCancelInvitation,
+  postAdminPartnerDeactivate,
   postAdminPartnerRankEvaluation,
   getAdminPartnerCommissionPlans,
   postAdminPartnerCommissionPlan,

@@ -44,6 +44,7 @@ const {
   closeActiveRankHistory,
   createRankHistory,
   listRankHistory,
+  getPartnerLifecycleSummary,
   createPartnerAuditLog,
   listPartnerAuditLog
 } = require('../repositories/partners.repository');
@@ -56,7 +57,7 @@ const {
   markPartnerInvitationAccepted
 } = require('../repositories/partner-invitations.repository');
 
-const PARTNER_STATUSES = new Set(['invited', 'active', 'suspended', 'disabled']);
+const PARTNER_STATUSES = new Set(['invited', 'active', 'suspended', 'disabled', 'invitation_canceled']);
 const DEFAULT_COMMISSION_CAP_PERCENT = '15.00';
 const PARTNER_INVITATION_EXPIRES_IN_HOURS = 168;
 const SUPPORTED_EVENT_TYPES = new Set(['subscription_signup_accredited', 'subscription_recurring_accredited']);
@@ -354,6 +355,32 @@ function enrichPartnerAdminRecord(partner, invitation) {
   return {
     ...partner,
     invitation: invitationSummary
+  };
+}
+
+function buildPartnerLifecycleSnapshot(summary) {
+  const safe = summary && typeof summary === 'object' ? summary : {};
+  const activeClients = Math.max(0, Number(safe.activeAttributionCount || 0));
+  const totalAttributions = Math.max(0, Number(safe.totalAttributionCount || 0));
+  const directDescendants = Math.max(0, Number(safe.activeDirectDescendantCount || 0));
+  const commissionEntries = Math.max(0, Number(safe.commissionEntryCount || 0));
+  const pendingInvitations = Math.max(0, Number(safe.pendingInvitationCount || 0));
+  const rankHistoryEntries = Math.max(0, Number(safe.rankHistoryCount || 0));
+  const blockers = [];
+
+  if (activeClients > 0) blockers.push('active_clients');
+  if (directDescendants > 0) blockers.push('active_descendants');
+
+  return {
+    activeClients,
+    activeAttributions: activeClients,
+    totalAttributions,
+    directDescendants,
+    commissionEntries,
+    pendingInvitations,
+    rankHistoryEntries,
+    hasCommercialHistory: totalAttributions > 0 || commissionEntries > 0 || rankHistoryEntries > 0,
+    blockers
   };
 }
 
@@ -676,12 +703,13 @@ async function getPartnerDetails(partnerId) {
   const partner = await findPartnerById(partnerId);
   if (!partner) return { ok: false, reason: 'partner_not_found' };
 
-  const [attributions, commissionEntries, rankHistory, audit, latestInvitations] = await Promise.all([
+  const [attributions, commissionEntries, rankHistory, audit, latestInvitations, lifecycleSummary] = await Promise.all([
     listPartnerAttributions(partnerId),
     listPartnerCommissionEntries(partnerId),
     listRankHistory(partnerId),
     listPartnerAuditLog(partnerId, 30),
-    listLatestPartnerInvitationsByPartnerIds([partnerId])
+    listLatestPartnerInvitationsByPartnerIds([partnerId]),
+    getPartnerLifecycleSummary(partnerId)
   ]);
   const invitation = latestInvitations[0] || null;
 
@@ -692,7 +720,8 @@ async function getPartnerDetails(partnerId) {
     commissionEntries,
     rankHistory,
     audit,
-    invitation: buildPartnerInvitationSummary(partner, invitation)
+    invitation: buildPartnerInvitationSummary(partner, invitation),
+    lifecycle: buildPartnerLifecycleSnapshot(lifecycleSummary)
   };
 }
 
@@ -1060,6 +1089,123 @@ async function changePartnerStatus(partnerId, status, options = {}) {
   });
 }
 
+async function cancelPartnerInvitation(partnerId, options = {}) {
+  const actorStaffUserId = isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null;
+  const reason = normalizeString(options.reason) || 'admin_canceled_invitation';
+
+  return withTransaction(async (client) => {
+    const partner = await findPartnerById(partnerId, client);
+    if (!partner) return { ok: false, reason: 'partner_not_found' };
+
+    const lifecycle = buildPartnerLifecycleSnapshot(await getPartnerLifecycleSummary(partnerId, client));
+    if (partner.status === 'invitation_canceled') {
+      return {
+        ok: true,
+        partner,
+        lifecycle
+      };
+    }
+    if (partner.status !== 'invited') {
+      return { ok: false, reason: 'partner_invitation_not_pending' };
+    }
+
+    const hasPassword = Boolean((await findRawPartnerAuthByEmail(partner.email, client))?.passwordHash);
+    if (hasPassword || lifecycle.hasCommercialHistory || lifecycle.directDescendants > 0 || lifecycle.activeClients > 0) {
+      return {
+        ok: false,
+        reason: 'partner_invitation_cancel_blocked',
+        lifecycle
+      };
+    }
+
+    const revokedByPartner = await revokePendingPartnerInvitationsByPartnerId(partnerId, client);
+    const revokedByEmail = await revokePendingPartnerInvitationsByEmail(partner.email, client);
+    await endActivePartnerRelationship(partnerId, new Date().toISOString(), client);
+    await updatePartnerStatus(partnerId, 'invitation_canceled', client);
+
+    await appendAuditLog(
+      {
+        partnerId,
+        entityType: 'partner_invitation',
+        entityId: partnerId,
+        action: 'partner_invitation_canceled',
+        reason,
+        actorType: actorStaffUserId ? 'staff' : 'system',
+        actorStaffUserId,
+        metadata: {
+          revokedInvitationCount: (Array.isArray(revokedByPartner) ? revokedByPartner.length : 0) + (Array.isArray(revokedByEmail) ? revokedByEmail.length : 0),
+          previousStatus: partner.status
+        }
+      },
+      client
+    );
+
+    return {
+      ok: true,
+      partner: await findPartnerById(partnerId, client),
+      lifecycle: buildPartnerLifecycleSnapshot(await getPartnerLifecycleSummary(partnerId, client))
+    };
+  });
+}
+
+async function deactivatePartner(partnerId, options = {}) {
+  const actorStaffUserId = isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null;
+  const reason = normalizeString(options.reason);
+  if (!reason) return { ok: false, reason: 'partner_deactivation_reason_required' };
+
+  return withTransaction(async (client) => {
+    const partner = await findPartnerById(partnerId, client);
+    if (!partner) return { ok: false, reason: 'partner_not_found' };
+
+    const lifecycle = buildPartnerLifecycleSnapshot(await getPartnerLifecycleSummary(partnerId, client));
+    if (partner.status === 'disabled') {
+      return {
+        ok: true,
+        partner,
+        lifecycle
+      };
+    }
+    if (partner.status === 'invited' || partner.status === 'invitation_canceled') {
+      return { ok: false, reason: 'partner_deactivation_not_available_for_pending_invitation', lifecycle };
+    }
+    if (lifecycle.blockers.length > 0) {
+      return {
+        ok: false,
+        reason: 'partner_deactivation_blocked',
+        lifecycle
+      };
+    }
+
+    await revokePendingPartnerInvitationsByPartnerId(partnerId, client);
+    await revokePendingPartnerInvitationsByEmail(partner.email, client);
+    await endActivePartnerRelationship(partnerId, new Date().toISOString(), client);
+    await updatePartnerStatus(partnerId, 'disabled', client);
+
+    await appendAuditLog(
+      {
+        partnerId,
+        entityType: 'partner_account',
+        entityId: partnerId,
+        action: 'partner_deactivated',
+        reason: 'disabled',
+        actorType: actorStaffUserId ? 'staff' : 'system',
+        actorStaffUserId,
+        metadata: {
+          previousStatus: partner.status,
+          deactivationReason: reason
+        }
+      },
+      client
+    );
+
+    return {
+      ok: true,
+      partner: await findPartnerById(partnerId, client),
+      lifecycle: buildPartnerLifecycleSnapshot(await getPartnerLifecycleSummary(partnerId, client))
+    };
+  });
+}
+
 async function assignPartnerSponsor(partnerId, sponsorPartnerId, options = {}) {
   return withTransaction(async (client) => {
     const partner = await findPartnerById(partnerId, client);
@@ -1126,6 +1272,7 @@ async function attributeTenantToPartner(partnerId, payload, options = {}) {
   return withTransaction(async (client) => {
     const partner = await findPartnerById(partnerId, client);
     if (!partner) return { ok: false, reason: 'partner_not_found' };
+    if (partner.status !== 'active') return { ok: false, reason: 'partner_not_active' };
 
     const clinic = await findClinicTenantByExternalTenantId(tenantId, client);
     if (!clinic) return { ok: false, reason: 'tenant_not_found' };
@@ -1371,6 +1518,9 @@ async function buildPartnerChain(rootPartnerId, client = null) {
   let current = await findPartnerById(rootPartnerId, client);
   if (!current) return chain;
   while (current) {
+    if (chain.length > 0 && current.status !== 'active') {
+      break;
+    }
     if (visited.has(String(current.id))) {
       const error = new Error('partner_hierarchy_cycle_detected');
       error.code = 'PARTNER_HIERARCHY_CYCLE_DETECTED';
@@ -1867,6 +2017,8 @@ module.exports = {
   getPartnerDetails,
   resendPartnerInvitation,
   changePartnerStatus,
+  cancelPartnerInvitation,
+  deactivatePartner,
   assignPartnerSponsor,
   attributeTenantToPartner,
   createCommissionPlanWithVersion,

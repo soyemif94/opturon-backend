@@ -215,6 +215,14 @@ function setup(overrides = {}) {
     closeActiveRankHistory: async () => 1,
     createRankHistory: async () => ({ id: 'rank-1' }),
     listRankHistory: async () => [],
+    getPartnerLifecycleSummary: async () => ({
+      activeAttributionCount: 0,
+      totalAttributionCount: 0,
+      commissionEntryCount: 0,
+      activeDirectDescendantCount: 0,
+      pendingInvitationCount: 0,
+      rankHistoryCount: 0
+    }),
     createPartnerAuditLog: async () => ({ id: 'audit-1' }),
     listPartnerAuditLog: async () => [],
     ...overrides
@@ -375,6 +383,114 @@ async function testAttributeTenantBlocksOtherPartner() {
   assert.strictEqual(result.reason, 'tenant_already_attributed');
 }
 
+async function testCancelPendingInvitationMovesToTerminalStatus() {
+  let updatedStatus = null;
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': {
+        id: 'partner-1',
+        email: 'partner1@test.com',
+        status: updatedStatus || 'invited',
+        sponsorPartnerId: null,
+        currentRankCode: null,
+        profile: { displayName: 'Partner Uno', code: 'PARTNER-UNO' }
+      }
+    }[partnerId] || null),
+    findRawPartnerAuthByEmail: async () => ({ id: 'partner-1', email: 'partner1@test.com', status: 'invited', passwordHash: null }),
+    updatePartnerStatus: async (_partnerId, status) => {
+      updatedStatus = status;
+      return true;
+    }
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.cancelPartnerInvitation('partner-1', { reason: 'admin_cleanup' });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(updatedStatus, 'invitation_canceled');
+}
+
+async function testCancelPendingInvitationBlocksCommercialHistory() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': {
+        id: 'partner-1',
+        email: 'partner1@test.com',
+        status: 'invited',
+        sponsorPartnerId: null,
+        currentRankCode: null,
+        profile: { displayName: 'Partner Uno', code: 'PARTNER-UNO' }
+      }
+    }[partnerId] || null),
+    findRawPartnerAuthByEmail: async () => ({ id: 'partner-1', email: 'partner1@test.com', status: 'invited', passwordHash: null }),
+    getPartnerLifecycleSummary: async () => ({
+      activeAttributionCount: 0,
+      totalAttributionCount: 0,
+      commissionEntryCount: 1,
+      activeDirectDescendantCount: 0,
+      pendingInvitationCount: 1,
+      rankHistoryCount: 0
+    })
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.cancelPartnerInvitation('partner-1', { reason: 'admin_cleanup' });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_invitation_cancel_blocked');
+}
+
+async function testDeactivatePartnerBlocksDependencies() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': {
+        id: 'partner-1',
+        email: 'partner1@test.com',
+        status: 'active',
+        sponsorPartnerId: null,
+        currentRankCode: 'lider',
+        profile: { displayName: 'Partner Uno', code: 'PARTNER-UNO' }
+      }
+    }[partnerId] || null),
+    getPartnerLifecycleSummary: async () => ({
+      activeAttributionCount: 2,
+      totalAttributionCount: 2,
+      commissionEntryCount: 4,
+      activeDirectDescendantCount: 1,
+      pendingInvitationCount: 0,
+      rankHistoryCount: 1
+    })
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.deactivatePartner('partner-1', { reason: 'manual_offboarding' });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_deactivation_blocked');
+}
+
+async function testDeactivatePartnerRequiresReasonAndDisablesAccount() {
+  let updatedStatus = null;
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': {
+        id: 'partner-1',
+        email: 'partner1@test.com',
+        status: updatedStatus || 'suspended',
+        sponsorPartnerId: null,
+        currentRankCode: 'lider',
+        profile: { displayName: 'Partner Uno', code: 'PARTNER-UNO' }
+      }
+    }[partnerId] || null),
+    updatePartnerStatus: async (_partnerId, status) => {
+      updatedStatus = status;
+      return true;
+    }
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const missingReason = await service.deactivatePartner('partner-1', {});
+  assert.strictEqual(missingReason.ok, false);
+  assert.strictEqual(missingReason.reason, 'partner_deactivation_reason_required');
+
+  const result = await service.deactivatePartner('partner-1', { reason: 'manual_offboarding' });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(updatedStatus, 'disabled');
+}
+
 async function testSimulateCommissionEntriesBuildsDirectAndIndirectPayouts() {
   setup();
   const service = require(modulePath('src/services/partners.service.js'));
@@ -502,6 +618,32 @@ async function testRecurringCapOver15Rejected() {
 
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.reason, 'partner_commission_cap_exceeded');
+}
+
+async function testDisabledSponsorDoesNotReceiveNewCommission() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': { id: 'partner-1', email: 'partner1@test.com', status: 'active', sponsorPartnerId: 'partner-2', currentRankCode: 'lider', profile: { displayName: 'One' } },
+      'partner-2': { id: 'partner-2', email: 'partner2@test.com', status: 'disabled', sponsorPartnerId: 'partner-3', currentRankCode: 'emperador', profile: { displayName: 'Two' } },
+      'partner-3': { id: 'partner-3', email: 'partner3@test.com', status: 'active', sponsorPartnerId: null, currentRankCode: 'emperador', profile: { displayName: 'Three' } }
+    }[partnerId] || null)
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.simulateCommissionEntries({
+    tenantId: 'tenant-a',
+    sourceType: 'subscription',
+    sourceRef: 'sub-disabled-sponsor',
+    sourceEventId: 'evt-disabled-sponsor',
+    eventType: 'subscription_recurring_accredited',
+    eventAt: '2026-06-18T12:00:00.000Z',
+    basisAmount: '1000.00',
+    paymentStatus: 'accredited',
+    reversed: false
+  }, { persist: false });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.simulation.length, 1);
+  assert.strictEqual(result.simulation[0].partnerId, 'partner-1');
 }
 
 async function testRecurringPaymentMustBeAccredited() {
@@ -994,6 +1136,10 @@ async function run() {
   await testResolvePartnerInvitationReturnsSafeSummary();
   await testAcceptPartnerInvitationActivatesCredentials();
   await testAttributeTenantBlocksOtherPartner();
+  await testCancelPendingInvitationMovesToTerminalStatus();
+  await testCancelPendingInvitationBlocksCommercialHistory();
+  await testDeactivatePartnerBlocksDependencies();
+  await testDeactivatePartnerRequiresReasonAndDisablesAccount();
   await testSimulateCommissionEntriesBuildsDirectAndIndirectPayouts();
   await testReverseCommissionEntryCreatesNegativeReversal();
   await testEvaluateRankUsesThresholds();
@@ -1002,6 +1148,7 @@ async function run() {
   await testCreateCommissionPlanRejectsRecurringCapAbove15();
   await testRecurringCapExact15Allowed();
   await testRecurringCapOver15Rejected();
+  await testDisabledSponsorDoesNotReceiveNewCommission();
   await testRecurringPaymentMustBeAccredited();
   await testSponsorCycleTwoNodesRejected();
   await testSponsorCycleThreeNodesRejected();

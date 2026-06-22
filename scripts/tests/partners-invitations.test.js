@@ -96,6 +96,14 @@ async function inspect052Schema() {
   );
   assert.ok(foreignKeys.rowCount >= 2);
 
+  const statusConstraint = await client.query(
+    `SELECT pg_get_constraintdef(oid) AS definition
+     FROM pg_constraint
+     WHERE conrelid = 'partner_accounts'::regclass
+       AND conname = 'partner_accounts_status_check'`
+  );
+  assert.match(statusConstraint.rows[0].definition, /invitation_canceled/);
+
   await client.end();
 }
 
@@ -279,6 +287,34 @@ async function runDomainAssertions() {
   const loginSuspended = await service.authenticatePartnerUser('suspended@partner.test', 'password123');
   assert.strictEqual(loginSuspended.ok, false);
   assert.strictEqual(loginSuspended.reason, 'invalid_credentials');
+
+  const canceled = await service.cancelPartnerInvitation(inviteResult.partner.id, {
+    actorStaffUserId: seed.adminActorId,
+    reason: 'admin_cleanup'
+  });
+  assert.strictEqual(canceled.ok, false);
+  assert.strictEqual(canceled.reason, 'partner_invitation_not_pending');
+
+  const secondInvite = await service.invitePartner(
+    {
+      email: 'cancelme@partner.test',
+      displayName: 'Cancel Me',
+      code: 'CANCEL-001'
+    },
+    { actorStaffUserId: seed.adminActorId }
+  );
+  assert.strictEqual(secondInvite.ok, true);
+  const cancelToken = emailMock.getToken();
+  assert.ok(cancelToken);
+  const canceledPending = await service.cancelPartnerInvitation(secondInvite.partner.id, {
+    actorStaffUserId: seed.adminActorId,
+    reason: 'admin_cleanup'
+  });
+  assert.strictEqual(canceledPending.ok, true);
+  assert.strictEqual(canceledPending.partner.status, 'invitation_canceled');
+  const canceledLookup = await service.resolvePartnerInvitation(cancelToken);
+  assert.strictEqual(canceledLookup.ok, false);
+  assert.strictEqual(canceledLookup.reason, 'invalid_or_expired_invitation');
 }
 
 async function runEmailFailureAssertion() {

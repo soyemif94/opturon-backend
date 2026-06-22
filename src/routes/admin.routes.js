@@ -20,6 +20,8 @@ const {
   postAdminPartnerSponsor,
   postAdminPartnerAttribution,
   postAdminPartnerResendInvite,
+  postAdminPartnerCancelInvitation,
+  postAdminPartnerDeactivate,
   postAdminPartnerRankEvaluation,
   getAdminPartnerCommissionPlans,
   postAdminPartnerCommissionPlan,
@@ -57,6 +59,8 @@ router.post('/partners/commissions/reverse-controlled', requireAdminInternalActo
 router.get('/partners/:partnerId', requireAdminInternalActor, getAdminPartner);
 router.patch('/partners/:partnerId/status', requireAdminInternalActor, patchAdminPartnerStatus);
 router.post('/partners/:partnerId/resend-invite', requireAdminInternalActor, postAdminPartnerResendInvite);
+router.post('/partners/:partnerId/cancel-invitation', requireAdminInternalActor, postAdminPartnerCancelInvitation);
+router.post('/partners/:partnerId/deactivate', requireAdminInternalActor, postAdminPartnerDeactivate);
 router.post('/partners/:partnerId/sponsor', requireAdminInternalActor, postAdminPartnerSponsor);
 router.post('/partners/:partnerId/attributions', requireAdminInternalActor, postAdminPartnerAttribution);
 router.post('/partners/:partnerId/rank/evaluate', requireAdminInternalActor, postAdminPartnerRankEvaluation);

@@ -1036,6 +1036,48 @@ async function listRankHistory(partnerId, client = null) {
   return result.rows;
 }
 
+async function getPartnerLifecycleSummary(partnerId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT (
+        SELECT COUNT(*)::INT
+        FROM partner_client_attributions pca
+        WHERE pca."partnerId" = $1
+          AND pca.status = 'active'
+      ) AS "activeAttributionCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_client_attributions pca
+        WHERE pca."partnerId" = $1
+      ) AS "totalAttributionCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_commission_entries pce
+        WHERE pce."partnerId" = $1
+      ) AS "commissionEntryCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_relationships rel
+        WHERE rel."sponsorPartnerId" = $1
+          AND rel.status = 'active'
+      ) AS "activeDirectDescendantCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_invitations inv
+        WHERE inv."partnerId" = $1
+          AND inv."acceptedAt" IS NULL
+          AND inv."revokedAt" IS NULL
+      ) AS "pendingInvitationCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_rank_history prh
+        WHERE prh."partnerId" = $1
+      ) AS "rankHistoryCount"`,
+    [partnerId]
+  );
+  return result.rows[0] || null;
+}
+
 async function createPartnerAuditLog(input, client = null) {
   const result = await dbQuery(
     client,
@@ -1124,6 +1166,7 @@ module.exports = {
   closeActiveRankHistory,
   createRankHistory,
   listRankHistory,
+  getPartnerLifecycleSummary,
   createPartnerAuditLog,
   listPartnerAuditLog
 };
