@@ -139,6 +139,7 @@ const env = {
   mercadoPagoPublicKey: String(process.env.MERCADO_PAGO_PUBLIC_KEY || '').trim(),
   mercadoPagoWebhookSecret: String(process.env.MERCADO_PAGO_WEBHOOK_SECRET || '').trim(),
   mercadoPagoEnvironment: String(process.env.MERCADO_PAGO_ENVIRONMENT || 'production').trim().toLowerCase(),
+  partnerPortalInvitationBaseUrl: String(process.env.PARTNER_PORTAL_INVITATION_BASE_URL || '').trim(),
   opturonPublicAppUrl: String(process.env.OPTURON_PUBLIC_APP_URL || '').trim(),
   opturonApiPublicUrl: String(process.env.OPTURON_API_PUBLIC_URL || '').trim()
 };

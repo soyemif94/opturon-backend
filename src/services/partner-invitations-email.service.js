@@ -31,12 +31,10 @@ function resolveInvitationEmailFrom() {
 
 function resolvePartnerPortalBaseUrl() {
   return String(
-    env.opturonPublicAppUrl
-    || process.env.PARTNER_PORTAL_INVITATION_BASE_URL
-    || process.env.PORTAL_INVITATION_BASE_URL
-    || process.env.NEXTAUTH_URL
-    || process.env.NEXT_PUBLIC_SITE_URL
-    || ''
+    process.env.PARTNER_PORTAL_INVITATION_BASE_URL
+    || env.partnerPortalInvitationBaseUrl
+    || process.env.PARTNER_PORTAL_BASE_URL
+    || 'https://partners.opturon.com'
   )
     .trim()
     .replace(/\/$/, '');
@@ -49,7 +47,8 @@ function buildPartnerInvitationAcceptLink(token) {
     error.code = 'partner_invitation_base_url_not_configured';
     throw error;
   }
-  return `${baseUrl}/partners/invite?token=${encodeURIComponent(token)}`;
+  const invitationPath = baseUrl.endsWith('/invite') || baseUrl.endsWith('/partners/invite') ? '' : '/invite';
+  return `${baseUrl}${invitationPath}?token=${encodeURIComponent(token)}`;
 }
 
 function buildPartnerInvitationEmailHtml(input) {
