@@ -100,7 +100,7 @@ async function testPartnerMiddlewareRejectsUnknownPartnerHeader() {
 
   assert.strictEqual(nextCalled, false);
   assert.strictEqual(res.statusCode, 403);
-  assert.strictEqual(res.body.error, 'partner_forbidden');
+  assert.strictEqual(res.body.error, 'partner_identity_invalid');
 }
 
 async function testPartnerControllerUsesResolvedAuthContextInsteadOfClientHeader() {

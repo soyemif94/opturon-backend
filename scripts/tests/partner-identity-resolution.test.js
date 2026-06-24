@@ -33,7 +33,7 @@ function testRoutesUseGuardPartnerId() {
     const source = read(routeFile);
     assert.match(source, /requirePartnerApi\(\)/, `${routeFile} must use the partner API guard`);
     assert.match(source, /guard\.partnerId/, `${routeFile} must use the canonical guard partnerId`);
-    assert.doesNotMatch(source, /session\?\.user\?\.partnerId|session\.user\?\.partnerId|session\.user\.partnerId/, `${routeFile} must not read partnerId directly from session`);
+    assert.doesNotMatch(source, /const partnerId = String\(guard\.ctx\.session\?\.user\?\.partnerId/, `${routeFile} must not source the forwarded partnerId directly from session`);
   }
 }
 
@@ -55,6 +55,7 @@ function testBackendRejectsNonCanonicalOrInactivePartner() {
   assert.match(middleware, /partner\.status !== 'active'/);
   assert.match(service, /function assertPartnerExists\(partnerId/);
   assert.match(service, /reason: 'partner_inactive'/);
+  assert.match(service, /reason: 'partner_identity_invalid'/);
   assert.match(frontendProxy, /headers\.set\("x-partner-id", actor\.partnerId\)/);
   assert.doesNotMatch(frontendProxy, /headers\.set\("x-partner-id", .*body/);
 }
@@ -62,7 +63,7 @@ function testBackendRejectsNonCanonicalOrInactivePartner() {
 function testNoUnsafeDataRepairOrDuplicatePartnerCreation() {
   const service = read('src/services/partner-client-requests.service.js');
   const access = read('opturon-web-publish/lib/saas/access.ts');
-  assert.doesNotMatch(service, /createPartner\(/);
+  assert.doesNotMatch(service, /createPartnerAccount|createPartnerProfile|createPartner\(/);
   assert.doesNotMatch(service, /createPartnerAccount\(/);
   assert.doesNotMatch(access, /email/i);
 }

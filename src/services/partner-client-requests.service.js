@@ -50,7 +50,17 @@ function normalizePaymentReference(value) {
 }
 
 function isUuid(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i.test(normalizeString(value));
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalizeString(value));
+}
+
+function logPartnerIdentityTrace(payload = {}) {
+  if (!payload.traceId) return;
+  console.info('partner_identity_trace', {
+    event: 'partner_identity_trace',
+    layer: 'client_requests_service',
+    lookupTable: 'partner_accounts',
+    ...payload
+  });
 }
 
 function parsePositiveMoney(value) {
@@ -170,20 +180,34 @@ async function auditClientRequest(input, client = null) {
   }, client);
 }
 
-async function assertPartnerExists(partnerId, client = null) {
-  if (!isUuid(partnerId)) return { ok: false, reason: 'partner_not_found' };
+async function assertPartnerExists(partnerId, client = null, trace = {}) {
+  if (!isUuid(partnerId)) {
+    logPartnerIdentityTrace({
+      ...trace,
+      repositoryLookupId: partnerId || null,
+      found: false,
+      active: false
+    });
+    return { ok: false, reason: 'partner_unauthorized' };
+  }
   const partner = await findPartnerById(partnerId, client);
-  if (!partner) return { ok: false, reason: 'partner_not_found' };
+  logPartnerIdentityTrace({
+    ...trace,
+    repositoryLookupId: partnerId,
+    found: Boolean(partner),
+    active: Boolean(partner && partner.status === 'active')
+  });
+  if (!partner) return { ok: false, reason: 'partner_identity_invalid' };
   if (partner.status !== 'active') return { ok: false, reason: 'partner_inactive' };
   return { ok: true, partner };
 }
 
-async function createRequestForPartner(partnerId, payload, file) {
+async function createRequestForPartner(partnerId, payload, file, trace = {}) {
   const normalized = normalizePayload(payload);
   if (!normalized.ok) return normalized;
 
   return withTransaction(async (client) => {
-    const partnerResult = await assertPartnerExists(partnerId, client);
+    const partnerResult = await assertPartnerExists(partnerId, client, trace);
     if (!partnerResult.ok) return partnerResult;
 
     const savedReceipt = await saveClientRequestReceipt(partnerId, file);
@@ -215,8 +239,8 @@ async function createRequestForPartner(partnerId, payload, file) {
   });
 }
 
-async function listRequestsForPartner(partnerId, query = {}) {
-  const partnerResult = await assertPartnerExists(partnerId);
+async function listRequestsForPartner(partnerId, query = {}, trace = {}) {
+  const partnerResult = await assertPartnerExists(partnerId, null, trace);
   if (!partnerResult.ok) return partnerResult;
   const result = await listPartnerClientRequests({
     partnerId,

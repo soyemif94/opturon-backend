@@ -22,6 +22,10 @@ function getPartnerActorId(req) {
   return String((req.partnerAuth && req.partnerAuth.partnerId) || '').trim();
 }
 
+function getPartnerIdentityTraceId(req) {
+  return String((req.partnerAuth && req.partnerAuth.traceId) || req.get('x-partner-identity-trace-id') || '').trim();
+}
+
 async function getPartnersMe(req, res) {
   const partnerId = getPartnerActorId(req);
   try {
@@ -126,10 +130,12 @@ async function getPartnersMeCommissions(req, res) {
 
 function sendClientRequestResult(res, result) {
   if (!result.ok) {
-    const status = result.reason === 'client_request_not_found' || result.reason === 'partner_not_found'
+    const status = result.reason === 'client_request_not_found'
       ? 404
-      : result.reason === 'partner_inactive'
+      : result.reason === 'partner_identity_invalid' || result.reason === 'partner_inactive'
         ? 403
+      : result.reason === 'partner_unauthorized'
+        ? 401
       : result.reason === 'client_request_not_editable' || result.reason === 'invalid_client_request_transition'
         ? 409
         : 400;
@@ -141,7 +147,10 @@ function sendClientRequestResult(res, result) {
 async function postPartnerClientRequest(req, res) {
   const partnerId = getPartnerActorId(req);
   try {
-    const result = await createRequestForPartner(partnerId, req.body || {}, req.file || null);
+    const result = await createRequestForPartner(partnerId, req.body || {}, req.file || null, {
+      traceId: getPartnerIdentityTraceId(req),
+      requestPath: req.originalUrl || req.path
+    });
     return sendClientRequestResult(res, result);
   } catch (error) {
     return res.status(500).json({ success: false, error: 'partner_client_request_create_failed', details: error.message });
@@ -151,7 +160,10 @@ async function postPartnerClientRequest(req, res) {
 async function getPartnerClientRequests(req, res) {
   const partnerId = getPartnerActorId(req);
   try {
-    const result = await listRequestsForPartner(partnerId, req.query || {});
+    const result = await listRequestsForPartner(partnerId, req.query || {}, {
+      traceId: getPartnerIdentityTraceId(req),
+      requestPath: req.originalUrl || req.path
+    });
     return sendClientRequestResult(res, result);
   } catch (error) {
     return res.status(500).json({ success: false, error: 'partner_client_requests_failed', details: error.message });
