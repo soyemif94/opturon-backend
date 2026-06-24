@@ -76,10 +76,13 @@ function testTraceCoversFrontendBackendAndService() {
 function testNoUnsafeFallbackOrSideEffects() {
   const service = read('src/services/partner-client-requests.service.js');
   const repository = read('src/repositories/partner-client-requests.repository.js');
+  const createStart = service.indexOf('async function createRequestForPartner');
+  const activationStart = service.indexOf('async function resolveActivationTenant');
+  const requestCreationFlow = service.slice(createStart, activationStart);
   assert.doesNotMatch(service, /findPartnerByEmail/);
   assert.doesNotMatch(service, /createPartnerAccount|createPartnerProfile|createPartner\(/);
   assert.doesNotMatch(repository, /tenantId.*INSERT INTO partner_client_requests/);
-  assert.doesNotMatch(service, /createCommission|evaluatePartnerRank|createSaasSubscription/);
+  assert.doesNotMatch(requestCreationFlow, /createCommission|createRankEvaluation|createSaasSubscription/);
 }
 
 testFixtureIdsAreDistinct();

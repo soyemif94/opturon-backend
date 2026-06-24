@@ -1,10 +1,30 @@
+const { randomUUID } = require('crypto');
 const { withTransaction } = require('../db/client');
-const { findPartnerById, createPartnerAuditLog } = require('../repositories/partners.repository');
+const {
+  findPartnerById,
+  createPartnerAuditLog,
+  findClinicTenantByExternalTenantId,
+  findActiveAttributionByTenantId,
+  createPartnerAttribution,
+  findPublishedCommissionPlanVersion,
+  findCommissionEntriesBySource,
+  createCommissionEntry,
+  countActivePartnerAttributions,
+  sumGeneratedCommissionsForPartner,
+  createRankEvaluation,
+  closeActiveRankHistory,
+  createRankHistory
+} = require('../repositories/partners.repository');
+const { provisionCleanClinicForExternalTenant } = require('../repositories/tenant.repository');
 const {
   createPartnerClientRequest,
   updatePartnerClientRequest,
   transitionPartnerClientRequest,
   findPartnerClientRequestById,
+  findPartnerClientRequestByIdForUpdate,
+  markPartnerClientRequestProcessing,
+  markPartnerClientRequestProcessingFailed,
+  markPartnerClientRequestProcessed,
   listPartnerClientRequests,
   findPartnerClientRequestDuplicates,
   findExistingClientDuplicates
@@ -28,6 +48,9 @@ const ADMIN_REVIEW_AUDIT_ACTIONS = {
   rejected: 'partner_client_request_rejected',
   changes_requested: 'partner_client_request_changes_requested'
 };
+const CLIENT_REQUEST_ACTIVATION_SOURCE = 'partner_client_request';
+const CLIENT_REQUEST_SIGNUP_EVENT = 'subscription_signup_accredited';
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -69,6 +92,122 @@ function parsePositiveMoney(value) {
   const number = Number(normalized);
   if (!Number.isFinite(number) || number <= 0) return null;
   return number.toFixed(2);
+}
+
+function parseMoneyToCents(value) {
+  const normalized = normalizeString(value).replace(',', '.');
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) return null;
+  const [wholePart, decimalPart = ''] = normalized.split('.');
+  const cents = (BigInt(wholePart) * 100n) + BigInt((decimalPart + '00').slice(0, 2));
+  if (cents > MAX_SAFE_INTEGER_BIGINT) return null;
+  return Number(cents);
+}
+
+function centsToMoney(cents) {
+  const safe = BigInt(Number(cents) || 0);
+  return `${safe / 100n}.${String(Number(safe % 100n)).padStart(2, '0')}`;
+}
+
+function parsePercentToBasisPoints(value) {
+  return parseMoneyToCents(value);
+}
+
+function basisPointsToPercentString(basisPoints) {
+  return centsToMoney(basisPoints);
+}
+
+function calculateCommissionAmountCents(baseCents, rateBasisPoints) {
+  const rounded = ((BigInt(baseCents) * BigInt(rateBasisPoints)) + 5000n) / 10000n;
+  if (rounded > MAX_SAFE_INTEGER_BIGINT) throw new Error('partner_commission_amount_out_of_range');
+  return Number(rounded);
+}
+
+function buildPeriodKey(eventAt) {
+  const date = new Date(eventAt);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function getPartnerRankCode(partner) {
+  return normalizeString(partner && partner.currentRankCode).toLowerCase() || 'asesor';
+}
+
+function resolveOwnSignupRule(planVersion, partner) {
+  const rules = planVersion && planVersion.rules && typeof planVersion.rules === 'object' ? planVersion.rules : null;
+  const rankConfigs = Array.isArray(rules && rules.rankConfigs) ? rules.rankConfigs : [];
+  const rankCode = getPartnerRankCode(partner);
+  const config = rankConfigs.find((item) => normalizeString(item && item.code).toLowerCase() === rankCode) || rankConfigs[0] || null;
+  const rateBasisPoints = parsePercentToBasisPoints(config && config.ownSignupRatePercent);
+  if (!config || rateBasisPoints === null) return null;
+  return {
+    rankCode,
+    ruleCode: `own_signup:${normalizeString(config.code).toLowerCase() || rankCode}`,
+    rateBasisPoints,
+    rate: basisPointsToPercentString(rateBasisPoints)
+  };
+}
+
+function resolveRankThresholds(planVersion) {
+  const rules = planVersion && planVersion.rules && typeof planVersion.rules === 'object' ? planVersion.rules : null;
+  const thresholds = Array.isArray(rules && rules.rankThresholds) ? rules.rankThresholds : [];
+  const rankConfigs = Array.isArray(rules && rules.rankConfigs) ? rules.rankConfigs : [];
+  const source = thresholds.length > 0
+    ? thresholds
+    : rankConfigs.map((config) => ({ code: config.code, minActiveClients: 0, minGeneratedCommission: '0.00' }));
+  return source.map((threshold) => ({
+    code: normalizeString(threshold && threshold.code).toLowerCase(),
+    minActiveClients: Math.max(0, Number(threshold && threshold.minActiveClients) || 0),
+    minGeneratedCommission: parseMoneyToCents(threshold && threshold.minGeneratedCommission) === null
+      ? '0.00'
+      : centsToMoney(parseMoneyToCents(threshold && threshold.minGeneratedCommission))
+  })).filter((threshold) => threshold.code);
+}
+
+async function evaluatePartnerCareerAfterActivation(partnerId, planVersion, actorStaffUserId, client) {
+  const thresholds = resolveRankThresholds(planVersion);
+  if (thresholds.length === 0) return null;
+  const now = new Date().toISOString();
+  const windowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const activeClients = await countActivePartnerAttributions(partnerId, client);
+  const generatedCommission = await sumGeneratedCommissionsForPartner(partnerId, windowStart, now, client);
+  let currentRank = thresholds[0];
+  let nextRank = null;
+  const generatedCommissionCents = parseMoneyToCents(generatedCommission) || 0;
+
+  for (let index = 0; index < thresholds.length; index += 1) {
+    const threshold = thresholds[index];
+    const thresholdCommissionCents = parseMoneyToCents(threshold.minGeneratedCommission) || 0;
+    if (activeClients >= threshold.minActiveClients && generatedCommissionCents >= thresholdCommissionCents) {
+      currentRank = threshold;
+      nextRank = thresholds[index + 1] || null;
+    }
+  }
+
+  const evaluation = await createRankEvaluation({
+    partnerId,
+    planVersionId: planVersion.id,
+    currentRankCode: currentRank.code,
+    nextRankCode: nextRank ? nextRank.code : null,
+    metrics: {
+      activeClients,
+      generatedCommission: centsToMoney(generatedCommissionCents),
+      thresholdMatched: currentRank,
+      event: 'client_request_processed'
+    },
+    windowStart,
+    windowEnd: now,
+    evaluatedAt: now,
+    createdByStaffUserId: actorStaffUserId || null
+  }, client);
+  await closeActiveRankHistory(partnerId, evaluation.evaluatedAt, client);
+  await createRankHistory({
+    partnerId,
+    rankCode: currentRank.code,
+    effectiveFrom: evaluation.evaluatedAt,
+    evaluationId: evaluation.id,
+    notes: 'client_request_processed',
+    createdByStaffUserId: actorStaffUserId || null
+  }, client);
+  return evaluation;
 }
 
 function normalizeDate(value) {
@@ -418,6 +557,194 @@ async function reviewRequestAsAdmin(requestId, action, payload = {}, actorStaffU
   });
 }
 
+async function resolveActivationTenant(request, payload, actorStaffUserId, client) {
+  const mode = normalizeString(payload.tenantMode || payload.mode || 'new').toLowerCase();
+  if (mode === 'existing') {
+    const externalTenantId = normalizeString(payload.existingTenantId || payload.tenantId);
+    if (!externalTenantId) return { ok: false, reason: 'missing_existing_tenant_id' };
+    const clinic = await findClinicTenantByExternalTenantId(externalTenantId, client);
+    if (!clinic) return { ok: false, reason: 'tenant_not_found' };
+    return { ok: true, clinic, externalTenantId: clinic.externalTenantId, created: false };
+  }
+
+  const externalTenantId = normalizeString(payload.newTenantId) || randomUUID();
+  const clinic = await provisionCleanClinicForExternalTenant({
+    externalTenantId,
+    name: normalizeString(payload.tenantName) || request.businessName || request.clientName,
+    timezone: normalizeString(payload.timezone) || 'America/Argentina/Buenos_Aires'
+  }, client);
+  return { ok: true, clinic, externalTenantId: clinic.externalTenantId, created: true };
+}
+
+async function processApprovedRequestAsAdmin(requestId, payload = {}, actorStaffUserId) {
+  const actorId = isUuid(actorStaffUserId) ? actorStaffUserId : null;
+  if (!actorId) return { ok: false, reason: 'partner_admin_unauthorized' };
+  if (payload.paymentConfirmed !== true) return { ok: false, reason: 'payment_confirmation_required' };
+
+  const confirmedAmount = parsePositiveMoney(payload.confirmedAmount || payload.amount);
+  const confirmedCurrency = normalizeString(payload.confirmedCurrency || payload.currency || 'ARS').toUpperCase();
+  const paymentMethod = normalizeString(payload.paymentMethod || payload.method || 'manual_admin');
+  const paymentReference = normalizeString(payload.paymentReference || payload.reference) || null;
+  const paymentNotes = normalizeString(payload.paymentNotes || payload.notes) || null;
+  if (!confirmedAmount) return { ok: false, reason: 'invalid_confirmed_amount' };
+  if (!CURRENCIES.has(confirmedCurrency)) return { ok: false, reason: 'invalid_confirmed_currency' };
+
+  return withTransaction(async (client) => {
+    const request = await findPartnerClientRequestByIdForUpdate(requestId, client);
+    if (!request) return { ok: false, reason: 'client_request_not_found' };
+    if (request.processingStatus === 'processed') {
+      return { ok: true, request, alreadyProcessed: true };
+    }
+    if (request.status !== 'approved') return { ok: false, reason: 'client_request_not_approved' };
+
+    const partner = await findPartnerById(request.partnerId, client);
+    if (!partner) return { ok: false, reason: 'partner_not_found' };
+    if (partner.status !== 'active') return { ok: false, reason: 'partner_not_active' };
+
+    const tenantResult = await resolveActivationTenant(request, payload, actorId, client);
+    if (!tenantResult.ok) return tenantResult;
+
+    const existingAttribution = await findActiveAttributionByTenantId(tenantResult.externalTenantId, client);
+    if (existingAttribution && String(existingAttribution.partnerId) !== String(request.partnerId)) {
+      return { ok: false, reason: 'tenant_already_attributed', partnerId: existingAttribution.partnerId };
+    }
+
+    const attribution = existingAttribution || await createPartnerAttribution({
+      partnerId: request.partnerId,
+      clinicId: tenantResult.clinic.id,
+      tenantId: tenantResult.externalTenantId,
+      attributionSource: 'partner_client_request',
+      notes: `sourceRequestId:${request.id}`,
+      attributedAt: new Date().toISOString(),
+      createdByStaffUserId: actorId
+    }, client);
+
+    const planVersion = await findPublishedCommissionPlanVersion(null, client);
+    if (!planVersion) return { ok: false, reason: 'partner_commission_plan_version_not_found' };
+    if (normalizeString(planVersion.currency).toUpperCase() !== confirmedCurrency) {
+      return { ok: false, reason: 'partner_commission_currency_mismatch' };
+    }
+
+    const rule = resolveOwnSignupRule(planVersion, partner);
+    if (!rule) return { ok: false, reason: 'partner_commission_rule_not_found' };
+    const baseCents = parseMoneyToCents(confirmedAmount);
+    if (baseCents === null) return { ok: false, reason: 'invalid_confirmed_amount' };
+    const commissionAmount = centsToMoney(calculateCommissionAmountCents(baseCents, rule.rateBasisPoints));
+    const sourceRef = request.id;
+    const sourceEventId = request.id;
+    const existingEntries = await findCommissionEntriesBySource(CLIENT_REQUEST_ACTIVATION_SOURCE, sourceRef, sourceEventId, client);
+    const existingOwnSignup = existingEntries.find((entry) => entry.payoutKind === 'own_signup' && entry.status === 'generated');
+    const eventAt = new Date().toISOString();
+    const commissionEntry = existingOwnSignup || await createCommissionEntry({
+      partnerId: request.partnerId,
+      attributionId: attribution.id,
+      planVersionId: planVersion.id,
+      clinicId: tenantResult.clinic.id,
+      tenantId: tenantResult.externalTenantId,
+      sourceType: CLIENT_REQUEST_ACTIVATION_SOURCE,
+      sourceRef,
+      sourceEventId,
+      eventType: CLIENT_REQUEST_SIGNUP_EVENT,
+      eventAt,
+      periodKey: buildPeriodKey(eventAt),
+      currency: confirmedCurrency,
+      planCodeSnapshot: planVersion.planCode,
+      planVersionNumberSnapshot: planVersion.versionNumber,
+      payoutKind: 'own_signup',
+      paymentStatus: 'accredited',
+      status: 'generated',
+      basisAmount: confirmedAmount,
+      commissionRate: rule.rate,
+      commissionAmount,
+      depthLevel: 0,
+      idempotencyKey: `${CLIENT_REQUEST_ACTIVATION_SOURCE}:${request.id}:own_signup:${request.partnerId}`,
+      details: {
+        requestId: request.id,
+        clientName: request.clientName,
+        ruleCode: rule.ruleCode,
+        partnerRankCode: rule.rankCode,
+        tenantCreated: tenantResult.created,
+        paymentConfirmationMethod: paymentMethod
+      },
+      createdByStaffUserId: actorId
+    }, client);
+
+    const processed = await markPartnerClientRequestProcessed(request.id, {
+      paymentConfirmedAt: eventAt,
+      paymentConfirmedBy: actorId,
+      paymentConfirmationMethod: paymentMethod,
+      confirmedAmount,
+      confirmedCurrency,
+      paymentConfirmationReference: paymentReference,
+      paymentConfirmationNotes: paymentNotes,
+      linkedTenantId: tenantResult.clinic.id,
+      linkedExternalTenantId: tenantResult.externalTenantId,
+      attributionId: attribution.id,
+      commissionEntryId: commissionEntry.id,
+      processedBy: actorId,
+      commissionBaseAmount: confirmedAmount,
+      commissionCurrency: confirmedCurrency,
+      commissionRate: rule.rate,
+      commissionAmount,
+      commissionRuleCode: rule.ruleCode,
+      metadata: {
+        activation: {
+          tenantMode: tenantResult.created ? 'new' : 'existing',
+          commissionPlanVersionId: planVersion.id,
+          commissionPlanCode: planVersion.planCode,
+          commissionPlanVersionNumber: planVersion.versionNumber
+        }
+      }
+    }, client);
+
+    const careerEvaluation = await evaluatePartnerCareerAfterActivation(request.partnerId, planVersion, actorId, client);
+
+    await auditClientRequest({
+      partnerId: request.partnerId,
+      requestId: request.id,
+      action: 'partner_client_request_processed',
+      actorType: 'staff',
+      actorStaffUserId: actorId,
+      previousStatus: request.status,
+      nextStatus: processed.status,
+      reason: 'payment_confirmed'
+    }, client);
+    await createPartnerAuditLog({
+      partnerId: request.partnerId,
+      tenantId: tenantResult.externalTenantId,
+      entityType: 'partner_client_activation',
+      entityId: request.id,
+      action: 'partner_client_request_activation_completed',
+      reason: 'payment_confirmed',
+      actorType: 'staff',
+      actorStaffUserId: actorId,
+      metadata: {
+        attributionId: attribution.id,
+        commissionEntryId: commissionEntry.id,
+        commissionAmount,
+        commissionRate: rule.rate,
+        commissionBaseAmount: confirmedAmount,
+        careerEvaluationId: careerEvaluation ? careerEvaluation.id : null
+      }
+    }, client);
+
+    return {
+      ok: true,
+      request: processed,
+      tenant: tenantResult.clinic,
+      attribution,
+      commissionEntry,
+      careerEvaluation,
+      alreadyProcessed: false
+    };
+  }).catch(async (error) => {
+    try {
+      await markPartnerClientRequestProcessingFailed(requestId, error && error.message ? error.message : 'client_request_processing_failed');
+    } catch {}
+    throw error;
+  });
+}
+
 async function getReceiptForAdmin(requestId, actorStaffUserId) {
   const current = await findPartnerClientRequestById(requestId);
   if (!current) return { ok: false, reason: 'client_request_not_found' };
@@ -449,6 +776,7 @@ module.exports = {
   listRequestsForAdmin,
   getRequestForAdmin,
   reviewRequestAsAdmin,
+  processApprovedRequestAsAdmin,
   getReceiptForAdmin,
   normalizePayload,
   canTransition

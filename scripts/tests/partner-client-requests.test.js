@@ -52,9 +52,13 @@ function testTransitionsAndNoSideEffects() {
   assert.match(service, /\['pending_review', new Set\(\['approved', 'rejected', 'changes_requested', 'cancelled'\]\)\]/);
   assert.match(service, /\['changes_requested', new Set\(\['pending_review', 'cancelled'\]\)\]/);
   assert.match(service, /admin_notes_required/);
-  assert.doesNotMatch(service, /createPartnerAttribution\(/);
-  assert.doesNotMatch(service, /simulateCommissionEntries\(/);
-  assert.doesNotMatch(service, /evaluatePartnerRank\(/);
+  const reviewStart = service.indexOf('async function reviewRequestAsAdmin');
+  const activationStart = service.indexOf('async function resolveActivationTenant');
+  assert.ok(reviewStart >= 0 && activationStart > reviewStart, 'review and activation flows must be separate');
+  const reviewFlow = service.slice(reviewStart, activationStart);
+  assert.doesNotMatch(reviewFlow, /createPartnerAttribution\(/);
+  assert.doesNotMatch(reviewFlow, /createCommissionEntry\(/);
+  assert.doesNotMatch(reviewFlow, /createRankEvaluation\(/);
   assert.doesNotMatch(service, /createSaasSubscription/);
 }
 

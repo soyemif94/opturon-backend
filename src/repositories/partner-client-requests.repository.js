@@ -35,8 +35,25 @@ const CLIENT_REQUEST_SELECT = `SELECT pcr.id,
        pcr."reviewedBy",
        pcr."reviewedAt",
        pcr."linkedTenantId",
+       pcr."linkedExternalTenantId",
        pcr."attributionId",
+       pcr."commissionEntryId",
        pcr."processedAt",
+       pcr."processedBy",
+       pcr."processingStatus",
+       pcr."processingErrorCode",
+       pcr."paymentConfirmedAt",
+       pcr."paymentConfirmedBy",
+       pcr."paymentConfirmationMethod",
+       pcr."confirmedAmount"::TEXT AS "confirmedAmount",
+       pcr."confirmedCurrency",
+       pcr."paymentConfirmationReference",
+       pcr."paymentConfirmationNotes",
+       pcr."commissionBaseAmount"::TEXT AS "commissionBaseAmount",
+       pcr."commissionCurrency",
+       pcr."commissionRate"::TEXT AS "commissionRate",
+       pcr."commissionAmount"::TEXT AS "commissionAmount",
+       pcr."commissionRuleCode",
        pcr.metadata,
        pcr."createdAt",
        pcr."updatedAt",
@@ -81,8 +98,29 @@ function mapClientRequestRow(row) {
     reviewedBy: row.reviewedBy || null,
     reviewedAt: row.reviewedAt || null,
     linkedTenantId: row.linkedTenantId || null,
+    linkedExternalTenantId: row.linkedExternalTenantId || null,
     attributionId: row.attributionId || null,
+    commissionEntryId: row.commissionEntryId || null,
     processedAt: row.processedAt || null,
+    processedBy: row.processedBy || null,
+    processingStatus: row.processingStatus || 'not_processed',
+    processingErrorCode: row.processingErrorCode || null,
+    paymentConfirmation: {
+      confirmedAt: row.paymentConfirmedAt || null,
+      confirmedBy: row.paymentConfirmedBy || null,
+      method: row.paymentConfirmationMethod || null,
+      amount: row.confirmedAmount || null,
+      currency: row.confirmedCurrency || null,
+      reference: row.paymentConfirmationReference || null,
+      notes: row.paymentConfirmationNotes || null
+    },
+    commissionSnapshot: {
+      baseAmount: row.commissionBaseAmount || null,
+      currency: row.commissionCurrency || null,
+      rate: row.commissionRate || null,
+      amount: row.commissionAmount || null,
+      ruleCode: row.commissionRuleCode || null
+    },
     metadata: row.metadata && typeof row.metadata === 'object' ? row.metadata : {},
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -265,6 +303,102 @@ async function findPartnerClientRequestById(requestId, client = null) {
   return mapClientRequestRow(result.rows[0] || null);
 }
 
+async function findPartnerClientRequestByIdForUpdate(requestId, client = null) {
+  const result = await dbQuery(
+    client,
+    `${CLIENT_REQUEST_SELECT}
+     WHERE pcr.id = $1
+     LIMIT 1
+     FOR UPDATE OF pcr`,
+    [requestId]
+  );
+  return mapClientRequestRow(result.rows[0] || null);
+}
+
+async function markPartnerClientRequestProcessing(requestId, actorStaffUserId, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE partner_client_requests
+     SET "processingStatus" = 'processing',
+         "processedBy" = $2::uuid,
+         "processingErrorCode" = NULL,
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND "processingStatus" IN ('not_processed', 'processing_failed')
+     RETURNING id`,
+    [requestId, actorStaffUserId || null]
+  );
+  return result.rowCount > 0;
+}
+
+async function markPartnerClientRequestProcessingFailed(requestId, errorCode, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE partner_client_requests
+     SET "processingStatus" = 'processing_failed',
+         "processingErrorCode" = $2,
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id`,
+    [requestId, errorCode || 'client_request_processing_failed']
+  );
+  return result.rowCount > 0;
+}
+
+async function markPartnerClientRequestProcessed(requestId, input, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE partner_client_requests
+     SET "processingStatus" = 'processed',
+         "paymentConfirmedAt" = COALESCE($2::timestamptz, NOW()),
+         "paymentConfirmedBy" = $3::uuid,
+         "paymentConfirmationMethod" = $4,
+         "confirmedAmount" = $5::numeric,
+         "confirmedCurrency" = $6,
+         "paymentConfirmationReference" = $7,
+         "paymentConfirmationNotes" = $8,
+         "linkedTenantId" = $9::uuid,
+         "linkedExternalTenantId" = $10,
+         "attributionId" = $11::uuid,
+         "commissionEntryId" = $12::uuid,
+         "processedAt" = NOW(),
+         "processedBy" = $13::uuid,
+         "processingErrorCode" = NULL,
+         "commissionBaseAmount" = $14::numeric,
+         "commissionCurrency" = $15,
+         "commissionRate" = $16::numeric,
+         "commissionAmount" = $17::numeric,
+         "commissionRuleCode" = $18,
+         metadata = COALESCE(metadata, '{}'::jsonb) || $19::jsonb,
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id`,
+    [
+      requestId,
+      input.paymentConfirmedAt || null,
+      input.paymentConfirmedBy || null,
+      input.paymentConfirmationMethod || null,
+      input.confirmedAmount,
+      input.confirmedCurrency,
+      input.paymentConfirmationReference || null,
+      input.paymentConfirmationNotes || null,
+      input.linkedTenantId,
+      input.linkedExternalTenantId,
+      input.attributionId,
+      input.commissionEntryId,
+      input.processedBy || null,
+      input.commissionBaseAmount,
+      input.commissionCurrency,
+      input.commissionRate,
+      input.commissionAmount,
+      input.commissionRuleCode,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+  if (result.rowCount === 0) return null;
+  return findPartnerClientRequestById(requestId, client);
+}
+
 async function listPartnerClientRequests(options = {}, client = null) {
   const safePage = Math.max(1, Number(options.page) || 1);
   const safePageSize = Math.max(1, Math.min(50, Number(options.pageSize) || 20));
@@ -358,6 +492,10 @@ module.exports = {
   updatePartnerClientRequest,
   transitionPartnerClientRequest,
   findPartnerClientRequestById,
+  findPartnerClientRequestByIdForUpdate,
+  markPartnerClientRequestProcessing,
+  markPartnerClientRequestProcessingFailed,
+  markPartnerClientRequestProcessed,
   listPartnerClientRequests,
   findPartnerClientRequestDuplicates,
   findExistingClientDuplicates

@@ -32,6 +32,7 @@ const {
   getAdminPartnerClientRequests,
   getAdminPartnerClientRequest,
   postAdminPartnerClientRequestReview,
+  postAdminPartnerClientRequestProcess,
   getAdminPartnerClientRequestReceipt
 } = require('../controllers/admin.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
@@ -63,6 +64,7 @@ router.post('/partners/commissions/reverse-controlled', requireAdminInternalActo
 router.get('/partners/client-requests', requireAdminInternalActor, getAdminPartnerClientRequests);
 router.get('/partners/client-requests/:requestId', requireAdminInternalActor, getAdminPartnerClientRequest);
 router.get('/partners/client-requests/:requestId/receipt', requireAdminInternalActor, getAdminPartnerClientRequestReceipt);
+router.post('/partners/client-requests/:requestId/process', requireAdminInternalActor, postAdminPartnerClientRequestProcess);
 router.post('/partners/client-requests/:requestId/:action(approve|reject|request_changes)', requireAdminInternalActor, postAdminPartnerClientRequestReview);
 router.get('/partners/:partnerId', requireAdminInternalActor, getAdminPartner);
 router.patch('/partners/:partnerId/status', requireAdminInternalActor, patchAdminPartnerStatus);

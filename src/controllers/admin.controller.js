@@ -36,6 +36,7 @@ const {
   listRequestsForAdmin,
   getRequestForAdmin,
   reviewRequestAsAdmin,
+  processApprovedRequestAsAdmin,
   getReceiptForAdmin
 } = require('../services/partner-client-requests.service');
 const { logError } = require('../utils/logger');
@@ -651,9 +652,12 @@ async function postAdminPartnerCommissionReverse(req, res) {
 
 function sendAdminClientRequestResult(res, result) {
   if (!result.ok) {
-    const status = result.reason === 'client_request_not_found'
+    const status = result.reason === 'client_request_not_found' || result.reason === 'tenant_not_found' || result.reason === 'partner_not_found'
       ? 404
-      : result.reason === 'invalid_client_request_transition'
+      : result.reason === 'invalid_client_request_transition' ||
+        result.reason === 'client_request_not_approved' ||
+        result.reason === 'tenant_already_attributed' ||
+        result.reason === 'partner_not_active'
         ? 409
         : 400;
     return res.status(status).json({ success: false, error: result.reason });
@@ -691,6 +695,20 @@ async function postAdminPartnerClientRequestReview(req, res) {
     return sendAdminClientRequestResult(res, result);
   } catch (error) {
     return res.status(500).json({ success: false, error: 'admin_partner_client_request_review_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerClientRequestProcess(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await processApprovedRequestAsAdmin(
+      req.params && req.params.requestId,
+      req.body || {},
+      actorUserId
+    );
+    return sendAdminClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_client_request_process_failed', details: error.message });
   }
 }
 
@@ -743,5 +761,6 @@ module.exports = {
   getAdminPartnerClientRequests,
   getAdminPartnerClientRequest,
   postAdminPartnerClientRequestReview,
+  postAdminPartnerClientRequestProcess,
   getAdminPartnerClientRequestReceipt
 };
