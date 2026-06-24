@@ -171,9 +171,11 @@ async function auditClientRequest(input, client = null) {
 }
 
 async function assertPartnerExists(partnerId, client = null) {
-  if (!isUuid(partnerId)) return null;
+  if (!isUuid(partnerId)) return { ok: false, reason: 'partner_not_found' };
   const partner = await findPartnerById(partnerId, client);
-  return partner && partner.status === 'active' ? partner : null;
+  if (!partner) return { ok: false, reason: 'partner_not_found' };
+  if (partner.status !== 'active') return { ok: false, reason: 'partner_inactive' };
+  return { ok: true, partner };
 }
 
 async function createRequestForPartner(partnerId, payload, file) {
@@ -181,8 +183,8 @@ async function createRequestForPartner(partnerId, payload, file) {
   if (!normalized.ok) return normalized;
 
   return withTransaction(async (client) => {
-    const partner = await assertPartnerExists(partnerId, client);
-    if (!partner) return { ok: false, reason: 'partner_not_found' };
+    const partnerResult = await assertPartnerExists(partnerId, client);
+    if (!partnerResult.ok) return partnerResult;
 
     const savedReceipt = await saveClientRequestReceipt(partnerId, file);
     if (!savedReceipt.ok) return savedReceipt;
@@ -214,8 +216,8 @@ async function createRequestForPartner(partnerId, payload, file) {
 }
 
 async function listRequestsForPartner(partnerId, query = {}) {
-  const partner = await assertPartnerExists(partnerId);
-  if (!partner) return { ok: false, reason: 'partner_not_found' };
+  const partnerResult = await assertPartnerExists(partnerId);
+  if (!partnerResult.ok) return partnerResult;
   const result = await listPartnerClientRequests({
     partnerId,
     status: normalizeString(query.status) || null,

@@ -128,6 +128,8 @@ function sendClientRequestResult(res, result) {
   if (!result.ok) {
     const status = result.reason === 'client_request_not_found' || result.reason === 'partner_not_found'
       ? 404
+      : result.reason === 'partner_inactive'
+        ? 403
       : result.reason === 'client_request_not_editable' || result.reason === 'invalid_client_request_transition'
         ? 409
         : 400;
