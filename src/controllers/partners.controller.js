@@ -8,6 +8,15 @@ const {
   getPartnerNetwork,
   getPartnerCommissionLedger
 } = require('../services/partners.service');
+const {
+  createRequestForPartner,
+  listRequestsForPartner,
+  getRequestForPartner,
+  updateRequestForPartner,
+  submitRequestForPartner,
+  cancelRequestForPartner,
+  getReceiptForPartner
+} = require('../services/partner-client-requests.service');
 
 function getPartnerActorId(req) {
   return String((req.partnerAuth && req.partnerAuth.partnerId) || '').trim();
@@ -115,6 +124,97 @@ async function getPartnersMeCommissions(req, res) {
   }
 }
 
+function sendClientRequestResult(res, result) {
+  if (!result.ok) {
+    const status = result.reason === 'client_request_not_found' || result.reason === 'partner_not_found'
+      ? 404
+      : result.reason === 'client_request_not_editable' || result.reason === 'invalid_client_request_transition'
+        ? 409
+        : 400;
+    return res.status(status).json({ success: false, error: result.reason });
+  }
+  return res.status(200).json({ success: true, data: result });
+}
+
+async function postPartnerClientRequest(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await createRequestForPartner(partnerId, req.body || {}, req.file || null);
+    return sendClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_client_request_create_failed', details: error.message });
+  }
+}
+
+async function getPartnerClientRequests(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await listRequestsForPartner(partnerId, req.query || {});
+    return sendClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_client_requests_failed', details: error.message });
+  }
+}
+
+async function getPartnerClientRequest(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await getRequestForPartner(partnerId, req.params && req.params.requestId);
+    return sendClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_client_request_failed', details: error.message });
+  }
+}
+
+async function patchPartnerClientRequest(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await updateRequestForPartner(partnerId, req.params && req.params.requestId, req.body || {}, req.file || null);
+    return sendClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_client_request_update_failed', details: error.message });
+  }
+}
+
+async function postPartnerClientRequestSubmit(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await submitRequestForPartner(partnerId, req.params && req.params.requestId);
+    return sendClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_client_request_submit_failed', details: error.message });
+  }
+}
+
+async function postPartnerClientRequestCancel(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await cancelRequestForPartner(partnerId, req.params && req.params.requestId);
+    return sendClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_client_request_cancel_failed', details: error.message });
+  }
+}
+
+async function getPartnerClientRequestReceipt(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await getReceiptForPartner(partnerId, req.params && req.params.requestId, {
+      actorType: 'partner',
+      actorPartnerId: partnerId
+    });
+    if (!result.ok) {
+      return res.status(result.reason === 'client_request_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    res.setHeader('Content-Type', result.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(result.fileName)}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    return res.status(200).send(result.buffer);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_client_request_receipt_failed', details: error.message });
+  }
+}
+
 module.exports = {
   getPartnerInvitationValidation,
   postPartnerInvitationAcceptance,
@@ -123,5 +223,12 @@ module.exports = {
   getPartnersMeClients,
   getPartnersMeRankProgress,
   getPartnersMeNetwork,
-  getPartnersMeCommissions
+  getPartnersMeCommissions,
+  postPartnerClientRequest,
+  getPartnerClientRequests,
+  getPartnerClientRequest,
+  patchPartnerClientRequest,
+  postPartnerClientRequestSubmit,
+  postPartnerClientRequestCancel,
+  getPartnerClientRequestReceipt
 };

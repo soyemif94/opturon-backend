@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer');
 const {
   getPartnerInvitationValidation,
   postPartnerInvitationAcceptance,
@@ -7,13 +8,37 @@ const {
   getPartnersMeClients,
   getPartnersMeRankProgress,
   getPartnersMeNetwork,
-  getPartnersMeCommissions
+  getPartnersMeCommissions,
+  postPartnerClientRequest,
+  getPartnerClientRequests,
+  getPartnerClientRequest,
+  patchPartnerClientRequest,
+  postPartnerClientRequestSubmit,
+  postPartnerClientRequestCancel,
+  getPartnerClientRequestReceipt
 } = require('../controllers/partners.controller');
+const { MAX_RECEIPT_BYTES } = require('../services/partner-client-request-receipts.service');
 const { authenticatePartnerUser, getPartnerAuthUserByEmail } = require('../services/partners.service');
 const { requirePartnerInternalAuth } = require('../middlewares/partner-auth.middleware');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 
 const router = express.Router();
+const clientRequestReceiptUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_RECEIPT_BYTES }
+});
+
+function handleClientRequestReceiptUpload(req, res, next) {
+  clientRequestReceiptUpload.single('receipt')(req, res, (error) => {
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ success: false, error: 'client_request_receipt_too_large' });
+    }
+    if (error) {
+      return res.status(400).json({ success: false, error: 'invalid_client_request_receipt_upload' });
+    }
+    return next();
+  });
+}
 
 router.post('/auth/login', async (req, res) => {
   try {
@@ -48,5 +73,12 @@ router.get('/me/clients', requirePartnerInternalAuth, getPartnersMeClients);
 router.get('/me/rank-progress', requirePartnerInternalAuth, getPartnersMeRankProgress);
 router.get('/me/network', requirePartnerInternalAuth, getPartnersMeNetwork);
 router.get('/me/commissions', requirePartnerInternalAuth, getPartnersMeCommissions);
+router.post('/me/client-requests', requirePartnerInternalAuth, handleClientRequestReceiptUpload, postPartnerClientRequest);
+router.get('/me/client-requests', requirePartnerInternalAuth, getPartnerClientRequests);
+router.get('/me/client-requests/:requestId', requirePartnerInternalAuth, getPartnerClientRequest);
+router.patch('/me/client-requests/:requestId', requirePartnerInternalAuth, handleClientRequestReceiptUpload, patchPartnerClientRequest);
+router.post('/me/client-requests/:requestId/submit', requirePartnerInternalAuth, postPartnerClientRequestSubmit);
+router.post('/me/client-requests/:requestId/cancel', requirePartnerInternalAuth, postPartnerClientRequestCancel);
+router.get('/me/client-requests/:requestId/receipt', requirePartnerInternalAuth, getPartnerClientRequestReceipt);
 
 module.exports = router;

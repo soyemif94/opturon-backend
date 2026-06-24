@@ -28,7 +28,11 @@ const {
   postAdminPartnerCommissionPlanVersion,
   postAdminPartnerCommissionSimulation,
   postAdminPartnerCommissionGeneration,
-  postAdminPartnerCommissionReverse
+  postAdminPartnerCommissionReverse,
+  getAdminPartnerClientRequests,
+  getAdminPartnerClientRequest,
+  postAdminPartnerClientRequestReview,
+  getAdminPartnerClientRequestReceipt
 } = require('../controllers/admin.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 const { requireAdminInternalActor } = require('../middlewares/partner-auth.middleware');
@@ -56,6 +60,10 @@ router.post('/partners/commission-plans/:planCode/versions', requireAdminInterna
 router.post('/partners/commissions/simulate', requireAdminInternalActor, postAdminPartnerCommissionSimulation);
 router.post('/partners/commissions/generate-controlled', requireAdminInternalActor, postAdminPartnerCommissionGeneration);
 router.post('/partners/commissions/reverse-controlled', requireAdminInternalActor, postAdminPartnerCommissionReverse);
+router.get('/partners/client-requests', requireAdminInternalActor, getAdminPartnerClientRequests);
+router.get('/partners/client-requests/:requestId', requireAdminInternalActor, getAdminPartnerClientRequest);
+router.get('/partners/client-requests/:requestId/receipt', requireAdminInternalActor, getAdminPartnerClientRequestReceipt);
+router.post('/partners/client-requests/:requestId/:action(approve|reject|request_changes)', requireAdminInternalActor, postAdminPartnerClientRequestReview);
 router.get('/partners/:partnerId', requireAdminInternalActor, getAdminPartner);
 router.patch('/partners/:partnerId/status', requireAdminInternalActor, patchAdminPartnerStatus);
 router.post('/partners/:partnerId/resend-invite', requireAdminInternalActor, postAdminPartnerResendInvite);

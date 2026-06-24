@@ -32,6 +32,12 @@ const {
   reverseCommissionEntries,
   evaluatePartnerRank
 } = require('../services/partners.service');
+const {
+  listRequestsForAdmin,
+  getRequestForAdmin,
+  reviewRequestAsAdmin,
+  getReceiptForAdmin
+} = require('../services/partner-client-requests.service');
 const { logError } = require('../utils/logger');
 
 function sanitizeBillingPayload(payload) {
@@ -643,6 +649,67 @@ async function postAdminPartnerCommissionReverse(req, res) {
   }
 }
 
+function sendAdminClientRequestResult(res, result) {
+  if (!result.ok) {
+    const status = result.reason === 'client_request_not_found'
+      ? 404
+      : result.reason === 'invalid_client_request_transition'
+        ? 409
+        : 400;
+    return res.status(status).json({ success: false, error: result.reason });
+  }
+  return res.status(200).json({ success: true, data: result });
+}
+
+async function getAdminPartnerClientRequests(req, res) {
+  try {
+    const result = await listRequestsForAdmin(req.query || {});
+    return sendAdminClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_client_requests_failed', details: error.message });
+  }
+}
+
+async function getAdminPartnerClientRequest(req, res) {
+  try {
+    const result = await getRequestForAdmin(req.params && req.params.requestId);
+    return sendAdminClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_client_request_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerClientRequestReview(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await reviewRequestAsAdmin(
+      req.params && req.params.requestId,
+      req.params && req.params.action,
+      req.body || {},
+      actorUserId
+    );
+    return sendAdminClientRequestResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_client_request_review_failed', details: error.message });
+  }
+}
+
+async function getAdminPartnerClientRequestReceipt(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await getReceiptForAdmin(req.params && req.params.requestId, actorUserId);
+    if (!result.ok) {
+      return res.status(result.reason === 'client_request_not_found' ? 404 : 400).json({ success: false, error: result.reason });
+    }
+    res.setHeader('Content-Type', result.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(result.fileName)}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    return res.status(200).send(result.buffer);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_client_request_receipt_failed', details: error.message });
+  }
+}
+
 module.exports = {
   postSetActiveTenant,
   getTenants,
@@ -672,5 +739,9 @@ module.exports = {
   postAdminPartnerCommissionPlanVersion,
   postAdminPartnerCommissionSimulation,
   postAdminPartnerCommissionGeneration,
-  postAdminPartnerCommissionReverse
+  postAdminPartnerCommissionReverse,
+  getAdminPartnerClientRequests,
+  getAdminPartnerClientRequest,
+  postAdminPartnerClientRequestReview,
+  getAdminPartnerClientRequestReceipt
 };
