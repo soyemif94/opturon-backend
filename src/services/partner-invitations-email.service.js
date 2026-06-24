@@ -34,7 +34,7 @@ function resolvePartnerPortalBaseUrl() {
     process.env.PARTNER_PORTAL_INVITATION_BASE_URL
     || env.partnerPortalInvitationBaseUrl
     || process.env.PARTNER_PORTAL_BASE_URL
-    || 'https://partners.opturon.com'
+    || 'https://asesores.opturon.com'
   )
     .trim()
     .replace(/\/$/, '');
