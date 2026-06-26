@@ -15,14 +15,20 @@ async function createPartnerInvitation(payload, client = null) {
        email,
        "tokenHash",
        "expiresAt",
+       "sourceType",
+       "sourceId",
+       "sponsorPartnerId",
        "createdByStaffUserId"
      )
-     VALUES ($1, $2, $3, $4, $5::uuid)
+     VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::uuid, $8::uuid)
      RETURNING id,
                "partnerId",
                email,
                "tokenHash",
                "expiresAt",
+               "sourceType",
+               "sourceId",
+               "sponsorPartnerId",
                "acceptedAt",
                "revokedAt",
                "createdByStaffUserId",
@@ -33,6 +39,9 @@ async function createPartnerInvitation(payload, client = null) {
       payload.email,
       payload.tokenHash,
       payload.expiresAt,
+      payload.sourceType || null,
+      payload.sourceId || null,
+      payload.sponsorPartnerId || null,
       payload.createdByStaffUserId || null
     ]
   );
@@ -105,6 +114,9 @@ async function findPartnerInvitationByTokenHash(tokenHash, client = null) {
             inv.email,
             inv."tokenHash",
             inv."expiresAt",
+            inv."sourceType",
+            inv."sourceId",
+            inv."sponsorPartnerId",
             inv."acceptedAt",
             inv."revokedAt",
             inv."createdByStaffUserId",
@@ -115,7 +127,7 @@ async function findPartnerInvitationByTokenHash(tokenHash, client = null) {
             pp.code,
             pp."displayName",
             pp.phone,
-            rel."sponsorPartnerId",
+            COALESCE(inv."sponsorPartnerId", rel."sponsorPartnerId") AS "resolvedSponsorPartnerId",
             sponsor_profile."displayName" AS "sponsorDisplayName"
      FROM partner_invitations inv
      INNER JOIN partner_accounts pa ON pa.id = inv."partnerId"
@@ -124,7 +136,7 @@ async function findPartnerInvitationByTokenHash(tokenHash, client = null) {
        ON rel."partnerId" = pa.id
       AND rel.status = 'active'
      LEFT JOIN partner_profiles sponsor_profile
-       ON sponsor_profile."partnerId" = rel."sponsorPartnerId"
+       ON sponsor_profile."partnerId" = COALESCE(inv."sponsorPartnerId", rel."sponsorPartnerId")
      WHERE inv."tokenHash" = $1
      LIMIT 1`,
     [tokenHash]
@@ -144,6 +156,9 @@ async function markPartnerInvitationAccepted(invitationId, client = null) {
                "partnerId",
                email,
                "expiresAt",
+               "sourceType",
+               "sourceId",
+               "sponsorPartnerId",
                "acceptedAt",
                "revokedAt",
                "createdByStaffUserId",

@@ -17,6 +17,14 @@ const {
   cancelRequestForPartner,
   getReceiptForPartner
 } = require('../services/partner-client-requests.service');
+const {
+  createApplicationForPartner,
+  listApplicationsForPartner,
+  getApplicationForPartner,
+  updateApplicationForPartner,
+  submitApplicationForPartner,
+  cancelApplicationForPartner
+} = require('../services/partner-recruitment-applications.service');
 
 function getPartnerActorId(req) {
   return String((req.partnerAuth && req.partnerAuth.partnerId) || '').trim();
@@ -229,6 +237,88 @@ async function getPartnerClientRequestReceipt(req, res) {
   }
 }
 
+function sendRecruitmentApplicationResult(res, result) {
+  if (!result.ok) {
+    const status = result.reason === 'partner_recruitment_application_not_found'
+      ? 404
+      : result.reason === 'partner_identity_invalid' || result.reason === 'partner_inactive'
+        ? 403
+      : result.reason === 'partner_unauthorized'
+        ? 401
+      : result.reason === 'partner_recruitment_application_not_editable' || result.reason === 'invalid_partner_recruitment_transition'
+        ? 409
+        : 400;
+    return res.status(status).json({ success: false, error: result.reason, duplicateWarnings: result.duplicateWarnings || undefined });
+  }
+  return res.status(200).json({ success: true, data: result });
+}
+
+async function postPartnerRecruitmentApplication(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await createApplicationForPartner(partnerId, req.body || {}, {
+      traceId: getPartnerIdentityTraceId(req),
+      requestPath: req.originalUrl || req.path
+    });
+    return sendRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_recruitment_application_create_failed', details: error.message });
+  }
+}
+
+async function getPartnerRecruitmentApplications(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await listApplicationsForPartner(partnerId, req.query || {}, {
+      traceId: getPartnerIdentityTraceId(req),
+      requestPath: req.originalUrl || req.path
+    });
+    return sendRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_recruitment_applications_failed', details: error.message });
+  }
+}
+
+async function getPartnerRecruitmentApplication(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await getApplicationForPartner(partnerId, req.params && req.params.applicationId);
+    return sendRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_recruitment_application_failed', details: error.message });
+  }
+}
+
+async function patchPartnerRecruitmentApplication(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await updateApplicationForPartner(partnerId, req.params && req.params.applicationId, req.body || {});
+    return sendRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_recruitment_application_update_failed', details: error.message });
+  }
+}
+
+async function postPartnerRecruitmentApplicationSubmit(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await submitApplicationForPartner(partnerId, req.params && req.params.applicationId);
+    return sendRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_recruitment_application_submit_failed', details: error.message });
+  }
+}
+
+async function postPartnerRecruitmentApplicationCancel(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await cancelApplicationForPartner(partnerId, req.params && req.params.applicationId);
+    return sendRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_recruitment_application_cancel_failed', details: error.message });
+  }
+}
+
 module.exports = {
   getPartnerInvitationValidation,
   postPartnerInvitationAcceptance,
@@ -244,5 +334,11 @@ module.exports = {
   patchPartnerClientRequest,
   postPartnerClientRequestSubmit,
   postPartnerClientRequestCancel,
-  getPartnerClientRequestReceipt
+  getPartnerClientRequestReceipt,
+  postPartnerRecruitmentApplication,
+  getPartnerRecruitmentApplications,
+  getPartnerRecruitmentApplication,
+  patchPartnerRecruitmentApplication,
+  postPartnerRecruitmentApplicationSubmit,
+  postPartnerRecruitmentApplicationCancel
 };

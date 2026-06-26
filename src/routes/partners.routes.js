@@ -15,7 +15,13 @@ const {
   patchPartnerClientRequest,
   postPartnerClientRequestSubmit,
   postPartnerClientRequestCancel,
-  getPartnerClientRequestReceipt
+  getPartnerClientRequestReceipt,
+  postPartnerRecruitmentApplication,
+  getPartnerRecruitmentApplications,
+  getPartnerRecruitmentApplication,
+  patchPartnerRecruitmentApplication,
+  postPartnerRecruitmentApplicationSubmit,
+  postPartnerRecruitmentApplicationCancel
 } = require('../controllers/partners.controller');
 const { MAX_RECEIPT_BYTES } = require('../services/partner-client-request-receipts.service');
 const { authenticatePartnerUser, getPartnerAuthUserByEmail } = require('../services/partners.service');
@@ -80,5 +86,11 @@ router.patch('/me/client-requests/:requestId', requirePartnerInternalAuth, handl
 router.post('/me/client-requests/:requestId/submit', requirePartnerInternalAuth, postPartnerClientRequestSubmit);
 router.post('/me/client-requests/:requestId/cancel', requirePartnerInternalAuth, postPartnerClientRequestCancel);
 router.get('/me/client-requests/:requestId/receipt', requirePartnerInternalAuth, getPartnerClientRequestReceipt);
+router.post('/me/recruitment-applications', requirePartnerInternalAuth, postPartnerRecruitmentApplication);
+router.get('/me/recruitment-applications', requirePartnerInternalAuth, getPartnerRecruitmentApplications);
+router.get('/me/recruitment-applications/:applicationId', requirePartnerInternalAuth, getPartnerRecruitmentApplication);
+router.patch('/me/recruitment-applications/:applicationId', requirePartnerInternalAuth, patchPartnerRecruitmentApplication);
+router.post('/me/recruitment-applications/:applicationId/submit', requirePartnerInternalAuth, postPartnerRecruitmentApplicationSubmit);
+router.post('/me/recruitment-applications/:applicationId/cancel', requirePartnerInternalAuth, postPartnerRecruitmentApplicationCancel);
 
 module.exports = router;

@@ -39,6 +39,12 @@ const {
   processApprovedRequestAsAdmin,
   getReceiptForAdmin
 } = require('../services/partner-client-requests.service');
+const {
+  listApplicationsForAdmin,
+  getApplicationForAdmin,
+  reviewApplicationAsAdmin,
+  sendRecruitmentInvitationAsAdmin
+} = require('../services/partner-recruitment-applications.service');
 const { logError } = require('../utils/logger');
 
 function sanitizeBillingPayload(payload) {
@@ -728,6 +734,63 @@ async function getAdminPartnerClientRequestReceipt(req, res) {
   }
 }
 
+function sendAdminRecruitmentApplicationResult(res, result) {
+  if (!result.ok) {
+    const status = result.reason === 'partner_recruitment_application_not_found' || result.reason === 'partner_not_found'
+      ? 404
+      : result.reason === 'invalid_partner_recruitment_transition' ||
+        result.reason === 'partner_recruitment_application_not_approved' ||
+        result.reason === 'partner_recruitment_invitation_already_sent'
+        ? 409
+        : 400;
+    return res.status(status).json({ success: false, error: result.reason, duplicateWarnings: result.duplicateWarnings || undefined });
+  }
+  return res.status(200).json({ success: true, data: result });
+}
+
+async function getAdminPartnerRecruitmentApplications(req, res) {
+  try {
+    const result = await listApplicationsForAdmin(req.query || {});
+    return sendAdminRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_recruitment_applications_failed', details: error.message });
+  }
+}
+
+async function getAdminPartnerRecruitmentApplication(req, res) {
+  try {
+    const result = await getApplicationForAdmin(req.params && req.params.applicationId);
+    return sendAdminRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_recruitment_application_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerRecruitmentApplicationReview(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await reviewApplicationAsAdmin(
+      req.params && req.params.applicationId,
+      req.params && req.params.action,
+      req.body || {},
+      actorUserId
+    );
+    return sendAdminRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_recruitment_application_review_failed', details: error.message });
+  }
+}
+
+async function postAdminPartnerRecruitmentApplicationSendInvitation(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await sendRecruitmentInvitationAsAdmin(req.params && req.params.applicationId, actorUserId);
+    return sendAdminRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_partner_recruitment_invitation_send_failed', details: error.message });
+  }
+}
+
 module.exports = {
   postSetActiveTenant,
   getTenants,
@@ -762,5 +825,9 @@ module.exports = {
   getAdminPartnerClientRequest,
   postAdminPartnerClientRequestReview,
   postAdminPartnerClientRequestProcess,
-  getAdminPartnerClientRequestReceipt
+  getAdminPartnerClientRequestReceipt,
+  getAdminPartnerRecruitmentApplications,
+  getAdminPartnerRecruitmentApplication,
+  postAdminPartnerRecruitmentApplicationReview,
+  postAdminPartnerRecruitmentApplicationSendInvitation
 };

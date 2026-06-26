@@ -33,7 +33,11 @@ const {
   getAdminPartnerClientRequest,
   postAdminPartnerClientRequestReview,
   postAdminPartnerClientRequestProcess,
-  getAdminPartnerClientRequestReceipt
+  getAdminPartnerClientRequestReceipt,
+  getAdminPartnerRecruitmentApplications,
+  getAdminPartnerRecruitmentApplication,
+  postAdminPartnerRecruitmentApplicationReview,
+  postAdminPartnerRecruitmentApplicationSendInvitation
 } = require('../controllers/admin.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 const { requireAdminInternalActor } = require('../middlewares/partner-auth.middleware');
@@ -66,6 +70,10 @@ router.get('/partners/client-requests/:requestId', requireAdminInternalActor, ge
 router.get('/partners/client-requests/:requestId/receipt', requireAdminInternalActor, getAdminPartnerClientRequestReceipt);
 router.post('/partners/client-requests/:requestId/process', requireAdminInternalActor, postAdminPartnerClientRequestProcess);
 router.post('/partners/client-requests/:requestId/:action(approve|reject|request_changes)', requireAdminInternalActor, postAdminPartnerClientRequestReview);
+router.get('/partners/recruitment-applications', requireAdminInternalActor, getAdminPartnerRecruitmentApplications);
+router.get('/partners/recruitment-applications/:applicationId', requireAdminInternalActor, getAdminPartnerRecruitmentApplication);
+router.post('/partners/recruitment-applications/:applicationId/send-invitation', requireAdminInternalActor, postAdminPartnerRecruitmentApplicationSendInvitation);
+router.post('/partners/recruitment-applications/:applicationId/:action(approve|reject|request_changes)', requireAdminInternalActor, postAdminPartnerRecruitmentApplicationReview);
 router.get('/partners/:partnerId', requireAdminInternalActor, getAdminPartner);
 router.patch('/partners/:partnerId/status', requireAdminInternalActor, patchAdminPartnerStatus);
 router.post('/partners/:partnerId/resend-invite', requireAdminInternalActor, postAdminPartnerResendInvite);

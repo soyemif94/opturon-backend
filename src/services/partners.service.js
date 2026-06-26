@@ -56,6 +56,7 @@ const {
   findPartnerInvitationByTokenHash,
   markPartnerInvitationAccepted
 } = require('../repositories/partner-invitations.repository');
+const { acceptRecruitmentInvitation } = require('./partner-recruitment-applications.service');
 
 const PARTNER_STATUSES = new Set(['invited', 'active', 'suspended', 'disabled', 'invitation_canceled']);
 const DEFAULT_COMMISSION_CAP_PERCENT = '15.00';
@@ -810,6 +811,9 @@ async function invitePartner(input, options = {}) {
         email,
         tokenHash: invitationTokenHash,
         expiresAt: invitationExpiresAt.toISOString(),
+        sourceType: 'partner_invite',
+        sourceId: null,
+        sponsorPartnerId,
         createdByStaffUserId: actorStaffUserId
       },
       client
@@ -907,6 +911,9 @@ async function resendPartnerInvitation(partnerId, options = {}) {
         email: partner.email,
         tokenHash: invitationTokenHash,
         expiresAt: invitationExpiresAt.toISOString(),
+        sourceType: 'partner_invite',
+        sourceId: null,
+        sponsorPartnerId: partner.sponsorPartnerId || null,
         createdByStaffUserId: actorStaffUserId
       },
       client
@@ -1029,6 +1036,8 @@ async function acceptPartnerInvitation(token, password) {
 
     await markPartnerInvitationAccepted(invitation.id, client);
     await revokePendingPartnerInvitationsByPartnerId(invitation.partnerId, client);
+    const recruitmentAcceptance = await acceptRecruitmentInvitation(invitation, client);
+    if (!recruitmentAcceptance.ok) return { error: recruitmentAcceptance.reason };
 
     await appendAuditLog(
       {
@@ -1045,7 +1054,8 @@ async function acceptPartnerInvitation(token, password) {
     );
 
     return {
-      partner: await findPartnerById(invitation.partnerId, client)
+      partner: await findPartnerById(invitation.partnerId, client),
+      recruitmentApplication: recruitmentAcceptance.application || null
     };
   });
 
@@ -1055,7 +1065,8 @@ async function acceptPartnerInvitation(token, password) {
 
   return {
     ok: true,
-    partner: accepted.partner
+    partner: accepted.partner,
+    recruitmentApplication: accepted.recruitmentApplication || null
   };
 }
 

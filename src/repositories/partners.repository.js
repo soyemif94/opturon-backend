@@ -85,6 +85,17 @@ async function findPartnerByEmail(email, client = null) {
   return mapPartnerRow(result.rows[0] || null);
 }
 
+async function findPartnerByPhone(normalizedPhone, client = null) {
+  const result = await dbQuery(
+    client,
+    `${PARTNER_SELECT}
+     WHERE regexp_replace(COALESCE(pp.phone, ''), '[^0-9]+', '', 'g') = $1
+     LIMIT 1`,
+    [normalizedPhone]
+  );
+  return mapPartnerRow(result.rows[0] || null);
+}
+
 async function findPartnerByCode(code, client = null) {
   const result = await dbQuery(
     client,
@@ -1101,6 +1112,18 @@ async function createPartnerAuditLog(input, client = null) {
   return result.rows[0] || null;
 }
 
+async function findStaffUserByEmail(email, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, email, role, "accountScope", active
+     FROM staff_users
+     WHERE LOWER(email) = LOWER($1)
+     LIMIT 1`,
+    [email]
+  );
+  return result.rows[0] || null;
+}
+
 async function listPartnerAuditLog(partnerId, limit = 50, client = null) {
   const result = await dbQuery(
     client,
@@ -1129,6 +1152,7 @@ module.exports = {
   listPartners,
   findPartnerById,
   findPartnerByEmail,
+  findPartnerByPhone,
   findPartnerByCode,
   findRawPartnerAuthByEmail,
   createPartnerAccount,
@@ -1168,5 +1192,6 @@ module.exports = {
   listRankHistory,
   getPartnerLifecycleSummary,
   createPartnerAuditLog,
-  listPartnerAuditLog
+  listPartnerAuditLog,
+  findStaffUserByEmail
 };
