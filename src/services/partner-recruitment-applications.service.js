@@ -112,6 +112,24 @@ function normalizeDateTime(value, endOfDay = false) {
   return parsed.toISOString();
 }
 
+function logRecruitmentFailure(stage, trace = {}, sponsorPartnerId, error) {
+  console.error('partner_recruitment_application_create_failed', {
+    event: 'partner_recruitment_application_create_failed',
+    traceId: trace.traceId || null,
+    requestPath: trace.requestPath || null,
+    sponsorPartnerId: sponsorPartnerId || null,
+    stage,
+    errorCode: error && error.code ? error.code : error && error.name ? error.name : 'unexpected_error',
+    postgresCode: error && error.code ? error.code : null,
+    constraint: error && error.constraint ? error.constraint : null,
+    table: error && error.table ? error.table : null,
+    column: error && error.column ? error.column : null,
+    detail: error && error.detail ? error.detail : null,
+    message: error && error.message ? error.message : 'Unexpected recruitment application failure',
+    stack: error && error.stack ? error.stack : null
+  });
+}
+
 function normalizePayload(payload = {}) {
   const firstName = normalizeString(payload.firstName);
   const lastName = normalizeString(payload.lastName);
@@ -178,17 +196,34 @@ async function assertSponsorPartner(partnerId, client = null, trace = {}) {
 }
 
 async function buildDuplicateWarnings(application, client = null) {
-  const [matches, existingPartnerByEmail, existingPartnerByPhone, existingStaffUser] = await Promise.all([
-    findRecruitmentApplicationDuplicates({
+  let matches;
+  let existingPartnerByEmail;
+  let existingPartnerByPhone;
+  let existingStaffUser;
+
+  if (client) {
+    matches = await findRecruitmentApplicationDuplicates({
       normalizedEmail: application.normalizedEmail,
       normalizedPhone: application.normalizedPhone,
       normalizedDocumentId: application.normalizedDocumentId,
       excludeApplicationId: application.id
-    }, client),
-    findPartnerByEmail(application.normalizedEmail, client),
-    application.normalizedPhone ? findPartnerByPhone(application.normalizedPhone, client) : null,
-    findStaffUserByEmail(application.normalizedEmail, client)
-  ]);
+    }, client);
+    existingPartnerByEmail = await findPartnerByEmail(application.normalizedEmail, client);
+    existingPartnerByPhone = application.normalizedPhone ? await findPartnerByPhone(application.normalizedPhone, client) : null;
+    existingStaffUser = await findStaffUserByEmail(application.normalizedEmail, client);
+  } else {
+    [matches, existingPartnerByEmail, existingPartnerByPhone, existingStaffUser] = await Promise.all([
+      findRecruitmentApplicationDuplicates({
+        normalizedEmail: application.normalizedEmail,
+        normalizedPhone: application.normalizedPhone,
+        normalizedDocumentId: application.normalizedDocumentId,
+        excludeApplicationId: application.id
+      }, client),
+      findPartnerByEmail(application.normalizedEmail, client),
+      application.normalizedPhone ? findPartnerByPhone(application.normalizedPhone, client) : null,
+      findStaffUserByEmail(application.normalizedEmail, client)
+    ]);
+  }
 
   const warnings = [];
   const activeMatches = (matches || []).filter((item) => ACTIVE_APPLICATION_STATUSES.has(String(item.status || '')));
@@ -237,38 +272,49 @@ async function createApplicationForPartner(partnerId, payload, trace = {}) {
   const normalized = normalizePayload(payload);
   if (!normalized.ok) return normalized;
 
-  return withTransaction(async (client) => {
-    const sponsorResult = await assertSponsorPartner(partnerId, client, trace);
-    if (!sponsorResult.ok) return sponsorResult;
+  let stage = 'transaction_begin';
+  try {
+    return await withTransaction(async (client) => {
+      stage = 'assert_sponsor_partner';
+      const sponsorResult = await assertSponsorPartner(partnerId, client, trace);
+      if (!sponsorResult.ok) return sponsorResult;
 
-    const draft = await createRecruitmentApplication({
-      sponsorPartnerId: partnerId,
-      status: 'draft',
-      ...normalized.data
-    }, client);
-    const duplicateCheck = await assertNoBlockingDuplicates(draft, client);
+      stage = 'create_application';
+      const draft = await createRecruitmentApplication({
+        sponsorPartnerId: partnerId,
+        status: 'draft',
+        ...normalized.data
+      }, client);
 
-    await appendRecruitmentAuditLog({
-      partnerId,
-      applicationId: draft.id,
-      action: 'partner_recruitment_application_created',
-      actorType: 'partner',
-      actorPartnerId: partnerId,
-      nextStatus: draft.status,
-      duplicateWarnings: duplicateCheck.duplicateWarnings || []
-    }, client);
+      stage = 'duplicate_check';
+      const duplicateCheck = await assertNoBlockingDuplicates(draft, client);
 
-    if (!duplicateCheck.ok) {
-      return {
-        ok: false,
-        reason: duplicateCheck.reason,
-        application: draft,
-        duplicateWarnings: duplicateCheck.duplicateWarnings
-      };
-    }
+      stage = 'append_audit_log';
+      await appendRecruitmentAuditLog({
+        partnerId,
+        applicationId: draft.id,
+        action: 'partner_recruitment_application_created',
+        actorType: 'partner',
+        actorPartnerId: partnerId,
+        nextStatus: draft.status,
+        duplicateWarnings: duplicateCheck.duplicateWarnings || []
+      }, client);
 
-    return { ok: true, application: draft, duplicateWarnings: duplicateCheck.duplicateWarnings };
-  });
+      if (!duplicateCheck.ok) {
+        return {
+          ok: false,
+          reason: duplicateCheck.reason,
+          application: draft,
+          duplicateWarnings: duplicateCheck.duplicateWarnings
+        };
+      }
+
+      return { ok: true, application: draft, duplicateWarnings: duplicateCheck.duplicateWarnings };
+    });
+  } catch (error) {
+    logRecruitmentFailure(stage, trace, partnerId, error);
+    throw error;
+  }
 }
 
 async function listApplicationsForPartner(partnerId, query = {}, trace = {}) {
@@ -333,40 +379,54 @@ async function updateApplicationForPartner(partnerId, applicationId, payload) {
 }
 
 async function submitApplicationForPartner(partnerId, applicationId) {
-  return withTransaction(async (client) => {
-    const current = await findRecruitmentApplicationById(applicationId, client);
-    if (!current || String(current.sponsorPartnerId) !== String(partnerId)) {
-      return { ok: false, reason: 'partner_recruitment_application_not_found' };
-    }
-    if (!canTransition(current.status, 'pending_review')) {
-      return { ok: false, reason: 'invalid_partner_recruitment_transition' };
-    }
+  const trace = {
+    requestPath: `/api/partners/me/recruitment-applications/${applicationId}/submit`
+  };
+  let stage = 'transaction_begin';
+  try {
+    return await withTransaction(async (client) => {
+      stage = 'load_application';
+      const current = await findRecruitmentApplicationById(applicationId, client);
+      if (!current || String(current.sponsorPartnerId) !== String(partnerId)) {
+        return { ok: false, reason: 'partner_recruitment_application_not_found' };
+      }
+      if (!canTransition(current.status, 'pending_review')) {
+        return { ok: false, reason: 'invalid_partner_recruitment_transition' };
+      }
 
-    const duplicateCheck = await assertNoBlockingDuplicates(current, client);
-    if (!duplicateCheck.ok) {
-      return {
-        ok: false,
-        reason: duplicateCheck.reason,
-        application: current,
+      stage = 'duplicate_check';
+      const duplicateCheck = await assertNoBlockingDuplicates(current, client);
+      if (!duplicateCheck.ok) {
+        return {
+          ok: false,
+          reason: duplicateCheck.reason,
+          application: current,
+          duplicateWarnings: duplicateCheck.duplicateWarnings
+        };
+      }
+
+      stage = 'transition_application';
+      const application = await transitionRecruitmentApplication(applicationId, { status: 'pending_review' }, client);
+
+      stage = 'append_audit_log';
+      await appendRecruitmentAuditLog({
+        partnerId,
+        applicationId,
+        action: current.status === 'changes_requested'
+          ? 'partner_recruitment_application_resubmitted'
+          : 'partner_recruitment_application_submitted',
+        actorType: 'partner',
+        actorPartnerId: partnerId,
+        previousStatus: current.status,
+        nextStatus: application.status,
         duplicateWarnings: duplicateCheck.duplicateWarnings
-      };
-    }
-
-    const application = await transitionRecruitmentApplication(applicationId, { status: 'pending_review' }, client);
-    await appendRecruitmentAuditLog({
-      partnerId,
-      applicationId,
-      action: current.status === 'changes_requested'
-        ? 'partner_recruitment_application_resubmitted'
-        : 'partner_recruitment_application_submitted',
-      actorType: 'partner',
-      actorPartnerId: partnerId,
-      previousStatus: current.status,
-      nextStatus: application.status,
-      duplicateWarnings: duplicateCheck.duplicateWarnings
-    }, client);
-    return { ok: true, application, duplicateWarnings: duplicateCheck.duplicateWarnings };
-  });
+      }, client);
+      return { ok: true, application, duplicateWarnings: duplicateCheck.duplicateWarnings };
+    });
+  } catch (error) {
+    logRecruitmentFailure(stage, trace, partnerId, error);
+    throw error;
+  }
 }
 
 async function cancelApplicationForPartner(partnerId, applicationId) {

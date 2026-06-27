@@ -1115,7 +1115,7 @@ async function createPartnerAuditLog(input, client = null) {
 async function findStaffUserByEmail(email, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, email, role, "accountScope", active
+    `SELECT id, email, role, "accountType", active
      FROM staff_users
      WHERE LOWER(email) = LOWER($1)
      LIMIT 1`,

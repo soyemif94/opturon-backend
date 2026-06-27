@@ -20,21 +20,23 @@ function assertRoute(router, needle) {
 
 function main() {
   const validPayload = recruitmentService.normalizePayload({
-    firstName: 'Ana',
-    lastName: 'Lopez',
-    email: 'ana@example.com',
-    phone: '+54 9 11 5555 5555',
-    documentId: '12.345.678',
-    city: 'Buenos Aires',
+    firstName: 'Adriel Sergio',
+    lastName: 'Opturon',
+    email: 'correo-controlado@example.com',
+    phone: '02915275449',
+    documentId: '38550389',
+    city: 'Bahia Blanca',
     province: 'Buenos Aires',
     country: 'Argentina',
-    notes: 'Conocida por el sponsor',
+    notes: 'Referencia controlada',
     consentConfirmed: true
   });
   assert.strictEqual(validPayload.ok, true);
-  assert.strictEqual(validPayload.data.normalizedEmail, 'ana@example.com');
-  assert.strictEqual(validPayload.data.normalizedPhone, '5491155555555');
-  assert.strictEqual(validPayload.data.normalizedDocumentId, '12345678');
+  assert.strictEqual(validPayload.data.normalizedEmail, 'correo-controlado@example.com');
+  assert.strictEqual(validPayload.data.phone, '02915275449');
+  assert.strictEqual(validPayload.data.normalizedPhone, '02915275449');
+  assert.strictEqual(validPayload.data.documentId, '38550389');
+  assert.strictEqual(validPayload.data.normalizedDocumentId, '38550389');
 
   const missingConsent = recruitmentService.normalizePayload({
     firstName: 'Ana',
@@ -66,10 +68,16 @@ function main() {
     path.join(rootDir, 'db/migrations/057_partner_recruitment_applications_phase1.sql'),
     'utf8'
   );
+  const partnersRepositoryText = fs.readFileSync(
+    path.join(rootDir, 'src/repositories/partners.repository.js'),
+    'utf8'
+  );
   assert.match(migrationText, /CREATE TABLE IF NOT EXISTS partner_recruitment_applications/);
   assert.match(migrationText, /partner_recruitment_applications_active_email_unique_idx/);
   assert.match(migrationText, /ALTER TABLE partner_invitations/);
   assert.match(migrationText, /"sourceType" IN \('partner_invite', 'partner_recruitment_application'\)/);
+  assert.match(partnersRepositoryText, /SELECT id, email, role, "accountType", active/);
+  assert.doesNotMatch(partnersRepositoryText, /SELECT id, email, role, "accountScope", active/);
 
   console.log('partner-recruitment-applications.test.js: ok');
 }

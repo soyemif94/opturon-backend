@@ -34,6 +34,20 @@ function getPartnerIdentityTraceId(req) {
   return String((req.partnerAuth && req.partnerAuth.traceId) || req.get('x-partner-identity-trace-id') || '').trim();
 }
 
+function sendPartnerUnexpectedError(res, errorCode, traceId, error) {
+  console.error(errorCode, {
+    event: errorCode,
+    traceId: traceId || null,
+    errorCode: error && error.code ? error.code : error && error.name ? error.name : 'unexpected_error',
+    postgresCode: error && error.code ? error.code : null,
+    constraint: error && error.constraint ? error.constraint : null,
+    table: error && error.table ? error.table : null,
+    column: error && error.column ? error.column : null,
+    message: error && error.message ? error.message : 'Unexpected controller failure'
+  });
+  return res.status(500).json({ success: false, error: errorCode, traceId: traceId || undefined });
+}
+
 async function getPartnersMe(req, res) {
   const partnerId = getPartnerActorId(req);
   try {
@@ -255,14 +269,15 @@ function sendRecruitmentApplicationResult(res, result) {
 
 async function postPartnerRecruitmentApplication(req, res) {
   const partnerId = getPartnerActorId(req);
+  const traceId = getPartnerIdentityTraceId(req);
   try {
     const result = await createApplicationForPartner(partnerId, req.body || {}, {
-      traceId: getPartnerIdentityTraceId(req),
+      traceId,
       requestPath: req.originalUrl || req.path
     });
     return sendRecruitmentApplicationResult(res, result);
   } catch (error) {
-    return res.status(500).json({ success: false, error: 'partner_recruitment_application_create_failed', details: error.message });
+    return sendPartnerUnexpectedError(res, 'partner_recruitment_application_create_failed', traceId, error);
   }
 }
 
@@ -301,11 +316,12 @@ async function patchPartnerRecruitmentApplication(req, res) {
 
 async function postPartnerRecruitmentApplicationSubmit(req, res) {
   const partnerId = getPartnerActorId(req);
+  const traceId = getPartnerIdentityTraceId(req);
   try {
     const result = await submitApplicationForPartner(partnerId, req.params && req.params.applicationId);
     return sendRecruitmentApplicationResult(res, result);
   } catch (error) {
-    return res.status(500).json({ success: false, error: 'partner_recruitment_application_submit_failed', details: error.message });
+    return sendPartnerUnexpectedError(res, 'partner_recruitment_application_submit_failed', traceId, error);
   }
 }
 
