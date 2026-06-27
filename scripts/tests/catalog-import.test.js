@@ -69,6 +69,32 @@ assert.strictEqual(analysis.previewRows[0].values.name, 'Cafe tostado');
 assert.strictEqual(analysis.previewRows[1].errors[0].code, 'invalid_price');
 assert.strictEqual(analysis.previewRows[2].errors[0].code, 'duplicate_in_file');
 
+const formattedCurrencyAnalysis = analyzeRows(
+  [
+    ['Nombre', 'Precio', 'Stock', 'SKU'],
+    ['Gratis', '$ 1,000.50', 0, 'FREE-01'],
+    ['Promo', '1,000.50', '0', 'FREE-02'],
+    ['AR', '$ 1.000,50', '3', 'FREE-03'],
+    ['Cero', 0, 0, 'FREE-04']
+  ],
+  {
+    hasHeaders: true,
+    duplicatePolicy: 'skip',
+    categoryPolicy: 'reject_missing',
+    importPolicy: 'valid_only',
+    mapping: {}
+  },
+  emptySnapshot()
+);
+
+assert.strictEqual(formattedCurrencyAnalysis.previewRows[0].values.price, 1000.5);
+assert.strictEqual(formattedCurrencyAnalysis.previewRows[0].values.stock, 0);
+assert.strictEqual(formattedCurrencyAnalysis.previewRows[1].values.price, 1000.5);
+assert.strictEqual(formattedCurrencyAnalysis.previewRows[1].values.stock, 0);
+assert.strictEqual(formattedCurrencyAnalysis.previewRows[2].values.price, 1000.5);
+assert.strictEqual(formattedCurrencyAnalysis.previewRows[3].values.price, 0);
+assert.strictEqual(formattedCurrencyAnalysis.previewRows[3].values.stock, 0);
+
 const structuredTxt = parseStructuredFile(
   {
     originalname: 'catalogo.txt',

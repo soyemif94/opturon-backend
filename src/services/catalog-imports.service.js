@@ -78,7 +78,7 @@ const FIELD_ALIASES = new Map([
 ]);
 
 function normalizeString(value) {
-  return String(value || '').trim();
+  return value === null || value === undefined ? '' : String(value).trim();
 }
 
 function normalizeHeaderKey(value) {
@@ -186,6 +186,16 @@ function convertSheetRows(sheet, workbook) {
         continue;
       }
 
+      if (cell.t === 'n' && typeof cell.v === 'number' && Number.isFinite(cell.v)) {
+        row.push(cell.v);
+        continue;
+      }
+
+      if (cell.t === 'b' && typeof cell.v === 'boolean') {
+        row.push(cell.v);
+        continue;
+      }
+
       const formatted = cell.w !== undefined ? cell.w : XLSX.utils.format_cell(cell, undefined, workbook);
       row.push(formatted == null ? '' : String(formatted).trim());
     }
@@ -265,16 +275,49 @@ function sanitizeMapping(mapping, columns) {
 }
 
 function parseDecimalString(value) {
-  const normalized = normalizeString(value)
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    return quantizeDecimal(value, 2, NaN);
+  }
+
+  const raw = normalizeString(value);
+  if (!raw) return null;
+
+  const normalized = raw
     .replace(/\s+/g, '')
-    .replace(/\.(?=\d{3}(?:\D|$))/g, '')
-    .replace(',', '.');
+    .replace(/[$€£¥₲₱₡₽₴₹₺₦₫₭₲₵₸₼₾₪₤₥₨₿]/g, '');
   if (!normalized) return null;
-  if (!/^-?\d+(\.\d+)?$/.test(normalized)) return null;
-  return quantizeDecimal(normalized, 2, NaN);
+
+  const lastComma = normalized.lastIndexOf(',');
+  const lastDot = normalized.lastIndexOf('.');
+  let canonical = normalized;
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    if (lastComma > lastDot) {
+      canonical = normalized.replace(/\./g, '').replace(',', '.');
+    } else {
+      canonical = normalized.replace(/,/g, '');
+    }
+  } else if (lastComma >= 0) {
+    const fractionalLength = normalized.length - lastComma - 1;
+    canonical =
+      fractionalLength > 0 && fractionalLength <= 2
+        ? normalized.replace(/\./g, '').replace(',', '.')
+        : normalized.replace(/,/g, '');
+  } else if (lastDot >= 0) {
+    const fractionalLength = normalized.length - lastDot - 1;
+    canonical = fractionalLength === 3 ? normalized.replace(/\./g, '') : normalized;
+  }
+
+  if (!/^-?\d+(\.\d+)?$/.test(canonical)) return null;
+  return quantizeDecimal(canonical, 2, NaN);
 }
 
 function parseIntegerString(value) {
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value)) return null;
+    return value;
+  }
   const normalized = normalizeString(value);
   if (!normalized) return null;
   if (!/^-?\d+$/.test(normalized)) return null;
