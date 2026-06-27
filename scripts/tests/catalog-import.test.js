@@ -95,6 +95,55 @@ assert.strictEqual(formattedCurrencyAnalysis.previewRows[2].values.price, 1000.5
 assert.strictEqual(formattedCurrencyAnalysis.previewRows[3].values.price, 0);
 assert.strictEqual(formattedCurrencyAnalysis.previewRows[3].values.stock, 0);
 
+const missingCategoryRejectAnalysis = analyzeRows(
+  [
+    ['Nombre', 'Categoria', 'Precio', 'Stock', 'SKU'],
+    ['Termo de prueba', 'Prueba Importacion', '1500', '4', 'TERM-01']
+  ],
+  {
+    hasHeaders: true,
+    duplicatePolicy: 'skip',
+    categoryPolicy: 'reject_missing',
+    importPolicy: 'valid_only',
+    mapping: {
+      column_0: 'name',
+      column_1: 'categoryName',
+      column_2: 'price',
+      column_3: 'stock',
+      column_4: 'sku'
+    }
+  },
+  emptySnapshot()
+);
+
+assert.strictEqual(missingCategoryRejectAnalysis.previewRows[0].status, 'error');
+assert.strictEqual(missingCategoryRejectAnalysis.previewRows[0].errors[0].code, 'missing_category');
+
+const missingCategoryCreateAnalysis = analyzeRows(
+  [
+    ['Nombre', 'Categoria', 'Precio', 'Stock', 'SKU'],
+    ['Termo de prueba', 'Prueba Importacion', '1500', '4', 'TERM-01']
+  ],
+  {
+    hasHeaders: true,
+    duplicatePolicy: 'skip',
+    categoryPolicy: 'create_missing',
+    importPolicy: 'valid_only',
+    mapping: {
+      column_0: 'name',
+      column_1: 'categoryName',
+      column_2: 'price',
+      column_3: 'stock',
+      column_4: 'sku'
+    }
+  },
+  emptySnapshot()
+);
+
+assert.strictEqual(missingCategoryCreateAnalysis.previewRows[0].status, 'valid');
+assert.strictEqual(missingCategoryCreateAnalysis.previewRows[0].errors.length, 0);
+assert.strictEqual(missingCategoryCreateAnalysis.previewRows[0].values.categoryName, 'Prueba Importacion');
+
 const structuredTxt = parseStructuredFile(
   {
     originalname: 'catalogo.txt',
