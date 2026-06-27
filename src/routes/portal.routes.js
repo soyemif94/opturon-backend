@@ -28,6 +28,12 @@ const {
   postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,
+  postPortalCatalogImportAnalyze,
+  getPortalCatalogImport,
+  postPortalCatalogImportConfirm,
+  postPortalCatalogImportCancel,
+  getPortalCatalogImportErrors,
+  getPortalCatalogImportTemplate,
   updatePortalProduct,
   updatePortalProductCategory,
   destroyPortalProductCategory,
@@ -175,6 +181,30 @@ function handleCatalogImageUpload(req, res, next) {
   });
 }
 
+const catalogImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: Number(process.env.CATALOG_IMPORT_MAX_FILE_SIZE_BYTES || 10 * 1024 * 1024),
+    files: 1
+  }
+});
+
+function handleCatalogImportUpload(req, res, next) {
+  catalogImportUpload.single('file')(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ success: false, error: 'catalog_import_file_too_large' });
+      return;
+    }
+
+    next(error);
+  });
+}
+
 const loyaltyRewardImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -242,6 +272,12 @@ router.post('/tenants/:tenantId/products', catalogModule, postPortalProduct);
 router.post('/tenants/:tenantId/products/image-upload', requirePortalInternalAuth, catalogModule, handleCatalogImageUpload, postPortalProductImageUpload);
 router.post('/tenants/:tenantId/product-categories', catalogModule, postPortalProductCategory);
 router.post('/tenants/:tenantId/products/bulk', catalogModule, postPortalProductsBulk);
+router.get('/tenants/:tenantId/catalog-imports/template', requirePortalInternalAuth, catalogModule, getPortalCatalogImportTemplate);
+router.post('/tenants/:tenantId/catalog-imports/analyze', requirePortalInternalAuth, catalogModule, handleCatalogImportUpload, postPortalCatalogImportAnalyze);
+router.get('/tenants/:tenantId/catalog-imports/:importId', requirePortalInternalAuth, catalogModule, getPortalCatalogImport);
+router.post('/tenants/:tenantId/catalog-imports/:importId/confirm', requirePortalInternalAuth, catalogModule, postPortalCatalogImportConfirm);
+router.post('/tenants/:tenantId/catalog-imports/:importId/cancel', requirePortalInternalAuth, catalogModule, postPortalCatalogImportCancel);
+router.get('/tenants/:tenantId/catalog-imports/:importId/errors', requirePortalInternalAuth, catalogModule, getPortalCatalogImportErrors);
 router.get('/tenants/:tenantId/products/:productId', catalogModule, getPortalProduct);
 router.patch('/tenants/:tenantId/products/:productId', catalogModule, updatePortalProduct);
 router.patch('/tenants/:tenantId/product-categories/:categoryId', catalogModule, updatePortalProductCategory);

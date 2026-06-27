@@ -53,6 +53,14 @@ const {
   getPortalProductImageAsset
 } = require('../services/portal-products.service');
 const {
+  analyzeCatalogImport,
+  getCatalogImport,
+  cancelCatalogImport,
+  confirmCatalogImport,
+  buildCatalogImportErrorCsv,
+  buildCatalogImportTemplateCsv
+} = require('../services/catalog-imports.service');
+const {
   listPortalUsers,
   invitePortalUser,
   assignPrimaryPortalUser,
@@ -170,6 +178,13 @@ function getPublicRequestOrigin(req) {
   const host = String(req.get('x-forwarded-host') || req.get('host') || '').trim();
   if (!host) return null;
   return `${protocol}://${host}`;
+}
+
+function getPortalActorMeta(req) {
+  return {
+    actorId: String(req.get('x-portal-actor-id') || '').trim() || null,
+    actorName: String(req.get('x-portal-actor-name') || '').trim() || null
+  };
 }
 
 async function getPortalTenantContext(req, res) {
@@ -1011,6 +1026,199 @@ async function postPortalProductsBulk(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_product_bulk_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalCatalogImportAnalyze(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const rawOptions = req.body && typeof req.body === 'object' ? req.body : {};
+    const mapping =
+      rawOptions.mapping && typeof rawOptions.mapping === 'string'
+        ? JSON.parse(rawOptions.mapping)
+        : rawOptions.mapping;
+    const result = await analyzeCatalogImport(
+      tenantId,
+      req.file,
+      {
+        sheetName: rawOptions.sheetName,
+        delimiter: rawOptions.delimiter,
+        hasHeaders: rawOptions.hasHeaders === 'true' || rawOptions.hasHeaders === true,
+        duplicatePolicy: rawOptions.duplicatePolicy,
+        categoryPolicy: rawOptions.categoryPolicy,
+        importPolicy: rawOptions.importPolicy,
+        mapping
+      },
+      actor
+    );
+
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_catalog_import_file' ||
+        result.reason === 'unsupported_catalog_import_file_type' ||
+        result.reason === 'catalog_import_file_too_large' ||
+        result.reason === 'catalog_import_unstructured_text' ||
+        result.reason === 'catalog_import_too_many_rows' ||
+        result.reason === 'catalog_import_too_many_columns' ||
+        result.reason === 'catalog_import_no_columns_detected'
+          ? 400
+          : result.reason === 'catalog_import_sheet_not_found'
+            ? 422
+            : result.reason === 'tenant_mapping_not_found'
+              ? 404
+              : 422;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        details: result.details || null,
+        tenantId: result.tenantId
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.import
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_import_analyze_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalCatalogImport(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const importId = String(req.params.importId || '').trim();
+
+  try {
+    const result = await getCatalogImport(tenantId, importId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.import
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_import_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalCatalogImportConfirm(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const importId = String(req.params.importId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await confirmCatalogImport(tenantId, importId, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id'
+          ? 400
+          : result.reason === 'catalog_import_cancelled'
+            ? 409
+            : result.reason === 'catalog_import_blocked_by_errors'
+              ? 422
+              : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...result.import,
+        idempotent: result.idempotent === true
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_import_confirm_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalCatalogImportCancel(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const importId = String(req.params.importId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await cancelCatalogImport(tenantId, importId, actor);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.import
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_import_cancel_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalCatalogImportErrors(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const importId = String(req.params.importId || '').trim();
+
+  try {
+    const result = await getCatalogImport(tenantId, importId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    const csv = buildCatalogImportErrorCsv(result.import);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="catalog-import-errors-${importId}.csv"`);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(`\uFEFF${csv}`);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_import_errors_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalCatalogImportTemplate(req, res) {
+  try {
+    const csv = buildCatalogImportTemplateCsv();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="catalog-import-template.csv"');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(`\uFEFF${csv}`);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_import_template_failed',
       details: error.message
     });
   }
@@ -4270,6 +4478,12 @@ module.exports = {
   postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,
+  postPortalCatalogImportAnalyze,
+  getPortalCatalogImport,
+  postPortalCatalogImportConfirm,
+  postPortalCatalogImportCancel,
+  getPortalCatalogImportErrors,
+  getPortalCatalogImportTemplate,
   updatePortalProduct,
   updatePortalProductCategory,
   destroyPortalProductCategory,
