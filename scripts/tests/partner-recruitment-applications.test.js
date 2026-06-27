@@ -49,6 +49,7 @@ function main() {
   assert.strictEqual(missingConsent.reason, 'recruitment_consent_required');
 
   assert.strictEqual(recruitmentService.canTransition('draft', 'pending_review'), true);
+  assert.strictEqual(recruitmentService.canTransition('approved', 'changes_requested'), true);
   assert.strictEqual(recruitmentService.canTransition('approved', 'invitation_sent'), true);
   assert.strictEqual(recruitmentService.canTransition('approved', 'pending_review'), false);
   assert.strictEqual(recruitmentService.canTransition('invitation_sent', 'invitation_accepted'), true);
@@ -57,6 +58,7 @@ function main() {
   assertRoute(partnerRoutes, 'get:/me/recruitment-applications');
   assertRoute(partnerRoutes, 'get:/me/recruitment-applications/:applicationId');
   assertRoute(partnerRoutes, 'patch:/me/recruitment-applications/:applicationId');
+  assertRoute(partnerRoutes, 'post:/me/recruitment-applications/:applicationId/reopen-for-edit');
   assertRoute(partnerRoutes, 'post:/me/recruitment-applications/:applicationId/submit');
   assertRoute(partnerRoutes, 'post:/me/recruitment-applications/:applicationId/cancel');
 

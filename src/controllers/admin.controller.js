@@ -740,7 +740,11 @@ function sendAdminRecruitmentApplicationResult(res, result) {
       ? 404
       : result.reason === 'invalid_partner_recruitment_transition' ||
         result.reason === 'partner_recruitment_application_not_approved' ||
-        result.reason === 'partner_recruitment_invitation_already_sent'
+        result.reason === 'partner_recruitment_invitation_already_sent' ||
+        result.reason === 'recruitment_duplicate_phone' ||
+        result.reason === 'recruitment_duplicate_email' ||
+        result.reason === 'recruitment_duplicate_document' ||
+        result.reason === 'recruitment_duplicate_invitation'
         ? 409
         : 400;
     return res.status(status).json({ success: false, error: result.reason, duplicateWarnings: result.duplicateWarnings || undefined });

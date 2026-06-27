@@ -20,6 +20,7 @@ const {
   getPartnerRecruitmentApplications,
   getPartnerRecruitmentApplication,
   patchPartnerRecruitmentApplication,
+  postPartnerRecruitmentApplicationReopenForEdit,
   postPartnerRecruitmentApplicationSubmit,
   postPartnerRecruitmentApplicationCancel
 } = require('../controllers/partners.controller');
@@ -90,6 +91,7 @@ router.post('/me/recruitment-applications', requirePartnerInternalAuth, postPart
 router.get('/me/recruitment-applications', requirePartnerInternalAuth, getPartnerRecruitmentApplications);
 router.get('/me/recruitment-applications/:applicationId', requirePartnerInternalAuth, getPartnerRecruitmentApplication);
 router.patch('/me/recruitment-applications/:applicationId', requirePartnerInternalAuth, patchPartnerRecruitmentApplication);
+router.post('/me/recruitment-applications/:applicationId/reopen-for-edit', requirePartnerInternalAuth, postPartnerRecruitmentApplicationReopenForEdit);
 router.post('/me/recruitment-applications/:applicationId/submit', requirePartnerInternalAuth, postPartnerRecruitmentApplicationSubmit);
 router.post('/me/recruitment-applications/:applicationId/cancel', requirePartnerInternalAuth, postPartnerRecruitmentApplicationCancel);
 

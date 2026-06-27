@@ -41,7 +41,7 @@ const TRANSITIONS = new Map([
   ['draft', new Set(['pending_review', 'cancelled'])],
   ['pending_review', new Set(['changes_requested', 'approved', 'rejected', 'cancelled'])],
   ['changes_requested', new Set(['pending_review', 'cancelled'])],
-  ['approved', new Set(['invitation_sent', 'rejected'])],
+  ['approved', new Set(['changes_requested', 'invitation_sent', 'rejected'])],
   ['invitation_sent', new Set(['invitation_accepted', 'expired'])]
 ]);
 const ADMIN_REVIEW_AUDIT_ACTIONS = {
@@ -74,6 +74,19 @@ function isUuid(value) {
 
 function canTransition(from, to) {
   return Boolean(TRANSITIONS.get(from) && TRANSITIONS.get(from).has(to));
+}
+
+function canReopenApprovedApplication(application) {
+  return Boolean(
+    application
+    && application.status === 'approved'
+    && !application.invitationId
+    && !application.createdPartnerId
+  );
+}
+
+function isEditableByPartner(application) {
+  return EDITABLE_STATUSES.has(String(application && application.status || '')) || canReopenApprovedApplication(application);
 }
 
 function hashInvitationToken(token) {
@@ -180,9 +193,32 @@ async function appendRecruitmentAuditLog(input, client = null) {
       nextStatus: input.nextStatus || null,
       invitationId: input.invitationId || null,
       createdPartnerId: input.createdPartnerId || null,
-      duplicateWarnings: input.duplicateWarnings || []
+      duplicateWarnings: input.duplicateWarnings || [],
+      duplicateErrorCode: input.duplicateErrorCode || null,
+      correctionAfterApproval: input.correctionAfterApproval === true,
+      modifiedFields: Array.isArray(input.modifiedFields) ? input.modifiedFields : []
     }
   }, client);
+}
+
+function listChangedFields(current, nextData) {
+  const fields = [];
+  const fieldMap = [
+    ['firstName', nextData.firstName],
+    ['lastName', nextData.lastName],
+    ['email', nextData.email],
+    ['phone', nextData.phone],
+    ['documentId', nextData.documentId || null],
+    ['city', nextData.city || null],
+    ['province', nextData.province || null],
+    ['country', nextData.country || null],
+    ['notes', nextData.notes || null]
+  ];
+  for (const [field, nextValue] of fieldMap) {
+    const currentValue = current && Object.prototype.hasOwnProperty.call(current, field) ? current[field] || null : null;
+    if (currentValue !== nextValue) fields.push(field);
+  }
+  return fields;
 }
 
 async function assertSponsorPartner(partnerId, client = null, trace = {}) {
@@ -268,6 +304,44 @@ async function assertNoBlockingDuplicates(application, client = null) {
   return { ok: true, duplicateWarnings: warnings };
 }
 
+function mapRecruitmentInvitationDuplicateResult(duplicateCheck = {}) {
+  const warnings = Array.isArray(duplicateCheck.duplicateWarnings) ? duplicateCheck.duplicateWarnings : [];
+  if (warnings.includes('El telefono coincide con otra cuenta.')) {
+    return { error: 'recruitment_duplicate_phone', duplicateWarnings: warnings };
+  }
+  if (warnings.includes('Ya existe un asesor con este email.')) {
+    return { error: 'recruitment_duplicate_email', duplicateWarnings: warnings };
+  }
+  if (warnings.includes('Ya existe una postulacion activa con este documento.')) {
+    return { error: 'recruitment_duplicate_document', duplicateWarnings: warnings };
+  }
+  if (warnings.includes('Existe una invitacion pendiente para esta persona.')) {
+    return { error: 'recruitment_duplicate_invitation', duplicateWarnings: warnings };
+  }
+  if (warnings.includes('Otro asesor ya presento a este postulante.')) {
+    return { error: 'recruitment_duplicate_email', duplicateWarnings: warnings };
+  }
+  if (warnings.includes('Ya existe una postulacion activa con este telefono.')) {
+    return { error: 'recruitment_duplicate_phone', duplicateWarnings: warnings };
+  }
+  if (duplicateCheck.reason === 'partner_email_already_exists') {
+    return { error: 'recruitment_duplicate_email', duplicateWarnings: warnings };
+  }
+  if (duplicateCheck.reason === 'partner_recruitment_phone_already_active') {
+    return { error: 'recruitment_duplicate_phone', duplicateWarnings: warnings };
+  }
+  if (duplicateCheck.reason === 'partner_recruitment_document_already_active') {
+    return { error: 'recruitment_duplicate_document', duplicateWarnings: warnings };
+  }
+  if (duplicateCheck.reason === 'partner_invitation_already_pending') {
+    return { error: 'recruitment_duplicate_invitation', duplicateWarnings: warnings };
+  }
+  if (duplicateCheck.reason) {
+    return { error: duplicateCheck.reason, duplicateWarnings: warnings };
+  }
+  return null;
+}
+
 async function createApplicationForPartner(partnerId, payload, trace = {}) {
   const normalized = normalizePayload(payload);
   if (!normalized.ok) return normalized;
@@ -349,20 +423,20 @@ async function updateApplicationForPartner(partnerId, applicationId, payload) {
     }
     const normalized = normalizePayload(payload);
     if (!normalized.ok) return normalized;
+    const modifiedFields = listChangedFields(current, normalized.data);
 
     const application = await updateRecruitmentApplication(applicationId, normalized.data, client);
     const duplicateCheck = await assertNoBlockingDuplicates(application, client);
     await appendRecruitmentAuditLog({
       partnerId,
       applicationId,
-      action: current.status === 'changes_requested'
-        ? 'partner_recruitment_application_corrected'
-        : 'partner_recruitment_application_edited',
+      action: 'partner_recruitment_application_updated',
       actorType: 'partner',
       actorPartnerId: partnerId,
       previousStatus: current.status,
       nextStatus: application.status,
-      duplicateWarnings: duplicateCheck.duplicateWarnings || []
+      duplicateWarnings: duplicateCheck.duplicateWarnings || [],
+      modifiedFields
     }, client);
 
     if (!duplicateCheck.ok) {
@@ -375,6 +449,33 @@ async function updateApplicationForPartner(partnerId, applicationId, payload) {
     }
 
     return { ok: true, application, duplicateWarnings: duplicateCheck.duplicateWarnings };
+  });
+}
+
+async function reopenApplicationForEditByPartner(partnerId, applicationId) {
+  return withTransaction(async (client) => {
+    const current = await findRecruitmentApplicationById(applicationId, client);
+    if (!current || String(current.sponsorPartnerId) !== String(partnerId)) {
+      return { ok: false, reason: 'partner_recruitment_application_not_found' };
+    }
+    if (!canReopenApprovedApplication(current)) {
+      return { ok: false, reason: 'partner_recruitment_application_not_editable' };
+    }
+    const application = await transitionRecruitmentApplication(applicationId, {
+      status: 'changes_requested',
+      setAdminNotes: false
+    }, client);
+    await appendRecruitmentAuditLog({
+      partnerId,
+      applicationId,
+      action: 'partner_recruitment_changes_requested_after_approval',
+      actorType: 'partner',
+      actorPartnerId: partnerId,
+      previousStatus: current.status,
+      nextStatus: application.status,
+      correctionAfterApproval: true
+    }, client);
+    return { ok: true, application };
   });
 }
 
@@ -489,7 +590,8 @@ async function reviewApplicationAsAdmin(applicationId, action, payload = {}, act
   return withTransaction(async (client) => {
     const current = await findRecruitmentApplicationById(applicationId, client);
     if (!current) return { ok: false, reason: 'partner_recruitment_application_not_found' };
-    if (!canTransition(current.status, nextStatus)) {
+    const allowApprovedCorrection = nextStatus === 'changes_requested' && canReopenApprovedApplication(current);
+    if (!allowApprovedCorrection && !canTransition(current.status, nextStatus)) {
       return { ok: false, reason: 'invalid_partner_recruitment_transition' };
     }
     const duplicateCheck = await assertNoBlockingDuplicates(current, client);
@@ -507,16 +609,22 @@ async function reviewApplicationAsAdmin(applicationId, action, payload = {}, act
       adminNotes: adminNotes || null,
       reviewedBy: actorStaffUserId
     }, client);
+    const reviewAction = nextStatus === 'approved' && current.approvedAt
+      ? 'partner_recruitment_application_reapproved'
+      : nextStatus === 'changes_requested' && current.status === 'approved'
+        ? 'partner_recruitment_changes_requested_after_approval'
+        : ADMIN_REVIEW_AUDIT_ACTIONS[nextStatus];
     await appendRecruitmentAuditLog({
       partnerId: current.sponsorPartnerId,
       applicationId,
-      action: ADMIN_REVIEW_AUDIT_ACTIONS[nextStatus],
+      action: reviewAction,
       actorType: 'staff',
       actorStaffUserId,
       reason: adminNotes || null,
       previousStatus: current.status,
       nextStatus,
-      duplicateWarnings: duplicateCheck.duplicateWarnings || []
+      duplicateWarnings: duplicateCheck.duplicateWarnings || [],
+      correctionAfterApproval: current.status === 'approved' && nextStatus === 'changes_requested'
     }, client);
     return { ok: true, application, duplicateWarnings: duplicateCheck.duplicateWarnings || [] };
   });
@@ -553,8 +661,25 @@ async function sendRecruitmentInvitationAsAdmin(applicationId, actorStaffUserId)
     if (sponsor.status !== 'active') return { error: 'partner_sponsor_inactive' };
 
     const duplicateCheck = await assertNoBlockingDuplicates(application, client);
-    if (!duplicateCheck.ok) {
-      return { error: duplicateCheck.reason, duplicateWarnings: duplicateCheck.duplicateWarnings };
+    const duplicateResult = mapRecruitmentInvitationDuplicateResult(duplicateCheck);
+    if (!duplicateCheck.ok || duplicateResult) {
+      const safeDuplicateResult = duplicateResult || {
+        error: duplicateCheck.reason || 'partner_recruitment_invitation_send_failed',
+        duplicateWarnings: duplicateCheck.duplicateWarnings || []
+      };
+      await appendRecruitmentAuditLog({
+        partnerId: application.sponsorPartnerId,
+        applicationId: application.id,
+        action: 'partner_recruitment_invitation_send_failed',
+        actorType: 'staff',
+        actorStaffUserId,
+        reason: safeDuplicateResult.error,
+        previousStatus: application.status,
+        nextStatus: application.status,
+        duplicateWarnings: safeDuplicateResult.duplicateWarnings || [],
+        duplicateErrorCode: safeDuplicateResult.error
+      }, client);
+      return safeDuplicateResult;
     }
 
     let partner = application.createdPartnerId ? await findPartnerById(application.createdPartnerId, client) : null;
@@ -738,6 +863,7 @@ module.exports = {
   listApplicationsForPartner,
   getApplicationForPartner,
   updateApplicationForPartner,
+  reopenApplicationForEditByPartner,
   submitApplicationForPartner,
   cancelApplicationForPartner,
   listApplicationsForAdmin,
@@ -748,5 +874,8 @@ module.exports = {
   findRecruitmentApplicationByInvitationId,
   markRecruitmentApplicationExpired,
   normalizePayload,
-  canTransition
+  canTransition,
+  canReopenApprovedApplication,
+  isEditableByPartner,
+  mapRecruitmentInvitationDuplicateResult
 };

@@ -22,6 +22,7 @@ const {
   listApplicationsForPartner,
   getApplicationForPartner,
   updateApplicationForPartner,
+  reopenApplicationForEditByPartner,
   submitApplicationForPartner,
   cancelApplicationForPartner
 } = require('../services/partner-recruitment-applications.service');
@@ -325,6 +326,16 @@ async function postPartnerRecruitmentApplicationSubmit(req, res) {
   }
 }
 
+async function postPartnerRecruitmentApplicationReopenForEdit(req, res) {
+  const partnerId = getPartnerActorId(req);
+  try {
+    const result = await reopenApplicationForEditByPartner(partnerId, req.params && req.params.applicationId);
+    return sendRecruitmentApplicationResult(res, result);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_recruitment_application_reopen_failed', details: error.message });
+  }
+}
+
 async function postPartnerRecruitmentApplicationCancel(req, res) {
   const partnerId = getPartnerActorId(req);
   try {
@@ -355,6 +366,7 @@ module.exports = {
   getPartnerRecruitmentApplications,
   getPartnerRecruitmentApplication,
   patchPartnerRecruitmentApplication,
+  postPartnerRecruitmentApplicationReopenForEdit,
   postPartnerRecruitmentApplicationSubmit,
   postPartnerRecruitmentApplicationCancel
 };
