@@ -76,6 +76,7 @@ function extractCatalogMetadata(metadata) {
   const safeMetadata = normalizeMetadataObject(metadata);
   const catalog = normalizeMetadataObject(safeMetadata.catalog);
   const subcategory = String(catalog.subcategory || '').trim() || null;
+  const brand = String(catalog.brand || '').trim() || null;
   const attributes = Array.isArray(catalog.attributes)
     ? catalog.attributes.map(normalizeProductAttributeRecord).filter(Boolean)
     : [];
@@ -83,6 +84,7 @@ function extractCatalogMetadata(metadata) {
 
   return {
     subcategory,
+    brand,
     attributes,
     image: image === '__invalid__' ? null : image || null
   };
@@ -113,6 +115,7 @@ function buildStoredMetadata(inputMetadata, input) {
       : normalizeProductImageRecord(safeCatalog.image);
   const nextCatalog = {
     ...safeCatalog,
+    brand: String(input.brand || '').trim() || null,
     subcategory: String(input.subcategory || '').trim() || null,
     attributes: Array.isArray(input.attributes)
       ? input.attributes.map(normalizeProductAttributeRecord).filter(Boolean)
@@ -154,6 +157,7 @@ function normalizeProduct(row) {
     sku: row.sku || null,
     categoryId: row.categoryId || null,
     categoryName: row.categoryName || null,
+    brand: catalogMetadata.brand,
     subcategory: catalogMetadata.subcategory,
     attributes: catalogMetadata.attributes,
     image: catalogMetadata.image,
@@ -289,6 +293,7 @@ async function updateProduct(productId, clinicId, payload, client = null) {
     ...current,
     ...payload,
     subcategory: payload.subcategory !== undefined ? payload.subcategory : current.subcategory,
+    brand: payload.brand !== undefined ? payload.brand : current.brand,
     attributes: payload.attributes !== undefined ? payload.attributes : current.attributes,
     image: payload.image !== undefined ? payload.image : current.image
   });

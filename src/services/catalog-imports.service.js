@@ -33,11 +33,12 @@ const STATUS_VALUES = new Set(['active', 'archived']);
 const DUPLICATE_POLICIES = new Set(['skip', 'update', 'cancel']);
 const CATEGORY_POLICIES = new Set(['reject_missing', 'create_missing']);
 const IMPORT_POLICIES = new Set(['valid_only', 'fail_on_error']);
-const IMPORTABLE_FIELDS = ['name', 'description', 'categoryName', 'price', 'stock', 'sku', 'active', 'currency', 'imageUrl'];
+const IMPORTABLE_FIELDS = ['name', 'description', 'categoryName', 'brand', 'price', 'stock', 'sku', 'active', 'currency', 'imageUrl'];
 const FIELD_LABELS = {
   name: 'Nombre',
   description: 'Descripcion',
   categoryName: 'Categoria',
+  brand: 'Marca',
   price: 'Precio',
   stock: 'Stock',
   sku: 'SKU',
@@ -57,6 +58,10 @@ const FIELD_ALIASES = new Map([
   ['rubro', 'categoryName'],
   ['categoria', 'categoryName'],
   ['rubrocategoria', 'categoryName'],
+  ['marca', 'brand'],
+  ['brand', 'brand'],
+  ['fabricante', 'brand'],
+  ['manufacturer', 'brand'],
   ['precio', 'price'],
   ['precioventa', 'price'],
   ['valor', 'price'],
@@ -574,6 +579,7 @@ function analyzeRows(rows, options, catalogSnapshot) {
     const normalizedName = normalizeString(values.name);
     const normalizedDescription = normalizeString(values.description) || null;
     const normalizedCategoryInput = normalizeString(values.categoryName);
+    const normalizedBrand = normalizeString(values.brand) || null;
     const normalizedCategoryKey = normalizeCategoryName(normalizedCategoryInput);
     const parsedPrice = values.price === undefined || values.price === '' ? 0 : parseDecimalString(values.price);
     const parsedStock = values.stock === undefined || values.stock === '' ? 0 : parseIntegerString(values.stock);
@@ -665,6 +671,7 @@ function analyzeRows(rows, options, catalogSnapshot) {
         name: normalizedName,
         description: normalizedDescription,
         categoryName: normalizedCategoryInput || null,
+        brand: normalizedBrand,
         price: parsedPrice === null || Number.isNaN(parsedPrice) ? null : parsedPrice,
         stock: parsedStock === null ? null : parsedStock,
         sku,
@@ -974,6 +981,7 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
   const payload = {
     name: values.name,
     description: values.description || null,
+    brand: values.brand || null,
     unitPrice: values.price ?? 0,
     price: values.price ?? 0,
     currency: values.currency || 'ARS',
@@ -1004,6 +1012,7 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
       ...current,
       name: payload.name || current.name,
       description: payload.description !== null ? payload.description : current.description,
+      brand: values.brand !== undefined ? payload.brand : current.brand,
       unitPrice: values.price !== null && values.price !== undefined ? payload.unitPrice : current.unitPrice,
       price: values.price !== null && values.price !== undefined ? payload.price : current.unitPrice,
       currency: payload.currency || current.currency,
@@ -1290,9 +1299,9 @@ function escapeCsvValue(value) {
 
 function buildCatalogImportTemplateCsv() {
   return [
-    'Nombre;Descripcion;Categoria;Precio;Stock;SKU;Activo;Moneda;Imagen URL',
-    'EJEMPLO - No importar;Fila de ejemplo para borrar antes de subirla;Combos;12500;100;SKU-EJEMPLO-1;si;ARS;https://ejemplo.com/producto-1.jpg',
-    'EJEMPLO - No importar;Segunda fila de referencia;Bebidas;1500;200;SKU-EJEMPLO-2;si;ARS;https://ejemplo.com/producto-2.jpg'
+    'Nombre;Descripcion;Categoria;Marca;Precio;Stock;SKU;Activo;Moneda;Imagen URL',
+    'EJEMPLO - No importar;Fila de ejemplo para borrar antes de subirla;Combos;NovaTech;12500;100;SKU-EJEMPLO-1;si;ARS;https://ejemplo.com/producto-1.jpg',
+    'EJEMPLO - No importar;Segunda fila de referencia;Bebidas;Voltix;1500;200;SKU-EJEMPLO-2;si;ARS;https://ejemplo.com/producto-2.jpg'
   ].join('\n');
 }
 

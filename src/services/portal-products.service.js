@@ -137,6 +137,7 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
     status: PRODUCT_STATUSES.has(requestedStatus) ? requestedStatus : fallbackStatus,
     sku: normalizeString(payload && payload.sku) || null,
     categoryId: normalizeString(payload && payload.categoryId) || null,
+    brand: normalizeString(payload && payload.brand) || null,
     subcategory: normalizeString(payload && (payload.subcategory ?? payload.subcategoryName)) || null,
     attributes: normalizeAttributes(payload && (payload.attributes ?? payload.configurableAttributes ?? payload.variants)),
     image: normalizeProductImage(payload && payload.image),
