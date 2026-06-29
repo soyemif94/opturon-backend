@@ -1167,7 +1167,61 @@ async function confirmCatalogImport(tenantId, importId, actor = {}) {
   return confirmed;
 }
 
-function buildCatalogImportErrorCsv(importJob) {
+function normalizeImportErrorFieldKey(value) {
+  const text = normalizeString(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  if (['precio', 'price', 'unit_price', 'unitprice'].includes(text)) return 'price';
+  if (['stock', 'cantidad', 'quantity'].includes(text)) return 'stock';
+  if (['sku', 'codigo', 'codigo sku', 'code'].includes(text)) return 'sku';
+  if (['nombre', 'name', 'producto'].includes(text)) return 'name';
+  if (['categoria', 'category', 'categoryname', 'category name'].includes(text)) return 'category';
+  if (['activo', 'active', 'estado', 'status'].includes(text)) return 'active';
+  if (['moneda', 'currency'].includes(text)) return 'currency';
+  if (['imagen url', 'image url', 'imageurl'].includes(text)) return 'image_url';
+  return text;
+}
+
+function normalizeCatalogImportError(rawError, sourceIndex = 0) {
+  const rowNumber = Number(rawError?.rowNumber ?? rawError?.sourceRowNumber ?? 0) || 0;
+  const code = normalizeString(rawError?.code || 'row_error') || 'row_error';
+  const field = normalizeString(rawError?.field);
+  const value = rawError?.value === null || rawError?.value === undefined ? '' : String(rawError.value);
+  const fallbackMessage = translateRowIssue(code);
+  const message = normalizeString(rawError?.message) || fallbackMessage;
+  return {
+    rowNumber,
+    field,
+    fieldKey: normalizeImportErrorFieldKey(field),
+    value,
+    code,
+    codeKey: code.toLowerCase(),
+    message,
+    genericMessage: fallbackMessage,
+    sourceIndex
+  };
+}
+
+function scoreCanonicalImportError(error) {
+  let score = 0;
+  if (error.fieldKey) score += 8;
+  if (normalizeString(error.value)) score += 4;
+  if (error.message && error.message !== error.genericMessage) score += 2;
+  if (error.message) score += 1;
+  return score;
+}
+
+function chooseBestImportError(current, candidate) {
+  if (!current) return candidate;
+  const currentScore = scoreCanonicalImportError(current);
+  const candidateScore = scoreCanonicalImportError(candidate);
+  if (candidateScore > currentScore) return candidate;
+  if (candidateScore < currentScore) return current;
+  return candidate.sourceIndex < current.sourceIndex ? candidate : current;
+}
+
+function buildCanonicalImportErrors(importJob) {
   const analysisErrors = Array.isArray(importJob?.analysis?.errors) ? importJob.analysis.errors : [];
   const resultRows = Array.isArray(importJob?.result?.rows) ? importJob.result.rows : [];
   const resultErrors = resultRows
@@ -1180,24 +1234,55 @@ function buildCatalogImportErrorCsv(importJob) {
       message: row.message || translateRowIssue(row.code)
     }));
 
-  const rows = [...analysisErrors, ...resultErrors];
-  const header = 'Fila;Campo;Valor;Codigo;Mensaje';
+  const errors = [...analysisErrors, ...resultErrors].map((error, index) => normalizeCatalogImportError(error, index));
+  const groupsByRowCode = new Map();
+  for (const error of errors) {
+    const key = `${error.rowNumber}::${error.codeKey}`;
+    if (!groupsByRowCode.has(key)) groupsByRowCode.set(key, []);
+    groupsByRowCode.get(key).push(error);
+  }
+
+  const canonical = [];
+  for (const group of groupsByRowCode.values()) {
+    const fieldKeys = new Set(group.map((error) => error.fieldKey).filter(Boolean));
+    if (fieldKeys.size <= 1) {
+      canonical.push(group.reduce((best, error) => chooseBestImportError(best, error), null));
+      continue;
+    }
+
+    const groupsByField = new Map();
+    for (const error of group) {
+      const fieldKey = error.fieldKey || '__generic__';
+      groupsByField.set(fieldKey, chooseBestImportError(groupsByField.get(fieldKey), error));
+    }
+    canonical.push(...groupsByField.values());
+  }
+
+  return canonical.sort((left, right) => {
+    if (left.rowNumber !== right.rowNumber) return left.rowNumber - right.rowNumber;
+    return left.sourceIndex - right.sourceIndex;
+  });
+}
+
+function buildCatalogImportErrorCsv(importJob) {
+  const rows = buildCanonicalImportErrors(importJob);
+  const header = 'Fila;Campo;Valor;Error;Código';
   const body = rows.map((row) =>
     [
       row.rowNumber,
       escapeCsvValue(row.field || ''),
       escapeCsvValue(row.value || ''),
-      escapeCsvValue(row.code || ''),
-      escapeCsvValue(row.message || '')
+      escapeCsvValue(row.message || ''),
+      escapeCsvValue(row.code || '')
     ].join(';')
   );
   return `${header}\n${body.join('\n')}`;
 }
 
 function escapeCsvValue(value) {
-  const normalized = String(value || '');
+  const normalized = value === null || value === undefined ? '' : String(value);
   const neutralized = /^[=+\-@]/.test(normalized) ? `'${normalized}` : normalized;
-  if (/[;"\n]/.test(neutralized)) {
+  if (/[;,"\r\n]/.test(neutralized)) {
     return `"${neutralized.replace(/"/g, '""')}"`;
   }
   return neutralized;
@@ -1221,6 +1306,7 @@ module.exports = {
   getCatalogImport,
   cancelCatalogImport,
   confirmCatalogImport,
+  buildCanonicalImportErrors,
   buildCatalogImportErrorCsv,
   buildCatalogImportTemplateCsv,
   detectDelimiter,
