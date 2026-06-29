@@ -143,6 +143,33 @@ const missingCategoryCreateAnalysis = analyzeRows(
 assert.strictEqual(missingCategoryCreateAnalysis.previewRows[0].status, 'valid');
 assert.strictEqual(missingCategoryCreateAnalysis.previewRows[0].errors.length, 0);
 assert.strictEqual(missingCategoryCreateAnalysis.previewRows[0].values.categoryName, 'Prueba Importacion');
+assert.strictEqual(missingCategoryCreateAnalysis.previewRows[0].values.categoryPendingCreation, true);
+assert.strictEqual(missingCategoryCreateAnalysis.stats.newCategories, 1);
+
+const repeatedMissingCategoryCreateAnalysis = analyzeRows(
+  [
+    ['Nombre', 'Categoria', 'Precio', 'Stock', 'SKU'],
+    ['Termo de prueba', 'Prueba Importacion', '1500', '4', 'TERM-01'],
+    ['Mate de prueba', ' prueba importación ', '1800', '2', 'MATE-01']
+  ],
+  {
+    hasHeaders: true,
+    duplicatePolicy: 'skip',
+    categoryPolicy: 'create_missing',
+    importPolicy: 'valid_only',
+    mapping: {
+      column_0: 'name',
+      column_1: 'categoryName',
+      column_2: 'price',
+      column_3: 'stock',
+      column_4: 'sku'
+    }
+  },
+  emptySnapshot()
+);
+
+assert.strictEqual(repeatedMissingCategoryCreateAnalysis.stats.newCategories, 1);
+assert.strictEqual(repeatedMissingCategoryCreateAnalysis.previewRows.every((row) => row.values.categoryPendingCreation === true), true);
 
 const structuredTxt = parseStructuredFile(
   {

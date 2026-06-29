@@ -531,6 +531,7 @@ function analyzeRows(rows, options, catalogSnapshot) {
   const errors = [];
   const normalizedRows = [];
   let ignoredEmptyRows = 0;
+  const pendingNewCategoryNames = new Set();
 
   const productBySku = new Map();
   const productByNameCategory = new Map();
@@ -581,6 +582,7 @@ function analyzeRows(rows, options, catalogSnapshot) {
     const currency = normalizeString(values.currency) || 'ARS';
     const image = values.imageUrl === undefined ? null : buildImagePayload(values.imageUrl);
     const category = normalizedCategoryKey ? categoriesByNormalizedName.get(normalizedCategoryKey) || null : null;
+    const categoryPendingCreation = Boolean(!category && normalizedCategoryInput && options.categoryPolicy === 'create_missing');
 
     if (!normalizedName) {
       rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Nombre', value: values.name, code: 'missing_name' }));
@@ -648,6 +650,10 @@ function analyzeRows(rows, options, catalogSnapshot) {
       statusLabel = 'error';
     }
 
+    if (categoryPendingCreation && action !== 'error' && action !== 'skip_duplicate') {
+      pendingNewCategoryNames.add(normalizedCategoryKey);
+    }
+
     normalizedRows.push({
       sourceRowNumber,
       status: statusLabel,
@@ -665,7 +671,8 @@ function analyzeRows(rows, options, catalogSnapshot) {
         status: STATUS_VALUES.has(status) ? status : 'active',
         currency,
         image,
-        existingCategoryId: category ? category.id : null
+        existingCategoryId: category ? category.id : null,
+        categoryPendingCreation
       }
     });
 
@@ -678,7 +685,8 @@ function analyzeRows(rows, options, catalogSnapshot) {
     warningRows: normalizedRows.filter((row) => row.status === 'warning').length,
     errorRows: normalizedRows.filter((row) => row.status === 'error').length,
     duplicateRows: normalizedRows.filter((row) => row.status === 'duplicated' || row.action === 'update').length,
-    ignoredRows: normalizedRows.filter((row) => row.status === 'ignored').length + ignoredEmptyRows
+    ignoredRows: normalizedRows.filter((row) => row.status === 'ignored').length + ignoredEmptyRows,
+    newCategories: pendingNewCategoryNames.size
   };
 
   return {
