@@ -20,6 +20,14 @@ const {
   findProductCategoryByName,
   createProductCategory
 } = require('../repositories/product-categories.repository');
+const {
+  listInventoryLots,
+  createInventoryLot,
+  insertInventoryMovement,
+  syncProductStockFromLots,
+  setProductInventoryTrackingMode
+} = require('../repositories/inventory.repository');
+const { calculateInventoryExpirationStatus } = require('../utils/inventory-expiration');
 
 const MAX_FILE_SIZE_BYTES = Number(process.env.CATALOG_IMPORT_MAX_FILE_SIZE_BYTES || 10 * 1024 * 1024);
 const MAX_ROWS = Number(process.env.CATALOG_IMPORT_MAX_ROWS || 10000);
@@ -33,6 +41,21 @@ const STATUS_VALUES = new Set(['active', 'archived']);
 const DUPLICATE_POLICIES = new Set(['skip', 'update', 'cancel']);
 const CATEGORY_POLICIES = new Set(['reject_missing', 'create_missing']);
 const IMPORT_POLICIES = new Set(['valid_only', 'fail_on_error']);
+const LOT_DUPLICATE_POLICIES = new Set(['reject_duplicate']);
+const LEGACY_STOCK_POLICIES = new Set(['create_initial_lot']);
+const EXPIRED_LOT_POLICIES = new Set(['reject_expired', 'import_expired']);
+const LOT_FIELDS = new Set([
+  'lotNumber',
+  'receivedAt',
+  'manufacturedAt',
+  'expiresAt',
+  'lotQuantity',
+  'lotUnitCost',
+  'warehouseName',
+  'locationName',
+  'lotSupplierName',
+  'lotNotes'
+]);
 const IMPORTABLE_FIELDS = [
   'name',
   'description',
@@ -52,7 +75,17 @@ const IMPORTABLE_FIELDS = [
   'sku',
   'active',
   'currency',
-  'imageUrl'
+  'imageUrl',
+  'lotNumber',
+  'receivedAt',
+  'manufacturedAt',
+  'expiresAt',
+  'lotQuantity',
+  'lotUnitCost',
+  'warehouseName',
+  'locationName',
+  'lotSupplierName',
+  'lotNotes'
 ];
 const FIELD_LABELS = {
   name: 'Nombre',
@@ -73,7 +106,17 @@ const FIELD_LABELS = {
   sku: 'SKU',
   active: 'Activo',
   currency: 'Moneda',
-  imageUrl: 'Imagen URL'
+  imageUrl: 'Imagen URL',
+  lotNumber: 'Numero de lote',
+  receivedAt: 'Fecha de recepcion',
+  manufacturedAt: 'Fecha de fabricacion',
+  expiresAt: 'Fecha de vencimiento',
+  lotQuantity: 'Cantidad del lote',
+  lotUnitCost: 'Costo unitario del lote',
+  warehouseName: 'Deposito',
+  locationName: 'Ubicacion',
+  lotSupplierName: 'Proveedor del lote',
+  lotNotes: 'Notas del lote'
 };
 
 const FIELD_ALIASES = new Map([
@@ -134,7 +177,54 @@ const FIELD_ALIASES = new Map([
   ['imagenurl', 'imageUrl'],
   ['imageurl', 'imageUrl'],
   ['urlimagen', 'imageUrl'],
-  ['urlfoto', 'imageUrl']
+  ['urlfoto', 'imageUrl'],
+  ['lote', 'lotNumber'],
+  ['nrolote', 'lotNumber'],
+  ['numerolote', 'lotNumber'],
+  ['numerodelote', 'lotNumber'],
+  ['lot', 'lotNumber'],
+  ['lotnumber', 'lotNumber'],
+  ['batch', 'lotNumber'],
+  ['batchnumber', 'lotNumber'],
+  ['fecharecepcion', 'receivedAt'],
+  ['fechaderecepcion', 'receivedAt'],
+  ['receivedat', 'receivedAt'],
+  ['receiveddate', 'receivedAt'],
+  ['fechafabricacion', 'manufacturedAt'],
+  ['fechadefabricacion', 'manufacturedAt'],
+  ['manufacturedat', 'manufacturedAt'],
+  ['manufactureddate', 'manufacturedAt'],
+  ['fabricado', 'manufacturedAt'],
+  ['vencimiento', 'expiresAt'],
+  ['fechavencimiento', 'expiresAt'],
+  ['fechadevencimiento', 'expiresAt'],
+  ['vence', 'expiresAt'],
+  ['expira', 'expiresAt'],
+  ['expiresat', 'expiresAt'],
+  ['expirationdate', 'expiresAt'],
+  ['expirydate', 'expiresAt'],
+  ['cantidadlote', 'lotQuantity'],
+  ['cantidaddellote', 'lotQuantity'],
+  ['lotquantity', 'lotQuantity'],
+  ['batchquantity', 'lotQuantity'],
+  ['cantidadrecibida', 'lotQuantity'],
+  ['costolote', 'lotUnitCost'],
+  ['costounitariolote', 'lotUnitCost'],
+  ['lotunitcost', 'lotUnitCost'],
+  ['deposito', 'warehouseName'],
+  ['almacen', 'warehouseName'],
+  ['warehouse', 'warehouseName'],
+  ['warehousename', 'warehouseName'],
+  ['ubicacion', 'locationName'],
+  ['location', 'locationName'],
+  ['locationname', 'locationName'],
+  ['proveedorlote', 'lotSupplierName'],
+  ['proveedordellote', 'lotSupplierName'],
+  ['lotsupplier', 'lotSupplierName'],
+  ['lotsuppliername', 'lotSupplierName'],
+  ['notaslote', 'lotNotes'],
+  ['notasdellote', 'lotNotes'],
+  ['lotnotes', 'lotNotes']
 ]);
 
 function normalizeString(value) {
@@ -317,9 +407,15 @@ function extractColumns(rows, hasHeaders) {
 }
 
 function suggestMapping(columns) {
+  const headerTargets = (columns || []).map((column) => FIELD_ALIASES.get(normalizeHeaderKey(column.label))).filter(Boolean);
+  const hasLotContext = headerTargets.some((target) => LOT_FIELDS.has(target) && target !== 'lotQuantity');
   const used = new Set();
   return columns.reduce((accumulator, column) => {
-    const suggested = FIELD_ALIASES.get(normalizeHeaderKey(column.label));
+    const headerKey = normalizeHeaderKey(column.label);
+    let suggested = FIELD_ALIASES.get(headerKey);
+    if (hasLotContext && suggested === 'stock' && ['cantidad', 'quantity', 'qty'].includes(headerKey)) {
+      suggested = 'lotQuantity';
+    }
     if (!suggested || used.has(suggested)) {
       accumulator[column.key] = null;
       return accumulator;
@@ -396,6 +492,12 @@ function parseDecimalString(value) {
   return quantizeDecimal(canonical, 2, NaN);
 }
 
+function parsePositiveDecimal(value) {
+  const parsed = parseDecimalString(value);
+  if (parsed === null || Number.isNaN(parsed)) return null;
+  return Number(parsed);
+}
+
 function parseIntegerString(value) {
   if (typeof value === 'number') {
     if (!Number.isInteger(value)) return null;
@@ -413,6 +515,67 @@ function parseBooleanStatus(value) {
   if (['si', 'sí', 'true', '1', 'activo', 'active'].includes(normalized)) return 'active';
   if (['no', 'false', '0', 'inactivo', 'archivado', 'archived'].includes(normalized)) return 'archived';
   return '__invalid__';
+}
+
+function isValidDateParts(year, month, day) {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+  if (year < 1900 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function formatDateOnly(year, month, day) {
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function parseDateOnlyValue(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return formatDateOnly(value.getFullYear(), value.getMonth() + 1, value.getDate());
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed && isValidDateParts(parsed.y, parsed.m, parsed.d)) {
+      return formatDateOnly(parsed.y, parsed.m, parsed.d);
+    }
+    return '__invalid__';
+  }
+
+  const raw = normalizeString(value);
+  if (!raw) return null;
+  let match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:T.*)?$/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    return isValidDateParts(year, month, day) ? formatDateOnly(year, month, day) : '__invalid__';
+  }
+  match = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (match) {
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const year = Number(match[3]);
+    return isValidDateParts(year, month, day) ? formatDateOnly(year, month, day) : '__invalid__';
+  }
+  return '__invalid__';
+}
+
+function todayDateOnly() {
+  const now = new Date();
+  return formatDateOnly(now.getFullYear(), now.getMonth() + 1, now.getDate());
+}
+
+function normalizeLotKey(value) {
+  return normalizeLooseKey(value).replace(/\s+/g, '').toUpperCase();
+}
+
+function countUniqueRows(rows, predicate, keySelector) {
+  const keys = new Set();
+  for (const row of rows) {
+    if (!predicate(row)) continue;
+    keys.add(keySelector(row) || `row-${row.sourceRowNumber}`);
+  }
+  return keys.size;
 }
 
 function buildImagePayload(value) {
@@ -483,6 +646,28 @@ function translateRowIssue(issue) {
       return 'La categoria no existe y la politica actual no permite crearla.';
     case 'duplicate_cancelled':
       return 'La politica actual cancela filas duplicadas.';
+    case 'missing_product_identity':
+      return 'La fila necesita producto, SKU o codigo de barras para aplicar el lote.';
+    case 'missing_lot_quantity':
+      return 'La cantidad del lote es obligatoria.';
+    case 'invalid_lot_quantity':
+      return 'La cantidad del lote debe ser un numero valido mayor a cero.';
+    case 'invalid_lot_unit_cost':
+      return 'El costo unitario del lote debe ser un numero valido.';
+    case 'negative_lot_unit_cost':
+      return 'El costo unitario del lote no puede ser negativo.';
+    case 'invalid_lot_date':
+      return 'La fecha del lote no es valida.';
+    case 'lot_date_order':
+      return 'Las fechas del lote no respetan el orden esperado.';
+    case 'expired_lot_rejected':
+      return 'El lote esta vencido y la politica actual no permite importarlo.';
+    case 'duplicate_lot_in_file':
+      return 'Hay un lote duplicado para el mismo producto dentro del archivo.';
+    case 'duplicate_lot_existing':
+      return 'Ya existe un lote con ese numero para el producto.';
+    case 'lot_product_not_found':
+      return 'No encontramos el producto para aplicar esta entrada de lote.';
     default:
       return 'La fila tiene datos invalidos.';
   }
@@ -502,6 +687,9 @@ function buildImportConfig(options = {}) {
   const duplicatePolicy = DUPLICATE_POLICIES.has(options.duplicatePolicy) ? options.duplicatePolicy : 'skip';
   const categoryPolicy = CATEGORY_POLICIES.has(options.categoryPolicy) ? options.categoryPolicy : 'reject_missing';
   const importPolicy = IMPORT_POLICIES.has(options.importPolicy) ? options.importPolicy : 'valid_only';
+  const lotDuplicatePolicy = LOT_DUPLICATE_POLICIES.has(options.lotDuplicatePolicy) ? options.lotDuplicatePolicy : 'reject_duplicate';
+  const legacyStockPolicy = LEGACY_STOCK_POLICIES.has(options.legacyStockPolicy) ? options.legacyStockPolicy : 'create_initial_lot';
+  const expiredLotPolicy = EXPIRED_LOT_POLICIES.has(options.expiredLotPolicy) ? options.expiredLotPolicy : 'reject_expired';
   const hasHeaders = options.hasHeaders !== undefined ? options.hasHeaders === true : true;
   return {
     sheetName: normalizeString(options.sheetName) || null,
@@ -510,6 +698,9 @@ function buildImportConfig(options = {}) {
     duplicatePolicy,
     categoryPolicy,
     importPolicy,
+    lotDuplicatePolicy,
+    legacyStockPolicy,
+    expiredLotPolicy,
     mapping: options.mapping && typeof options.mapping === 'object' ? options.mapping : {}
   };
 }
@@ -616,21 +807,38 @@ function analyzeRows(rows, options, catalogSnapshot) {
     Object.keys(options.mapping || {}).length > 0 ? options.mapping : suggestMapping(columns),
     columns
   );
+  const mappedTargets = Object.values(mapping).filter(Boolean);
+  const hasLotMapping = mappedTargets.some((target) => LOT_FIELDS.has(target));
+  const recommendation = {
+    type: hasLotMapping ? 'products_and_lots' : mappedTargets.includes('stock') ? 'products_with_simple_stock' : 'products',
+    hasLotFields: hasLotMapping,
+    duplicateLotRule: 'tenant_product_normalized_lot_number',
+    emptyLotNumberRule: 'allowed_with_warning_unique_receipt',
+    legacyStockPolicy: options.legacyStockPolicy || 'create_initial_lot',
+    expiredLotPolicy: options.expiredLotPolicy || 'reject_expired'
+  };
 
   const skuSeen = new Map();
   const nameCategorySeen = new Map();
+  const lotSeen = new Map();
   const errors = [];
   const normalizedRows = [];
   let ignoredEmptyRows = 0;
   const pendingNewCategoryNames = new Set();
 
   const productBySku = new Map();
+  const productByBarcode = new Map();
   const productByNameCategory = new Map();
+  const productByName = new Map();
   for (const product of catalogSnapshot.products) {
     const skuKey = normalizeSkuKey(product.sku);
     if (skuKey) productBySku.set(skuKey, product);
+    const barcodeKey = normalizeSkuKey(product.barcode);
+    if (barcodeKey) productByBarcode.set(barcodeKey, product);
     const composite = normalizeNameCategoryKey(product.name, product.categoryName);
     if (composite) productByNameCategory.set(composite, product);
+    const nameKey = normalizeLooseKey(product.name);
+    if (nameKey && !productByName.has(nameKey)) productByName.set(nameKey, product);
   }
 
   const categoriesByNormalizedName = new Map();
@@ -692,8 +900,24 @@ function analyzeRows(rows, options, catalogSnapshot) {
     const image = values.imageUrl === undefined ? null : buildImagePayload(values.imageUrl);
     const category = normalizedCategoryKey ? categoriesByNormalizedName.get(normalizedCategoryKey) || null : null;
     const categoryPendingCreation = Boolean(!category && normalizedCategoryInput && options.categoryPolicy === 'create_missing');
+    const rowHasLotFields =
+      hasLotMapping &&
+      Array.from(LOT_FIELDS).some((field) => values[field] !== undefined && normalizeString(values[field]) !== '');
+    const lotNumber = normalizeString(values.lotNumber) || null;
+    const lotQuantity =
+      values.lotQuantity === undefined || values.lotQuantity === '' ? null : parsePositiveDecimal(values.lotQuantity);
+    const lotUnitCost =
+      values.lotUnitCost === undefined || values.lotUnitCost === '' ? null : parsePositiveDecimal(values.lotUnitCost);
+    const receivedDate = values.receivedAt === undefined || values.receivedAt === '' ? null : parseDateOnlyValue(values.receivedAt);
+    const receivedAt = receivedDate && receivedDate !== '__invalid__' ? `${receivedDate}T12:00:00.000Z` : receivedDate;
+    const manufacturedAt = values.manufacturedAt === undefined || values.manufacturedAt === '' ? null : parseDateOnlyValue(values.manufacturedAt);
+    const expiresAt = values.expiresAt === undefined || values.expiresAt === '' ? null : parseDateOnlyValue(values.expiresAt);
+    const warehouseName = normalizeString(values.warehouseName) || null;
+    const locationName = normalizeString(values.locationName) || null;
+    const lotSupplierName = normalizeString(values.lotSupplierName) || normalizedDefaultSupplier || null;
+    const lotNotes = normalizeString(values.lotNotes) || null;
 
-    if (!normalizedName) {
+    if (!normalizedName && !rowHasLotFields) {
       rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Nombre', value: values.name, code: 'missing_name' }));
     }
 
@@ -733,28 +957,99 @@ function analyzeRows(rows, options, catalogSnapshot) {
       rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Imagen URL', value: values.imageUrl, code: 'invalid_image_url' }));
     }
 
+    if (rowHasLotFields) {
+      if (!normalizedName && !sku && !normalizedBarcode) {
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Producto', value: values.name || values.sku || values.barcode, code: 'missing_product_identity' }));
+      }
+      if (values.lotQuantity === undefined || values.lotQuantity === '') {
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Cantidad del lote', value: values.lotQuantity, code: 'missing_lot_quantity' }));
+      } else if (lotQuantity === null || lotQuantity <= 0) {
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Cantidad del lote', value: values.lotQuantity, code: 'invalid_lot_quantity' }));
+      }
+      if (lotUnitCost === null && values.lotUnitCost !== undefined && values.lotUnitCost !== '') {
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Costo unitario del lote', value: values.lotUnitCost, code: 'invalid_lot_unit_cost' }));
+      } else if (lotUnitCost !== null && lotUnitCost < 0) {
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Costo unitario del lote', value: values.lotUnitCost, code: 'negative_lot_unit_cost' }));
+      }
+      for (const [field, parsed] of [
+        ['Fecha de recepcion', receivedAt],
+        ['Fecha de fabricacion', manufacturedAt],
+        ['Fecha de vencimiento', expiresAt]
+      ]) {
+        if (parsed === '__invalid__') {
+          rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field, value: values[field], code: 'invalid_lot_date' }));
+        }
+      }
+      if (manufacturedAt && receivedDate && manufacturedAt > receivedDate) {
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Fecha de fabricacion', value: values.manufacturedAt, code: 'lot_date_order' }));
+      }
+      if (receivedDate && expiresAt && receivedDate > expiresAt) {
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Fecha de vencimiento', value: values.expiresAt, code: 'lot_date_order' }));
+      }
+      if (expiresAt && expiresAt !== '__invalid__' && expiresAt < todayDateOnly() && options.expiredLotPolicy !== 'import_expired') {
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Fecha de vencimiento', value: values.expiresAt, code: 'expired_lot_rejected' }));
+      }
+      if (!lotNumber) {
+        rowWarnings.push('El lote no tiene numero; se importara como recepcion sin identificador de lote.');
+      }
+      if (values.stock !== undefined && values.stock !== '') {
+        rowWarnings.push('La columna Stock se ignora en importaciones por lote; el stock sale de la suma de lotes activos.');
+      }
+    }
+
     if (!category && normalizedCategoryInput && options.categoryPolicy === 'reject_missing') {
       rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Categoria', value: normalizedCategoryInput, code: 'missing_category' }));
     }
 
     const skuKey = normalizeSkuKey(sku);
+    const barcodeKey = normalizeSkuKey(normalizedBarcode);
     const nameCategoryKey = normalizeNameCategoryKey(normalizedName, normalizedCategoryInput || category?.name || '');
+    const nameKey = normalizeLooseKey(normalizedName);
     const duplicateInFile =
-      (skuKey && skuSeen.has(skuKey)) ||
-      (!skuKey && nameCategoryKey && nameCategorySeen.has(nameCategoryKey));
+      !rowHasLotFields &&
+      ((skuKey && skuSeen.has(skuKey)) ||
+        (!skuKey && nameCategoryKey && nameCategorySeen.has(nameCategoryKey)));
 
     if (duplicateInFile) {
       rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: skuKey ? 'SKU' : 'Nombre', value: sku || normalizedName, code: 'duplicate_in_file' }));
     }
 
-    if (skuKey) skuSeen.set(skuKey, sourceRowNumber);
-    if (nameCategoryKey) nameCategorySeen.set(nameCategoryKey, sourceRowNumber);
+    if (!rowHasLotFields) {
+      if (skuKey) skuSeen.set(skuKey, sourceRowNumber);
+      if (nameCategoryKey) nameCategorySeen.set(nameCategoryKey, sourceRowNumber);
+    }
 
-    const duplicateExisting = (skuKey && productBySku.get(skuKey)) || (!skuKey ? productByNameCategory.get(nameCategoryKey) : null);
+    const duplicateExisting =
+      (skuKey && productBySku.get(skuKey)) ||
+      (barcodeKey && productByBarcode.get(barcodeKey)) ||
+      (!skuKey && !barcodeKey && nameCategoryKey ? productByNameCategory.get(nameCategoryKey) : null) ||
+      (!skuKey && !barcodeKey && nameKey ? productByName.get(nameKey) : null);
     let action = 'create';
     let statusLabel = 'valid';
 
-    if (duplicateExisting) {
+    if (rowHasLotFields) {
+      if (!duplicateExisting && !normalizedName) {
+        action = 'error';
+        statusLabel = 'error';
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Producto', value: sku || normalizedBarcode || normalizedName, code: 'lot_product_not_found' }));
+      } else {
+        action = duplicateExisting ? 'create_lot' : 'create_with_lot';
+        if (duplicateExisting?.inventoryTrackingMode !== 'lot_based' && Number(duplicateExisting?.stock || 0) > 0) {
+          statusLabel = 'warning';
+          rowWarnings.push('El producto tiene stock legacy; se creara un lote INICIAL antes de importar el lote nuevo.');
+        }
+      }
+
+      const identityKey = duplicateExisting?.id || skuKey || barcodeKey || nameCategoryKey || nameKey || `row-${sourceRowNumber}`;
+      const lotKey = lotNumber ? normalizeLotKey(lotNumber) : `__empty__${sourceRowNumber}`;
+      const duplicateLotKey = `${identityKey}::${lotKey}`;
+      if (lotNumber && lotSeen.has(duplicateLotKey)) {
+        action = 'error';
+        statusLabel = 'error';
+        rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Numero de lote', value: lotNumber, code: 'duplicate_lot_in_file' }));
+      }
+      lotSeen.set(duplicateLotKey, sourceRowNumber);
+    } else if (duplicateExisting) {
       if (options.duplicatePolicy === 'skip') {
         action = 'skip_duplicate';
         statusLabel = 'duplicated';
@@ -808,7 +1103,23 @@ function analyzeRows(rows, options, catalogSnapshot) {
         currency,
         image,
         existingCategoryId: category ? category.id : null,
-        categoryPendingCreation
+        categoryPendingCreation,
+        hasLot: rowHasLotFields,
+        lotNumber,
+        receivedAt,
+        manufacturedAt,
+        expiresAt,
+        lotQuantity: lotQuantity === null || Number.isNaN(lotQuantity) ? null : lotQuantity,
+        lotUnitCost: lotUnitCost === null || Number.isNaN(lotUnitCost) ? null : lotUnitCost,
+        warehouseName,
+        locationName,
+        lotSupplierName,
+        lotNotes,
+        lotExpirationStatus:
+          expiresAt && expiresAt !== '__invalid__' ? calculateInventoryExpirationStatus(expiresAt).status : null,
+        existingProductInventoryTrackingMode: duplicateExisting?.inventoryTrackingMode || null,
+        existingProductStock: duplicateExisting ? Number(duplicateExisting.stock || 0) : null,
+        productImportKey: skuKey || barcodeKey || nameCategoryKey || nameKey || null
       }
     });
 
@@ -822,7 +1133,15 @@ function analyzeRows(rows, options, catalogSnapshot) {
     errorRows: normalizedRows.filter((row) => row.status === 'error').length,
     duplicateRows: normalizedRows.filter((row) => row.status === 'duplicated' || row.action === 'update').length,
     ignoredRows: normalizedRows.filter((row) => row.status === 'ignored').length + ignoredEmptyRows,
-    newCategories: pendingNewCategoryNames.size
+    newCategories: pendingNewCategoryNames.size,
+    lotRows: normalizedRows.filter((row) => row.values?.hasLot).length,
+    lotsToCreate: normalizedRows.filter((row) => row.values?.hasLot && row.status !== 'error').length,
+    productsToCreateWithLots: countUniqueRows(
+      normalizedRows,
+      (row) => row.action === 'create_with_lot' && row.status !== 'error',
+      (row) => row.values?.productImportKey
+    ),
+    legacyConversions: normalizedRows.filter((row) => row.values?.hasLot && row.values?.existingProductInventoryTrackingMode === 'legacy' && Number(row.values?.existingProductStock || 0) > 0 && row.status !== 'error').length
   };
 
   return {
@@ -833,7 +1152,8 @@ function analyzeRows(rows, options, catalogSnapshot) {
     errors,
     normalizedRows,
     previewRows: normalizedRows.slice(0, PREVIEW_LIMIT),
-    stats
+    stats,
+    recommendation
   };
 }
 
@@ -1061,6 +1381,180 @@ async function resolveCategoryIdForImport(clinicId, categoryName, categoryPolicy
   return { ok: true, categoryId: created.id, created: true };
 }
 
+async function findExistingLotByNumber(clinicId, productId, lotNumber, client) {
+  const normalized = normalizeLotKey(lotNumber);
+  if (!normalized) return null;
+  const lots = await listInventoryLots(clinicId, { productId, search: lotNumber, pageSize: 250 }, client);
+  return lots.find((lot) => normalizeLotKey(lot.lotNumber) === normalized) || null;
+}
+
+async function createLotWithMovement(context, importId, row, product, lotInput, movementType, reason, runtime, client) {
+  const lot = await createInventoryLot(
+    {
+      tenantId: context.clinic.id,
+      productId: product.id,
+      lotNumber: lotInput.lotNumber || null,
+      supplierName: lotInput.supplierName || null,
+      receivedAt: lotInput.receivedAt || null,
+      manufacturedAt: lotInput.manufacturedAt || null,
+      expiresAt: lotInput.expiresAt || null,
+      initialQuantity: lotInput.quantity,
+      availableQuantity: lotInput.quantity,
+      unitCost: lotInput.unitCost ?? null,
+      warehouseName: lotInput.warehouseName || null,
+      locationName: lotInput.locationName || null,
+      status: lotInput.status || 'active',
+      notes: lotInput.notes || null,
+      metadata: {
+        source: 'catalog_import',
+        importId,
+        sourceRowNumber: row.sourceRowNumber,
+        sourceFile: runtime.originalFileName || null,
+        auditAction: movementType === 'initial_stock' ? 'legacy_stock_preserved' : 'catalog_import_lot_created'
+      },
+      createdBy: context.actorId
+    },
+    client
+  );
+
+  await insertInventoryMovement(
+    {
+      tenantId: context.clinic.id,
+      productId: product.id,
+      lotId: lot.id,
+      movementType,
+      quantity: lotInput.quantity,
+      quantityBefore: 0,
+      quantityAfter: lotInput.quantity,
+      referenceType: 'catalog_import',
+      referenceId: importId,
+      reason,
+      metadata: {
+        source: 'catalog_import',
+        importId,
+        sourceRowNumber: row.sourceRowNumber,
+        lotNumber: lotInput.lotNumber || null
+      },
+      createdBy: context.actorId
+    },
+    client
+  );
+  runtime.summary.movementsCreated += 1;
+  return lot;
+}
+
+async function applyLotImport(context, row, importConfig, runtime, client, payload) {
+  const values = row.values || {};
+  let product = row.duplicateProductId ? await findProductById(row.duplicateProductId, context.clinic.id, client) : null;
+  const productImportKey = values.productImportKey || null;
+  if (!product && productImportKey && runtime.productsByImportIdentity.has(productImportKey)) {
+    product = runtime.productsByImportIdentity.get(productImportKey);
+  }
+
+  if (!product && values.name) {
+    product = await createProduct(
+      {
+        clinicId: context.clinic.id,
+        ...payload,
+        stock: 0,
+        inventoryTrackingMode: 'lot_based'
+      },
+      client
+    );
+    runtime.summary.created += 1;
+    if (productImportKey) runtime.productsByImportIdentity.set(productImportKey, product);
+  }
+
+  if (!product) {
+    runtime.summary.errors += 1;
+    runtime.results.push({
+      sourceRowNumber: row.sourceRowNumber,
+      status: 'error',
+      code: 'lot_product_not_found',
+      message: translateRowIssue('lot_product_not_found')
+    });
+    return;
+  }
+
+  const current = await findProductById(product.id, context.clinic.id, client);
+  product = current || product;
+  const duplicateLot = await findExistingLotByNumber(context.clinic.id, product.id, values.lotNumber, client);
+  if (duplicateLot && importConfig.lotDuplicatePolicy === 'reject_duplicate') {
+    runtime.summary.errors += 1;
+    runtime.results.push({
+      sourceRowNumber: row.sourceRowNumber,
+      status: 'error',
+      code: 'duplicate_lot_existing',
+      message: translateRowIssue('duplicate_lot_existing'),
+      productId: product.id,
+      lotId: duplicateLot.id
+    });
+    return;
+  }
+
+  const wasLegacy = product.inventoryTrackingMode !== 'lot_based';
+  const legacyStock = Math.max(0, Math.floor(Number(product.stock || 0)));
+
+  if (wasLegacy) {
+    await setProductInventoryTrackingMode(product.id, context.clinic.id, 'lot_based', client);
+    runtime.summary.productsConvertedToLots += 1;
+
+    if (legacyStock > 0 && importConfig.legacyStockPolicy === 'create_initial_lot' && !runtime.initialLotsCreatedForProducts.has(product.id)) {
+      const initialLotNumber = 'INICIAL';
+      const existingInitial = await findExistingLotByNumber(context.clinic.id, product.id, initialLotNumber, client);
+      if (!existingInitial) {
+        await createLotWithMovement(
+          context,
+          runtime.importId,
+          row,
+          product,
+          {
+            lotNumber: initialLotNumber,
+            quantity: legacyStock,
+            receivedAt: `${todayDateOnly()}T12:00:00.000Z`,
+            status: 'active',
+            notes: 'Stock legacy preservado al activar inventario por lotes'
+          },
+          'initial_stock',
+          'Stock inicial previo a importacion por lotes',
+          runtime,
+          client
+        );
+        runtime.summary.initialLotsCreated += 1;
+      }
+      runtime.initialLotsCreatedForProducts.add(product.id);
+    }
+  }
+
+  const isExpired = values.expiresAt && calculateInventoryExpirationStatus(values.expiresAt).status === 'expired';
+  const lot = await createLotWithMovement(
+    context,
+    runtime.importId,
+    row,
+    product,
+    {
+      lotNumber: values.lotNumber || null,
+      quantity: values.lotQuantity,
+      unitCost: values.lotUnitCost ?? values.cost ?? null,
+      supplierName: values.lotSupplierName || values.defaultSupplier || null,
+      receivedAt: values.receivedAt || null,
+      manufacturedAt: values.manufacturedAt || null,
+      expiresAt: values.expiresAt || null,
+      warehouseName: values.warehouseName || null,
+      locationName: values.locationName || null,
+      status: isExpired ? 'expired' : 'active',
+      notes: values.lotNotes || null
+    },
+    'purchase_receipt',
+    'Importacion de lote de catalogo',
+    runtime,
+    client
+  );
+  runtime.summary.lotsCreated += 1;
+  await syncProductStockFromLots(product.id, context.clinic.id, client);
+  runtime.results.push({ sourceRowNumber: row.sourceRowNumber, status: row.action === 'create_with_lot' ? 'created' : 'updated', productId: product.id, lotId: lot.id });
+}
+
 async function applyRowImport(context, row, importConfig, runtime, client) {
   if (row.status === 'ignored') {
     runtime.summary.ignored += 1;
@@ -1133,6 +1627,11 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
     image: values.image || null,
     metadata: {}
   };
+
+  if (values.hasLot) {
+    await applyLotImport(context, row, importConfig, runtime, client, payload);
+    return;
+  }
 
   if (row.action === 'update' && row.duplicateProductId) {
     const current = await findProductById(row.duplicateProductId, context.clinic.id, client);
@@ -1257,16 +1756,24 @@ async function confirmCatalogImport(tenantId, importId, actor = {}) {
 
     const existingCategories = await listProductCategoriesByClinicId(context.clinic.id, { includeInactive: true }, client);
     const runtime = {
+      importId,
+      originalFileName: importJob.originalFileName || null,
       categoriesByName: new Map(
         (Array.isArray(existingCategories) ? existingCategories : []).map((category) => [normalizeCategoryName(category.name), category])
       ),
+      initialLotsCreatedForProducts: new Set(),
+      productsByImportIdentity: new Map(),
       summary: {
         created: 0,
         updated: 0,
         skippedDuplicates: 0,
         errors: 0,
         ignored: 0,
-        createdCategories: 0
+        createdCategories: 0,
+        lotsCreated: 0,
+        initialLotsCreated: 0,
+        movementsCreated: 0,
+        productsConvertedToLots: 0
       },
       results: []
     };
@@ -1308,6 +1815,10 @@ async function confirmCatalogImport(tenantId, importId, actor = {}) {
         skippedDuplicates: runtime.summary.skippedDuplicates,
         errors: runtime.summary.errors,
         createdCategories: runtime.summary.createdCategories,
+        lotsCreated: runtime.summary.lotsCreated,
+        initialLotsCreated: runtime.summary.initialLotsCreated,
+        movementsCreated: runtime.summary.movementsCreated,
+        productsConvertedToLots: runtime.summary.productsConvertedToLots,
         processingTimeMs: durationMs
       },
       client
@@ -1454,6 +1965,22 @@ function buildCatalogImportTemplateCsv() {
   ].join('\n');
 }
 
+function buildCatalogImportTemplateWorkbookBuffer() {
+  const workbook = XLSX.utils.book_new();
+  const productsRows = [
+    ['Nombre', 'Descripcion', 'Categoria', 'Subcategoria', 'Marca', 'Fabricante', 'Codigo de barras', 'Unidad', 'Costo', 'Precio', 'Stock', 'SKU', 'Proveedor habitual', 'Peso', 'Unidad de peso', 'Presentacion', 'Activo', 'Moneda', 'Imagen URL', 'Sabor'],
+    ['Yogur natural 1 kg', 'Producto de ejemplo', 'Lacteos', 'Yogures', 'Opturon Foods', 'Planta Norte', '7790000001019', 'unidad', 1200, 2200, 60, 'YOG-NAT-1KG', 'Proveedor Centro', 1, 'kg', 'Pote 1 kg', 'si', 'ARS', 'https://ejemplo.com/yogur.jpg', 'Natural']
+  ];
+  const lotsRows = [
+    ['Nombre', 'Categoria', 'Precio', 'SKU', 'Unidad', 'Proveedor habitual', 'Numero de lote', 'Cantidad del lote', 'Fecha de vencimiento', 'Fecha de recepcion', 'Fecha de fabricacion', 'Costo unitario del lote', 'Deposito', 'Ubicacion', 'Proveedor del lote', 'Notas del lote'],
+    ['Yogur natural 1 kg', 'Lacteos', 2200, 'YOG-NAT-1KG', 'unidad', 'Proveedor Centro', 'A123', 20, '2026-07-06', '2026-06-30', '2026-06-28', 1200, 'Central', 'Heladera 1', 'Proveedor Centro', 'Ejemplo: borrar antes de importar'],
+    ['Yogur natural 1 kg', 'Lacteos', 2200, 'YOG-NAT-1KG', 'unidad', 'Proveedor Centro', 'B456', 40, '2026-07-20', '2026-06-30', '2026-06-28', 1200, 'Central', 'Heladera 2', 'Proveedor Centro', 'Ejemplo: borrar antes de importar']
+  ];
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(productsRows), 'Productos');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(lotsRows), 'Productos y lotes');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
 module.exports = {
   MAX_FILE_SIZE_BYTES,
   MAX_ROWS,
@@ -1467,9 +1994,11 @@ module.exports = {
   buildCanonicalImportErrors,
   buildCatalogImportErrorCsv,
   buildCatalogImportTemplateCsv,
+  buildCatalogImportTemplateWorkbookBuffer,
   detectDelimiter,
   splitDelimitedLine,
   suggestMapping,
   analyzeRows,
-  parseStructuredFile
+  parseStructuredFile,
+  parseDateOnlyValue
 };

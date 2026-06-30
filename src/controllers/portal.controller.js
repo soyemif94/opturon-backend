@@ -65,7 +65,8 @@ const {
   cancelCatalogImport,
   confirmCatalogImport,
   buildCatalogImportErrorCsv,
-  buildCatalogImportTemplateCsv
+  buildCatalogImportTemplateCsv,
+  buildCatalogImportTemplateWorkbookBuffer
 } = require('../services/catalog-imports.service');
 const {
   listPortalUsers,
@@ -1220,11 +1221,11 @@ async function getPortalCatalogImportErrors(req, res) {
 
 async function getPortalCatalogImportTemplate(req, res) {
   try {
-    const csv = buildCatalogImportTemplateCsv();
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="catalog-import-template.csv"');
+    const workbook = buildCatalogImportTemplateWorkbookBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="catalog-import-template.xlsx"');
     res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).send(`\uFEFF${csv}`);
+    return res.status(200).send(workbook);
   } catch (error) {
     return res.status(500).json({
       success: false,
