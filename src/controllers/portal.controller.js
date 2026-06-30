@@ -464,6 +464,7 @@ async function postPortalOrder(req, res) {
           ? 400
           : result.reason === 'order_item_product_inactive' ||
               result.reason === 'order_item_product_archived' ||
+              result.reason === 'order_item_lot_based_not_supported' ||
               result.reason === 'order_item_insufficient_stock'
             ? 409
             : 404;

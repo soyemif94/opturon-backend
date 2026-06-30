@@ -868,6 +868,13 @@ async function createOrderForContext(context, payload) {
           if (String(product.status || '').toLowerCase() !== 'active') {
             return buildError(context.tenantId, 'order_item_product_archived', `Product ${product.name} is archived.`);
           }
+          if (product.inventoryTrackingMode === 'lot_based') {
+            return buildError(
+              context.tenantId,
+              'order_item_lot_based_not_supported',
+              `Product ${product.name} uses lot-based inventory. Lot allocation is not enabled for orders yet.`
+            );
+          }
           if (Number(product.stock) < item.quantity) {
             return buildError(
               context.tenantId,
