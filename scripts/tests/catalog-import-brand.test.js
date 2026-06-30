@@ -25,7 +25,7 @@ const mapping = suggestMapping([
 
 assert.strictEqual(mapping.column_0, 'name');
 assert.strictEqual(mapping.column_1, 'brand');
-assert.strictEqual(mapping.column_2, null);
+assert.strictEqual(mapping.column_2, 'manufacturer');
 assert.strictEqual(mapping.column_3, null);
 assert.strictEqual(mapping.column_4, null);
 
@@ -61,19 +61,21 @@ assert.strictEqual(analysis.previewRows[3].values.brand, 'Ñandú Ágil');
 assert.strictEqual(analysis.previewRows.every((row) => row.errors.length === 0), true);
 
 const templateCsv = buildCatalogImportTemplateCsv();
-assert.match(templateCsv, /Nombre;Descripcion;Categoria;Marca;Precio;Stock;SKU;Activo;Moneda;Imagen URL/);
+assert.match(templateCsv, /Nombre;Descripcion;Categoria;Subcategoria;Marca;Fabricante;Codigo de barras;Unidad;Costo;Precio;Stock;SKU;Proveedor habitual;Peso;Unidad de peso;Presentacion;Activo;Moneda;Imagen URL;Sabor/);
 
 const importSource = read('src/services/catalog-imports.service.js');
-assert.match(importSource, /const IMPORTABLE_FIELDS = \['name', 'description', 'categoryName', 'brand'/);
+assert.match(importSource, /'manufacturer'/);
 assert.match(importSource, /\['marca', 'brand'\]/);
-assert.match(importSource, /\['fabricante', 'brand'\]/);
-assert.match(importSource, /\['manufacturer', 'brand'\]/);
+assert.match(importSource, /\['fabricante', 'manufacturer'\]/);
+assert.match(importSource, /\['manufacturer', 'manufacturer'\]/);
 assert.match(importSource, /brand: values\.brand \|\| null/);
 assert.match(importSource, /brand: values\.brand !== undefined \? payload\.brand : current\.brand/);
+assert.match(importSource, /manufacturer: values\.manufacturer \|\| null/);
 
 const repositorySource = read('src/repositories/products.repository.js');
-assert.match(repositorySource, /const brand = String\(catalog\.brand \|\| ''\)\.trim\(\) \|\| null/);
-assert.match(repositorySource, /brand: String\(input\.brand \|\| ''\)\.trim\(\) \|\| null/);
+assert.match(repositorySource, /const brand = normalizeCatalogText\(catalog\.brand\)/);
+assert.match(repositorySource, /manufacturer: normalizeCatalogText\(input\.manufacturer\)/);
 assert.match(repositorySource, /brand: catalogMetadata\.brand/);
+assert.match(repositorySource, /manufacturer: catalogMetadata\.manufacturer/);
 
 console.log('catalog-import-brand.test.js passed');

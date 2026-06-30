@@ -33,12 +33,41 @@ const STATUS_VALUES = new Set(['active', 'archived']);
 const DUPLICATE_POLICIES = new Set(['skip', 'update', 'cancel']);
 const CATEGORY_POLICIES = new Set(['reject_missing', 'create_missing']);
 const IMPORT_POLICIES = new Set(['valid_only', 'fail_on_error']);
-const IMPORTABLE_FIELDS = ['name', 'description', 'categoryName', 'brand', 'price', 'stock', 'sku', 'active', 'currency', 'imageUrl'];
+const IMPORTABLE_FIELDS = [
+  'name',
+  'description',
+  'categoryName',
+  'subcategory',
+  'brand',
+  'manufacturer',
+  'barcode',
+  'unitOfMeasure',
+  'cost',
+  'defaultSupplier',
+  'weight',
+  'weightUnit',
+  'presentation',
+  'price',
+  'stock',
+  'sku',
+  'active',
+  'currency',
+  'imageUrl'
+];
 const FIELD_LABELS = {
   name: 'Nombre',
   description: 'Descripcion',
   categoryName: 'Categoria',
+  subcategory: 'Subcategoria',
   brand: 'Marca',
+  manufacturer: 'Fabricante',
+  barcode: 'Codigo de barras',
+  unitOfMeasure: 'Unidad de medida',
+  cost: 'Costo',
+  defaultSupplier: 'Proveedor habitual',
+  weight: 'Peso',
+  weightUnit: 'Unidad de peso',
+  presentation: 'Presentacion',
   price: 'Precio',
   stock: 'Stock',
   sku: 'SKU',
@@ -58,10 +87,36 @@ const FIELD_ALIASES = new Map([
   ['rubro', 'categoryName'],
   ['categoria', 'categoryName'],
   ['rubrocategoria', 'categoryName'],
+  ['subcategoria', 'subcategory'],
+  ['subrubro', 'subcategory'],
   ['marca', 'brand'],
   ['brand', 'brand'],
-  ['fabricante', 'brand'],
-  ['manufacturer', 'brand'],
+  ['fabricante', 'manufacturer'],
+  ['manufacturer', 'manufacturer'],
+  ['productor', 'manufacturer'],
+  ['elaboradopor', 'manufacturer'],
+  ['codigobarras', 'barcode'],
+  ['codigodebarras', 'barcode'],
+  ['barcode', 'barcode'],
+  ['ean', 'barcode'],
+  ['gtin', 'barcode'],
+  ['unidad', 'unitOfMeasure'],
+  ['unidaddemedida', 'unitOfMeasure'],
+  ['unit', 'unitOfMeasure'],
+  ['unitofmeasure', 'unitOfMeasure'],
+  ['costo', 'cost'],
+  ['cost', 'cost'],
+  ['costounitario', 'cost'],
+  ['proveedor', 'defaultSupplier'],
+  ['proveedorhabitual', 'defaultSupplier'],
+  ['defaultsupplier', 'defaultSupplier'],
+  ['peso', 'weight'],
+  ['weight', 'weight'],
+  ['unidadpeso', 'weightUnit'],
+  ['unidaddepeso', 'weightUnit'],
+  ['weightunit', 'weightUnit'],
+  ['presentacion', 'presentation'],
+  ['presentation', 'presentation'],
   ['precio', 'price'],
   ['precioventa', 'price'],
   ['valor', 'price'],
@@ -92,6 +147,27 @@ function normalizeHeaderKey(value) {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '');
+}
+
+function normalizeAttributeKey(value) {
+  return normalizeString(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9 _-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 64);
+}
+
+function buildAttributeTarget(value) {
+  const key = normalizeAttributeKey(value);
+  return key ? `attribute:${key}` : null;
+}
+
+function parseAttributeTarget(value) {
+  const raw = normalizeString(value);
+  if (!raw.startsWith('attribute:')) return null;
+  return normalizeAttributeKey(raw.slice('attribute:'.length));
 }
 
 function normalizeLooseKey(value) {
@@ -261,13 +337,15 @@ function sanitizeMapping(mapping, columns) {
 
   for (const [columnKey, targetField] of Object.entries(mapping || {})) {
     if (!availableColumns.has(columnKey)) continue;
-    if (!targetField || !IMPORTABLE_FIELDS.includes(targetField)) {
+    const attributeKey = parseAttributeTarget(targetField);
+    const sanitizedTarget = attributeKey ? `attribute:${attributeKey}` : targetField;
+    if (!sanitizedTarget || (!IMPORTABLE_FIELDS.includes(sanitizedTarget) && !attributeKey)) {
       sanitized[columnKey] = null;
       continue;
     }
-    if (seenTargets.has(targetField)) continue;
-    seenTargets.add(targetField);
-    sanitized[columnKey] = targetField;
+    if (seenTargets.has(sanitizedTarget)) continue;
+    seenTargets.add(sanitizedTarget);
+    sanitized[columnKey] = sanitizedTarget;
   }
 
   for (const column of columns || []) {
@@ -381,6 +459,14 @@ function translateRowIssue(issue) {
       return 'El precio debe ser un numero valido.';
     case 'negative_price':
       return 'El precio no puede ser negativo.';
+    case 'invalid_cost':
+      return 'El costo debe ser un numero valido.';
+    case 'negative_cost':
+      return 'El costo no puede ser negativo.';
+    case 'invalid_weight':
+      return 'El peso debe ser un numero valido.';
+    case 'negative_weight':
+      return 'El peso no puede ser negativo.';
     case 'invalid_stock':
       return 'El stock debe ser un entero valido.';
     case 'negative_stock':
@@ -568,10 +654,18 @@ function analyzeRows(rows, options, catalogSnapshot) {
     }
 
     const values = {};
+    const attributes = {};
     for (const column of columns) {
       const targetField = mapping[column.key];
       if (!targetField) continue;
-      values[targetField] = row[column.index] !== undefined ? row[column.index] : '';
+      const attributeKey = parseAttributeTarget(targetField);
+      const rawValue = row[column.index] !== undefined ? row[column.index] : '';
+      if (attributeKey) {
+        const normalizedValue = normalizeString(rawValue);
+        if (normalizedValue) attributes[attributeKey] = normalizedValue;
+        continue;
+      }
+      values[targetField] = rawValue;
     }
 
     const rowErrors = [];
@@ -579,8 +673,17 @@ function analyzeRows(rows, options, catalogSnapshot) {
     const normalizedName = normalizeString(values.name);
     const normalizedDescription = normalizeString(values.description) || null;
     const normalizedCategoryInput = normalizeString(values.categoryName);
+    const normalizedSubcategory = normalizeString(values.subcategory) || null;
     const normalizedBrand = normalizeString(values.brand) || null;
+    const normalizedManufacturer = normalizeString(values.manufacturer) || null;
+    const normalizedBarcode = normalizeString(values.barcode) || null;
+    const normalizedUnitOfMeasure = normalizeString(values.unitOfMeasure) || null;
+    const normalizedDefaultSupplier = normalizeString(values.defaultSupplier) || null;
+    const normalizedWeightUnit = normalizeString(values.weightUnit) || null;
+    const normalizedPresentation = normalizeString(values.presentation) || null;
     const normalizedCategoryKey = normalizeCategoryName(normalizedCategoryInput);
+    const parsedCost = values.cost === undefined || values.cost === '' ? null : parseDecimalString(values.cost);
+    const parsedWeight = values.weight === undefined || values.weight === '' ? null : parseDecimalString(values.weight);
     const parsedPrice = values.price === undefined || values.price === '' ? 0 : parseDecimalString(values.price);
     const parsedStock = values.stock === undefined || values.stock === '' ? 0 : parseIntegerString(values.stock);
     const sku = normalizeString(values.sku) || null;
@@ -598,6 +701,22 @@ function analyzeRows(rows, options, catalogSnapshot) {
       rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Precio', value: values.price, code: 'invalid_price' }));
     } else if (parsedPrice < 0) {
       rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Precio', value: values.price, code: 'negative_price' }));
+    }
+
+    if (parsedCost === null && values.cost !== undefined && values.cost !== '') {
+      rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Costo', value: values.cost, code: 'invalid_cost' }));
+    } else if (parsedCost !== null && Number.isNaN(parsedCost)) {
+      rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Costo', value: values.cost, code: 'invalid_cost' }));
+    } else if (parsedCost !== null && parsedCost < 0) {
+      rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Costo', value: values.cost, code: 'negative_cost' }));
+    }
+
+    if (parsedWeight === null && values.weight !== undefined && values.weight !== '') {
+      rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Peso', value: values.weight, code: 'invalid_weight' }));
+    } else if (parsedWeight !== null && Number.isNaN(parsedWeight)) {
+      rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Peso', value: values.weight, code: 'invalid_weight' }));
+    } else if (parsedWeight !== null && parsedWeight < 0) {
+      rowErrors.push(buildErrorEntry({ rowNumber: sourceRowNumber, field: 'Peso', value: values.weight, code: 'negative_weight' }));
     }
 
     if (parsedStock === null) {
@@ -671,7 +790,17 @@ function analyzeRows(rows, options, catalogSnapshot) {
         name: normalizedName,
         description: normalizedDescription,
         categoryName: normalizedCategoryInput || null,
+        subcategory: normalizedSubcategory,
         brand: normalizedBrand,
+        manufacturer: normalizedManufacturer,
+        barcode: normalizedBarcode,
+        unitOfMeasure: normalizedUnitOfMeasure,
+        cost: parsedCost === null || Number.isNaN(parsedCost) ? null : parsedCost,
+        defaultSupplier: normalizedDefaultSupplier,
+        weight: parsedWeight === null || Number.isNaN(parsedWeight) ? null : parsedWeight,
+        weightUnit: normalizedWeightUnit,
+        presentation: normalizedPresentation,
+        attributes,
         price: parsedPrice === null || Number.isNaN(parsedPrice) ? null : parsedPrice,
         stock: parsedStock === null ? null : parsedStock,
         sku,
@@ -982,6 +1111,16 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
     name: values.name,
     description: values.description || null,
     brand: values.brand || null,
+    manufacturer: values.manufacturer || null,
+    barcode: values.barcode || null,
+    unitOfMeasure: values.unitOfMeasure || null,
+    cost: values.cost ?? null,
+    defaultSupplier: values.defaultSupplier || null,
+    weight: values.weight ?? null,
+    weightUnit: values.weightUnit || null,
+    presentation: values.presentation || null,
+    subcategory: values.subcategory || null,
+    attributes: values.attributes || {},
     unitPrice: values.price ?? 0,
     price: values.price ?? 0,
     currency: values.currency || 'ARS',
@@ -1013,6 +1152,16 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
       name: payload.name || current.name,
       description: payload.description !== null ? payload.description : current.description,
       brand: values.brand !== undefined ? payload.brand : current.brand,
+      manufacturer: values.manufacturer !== undefined ? payload.manufacturer : current.manufacturer,
+      barcode: values.barcode !== undefined ? payload.barcode : current.barcode,
+      unitOfMeasure: values.unitOfMeasure !== undefined ? payload.unitOfMeasure : current.unitOfMeasure,
+      cost: values.cost !== undefined ? payload.cost : current.cost,
+      defaultSupplier: values.defaultSupplier !== undefined ? payload.defaultSupplier : current.defaultSupplier,
+      weight: values.weight !== undefined ? payload.weight : current.weight,
+      weightUnit: values.weightUnit !== undefined ? payload.weightUnit : current.weightUnit,
+      presentation: values.presentation !== undefined ? payload.presentation : current.presentation,
+      subcategory: values.subcategory !== undefined ? payload.subcategory : current.subcategory,
+      attributes: Object.keys(values.attributes || {}).length ? { ...(current.attributes || {}), ...values.attributes } : current.attributes,
       unitPrice: values.price !== null && values.price !== undefined ? payload.unitPrice : current.unitPrice,
       price: values.price !== null && values.price !== undefined ? payload.price : current.unitPrice,
       currency: payload.currency || current.currency,
@@ -1299,9 +1448,9 @@ function escapeCsvValue(value) {
 
 function buildCatalogImportTemplateCsv() {
   return [
-    'Nombre;Descripcion;Categoria;Marca;Precio;Stock;SKU;Activo;Moneda;Imagen URL',
-    'EJEMPLO - No importar;Fila de ejemplo para borrar antes de subirla;Combos;NovaTech;12500;100;SKU-EJEMPLO-1;si;ARS;https://ejemplo.com/producto-1.jpg',
-    'EJEMPLO - No importar;Segunda fila de referencia;Bebidas;Voltix;1500;200;SKU-EJEMPLO-2;si;ARS;https://ejemplo.com/producto-2.jpg'
+    'Nombre;Descripcion;Categoria;Subcategoria;Marca;Fabricante;Codigo de barras;Unidad;Costo;Precio;Stock;SKU;Proveedor habitual;Peso;Unidad de peso;Presentacion;Activo;Moneda;Imagen URL;Sabor',
+    'EJEMPLO - No importar;Fila de ejemplo para borrar antes de subirla;Combos;Promos;NovaTech;Laboratorio Uno;7790000000012;unidad;8000;12500;100;SKU-EJEMPLO-1;Proveedor Centro;0.5;kg;Caja x 1;si;ARS;https://ejemplo.com/producto-1.jpg;Vainilla',
+    'EJEMPLO - No importar;Segunda fila de referencia;Bebidas;Agua;Voltix;Bebidas Sur;7790000000029;botella;900;1500;200;SKU-EJEMPLO-2;Distribuidora Norte;500;ml;Botella 500ml;si;ARS;https://ejemplo.com/producto-2.jpg;Sin gas'
   ].join('\n');
 }
 

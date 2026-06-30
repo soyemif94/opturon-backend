@@ -26,26 +26,55 @@ function normalizeMetadataObject(value) {
   return value;
 }
 
+function normalizeCatalogText(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function normalizeCatalogNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeCatalogAttributeValue(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string') return null;
+
+  const normalized = value.trim();
+  if (!normalized) return null;
+  return normalized;
+}
+
 function normalizeProductAttributeRecord(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const attributes = {};
 
-  const name = String(value.name || '').trim();
-  if (!name) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const name = normalizeCatalogText(item.name);
+      if (!name) continue;
+      const options = Array.isArray(item.options)
+        ? Array.from(new Set(item.options.map((option) => String(option || '').trim()).filter(Boolean)))
+        : [];
+      const normalizedValue = normalizeCatalogAttributeValue(options.join(', '));
+      if (normalizedValue !== null) attributes[name] = normalizedValue;
+    }
+    return attributes;
+  }
 
-  const options = Array.isArray(value.options)
-    ? Array.from(
-        new Set(
-          value.options
-            .map((option) => String(option || '').trim())
-            .filter(Boolean)
-        )
-      )
-    : [];
+  if (!value || typeof value !== 'object') return {};
 
-  return {
-    name,
-    options
-  };
+  for (const [key, rawValue] of Object.entries(value)) {
+    const normalizedKey = normalizeCatalogText(key);
+    const normalizedValue = normalizeCatalogAttributeValue(rawValue);
+    if (normalizedKey && normalizedValue !== null) {
+      attributes[normalizedKey] = normalizedValue;
+    }
+  }
+
+  return attributes;
 }
 
 function normalizeProductImageRecord(value) {
@@ -75,16 +104,30 @@ function normalizeProductImageRecord(value) {
 function extractCatalogMetadata(metadata) {
   const safeMetadata = normalizeMetadataObject(metadata);
   const catalog = normalizeMetadataObject(safeMetadata.catalog);
-  const subcategory = String(catalog.subcategory || '').trim() || null;
-  const brand = String(catalog.brand || '').trim() || null;
-  const attributes = Array.isArray(catalog.attributes)
-    ? catalog.attributes.map(normalizeProductAttributeRecord).filter(Boolean)
-    : [];
+  const brand = normalizeCatalogText(catalog.brand);
+  const manufacturer = normalizeCatalogText(catalog.manufacturer);
+  const barcode = normalizeCatalogText(catalog.barcode);
+  const unitOfMeasure = normalizeCatalogText(catalog.unitOfMeasure);
+  const cost = normalizeCatalogNumber(catalog.cost);
+  const defaultSupplier = normalizeCatalogText(catalog.defaultSupplier);
+  const weight = normalizeCatalogNumber(catalog.weight);
+  const weightUnit = normalizeCatalogText(catalog.weightUnit);
+  const presentation = normalizeCatalogText(catalog.presentation);
+  const subcategory = normalizeCatalogText(catalog.subcategory);
+  const attributes = normalizeProductAttributeRecord(catalog.attributes);
   const image = normalizeProductImageRecord(catalog.image);
 
   return {
-    subcategory,
     brand,
+    manufacturer,
+    barcode,
+    unitOfMeasure,
+    cost,
+    defaultSupplier,
+    weight,
+    weightUnit,
+    presentation,
+    subcategory,
     attributes,
     image: image === '__invalid__' ? null : image || null
   };
@@ -115,11 +158,17 @@ function buildStoredMetadata(inputMetadata, input) {
       : normalizeProductImageRecord(safeCatalog.image);
   const nextCatalog = {
     ...safeCatalog,
-    brand: String(input.brand || '').trim() || null,
-    subcategory: String(input.subcategory || '').trim() || null,
-    attributes: Array.isArray(input.attributes)
-      ? input.attributes.map(normalizeProductAttributeRecord).filter(Boolean)
-      : []
+    brand: normalizeCatalogText(input.brand),
+    manufacturer: normalizeCatalogText(input.manufacturer),
+    barcode: normalizeCatalogText(input.barcode),
+    unitOfMeasure: normalizeCatalogText(input.unitOfMeasure),
+    cost: normalizeCatalogNumber(input.cost),
+    defaultSupplier: normalizeCatalogText(input.defaultSupplier),
+    weight: normalizeCatalogNumber(input.weight),
+    weightUnit: normalizeCatalogText(input.weightUnit),
+    presentation: normalizeCatalogText(input.presentation),
+    subcategory: normalizeCatalogText(input.subcategory),
+    attributes: normalizeProductAttributeRecord(input.attributes)
   };
   if (normalizedImage === '__invalid__') {
     nextCatalog.image = null;
@@ -158,6 +207,14 @@ function normalizeProduct(row) {
     categoryId: row.categoryId || null,
     categoryName: row.categoryName || null,
     brand: catalogMetadata.brand,
+    manufacturer: catalogMetadata.manufacturer,
+    barcode: catalogMetadata.barcode,
+    unitOfMeasure: catalogMetadata.unitOfMeasure,
+    cost: catalogMetadata.cost,
+    defaultSupplier: catalogMetadata.defaultSupplier,
+    weight: catalogMetadata.weight,
+    weightUnit: catalogMetadata.weightUnit,
+    presentation: catalogMetadata.presentation,
     subcategory: catalogMetadata.subcategory,
     attributes: catalogMetadata.attributes,
     image: catalogMetadata.image,
@@ -292,8 +349,16 @@ async function updateProduct(productId, clinicId, payload, client = null) {
   const storedMetadata = buildStoredMetadata(mergeProductMetadata(current.metadata, payload.metadata), {
     ...current,
     ...payload,
-    subcategory: payload.subcategory !== undefined ? payload.subcategory : current.subcategory,
     brand: payload.brand !== undefined ? payload.brand : current.brand,
+    manufacturer: payload.manufacturer !== undefined ? payload.manufacturer : current.manufacturer,
+    barcode: payload.barcode !== undefined ? payload.barcode : current.barcode,
+    unitOfMeasure: payload.unitOfMeasure !== undefined ? payload.unitOfMeasure : current.unitOfMeasure,
+    cost: payload.cost !== undefined ? payload.cost : current.cost,
+    defaultSupplier: payload.defaultSupplier !== undefined ? payload.defaultSupplier : current.defaultSupplier,
+    weight: payload.weight !== undefined ? payload.weight : current.weight,
+    weightUnit: payload.weightUnit !== undefined ? payload.weightUnit : current.weightUnit,
+    presentation: payload.presentation !== undefined ? payload.presentation : current.presentation,
+    subcategory: payload.subcategory !== undefined ? payload.subcategory : current.subcategory,
     attributes: payload.attributes !== undefined ? payload.attributes : current.attributes,
     image: payload.image !== undefined ? payload.image : current.image
   });

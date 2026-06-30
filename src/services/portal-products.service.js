@@ -37,6 +37,15 @@ function normalizeNumber(value) {
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
+function normalizeNullableNumber(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const normalized = normalizeString(value);
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
 function normalizeNullablePercentage(value) {
   if (value === undefined) return undefined;
   if (value === null) return null;
@@ -94,21 +103,35 @@ function normalizeProductImage(value) {
 }
 
 function normalizeAttributes(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.entries(value).reduce((accumulator, [key, rawValue]) => {
+      const name = normalizeString(key);
+      if (!name) return accumulator;
+      if (typeof rawValue === 'boolean') {
+        accumulator[name] = rawValue;
+        return accumulator;
+      }
+      if (typeof rawValue === 'number') {
+        if (Number.isFinite(rawValue)) accumulator[name] = rawValue;
+        return accumulator;
+      }
+      const normalizedValue = normalizeString(rawValue);
+      if (normalizedValue) accumulator[name] = normalizedValue;
+      return accumulator;
+    }, {});
+  }
+
   const items = Array.isArray(value) ? value : [];
-  return items
-    .map((item) => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+  return items.reduce((accumulator, item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return accumulator;
       const name = normalizeString(item.name);
-      if (!name) return null;
+      if (!name) return accumulator;
       const options = Array.isArray(item.options)
         ? Array.from(new Set(item.options.map((option) => normalizeString(option)).filter(Boolean)))
         : [];
-      return {
-        name,
-        options
-      };
-    })
-    .filter(Boolean);
+      if (options.length) accumulator[name] = options.join(', ');
+      return accumulator;
+    }, {});
 }
 
 function normalizeDateOnly(value) {
@@ -124,6 +147,8 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
   const vatRate = normalizeNumber(payload && (payload.vatRate ?? payload.taxRate ?? 0));
   const expirationDate = normalizeDateOnly(payload && payload.expirationDate);
   const discountPercentage = normalizeNullablePercentage(payload && payload.discountPercentage);
+  const cost = normalizeNullableNumber(payload && payload.cost);
+  const weight = normalizeNullableNumber(payload && payload.weight);
 
   return {
     name: normalizeString(payload && payload.name),
@@ -138,6 +163,14 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
     sku: normalizeString(payload && payload.sku) || null,
     categoryId: normalizeString(payload && payload.categoryId) || null,
     brand: normalizeString(payload && payload.brand) || null,
+    manufacturer: normalizeString(payload && payload.manufacturer) || null,
+    barcode: normalizeString(payload && payload.barcode) || null,
+    unitOfMeasure: normalizeString(payload && payload.unitOfMeasure) || null,
+    cost,
+    defaultSupplier: normalizeString(payload && payload.defaultSupplier) || null,
+    weight,
+    weightUnit: normalizeString(payload && payload.weightUnit) || null,
+    presentation: normalizeString(payload && payload.presentation) || null,
     subcategory: normalizeString(payload && (payload.subcategory ?? payload.subcategoryName)) || null,
     attributes: normalizeAttributes(payload && (payload.attributes ?? payload.configurableAttributes ?? payload.variants)),
     image: normalizeProductImage(payload && payload.image),
@@ -154,9 +187,12 @@ function validateProductPayload(product) {
   if (!Number.isInteger(product.stock) || product.stock < 0) return 'invalid_product_stock';
   if (!PRODUCT_STATUSES.has(product.status)) return 'invalid_product_status';
   if (product.expirationDate === '__invalid__') return 'invalid_product_expiration_date';
-  if (!Array.isArray(product.attributes)) return 'invalid_product_attributes';
-  if (product.attributes.some((attribute) => !attribute || !attribute.name || !Array.isArray(attribute.options))) {
-    return 'invalid_product_attributes';
+  if (!product.attributes || typeof product.attributes !== 'object' || Array.isArray(product.attributes)) return 'invalid_product_attributes';
+  if (product.cost !== null && product.cost !== undefined) {
+    if (!Number.isFinite(product.cost) || product.cost < 0) return 'invalid_product_cost';
+  }
+  if (product.weight !== null && product.weight !== undefined) {
+    if (!Number.isFinite(product.weight) || product.weight < 0) return 'invalid_product_weight';
   }
   if (product.image === '__invalid__') return 'invalid_product_image';
   if (product.discountPercentage !== null && product.discountPercentage !== undefined) {
