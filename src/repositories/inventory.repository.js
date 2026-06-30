@@ -8,7 +8,8 @@ const MOVEMENT_TYPES = new Set([
   'manual_adjustment_in',
   'manual_adjustment_out',
   'expired_writeoff',
-  'cancellation'
+  'cancellation',
+  'sale'
 ]);
 
 function dbQuery(client, text, params) {
@@ -332,6 +333,141 @@ async function setProductInventoryTrackingMode(productId, tenantId, mode, client
   return Boolean(result.rows[0]);
 }
 
+async function listEligibleLotsForFefo(tenantId, productId, client = null) {
+  const result = await dbQuery(
+    client,
+    `${buildLotSelect(`WHERE l."tenantId" = $1::uuid
+       AND l."productId" = $2::uuid
+       AND l.status = 'active'
+       AND l."availableQuantity" > 0
+       AND (l."expiresAt" IS NULL OR l."expiresAt" >= CURRENT_DATE)`)}
+     ORDER BY
+       CASE WHEN l."expiresAt" IS NULL THEN 1 ELSE 0 END ASC,
+       l."expiresAt" ASC NULLS LAST,
+       l."receivedAt" ASC,
+       l.id ASC
+     FOR UPDATE OF l`,
+    [tenantId, productId]
+  );
+  return result.rows.map(normalizeLot);
+}
+
+async function updateInventoryLotQuantity(lotId, tenantId, productId, availableQuantity, status, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE inventory_lots
+     SET "availableQuantity" = $4,
+         status = $5,
+         "updatedAt" = NOW()
+     WHERE id = $1::uuid
+       AND "tenantId" = $2::uuid
+       AND "productId" = $3::uuid
+     RETURNING id`,
+    [lotId, tenantId, productId, availableQuantity, status]
+  );
+  if (!result.rows[0]) return null;
+  return findInventoryLotById(lotId, tenantId, client);
+}
+
+function normalizeAllocation(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    orderId: row.orderId,
+    orderItemId: row.orderItemId,
+    productId: row.productId,
+    lotId: row.lotId,
+    lotNumber: row.lotNumber || null,
+    productName: row.productName || null,
+    quantity: numberValue(row.quantity),
+    status: row.status,
+    metadata: metadataValue(row.metadata),
+    createdAt: row.createdAt,
+    releasedAt: row.releasedAt || null
+  };
+}
+
+async function createInventoryLotAllocation(input, client = null) {
+  const result = await dbQuery(
+    client,
+    `INSERT INTO inventory_lot_allocations (
+       "tenantId",
+       "orderId",
+       "orderItemId",
+       "productId",
+       "lotId",
+       quantity,
+       status,
+       metadata
+     )
+     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8::jsonb)
+     RETURNING *`,
+    [
+      input.tenantId,
+      input.orderId,
+      input.orderItemId,
+      input.productId,
+      input.lotId,
+      input.quantity,
+      input.status || 'consumed',
+      JSON.stringify(metadataValue(input.metadata))
+    ]
+  );
+  return normalizeAllocation(result.rows[0]);
+}
+
+async function listInventoryLotAllocationsByOrder(tenantId, orderId, client = null, options = {}) {
+  const result = await dbQuery(
+    client,
+    `SELECT
+       a.id,
+       a."tenantId",
+       a."orderId",
+       a."orderItemId",
+       a."productId",
+       a."lotId",
+       l."lotNumber",
+       p.name AS "productName",
+       a.quantity,
+       a.status,
+       a.metadata,
+       a."createdAt",
+       a."releasedAt"
+     FROM inventory_lot_allocations a
+     INNER JOIN inventory_lots l
+       ON l.id = a."lotId"
+      AND l."tenantId" = a."tenantId"
+      AND l."productId" = a."productId"
+     INNER JOIN products p
+       ON p.id = a."productId"
+      AND p."clinicId" = a."tenantId"
+     WHERE a."tenantId" = $1::uuid
+       AND a."orderId" = $2::uuid
+     ORDER BY a."createdAt" ASC, a.id ASC
+     ${options.forUpdate ? 'FOR UPDATE OF a' : ''}`,
+    [tenantId, orderId]
+  );
+  return result.rows.map(normalizeAllocation);
+}
+
+async function markInventoryLotAllocationsReleased(tenantId, allocationIds, status, client = null) {
+  if (!Array.isArray(allocationIds) || allocationIds.length === 0) return [];
+  const result = await dbQuery(
+    client,
+    `UPDATE inventory_lot_allocations
+     SET status = $3,
+         "releasedAt" = COALESCE("releasedAt", NOW()),
+         metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{releasedAt}', to_jsonb(NOW()::text), true)
+     WHERE "tenantId" = $1::uuid
+       AND id = ANY($2::uuid[])
+       AND status IN ('allocated', 'consumed')
+     RETURNING *`,
+    [tenantId, allocationIds, status || 'released']
+  );
+  return result.rows.map(normalizeAllocation);
+}
+
 module.exports = {
   LOT_STATUSES: Array.from(LOT_STATUSES),
   MOVEMENT_TYPES: Array.from(MOVEMENT_TYPES),
@@ -343,5 +479,10 @@ module.exports = {
   listInventoryMovementsForLot,
   sumActiveLotStockByProductId,
   syncProductStockFromLots,
-  setProductInventoryTrackingMode
+  setProductInventoryTrackingMode,
+  listEligibleLotsForFefo,
+  updateInventoryLotQuantity,
+  createInventoryLotAllocation,
+  listInventoryLotAllocationsByOrder,
+  markInventoryLotAllocationsReleased
 };

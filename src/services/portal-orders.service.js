@@ -25,6 +25,15 @@ const {
   findProductById,
   updateProduct
 } = require('../repositories/products.repository');
+const {
+  listEligibleLotsForFefo,
+  updateInventoryLotQuantity,
+  createInventoryLotAllocation,
+  listInventoryLotAllocationsByOrder,
+  markInventoryLotAllocationsReleased,
+  insertInventoryMovement,
+  syncProductStockFromLots
+} = require('../repositories/inventory.repository');
 const { getClinicBusinessProfileById } = require('../repositories/tenant.repository');
 const { findConversationById } = require('../repositories/conversation.repository');
 const { updateConversationStage } = require('../repositories/conversation.repository');
@@ -248,6 +257,72 @@ function buildOrderDetailPayload(order, conversation, conversationMessages = [],
     transferPayment: summarizeTransferPayment(order, conversation),
     conversationPreview: buildConversationPreview(conversation, conversationMessages)
   };
+}
+
+async function attachLotAllocationsToOrders(clinicId, orders, client = null) {
+  const safeOrders = Array.isArray(orders) ? orders : [];
+  if (!safeOrders.length) return safeOrders;
+  const orderIds = safeOrders.map((order) => order.id).filter(Boolean);
+  if (!orderIds.length) return safeOrders;
+
+  const runner = client && typeof client.query === 'function' ? client : { query };
+  const result = await runner.query(
+    `SELECT
+       a.id,
+       a."orderId",
+       a."orderItemId",
+       a."productId",
+       a."lotId",
+       l."lotNumber",
+       p.name AS "productName",
+       a.quantity,
+       a.status,
+       a."createdAt",
+       a."releasedAt"
+     FROM inventory_lot_allocations a
+     INNER JOIN inventory_lots l
+       ON l.id = a."lotId"
+      AND l."tenantId" = a."tenantId"
+      AND l."productId" = a."productId"
+     INNER JOIN products p
+       ON p.id = a."productId"
+      AND p."clinicId" = a."tenantId"
+     WHERE a."tenantId" = $1::uuid
+       AND a."orderId" = ANY($2::uuid[])
+     ORDER BY a."createdAt" ASC, a.id ASC`,
+    [clinicId, orderIds]
+  );
+
+  const allocationsByOrder = new Map();
+  const allocationsByItem = new Map();
+  for (const row of result.rows) {
+    const allocation = {
+      id: row.id,
+      orderId: row.orderId,
+      orderItemId: row.orderItemId,
+      productId: row.productId,
+      productName: row.productName || null,
+      lotId: row.lotId,
+      lotNumber: row.lotNumber || null,
+      quantity: Number(row.quantity || 0),
+      status: row.status,
+      createdAt: row.createdAt,
+      releasedAt: row.releasedAt || null
+    };
+    if (!allocationsByOrder.has(row.orderId)) allocationsByOrder.set(row.orderId, []);
+    allocationsByOrder.get(row.orderId).push(allocation);
+    if (!allocationsByItem.has(row.orderItemId)) allocationsByItem.set(row.orderItemId, []);
+    allocationsByItem.get(row.orderItemId).push(allocation);
+  }
+
+  return safeOrders.map((order) => ({
+    ...order,
+    lotAllocations: allocationsByOrder.get(order.id) || [],
+    items: (order.items || []).map((item) => ({
+      ...item,
+      lotAllocations: allocationsByItem.get(item.id) || []
+    }))
+  }));
 }
 
 function summarizeOrderPaymentRecord(payment, order = null) {
@@ -511,13 +586,165 @@ function createStockAdjuster(direction) {
 const decrementProductStock = createStockAdjuster('decrement');
 const incrementProductStock = createStockAdjuster('increment');
 
+function buildInsufficientLotStockError(context, productId, requested, available) {
+  const safeRequested = Number(requested || 0);
+  const safeAvailable = Number(available || 0);
+  return buildError(context.tenantId, 'inventory_insufficient_lot_stock', {
+    productId,
+    requested: safeRequested,
+    available: safeAvailable,
+    missing: Math.max(0, safeRequested - safeAvailable)
+  });
+}
+
+async function consumeLotBasedOrderItem(context, order, item, product, client) {
+  const lots = await listEligibleLotsForFefo(context.clinic.id, product.id, client);
+  const requested = Number(item.quantity || 0);
+  const available = lots.reduce((sum, lot) => sum + Number(lot.availableQuantity || 0), 0);
+  if (available < requested) {
+    return buildInsufficientLotStockError(context, product.id, requested, available);
+  }
+
+  let remaining = requested;
+  const allocations = [];
+  for (const lot of lots) {
+    if (remaining <= 0) break;
+    const before = Number(lot.availableQuantity || 0);
+    if (before <= 0) continue;
+    const quantity = Math.min(before, remaining);
+    const after = Number((before - quantity).toFixed(3));
+    const nextStatus = after <= 0 ? 'depleted' : 'active';
+    const updatedLot = await updateInventoryLotQuantity(lot.id, context.clinic.id, product.id, after, nextStatus, client);
+    if (!updatedLot) {
+      return buildError(context.tenantId, 'inventory_lot_not_found');
+    }
+
+    const allocation = await createInventoryLotAllocation(
+      {
+        tenantId: context.clinic.id,
+        orderId: order.id,
+        orderItemId: item.id,
+        productId: product.id,
+        lotId: lot.id,
+        quantity,
+        status: 'consumed',
+        metadata: {
+          source: 'order_fefo',
+          auditAction: 'inventory_fefo_allocated',
+          orderId: order.id,
+          orderItemId: item.id,
+          productId: product.id,
+          lotId: lot.id,
+          lotNumber: lot.lotNumber || null,
+          quantityBefore: before,
+          quantityAfter: after
+        }
+      },
+      client
+    );
+    await insertInventoryMovement(
+      {
+        tenantId: context.clinic.id,
+        productId: product.id,
+        lotId: lot.id,
+        movementType: 'sale',
+        quantity,
+        quantityBefore: before,
+        quantityAfter: after,
+        referenceType: 'order',
+        referenceId: order.id,
+        reason: 'Pedido',
+        metadata: {
+          source: 'order_fefo',
+          auditAction: 'inventory_sale_consumed',
+          orderId: order.id,
+          orderItemId: item.id,
+          allocationId: allocation.id,
+          customerName: order.customerName || null,
+          actorName: context.actorName || null
+        },
+        createdBy: context.actorId || null
+      },
+      client
+    );
+    allocations.push(allocation);
+    remaining = Number((remaining - quantity).toFixed(3));
+  }
+
+  if (remaining > 0) {
+    return buildInsufficientLotStockError(context, product.id, requested, requested - remaining);
+  }
+
+  await syncProductStockFromLots(product.id, context.clinic.id, client);
+  return { ok: true, allocations };
+}
+
+async function restoreOrderLotAllocations(context, order, client) {
+  const allocations = await listInventoryLotAllocationsByOrder(context.clinic.id, order.id, client, { forUpdate: true });
+  const activeAllocations = allocations.filter((allocation) => allocation.status === 'allocated' || allocation.status === 'consumed');
+  if (!activeAllocations.length) {
+    return { ok: true, restored: 0, idempotent: true };
+  }
+
+  let restored = 0;
+  const restoredProductIds = new Set();
+  for (const allocation of activeAllocations) {
+    const lots = await listEligibleLotsForFefo(context.clinic.id, allocation.productId, client);
+    const lot =
+      lots.find((candidate) => candidate.id === allocation.lotId) ||
+      (await updateInventoryLotQuantity(allocation.lotId, context.clinic.id, allocation.productId, 0, 'active', client));
+    const currentLot = lot && lot.id === allocation.lotId ? lot : null;
+    const before = Number(currentLot?.availableQuantity || 0);
+    const after = Number((before + Number(allocation.quantity || 0)).toFixed(3));
+    await updateInventoryLotQuantity(allocation.lotId, context.clinic.id, allocation.productId, after, 'active', client);
+    await insertInventoryMovement(
+      {
+        tenantId: context.clinic.id,
+        productId: allocation.productId,
+        lotId: allocation.lotId,
+        movementType: 'cancellation',
+        quantity: allocation.quantity,
+        quantityBefore: before,
+        quantityAfter: after,
+        referenceType: 'order',
+        referenceId: order.id,
+        reason: 'Cancelacion de pedido',
+        metadata: {
+          source: 'order_fefo',
+          auditAction: 'inventory_order_cancelled_stock_restored',
+          orderId: order.id,
+          orderItemId: allocation.orderItemId,
+          allocationId: allocation.id,
+          lotNumber: allocation.lotNumber || null,
+          actorName: context.actorName || null
+        },
+        createdBy: context.actorId || null
+      },
+      client
+    );
+    restored += Number(allocation.quantity || 0);
+    restoredProductIds.add(allocation.productId);
+  }
+
+  await markInventoryLotAllocationsReleased(
+    context.clinic.id,
+    activeAllocations.map((allocation) => allocation.id),
+    'cancelled',
+    client
+  );
+  for (const productId of restoredProductIds) {
+    await syncProductStockFromLots(productId, context.clinic.id, client);
+  }
+  return { ok: true, restored };
+}
+
 async function listPortalOrders(tenantId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
   }
 
-  const orders = await listOrdersByClinicId(context.clinic.id);
+  const orders = await attachLotAllocationsToOrders(context.clinic.id, await listOrdersByClinicId(context.clinic.id));
   const payments = await listPaymentsByClinicId(context.clinic.id);
   const paymentRecordByOrderId = buildOrderPaymentRecordMap(payments, orders);
   const conversationIds = Array.from(new Set(orders.map((order) => order.conversationId).filter(Boolean)));
@@ -713,7 +940,8 @@ async function getPortalOrderDetail(tenantId, orderId) {
     };
   }
 
-  const order = await findOrderById(safeOrderId, context.clinic.id);
+  const baseOrder = await findOrderById(safeOrderId, context.clinic.id);
+  const [order] = await attachLotAllocationsToOrders(context.clinic.id, baseOrder ? [baseOrder] : []);
   if (!order) {
     return {
       ok: false,
@@ -858,6 +1086,7 @@ async function createOrderForContext(context, payload) {
   try {
     transactionResult = await withTransaction(async (client) => {
       const items = [];
+      const productById = new Map();
 
       for (const item of rawItems) {
         if (item.productId) {
@@ -868,14 +1097,7 @@ async function createOrderForContext(context, payload) {
           if (String(product.status || '').toLowerCase() !== 'active') {
             return buildError(context.tenantId, 'order_item_product_archived', `Product ${product.name} is archived.`);
           }
-          if (product.inventoryTrackingMode === 'lot_based') {
-            return buildError(
-              context.tenantId,
-              'order_item_lot_based_not_supported',
-              `Product ${product.name} uses lot-based inventory. Lot allocation is not enabled for orders yet.`
-            );
-          }
-          if (Number(product.stock) < item.quantity) {
+          if (product.inventoryTrackingMode !== 'lot_based' && Number(product.stock) < item.quantity) {
             return buildError(
               context.tenantId,
               'order_item_insufficient_stock',
@@ -899,6 +1121,7 @@ async function createOrderForContext(context, payload) {
             totalAmount: amounts.totalAmount,
             variant: item.variant || null
           });
+          productById.set(product.id, product);
         } else {
           const amounts = calculateLineAmounts({
             unitPrice: item.unitPrice,
@@ -919,19 +1142,6 @@ async function createOrderForContext(context, payload) {
             totalAmount: amounts.totalAmount,
             variant: item.variant || null
           });
-        }
-      }
-
-      for (const item of items) {
-        if (!item.productId) continue;
-
-        const updatedProduct = await decrementProductStock(item.productId, context.clinic.id, item.quantity, client);
-        if (!updatedProduct) {
-          return buildError(
-            context.tenantId,
-            'order_item_insufficient_stock',
-            `Not enough stock to reserve ${item.quantity} unit(s) for ${item.descriptionSnapshot}.`
-          );
         }
       }
 
@@ -967,9 +1177,35 @@ async function createOrderForContext(context, payload) {
         client
       );
 
+      for (const orderItem of order.items || []) {
+        if (!orderItem.productId) continue;
+
+        const product = productById.get(orderItem.productId) || await findProductById(orderItem.productId, context.clinic.id, client);
+        if (!product) {
+          return buildError(context.tenantId, 'order_item_product_not_found', `Product ${orderItem.productId} was not found.`);
+        }
+
+        if (product.inventoryTrackingMode === 'lot_based') {
+          const allocationResult = await consumeLotBasedOrderItem(context, order, orderItem, product, client);
+          if (!allocationResult.ok) {
+            return allocationResult;
+          }
+          continue;
+        }
+
+        const updatedProduct = await decrementProductStock(orderItem.productId, context.clinic.id, orderItem.quantity, client);
+        if (!updatedProduct) {
+          return buildError(
+            context.tenantId,
+            'order_item_insufficient_stock',
+            `Not enough stock to reserve ${orderItem.quantity} unit(s) for ${orderItem.descriptionSnapshot}.`
+          );
+        }
+      }
+
       return {
         ok: true,
-        order
+        order: (await attachLotAllocationsToOrders(context.clinic.id, [order], client))[0] || order
       };
     });
   } catch (error) {
@@ -1101,8 +1337,14 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
   }
 
   if (requestedOrderStatus === 'cancelled' && currentOrder.status !== 'cancelled') {
+    const restoreResult = await restoreOrderLotAllocations(context, currentOrder, client);
+    if (!restoreResult.ok) {
+      return restoreResult;
+    }
     for (const item of currentOrder.items || []) {
       if (!item.productId) continue;
+      const product = await findProductById(item.productId, context.clinic.id, client);
+      if (product && product.inventoryTrackingMode === 'lot_based') continue;
 
       const updatedProduct = await incrementProductStock(item.productId, context.clinic.id, item.quantity, client);
       if (!updatedProduct) {

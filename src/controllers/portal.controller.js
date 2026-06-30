@@ -466,7 +466,8 @@ async function postPortalOrder(req, res) {
           : result.reason === 'order_item_product_inactive' ||
               result.reason === 'order_item_product_archived' ||
               result.reason === 'order_item_lot_based_not_supported' ||
-              result.reason === 'order_item_insufficient_stock'
+              result.reason === 'order_item_insufficient_stock' ||
+              result.reason === 'inventory_insufficient_lot_stock'
             ? 409
             : 404;
 
@@ -524,7 +525,7 @@ async function updatePortalOrderStatus(req, res) {
         result.reason === 'missing_payment_destination_for_paid_order' ||
         result.reason === 'invalid_order_payment_amount'
           ? 400
-          : result.reason === 'order_item_product_inactive' || result.reason === 'order_item_insufficient_stock'
+          : result.reason === 'order_item_product_inactive' || result.reason === 'order_item_insufficient_stock' || result.reason === 'inventory_insufficient_lot_stock'
             ? 409
             : 404;
 
