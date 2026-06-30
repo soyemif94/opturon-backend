@@ -114,6 +114,7 @@ function extractCatalogMetadata(metadata) {
   const weightUnit = normalizeCatalogText(catalog.weightUnit);
   const presentation = normalizeCatalogText(catalog.presentation);
   const subcategory = normalizeCatalogText(catalog.subcategory);
+  const inventoryTrackingMode = catalog.inventoryTrackingMode === 'lot_based' ? 'lot_based' : 'legacy';
   const attributes = normalizeProductAttributeRecord(catalog.attributes);
   const image = normalizeProductImageRecord(catalog.image);
 
@@ -128,6 +129,7 @@ function extractCatalogMetadata(metadata) {
     weightUnit,
     presentation,
     subcategory,
+    inventoryTrackingMode,
     attributes,
     image: image === '__invalid__' ? null : image || null
   };
@@ -168,6 +170,7 @@ function buildStoredMetadata(inputMetadata, input) {
     weightUnit: normalizeCatalogText(input.weightUnit),
     presentation: normalizeCatalogText(input.presentation),
     subcategory: normalizeCatalogText(input.subcategory),
+    inventoryTrackingMode: input.inventoryTrackingMode === 'lot_based' ? 'lot_based' : safeCatalog.inventoryTrackingMode === 'lot_based' ? 'lot_based' : 'legacy',
     attributes: normalizeProductAttributeRecord(input.attributes)
   };
   if (normalizedImage === '__invalid__') {
@@ -216,6 +219,7 @@ function normalizeProduct(row) {
     weightUnit: catalogMetadata.weightUnit,
     presentation: catalogMetadata.presentation,
     subcategory: catalogMetadata.subcategory,
+    inventoryTrackingMode: catalogMetadata.inventoryTrackingMode,
     attributes: catalogMetadata.attributes,
     image: catalogMetadata.image,
     expirationDate: normalizeDateOnly(row.expirationDate),

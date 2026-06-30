@@ -53,6 +53,13 @@ const {
   getPortalProductImageAsset
 } = require('../services/portal-products.service');
 const {
+  listPortalInventoryLots,
+  getPortalInventoryLot: getPortalInventoryLotDetail,
+  createPortalInventoryLot,
+  adjustPortalInventoryLot,
+  setPortalProductInventoryMode
+} = require('../services/inventory-lots.service');
+const {
   analyzeCatalogImport,
   getCatalogImport,
   cancelCatalogImport,
@@ -1221,6 +1228,173 @@ async function getPortalCatalogImportTemplate(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_catalog_import_template_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInventoryLots(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await listPortalInventoryLots(tenantId, {
+      productId: req.query.productId,
+      status: req.query.status,
+      expirationStatus: req.query.expirationStatus,
+      warehouse: req.query.warehouse,
+      expiresBefore: req.query.expiresBefore,
+      expiresAfter: req.query.expiresAfter,
+      search: req.query.search,
+      pageSize: req.query.pageSize
+    });
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        lots: result.lots
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_lots_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInventoryLot(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const lotId = String(req.params.lotId || '').trim();
+
+  try {
+    const result = await getPortalInventoryLotDetail(tenantId, lotId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_lot_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        lot: result.lot,
+        movements: result.movements
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_lot_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInventoryLot(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await createPortalInventoryLot(tenantId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_id' ||
+        result.reason === 'invalid_lot_quantity' ||
+        result.reason === 'invalid_lot_unit_cost' ||
+        result.reason === 'invalid_lot_received_at' ||
+        result.reason === 'invalid_lot_manufactured_at' ||
+        result.reason === 'invalid_lot_expires_at' ||
+        result.reason === 'invalid_lot_status'
+          ? 400
+          : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.lot
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_lot_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInventoryLotAdjustment(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const lotId = String(req.params.lotId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await adjustPortalInventoryLot(tenantId, lotId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_lot_id' ||
+        result.reason === 'invalid_movement_type' ||
+        result.reason === 'invalid_movement_quantity' ||
+        result.reason === 'invalid_movement_reference_id'
+          ? 400
+          : result.reason === 'insufficient_lot_quantity' || result.reason === 'inventory_lot_cancelled'
+            ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        lot: result.lot,
+        movement: result.movement
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_lot_adjust_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalProductInventoryMode(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const productId = String(req.params.productId || '').trim();
+
+  try {
+    const result = await setPortalProductInventoryMode(tenantId, productId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_id' ||
+        result.reason === 'invalid_inventory_tracking_mode' ||
+        result.reason === 'initial_lot_required' ||
+        result.reason === 'invalid_lot_quantity' ||
+        result.reason === 'invalid_lot_received_at' ||
+        result.reason === 'invalid_lot_manufactured_at' ||
+        result.reason === 'invalid_lot_expires_at'
+          ? 400
+          : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.product
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_inventory_mode_update_failed',
       details: error.message
     });
   }
@@ -4488,6 +4662,11 @@ module.exports = {
   postPortalCatalogImportCancel,
   getPortalCatalogImportErrors,
   getPortalCatalogImportTemplate,
+  getPortalInventoryLots,
+  getPortalInventoryLot,
+  postPortalInventoryLot,
+  postPortalInventoryLotAdjustment,
+  postPortalProductInventoryMode,
   updatePortalProduct,
   updatePortalProductCategory,
   destroyPortalProductCategory,

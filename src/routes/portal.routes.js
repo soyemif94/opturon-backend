@@ -34,6 +34,11 @@ const {
   postPortalCatalogImportCancel,
   getPortalCatalogImportErrors,
   getPortalCatalogImportTemplate,
+  getPortalInventoryLots,
+  getPortalInventoryLot,
+  postPortalInventoryLot,
+  postPortalInventoryLotAdjustment,
+  postPortalProductInventoryMode,
   updatePortalProduct,
   updatePortalProductCategory,
   destroyPortalProductCategory,
@@ -278,7 +283,12 @@ router.get('/tenants/:tenantId/catalog-imports/:importId', requirePortalInternal
 router.post('/tenants/:tenantId/catalog-imports/:importId/confirm', requirePortalInternalAuth, catalogModule, postPortalCatalogImportConfirm);
 router.post('/tenants/:tenantId/catalog-imports/:importId/cancel', requirePortalInternalAuth, catalogModule, postPortalCatalogImportCancel);
 router.get('/tenants/:tenantId/catalog-imports/:importId/errors', requirePortalInternalAuth, catalogModule, getPortalCatalogImportErrors);
+router.get('/tenants/:tenantId/inventory/lots', catalogModule, getPortalInventoryLots);
+router.post('/tenants/:tenantId/inventory/lots', catalogModule, postPortalInventoryLot);
+router.get('/tenants/:tenantId/inventory/lots/:lotId', catalogModule, getPortalInventoryLot);
+router.post('/tenants/:tenantId/inventory/lots/:lotId/adjust', catalogModule, postPortalInventoryLotAdjustment);
 router.get('/tenants/:tenantId/products/:productId', catalogModule, getPortalProduct);
+router.post('/tenants/:tenantId/products/:productId/inventory-mode', catalogModule, postPortalProductInventoryMode);
 router.patch('/tenants/:tenantId/products/:productId', catalogModule, updatePortalProduct);
 router.patch('/tenants/:tenantId/product-categories/:categoryId', catalogModule, updatePortalProductCategory);
 router.delete('/tenants/:tenantId/product-categories/:categoryId', catalogModule, destroyPortalProductCategory);
