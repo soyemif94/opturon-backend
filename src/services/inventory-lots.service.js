@@ -1,10 +1,12 @@
 const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
+const { getClinicInventorySettingsById, updateClinicInventorySettingsById } = require('../repositories/tenant.repository');
 const { findProductById } = require('../repositories/products.repository');
 const {
   LOT_STATUSES,
   MOVEMENT_TYPES,
   listInventoryLots,
+  getInventoryExpirationSummary,
   findInventoryLotById,
   createInventoryLot,
   updateInventoryLotState,
@@ -13,6 +15,13 @@ const {
   syncProductStockFromLots,
   setProductInventoryTrackingMode
 } = require('../repositories/inventory.repository');
+const {
+  DEFAULT_EXPIRATION_ALERT_THRESHOLDS,
+  calculateInventoryExpirationStatus,
+  getTenantTodayISO,
+  normalizeExpirationAlertThresholds,
+  resolveTenantTimezone
+} = require('../utils/inventory-expiration');
 
 const LOT_STATUS_SET = new Set(LOT_STATUSES);
 const MOVEMENT_TYPE_SET = new Set(MOVEMENT_TYPES);
@@ -56,6 +65,27 @@ function normalizeActorId(actor) {
 
 function normalizeMetadata(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function resolveInventorySettings(rawSettings) {
+  const settings = rawSettings && typeof rawSettings === 'object' && !Array.isArray(rawSettings) ? rawSettings : {};
+  const inventory = settings.inventory && typeof settings.inventory === 'object' && !Array.isArray(settings.inventory) ? settings.inventory : {};
+  let thresholds = DEFAULT_EXPIRATION_ALERT_THRESHOLDS;
+  try {
+    thresholds = normalizeExpirationAlertThresholds(inventory.expirationAlertThresholds);
+  } catch {
+    thresholds = DEFAULT_EXPIRATION_ALERT_THRESHOLDS;
+  }
+  return { inventory, thresholds };
+}
+
+async function resolveInventoryRuntime(context) {
+  const record = await getClinicInventorySettingsById(context.clinic.id);
+  const settings = normalizeMetadata(record && record.settings);
+  const timezone = resolveTenantTimezone({ ...context.clinic, settings });
+  const { thresholds } = resolveInventorySettings(settings);
+  const todayISO = getTenantTodayISO({ timezone });
+  return { settings, timezone, thresholds, todayISO };
 }
 
 function resolveLotStatus(quantity, requestedStatus) {
@@ -136,8 +166,9 @@ async function listPortalInventoryLots(tenantId, filters = {}) {
   const context = await resolveInventoryContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
 
-  const lots = await listInventoryLots(context.clinic.id, filters);
-  return { ok: true, tenantId: context.tenantId, clinic: context.clinic, lots };
+  const runtime = await resolveInventoryRuntime(context);
+  const lots = await listInventoryLots(context.clinic.id, { ...filters, todayISO: runtime.todayISO, thresholds: runtime.thresholds });
+  return { ok: true, tenantId: context.tenantId, clinic: context.clinic, lots, thresholds: runtime.thresholds, timezone: runtime.timezone };
 }
 
 async function getPortalInventoryLot(tenantId, lotId) {
@@ -146,10 +177,75 @@ async function getPortalInventoryLot(tenantId, lotId) {
   const safeLotId = normalizeString(lotId);
   if (!safeLotId) return { ok: false, tenantId: context.tenantId, reason: 'missing_lot_id' };
 
-  const lot = await findInventoryLotById(safeLotId, context.clinic.id);
+  const runtime = await resolveInventoryRuntime(context);
+  const lot = await findInventoryLotById(safeLotId, context.clinic.id, null, { todayISO: runtime.todayISO, thresholds: runtime.thresholds });
   if (!lot) return { ok: false, tenantId: context.tenantId, reason: 'inventory_lot_not_found' };
   const movements = await listInventoryMovementsForLot(safeLotId, context.clinic.id);
   return { ok: true, tenantId: context.tenantId, clinic: context.clinic, lot, movements };
+}
+
+async function getPortalInventoryExpirationSummary(tenantId) {
+  const context = await resolveInventoryContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+  const runtime = await resolveInventoryRuntime(context);
+  const summary = await getInventoryExpirationSummary(context.clinic.id, {
+    todayISO: runtime.todayISO,
+    thresholds: runtime.thresholds
+  });
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    summary,
+    thresholds: runtime.thresholds,
+    timezone: runtime.timezone,
+    today: runtime.todayISO
+  };
+}
+
+async function getPortalInventoryExpirationSettings(tenantId) {
+  const context = await resolveInventoryContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+  const runtime = await resolveInventoryRuntime(context);
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    thresholds: runtime.thresholds,
+    timezone: runtime.timezone,
+    today: runtime.todayISO
+  };
+}
+
+async function updatePortalInventoryExpirationSettings(tenantId, payload, actor = {}) {
+  const context = await resolveInventoryContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  let thresholds;
+  try {
+    thresholds = normalizeExpirationAlertThresholds(payload && payload.expirationAlertThresholds ? payload.expirationAlertThresholds : payload);
+  } catch (error) {
+    return { ok: false, tenantId: context.tenantId, reason: error.reason || 'invalid_expiration_alert_thresholds' };
+  }
+
+  const current = await getClinicInventorySettingsById(context.clinic.id);
+  const settings = normalizeMetadata(current && current.settings);
+  const inventory = normalizeMetadata(settings.inventory);
+  const updated = await updateClinicInventorySettingsById(context.clinic.id, {
+    ...inventory,
+    expirationAlertThresholds: thresholds,
+    expirationAlertThresholdsUpdatedAt: new Date().toISOString(),
+    expirationAlertThresholdsUpdatedBy: normalizeActorId(actor)
+  });
+  const timezone = resolveTenantTimezone({ ...context.clinic, settings: normalizeMetadata(updated && updated.settings) });
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    thresholds,
+    timezone,
+    auditAction: 'inventory_expiration_settings_updated'
+  };
 }
 
 async function createPortalInventoryLot(tenantId, payload, actor = {}) {
@@ -264,6 +360,81 @@ async function adjustPortalInventoryLot(tenantId, lotId, payload, actor = {}) {
   return { ok: true, tenantId: context.tenantId, clinic: context.clinic, lot: result.lot, movement: result.movement };
 }
 
+async function bulkWriteoffExpiredPortalInventoryLots(tenantId, payload, actor = {}) {
+  const context = await resolveInventoryContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+  const lotIds = Array.isArray(payload && payload.lotIds)
+    ? payload.lotIds.map((value) => normalizeString(value)).filter(Boolean)
+    : [];
+  if (!lotIds.length) return { ok: false, tenantId: context.tenantId, reason: 'missing_lot_ids' };
+  if (lotIds.length > 100) return { ok: false, tenantId: context.tenantId, reason: 'too_many_lots' };
+
+  const runtime = await resolveInventoryRuntime(context);
+  const reason = normalizeNullableString(payload && payload.reason) || 'Producto vencido';
+  const notes = normalizeNullableString(payload && payload.notes);
+
+  const result = await withTransaction(async (client) => {
+    const writtenOff = [];
+    for (const lotId of lotIds) {
+      const lot = await findInventoryLotById(lotId, context.clinic.id, client, {
+        forUpdate: true,
+        todayISO: runtime.todayISO,
+        thresholds: runtime.thresholds
+      });
+      if (!lot) return { ok: false, reason: 'inventory_lot_not_found', lotId };
+      const expiration = calculateInventoryExpirationStatus(lot.expiresAt, { todayISO: runtime.todayISO, thresholds: runtime.thresholds });
+      const before = Number(lot.availableQuantity || 0);
+      if (expiration.status !== 'expired') return { ok: false, reason: 'inventory_lot_not_expired', lotId };
+      if (before <= 0) return { ok: false, reason: 'inventory_lot_without_stock', lotId };
+      if (['cancelled', 'depleted', 'quarantined'].includes(lot.status)) return { ok: false, reason: 'inventory_lot_not_writeoff_eligible', lotId };
+
+      const updatedLot = await updateInventoryLotState(
+        lot.id,
+        context.clinic.id,
+        {
+          availableQuantity: 0,
+          status: 'expired',
+          metadata: {
+            ...lot.metadata,
+            lastMovementType: 'expired_writeoff',
+            lastMovementAt: new Date().toISOString()
+          }
+        },
+        client
+      );
+      const movement = await insertInventoryMovement(
+        {
+          tenantId: context.clinic.id,
+          productId: lot.productId,
+          lotId: lot.id,
+          movementType: 'expired_writeoff',
+          quantity: before,
+          quantityBefore: before,
+          quantityAfter: 0,
+          referenceType: 'inventory_expiration_bulk_writeoff',
+          referenceId: null,
+          reason,
+          metadata: {
+            notes,
+            auditAction: 'inventory_expired_bulk_writeoff',
+            expirationStatus: expiration.status,
+            before,
+            after: 0
+          },
+          createdBy: normalizeActorId(actor)
+        },
+        client
+      );
+      await syncProductStockFromLots(lot.productId, context.clinic.id, client);
+      writtenOff.push({ lot: updatedLot, movement });
+    }
+    return { ok: true, writtenOff };
+  });
+
+  if (!result.ok) return { ok: false, tenantId: context.tenantId, reason: result.reason, lotId: result.lotId || null };
+  return { ok: true, tenantId: context.tenantId, clinic: context.clinic, writtenOff: result.writtenOff };
+}
+
 async function setPortalProductInventoryMode(tenantId, productId, payload) {
   const context = await resolveInventoryContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
@@ -342,7 +513,11 @@ async function setPortalProductInventoryMode(tenantId, productId, payload) {
 module.exports = {
   listPortalInventoryLots,
   getPortalInventoryLot,
+  getPortalInventoryExpirationSummary,
+  getPortalInventoryExpirationSettings,
+  updatePortalInventoryExpirationSettings,
   createPortalInventoryLot,
   adjustPortalInventoryLot,
+  bulkWriteoffExpiredPortalInventoryLots,
   setPortalProductInventoryMode
 };

@@ -55,8 +55,12 @@ const {
 const {
   listPortalInventoryLots,
   getPortalInventoryLot: getPortalInventoryLotDetail,
+  getPortalInventoryExpirationSummary: getPortalInventoryExpirationSummaryService,
+  getPortalInventoryExpirationSettings: getPortalInventoryExpirationSettingsService,
+  updatePortalInventoryExpirationSettings: updatePortalInventoryExpirationSettingsService,
   createPortalInventoryLot,
   adjustPortalInventoryLot,
+  bulkWriteoffExpiredPortalInventoryLots,
   setPortalProductInventoryMode
 } = require('../services/inventory-lots.service');
 const {
@@ -1244,7 +1248,13 @@ async function getPortalInventoryLots(req, res) {
       productId: req.query.productId,
       status: req.query.status,
       expirationStatus: req.query.expirationStatus,
+      daysUntilExpirationMin: req.query.daysUntilExpirationMin,
+      daysUntilExpirationMax: req.query.daysUntilExpirationMax,
+      hasStock: req.query.hasStock,
       warehouse: req.query.warehouse,
+      location: req.query.location,
+      supplier: req.query.supplier,
+      categoryId: req.query.categoryId,
       expiresBefore: req.query.expiresBefore,
       expiresAfter: req.query.expiresAfter,
       search: req.query.search,
@@ -1266,6 +1276,133 @@ async function getPortalInventoryLots(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_inventory_lots_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInventoryExpirationSummary(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await getPortalInventoryExpirationSummaryService(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        summary: result.summary,
+        thresholds: result.thresholds,
+        timezone: result.timezone,
+        today: result.today
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_expiration_summary_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInventoryExpirationSettings(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await getPortalInventoryExpirationSettingsService(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        thresholds: result.thresholds,
+        timezone: result.timezone,
+        today: result.today
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_expiration_settings_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
+async function putPortalInventoryExpirationSettings(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await updatePortalInventoryExpirationSettingsService(tenantId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_expiration_alert_thresholds' ||
+        result.reason === 'invalid_expiration_alert_threshold_order'
+          ? 400
+          : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        thresholds: result.thresholds,
+        timezone: result.timezone,
+        auditAction: result.auditAction
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_expiration_settings_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInventoryExpiredBulkWriteoff(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await bulkWriteoffExpiredPortalInventoryLots(tenantId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_lot_ids' ||
+        result.reason === 'too_many_lots'
+          ? 400
+          : result.reason === 'inventory_lot_not_expired' ||
+              result.reason === 'inventory_lot_without_stock' ||
+              result.reason === 'inventory_lot_not_writeoff_eligible'
+            ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId, lotId: result.lotId || null });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        writtenOff: result.writtenOff
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_expired_bulk_writeoff_failed',
       details: error.message
     });
   }
@@ -4667,6 +4804,10 @@ module.exports = {
   getPortalCatalogImportTemplate,
   getPortalInventoryLots,
   getPortalInventoryLot,
+  getPortalInventoryExpirationSummary,
+  getPortalInventoryExpirationSettings,
+  putPortalInventoryExpirationSettings,
+  postPortalInventoryExpiredBulkWriteoff,
   postPortalInventoryLot,
   postPortalInventoryLotAdjustment,
   postPortalProductInventoryMode,

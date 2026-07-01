@@ -754,6 +754,38 @@ async function updateClinicBotTransferConfigById(clinicId, transferConfig, clien
   return result.rows[0] || null;
 }
 
+async function getClinicInventorySettingsById(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, name, timezone, "externalTenantId", settings, settings -> 'inventory' AS "inventorySettings"
+     FROM clinics
+     WHERE id = $1
+     LIMIT 1`,
+    [clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function updateClinicInventorySettingsById(clinicId, inventorySettings, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE clinics
+     SET settings = jsonb_set(
+       COALESCE(settings, '{}'::jsonb),
+       '{inventory}',
+       $2::jsonb,
+       true
+     ),
+     "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id, name, timezone, "externalTenantId", settings, settings -> 'inventory' AS "inventorySettings"`,
+    [clinicId, JSON.stringify(inventorySettings || {})]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function updateClinicBotConfigById(clinicId, botConfig, client = null) {
   const result = await dbQuery(
     client,
@@ -809,6 +841,8 @@ module.exports = {
   updateClinicWhatsAppDefaultChannelId,
   getClinicBusinessProfileById,
   updateClinicBusinessProfileById,
+  getClinicInventorySettingsById,
+  updateClinicInventorySettingsById,
   getClinicBotSettingsById,
   updateClinicBotModeById,
   updateClinicBotConfigById,

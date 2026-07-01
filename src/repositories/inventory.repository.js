@@ -1,5 +1,9 @@
 const { query } = require('../db/client');
-const { calculateInventoryExpirationStatus, normalizeDateOnly } = require('../utils/inventory-expiration');
+const {
+  calculateInventoryExpirationStatus,
+  humanExpirationLabel,
+  normalizeDateOnly
+} = require('../utils/inventory-expiration');
 
 const LOT_STATUSES = new Set(['active', 'depleted', 'expired', 'quarantined', 'cancelled']);
 const MOVEMENT_TYPES = new Set([
@@ -26,9 +30,9 @@ function metadataValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
-function normalizeLot(row) {
+function normalizeLot(row, options = {}) {
   if (!row) return null;
-  const expiration = calculateInventoryExpirationStatus(row.expiresAt);
+  const expiration = calculateInventoryExpirationStatus(row.expiresAt, options);
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -48,6 +52,7 @@ function normalizeLot(row) {
     status: row.status || 'active',
     expirationStatus: expiration.status,
     daysUntilExpiration: expiration.daysUntilExpiration,
+    expirationLabel: humanExpirationLabel(expiration.daysUntilExpiration, expiration.status),
     notes: row.notes || null,
     metadata: metadataValue(row.metadata),
     createdBy: row.createdBy || null,
@@ -106,13 +111,27 @@ function buildLotSelect(whereClause = '') {
     ${whereClause}`;
 }
 
-async function listInventoryLots(tenantId, filters = {}, client = null) {
-  const params = [tenantId];
-  const conditions = ['l."tenantId" = $1::uuid'];
+function expirationSqlCase(todayParam, thresholds) {
+  return `CASE
+    WHEN l."expiresAt" IS NULL THEN 'no_expiration'
+    WHEN l."expiresAt" < $${todayParam}::date THEN 'expired'
+    WHEN l."expiresAt" = $${todayParam}::date THEN 'today'
+    WHEN l."expiresAt" <= ($${todayParam}::date + ${Number(thresholds.criticalDays || 3)} * INTERVAL '1 day')::date THEN 'critical'
+    WHEN l."expiresAt" <= ($${todayParam}::date + ${Number(thresholds.urgentDays || 7)} * INTERVAL '1 day')::date THEN 'urgent'
+    WHEN l."expiresAt" <= ($${todayParam}::date + ${Number(thresholds.warningDays || 15)} * INTERVAL '1 day')::date THEN 'warning'
+    WHEN l."expiresAt" <= ($${todayParam}::date + ${Number(thresholds.upcomingDays || 30)} * INTERVAL '1 day')::date THEN 'upcoming'
+    ELSE 'normal'
+  END`;
+}
 
+function addLotFilters(params, conditions, filters = {}) {
   if (filters.productId) {
     params.push(filters.productId);
     conditions.push(`l."productId" = $${params.length}::uuid`);
+  }
+  if (filters.categoryId) {
+    params.push(filters.categoryId);
+    conditions.push(`p."categoryId" = $${params.length}::uuid`);
   }
   if (filters.status && LOT_STATUSES.has(filters.status)) {
     params.push(filters.status);
@@ -126,6 +145,14 @@ async function listInventoryLots(tenantId, filters = {}, client = null) {
     params.push(`%${String(filters.warehouse).trim()}%`);
     conditions.push(`l."warehouseName" ILIKE $${params.length}`);
   }
+  if (filters.location) {
+    params.push(`%${String(filters.location).trim()}%`);
+    conditions.push(`l."locationName" ILIKE $${params.length}`);
+  }
+  if (filters.supplier) {
+    params.push(`%${String(filters.supplier).trim()}%`);
+    conditions.push(`l."supplierName" ILIKE $${params.length}`);
+  }
   if (filters.expiresBefore) {
     params.push(filters.expiresBefore);
     conditions.push(`l."expiresAt" <= $${params.length}::date`);
@@ -133,6 +160,36 @@ async function listInventoryLots(tenantId, filters = {}, client = null) {
   if (filters.expiresAfter) {
     params.push(filters.expiresAfter);
     conditions.push(`l."expiresAt" >= $${params.length}::date`);
+  }
+  if (filters.hasStock === true || filters.hasStock === 'true') {
+    conditions.push(`l."availableQuantity" > 0`);
+  } else if (filters.hasStock === false || filters.hasStock === 'false') {
+    conditions.push(`l."availableQuantity" <= 0`);
+  }
+  if (filters.daysUntilExpirationMin !== undefined && filters.daysUntilExpirationMin !== null && filters.daysUntilExpirationMin !== '') {
+    params.push(Number(filters.daysUntilExpirationMin));
+    conditions.push(`l."expiresAt" IS NOT NULL AND (l."expiresAt" - $2::date) >= $${params.length}`);
+  }
+  if (filters.daysUntilExpirationMax !== undefined && filters.daysUntilExpirationMax !== null && filters.daysUntilExpirationMax !== '') {
+    params.push(Number(filters.daysUntilExpirationMax));
+    conditions.push(`l."expiresAt" IS NOT NULL AND (l."expiresAt" - $2::date) <= $${params.length}`);
+  }
+}
+
+async function listInventoryLots(tenantId, filters = {}, client = null) {
+  const params = [tenantId];
+  const conditions = ['l."tenantId" = $1::uuid'];
+  const todayISO = filters.todayISO || new Date().toISOString().slice(0, 10);
+  params.push(todayISO);
+  const todayParam = params.length;
+  const thresholds = filters.thresholds || {};
+  const expirationCase = expirationSqlCase(todayParam, thresholds);
+
+  addLotFilters(params, conditions, filters);
+
+  if (filters.expirationStatus) {
+    params.push(filters.expirationStatus);
+    conditions.push(`${expirationCase} = $${params.length}`);
   }
 
   const pageSize = Math.min(Math.max(Number(filters.pageSize || 100), 1), 250);
@@ -142,16 +199,26 @@ async function listInventoryLots(tenantId, filters = {}, client = null) {
   const result = await dbQuery(
     client,
     `${buildLotSelect(`WHERE ${conditions.join(' AND ')}`)}
-     ORDER BY l."expiresAt" ASC NULLS LAST, l."receivedAt" ASC, l."createdAt" ASC
+     ORDER BY
+       CASE ${expirationCase}
+         WHEN 'expired' THEN 0
+         WHEN 'today' THEN 1
+         WHEN 'critical' THEN 2
+         WHEN 'urgent' THEN 3
+         WHEN 'warning' THEN 4
+         WHEN 'upcoming' THEN 5
+         WHEN 'normal' THEN 6
+         ELSE 7
+       END ASC,
+       CASE WHEN l."expiresAt" IS NULL THEN 999999 ELSE (l."expiresAt" - $${todayParam}::date) END ASC,
+       l."availableQuantity" DESC,
+       l."receivedAt" ASC NULLS LAST,
+       l."createdAt" ASC
      LIMIT $${limitIndex}`,
     params
   );
 
-  let lots = result.rows.map(normalizeLot);
-  if (filters.expirationStatus) {
-    lots = lots.filter((lot) => lot.expirationStatus === filters.expirationStatus);
-  }
-  return lots;
+  return result.rows.map((row) => normalizeLot(row, { todayISO, thresholds }));
 }
 
 async function findInventoryLotById(lotId, tenantId, client = null, options = {}) {
@@ -162,7 +229,63 @@ async function findInventoryLotById(lotId, tenantId, client = null, options = {}
      ${options.forUpdate ? 'FOR UPDATE OF l' : ''}`,
     [lotId, tenantId]
   );
-  return normalizeLot(result.rows[0]);
+  return normalizeLot(result.rows[0], options);
+}
+
+async function getInventoryExpirationSummary(tenantId, options = {}, client = null) {
+  const todayISO = options.todayISO || new Date().toISOString().slice(0, 10);
+  const thresholds = options.thresholds || {};
+  const result = await dbQuery(
+    client,
+    `WITH classified AS (
+       SELECT
+         ${expirationSqlCase(2, thresholds)} AS expiration_status,
+         l."availableQuantity",
+         l.status
+       FROM inventory_lots l
+       INNER JOIN products p
+         ON p.id = l."productId"
+        AND p."clinicId" = l."tenantId"
+       WHERE l."tenantId" = $1::uuid
+     )
+     SELECT
+       COUNT(*) FILTER (WHERE expiration_status = 'expired')::int AS "expiredLots",
+       COUNT(*) FILTER (WHERE expiration_status = 'today')::int AS "expiringTodayLots",
+       COUNT(*) FILTER (WHERE expiration_status = 'critical')::int AS "criticalLots",
+       COUNT(*) FILTER (WHERE expiration_status = 'urgent')::int AS "urgentLots",
+       COUNT(*) FILTER (WHERE expiration_status = 'warning')::int AS "warningLots",
+       COUNT(*) FILTER (WHERE expiration_status = 'upcoming')::int AS "upcomingLots",
+       COALESCE(SUM("availableQuantity") FILTER (
+         WHERE expiration_status IN ('expired', 'today', 'critical', 'urgent')
+           AND "availableQuantity" > 0
+           AND status NOT IN ('cancelled', 'depleted', 'quarantined')
+       ), 0)::numeric AS "unitsAtRisk7Days",
+       COALESCE(SUM("availableQuantity") FILTER (
+         WHERE expiration_status = 'expired'
+           AND "availableQuantity" > 0
+           AND status NOT IN ('cancelled', 'depleted', 'quarantined')
+       ), 0)::numeric AS "unitsExpired",
+       COALESCE(SUM("availableQuantity") FILTER (
+         WHERE expiration_status IN ('expired', 'today', 'critical', 'urgent', 'warning', 'upcoming')
+           AND "availableQuantity" > 0
+           AND status NOT IN ('cancelled', 'depleted', 'quarantined')
+       ), 0)::numeric AS "unitsAtRisk30Days"
+     FROM classified`,
+    [tenantId, todayISO]
+  );
+
+  const row = result.rows[0] || {};
+  return {
+    expiredLots: Number(row.expiredLots || 0),
+    expiringTodayLots: Number(row.expiringTodayLots || 0),
+    criticalLots: Number(row.criticalLots || 0),
+    urgentLots: Number(row.urgentLots || 0),
+    warningLots: Number(row.warningLots || 0),
+    upcomingLots: Number(row.upcomingLots || 0),
+    unitsAtRisk7Days: numberValue(row.unitsAtRisk7Days),
+    unitsExpired: numberValue(row.unitsExpired),
+    unitsAtRisk30Days: numberValue(row.unitsAtRisk30Days)
+  };
 }
 
 async function createInventoryLot(input, client = null) {
@@ -472,6 +595,7 @@ module.exports = {
   LOT_STATUSES: Array.from(LOT_STATUSES),
   MOVEMENT_TYPES: Array.from(MOVEMENT_TYPES),
   listInventoryLots,
+  getInventoryExpirationSummary,
   findInventoryLotById,
   createInventoryLot,
   updateInventoryLotState,

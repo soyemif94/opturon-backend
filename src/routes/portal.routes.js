@@ -36,6 +36,10 @@ const {
   getPortalCatalogImportTemplate,
   getPortalInventoryLots,
   getPortalInventoryLot,
+  getPortalInventoryExpirationSummary,
+  getPortalInventoryExpirationSettings,
+  putPortalInventoryExpirationSettings,
+  postPortalInventoryExpiredBulkWriteoff,
   postPortalInventoryLot,
   postPortalInventoryLotAdjustment,
   postPortalProductInventoryMode,
@@ -285,6 +289,10 @@ router.post('/tenants/:tenantId/catalog-imports/:importId/cancel', requirePortal
 router.get('/tenants/:tenantId/catalog-imports/:importId/errors', requirePortalInternalAuth, catalogModule, getPortalCatalogImportErrors);
 router.get('/tenants/:tenantId/inventory/lots', catalogModule, getPortalInventoryLots);
 router.post('/tenants/:tenantId/inventory/lots', catalogModule, postPortalInventoryLot);
+router.get('/tenants/:tenantId/inventory/expiration-summary', catalogModule, getPortalInventoryExpirationSummary);
+router.get('/tenants/:tenantId/inventory/expiration-settings', catalogModule, getPortalInventoryExpirationSettings);
+router.put('/tenants/:tenantId/inventory/expiration-settings', catalogModule, putPortalInventoryExpirationSettings);
+router.post('/tenants/:tenantId/inventory/lots/bulk-writeoff-expired', catalogModule, postPortalInventoryExpiredBulkWriteoff);
 router.get('/tenants/:tenantId/inventory/lots/:lotId', catalogModule, getPortalInventoryLot);
 router.post('/tenants/:tenantId/inventory/lots/:lotId/adjust', catalogModule, postPortalInventoryLotAdjustment);
 router.get('/tenants/:tenantId/products/:productId', catalogModule, getPortalProduct);
