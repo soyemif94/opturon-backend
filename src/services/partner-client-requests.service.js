@@ -127,6 +127,34 @@ function buildPeriodKey(eventAt) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
+function resolveRequestConfirmedAmount(request, fallbackAmount) {
+  return parsePositiveMoney(
+    fallbackAmount ||
+    (request && request.paymentConfirmation && request.paymentConfirmation.amount) ||
+    (request && request.commissionSnapshot && request.commissionSnapshot.baseAmount) ||
+    (request && request.confirmedAmount)
+  );
+}
+
+function resolveRequestConfirmedCurrency(request, fallbackCurrency) {
+  return normalizeString(
+    fallbackCurrency ||
+    (request && request.paymentConfirmation && request.paymentConfirmation.currency) ||
+    (request && request.commissionSnapshot && request.commissionSnapshot.currency) ||
+    (request && request.confirmedCurrency) ||
+    'ARS'
+  ).toUpperCase();
+}
+
+function resolveRequestPaymentMethod(request, fallbackMethod) {
+  return normalizeString(
+    fallbackMethod ||
+    (request && request.paymentConfirmation && request.paymentConfirmation.method) ||
+    (request && request.paymentMethod) ||
+    'manual_admin'
+  );
+}
+
 function getPartnerRankCode(partner) {
   return normalizeString(partner && partner.currentRankCode).toLowerCase() || 'asesor';
 }
@@ -208,6 +236,103 @@ async function evaluatePartnerCareerAfterActivation(partnerId, planVersion, acto
     createdByStaffUserId: actorStaffUserId || null
   }, client);
   return evaluation;
+}
+
+async function ensureOwnSignupCommissionForClientRequest(input, client) {
+  const {
+    request,
+    partner,
+    planVersion,
+    attributionId,
+    clinicId,
+    externalTenantId,
+    actorStaffUserId,
+    confirmedAmount,
+    confirmedCurrency,
+    paymentMethod,
+    tenantCreated
+  } = input || {};
+
+  if (!request || !request.id) return { ok: false, reason: 'client_request_not_found' };
+  const baseAmount = resolveRequestConfirmedAmount(request, confirmedAmount);
+  if (!baseAmount) return { ok: false, reason: 'invalid_confirmed_amount' };
+  const currency = resolveRequestConfirmedCurrency(request, confirmedCurrency);
+  if (!CURRENCIES.has(currency)) return { ok: false, reason: 'invalid_confirmed_currency' };
+  if (!attributionId) return { ok: false, reason: 'client_request_missing_attribution' };
+  if (!clinicId) return { ok: false, reason: 'client_request_missing_linked_tenant' };
+  if (!externalTenantId) return { ok: false, reason: 'client_request_missing_external_tenant' };
+  if (!planVersion) return { ok: false, reason: 'partner_commission_plan_version_not_found' };
+  if (normalizeString(planVersion.currency).toUpperCase() !== currency) {
+    return { ok: false, reason: 'partner_commission_currency_mismatch' };
+  }
+
+  const rule = resolveOwnSignupRule(planVersion, partner);
+  if (!rule) return { ok: false, reason: 'partner_commission_rule_not_found' };
+  const baseCents = parseMoneyToCents(baseAmount);
+  if (baseCents === null) return { ok: false, reason: 'invalid_confirmed_amount' };
+  const commissionAmount = centsToMoney(calculateCommissionAmountCents(baseCents, rule.rateBasisPoints));
+  const sourceRef = request.id;
+  const sourceEventId = request.id;
+  const existingEntries = await findCommissionEntriesBySource(CLIENT_REQUEST_ACTIVATION_SOURCE, sourceRef, sourceEventId, client);
+  const existingOwnSignup = existingEntries.find((entry) => entry.payoutKind === 'own_signup' && entry.status === 'generated');
+  if (existingOwnSignup) {
+    return {
+      ok: true,
+      commissionEntry: existingOwnSignup,
+      baseAmount,
+      currency,
+      rule,
+      commissionAmount: existingOwnSignup.commissionAmount || commissionAmount,
+      alreadyExisted: true
+    };
+  }
+
+  const eventAt = (request.paymentConfirmation && request.paymentConfirmation.confirmedAt) || request.processedAt || new Date().toISOString();
+  const commissionEntry = await createCommissionEntry({
+    partnerId: request.partnerId,
+    attributionId,
+    planVersionId: planVersion.id,
+    clinicId,
+    tenantId: externalTenantId,
+    sourceType: CLIENT_REQUEST_ACTIVATION_SOURCE,
+    sourceRef,
+    sourceEventId,
+    eventType: CLIENT_REQUEST_SIGNUP_EVENT,
+    eventAt,
+    periodKey: buildPeriodKey(eventAt),
+    currency,
+    planCodeSnapshot: planVersion.planCode,
+    planVersionNumberSnapshot: planVersion.versionNumber,
+    payoutKind: 'own_signup',
+    paymentStatus: 'accredited',
+    status: 'generated',
+    basisAmount: baseAmount,
+    commissionRate: rule.rate,
+    commissionAmount,
+    depthLevel: 0,
+    idempotencyKey: `${CLIENT_REQUEST_ACTIVATION_SOURCE}:${request.id}:own_signup:${request.partnerId}`,
+    details: {
+      requestId: request.id,
+      clientName: request.clientName,
+      planCode: request.planCode || null,
+      ruleCode: rule.ruleCode,
+      partnerRankCode: rule.rankCode,
+      tenantCreated: Boolean(tenantCreated),
+      paymentConfirmationMethod: resolveRequestPaymentMethod(request, paymentMethod),
+      basisSource: 'confirmed_amount'
+    },
+    createdByStaffUserId: actorStaffUserId || null
+  }, client);
+
+  return {
+    ok: true,
+    commissionEntry,
+    baseAmount,
+    currency,
+    rule,
+    commissionAmount,
+    alreadyExisted: false
+  };
 }
 
 function normalizeDate(value) {
@@ -593,7 +718,66 @@ async function processApprovedRequestAsAdmin(requestId, payload = {}, actorStaff
     const request = await findPartnerClientRequestByIdForUpdate(requestId, client);
     if (!request) return { ok: false, reason: 'client_request_not_found' };
     if (request.processingStatus === 'processed') {
-      return { ok: true, request, alreadyProcessed: true };
+      const existingEntries = await findCommissionEntriesBySource(CLIENT_REQUEST_ACTIVATION_SOURCE, request.id, request.id, client);
+      const existingOwnSignup = existingEntries.find((entry) => entry.payoutKind === 'own_signup' && entry.status === 'generated');
+      if (existingOwnSignup && request.commissionEntryId) {
+        return { ok: true, request, commissionEntry: existingOwnSignup, alreadyProcessed: true };
+      }
+
+      const partner = await findPartnerById(request.partnerId, client);
+      if (!partner) return { ok: false, reason: 'partner_not_found' };
+      const planVersion = await findPublishedCommissionPlanVersion(null, client);
+      if (!planVersion) return { ok: false, reason: 'partner_commission_plan_version_not_found' };
+      const commissionResult = await ensureOwnSignupCommissionForClientRequest({
+        request,
+        partner,
+        planVersion,
+        attributionId: request.attributionId,
+        clinicId: request.linkedTenantId,
+        externalTenantId: request.linkedExternalTenantId,
+        actorStaffUserId: actorId,
+        confirmedAmount,
+        confirmedCurrency,
+        paymentMethod,
+        tenantCreated: false
+      }, client);
+      if (!commissionResult.ok) return commissionResult;
+
+      const repaired = await markPartnerClientRequestProcessed(request.id, {
+        paymentConfirmedAt: request.paymentConfirmation && request.paymentConfirmation.confirmedAt,
+        paymentConfirmedBy: (request.paymentConfirmation && request.paymentConfirmation.confirmedBy) || actorId,
+        paymentConfirmationMethod: resolveRequestPaymentMethod(request, paymentMethod),
+        confirmedAmount: commissionResult.baseAmount,
+        confirmedCurrency: commissionResult.currency,
+        paymentConfirmationReference: request.paymentConfirmation && request.paymentConfirmation.reference,
+        paymentConfirmationNotes: request.paymentConfirmation && request.paymentConfirmation.notes,
+        linkedTenantId: request.linkedTenantId,
+        linkedExternalTenantId: request.linkedExternalTenantId,
+        attributionId: request.attributionId,
+        commissionEntryId: commissionResult.commissionEntry.id,
+        processedBy: request.processedBy || actorId,
+        commissionBaseAmount: commissionResult.baseAmount,
+        commissionCurrency: commissionResult.currency,
+        commissionRate: commissionResult.rule.rate,
+        commissionAmount: commissionResult.commissionAmount,
+        commissionRuleCode: commissionResult.rule.ruleCode,
+        metadata: {
+          activation: {
+            commissionPlanVersionId: planVersion.id,
+            commissionPlanCode: planVersion.planCode,
+            commissionPlanVersionNumber: planVersion.versionNumber,
+            commissionRepaired: !commissionResult.alreadyExisted
+          }
+        }
+      }, client);
+
+      return {
+        ok: true,
+        request: repaired,
+        commissionEntry: commissionResult.commissionEntry,
+        alreadyProcessed: true,
+        commissionRepaired: !commissionResult.alreadyExisted
+      };
     }
     if (request.status !== 'approved') return { ok: false, reason: 'client_request_not_approved' };
 
@@ -625,49 +809,31 @@ async function processApprovedRequestAsAdmin(requestId, payload = {}, actorStaff
       return { ok: false, reason: 'partner_commission_currency_mismatch' };
     }
 
-    const rule = resolveOwnSignupRule(planVersion, partner);
-    if (!rule) return { ok: false, reason: 'partner_commission_rule_not_found' };
-    const baseCents = parseMoneyToCents(confirmedAmount);
-    if (baseCents === null) return { ok: false, reason: 'invalid_confirmed_amount' };
-    const commissionAmount = centsToMoney(calculateCommissionAmountCents(baseCents, rule.rateBasisPoints));
-    const sourceRef = request.id;
-    const sourceEventId = request.id;
-    const existingEntries = await findCommissionEntriesBySource(CLIENT_REQUEST_ACTIVATION_SOURCE, sourceRef, sourceEventId, client);
-    const existingOwnSignup = existingEntries.find((entry) => entry.payoutKind === 'own_signup' && entry.status === 'generated');
     const eventAt = new Date().toISOString();
-    const commissionEntry = existingOwnSignup || await createCommissionEntry({
-      partnerId: request.partnerId,
-      attributionId: attribution.id,
-      planVersionId: planVersion.id,
-      clinicId: tenantResult.clinic.id,
-      tenantId: tenantResult.externalTenantId,
-      sourceType: CLIENT_REQUEST_ACTIVATION_SOURCE,
-      sourceRef,
-      sourceEventId,
-      eventType: CLIENT_REQUEST_SIGNUP_EVENT,
-      eventAt,
-      periodKey: buildPeriodKey(eventAt),
-      currency: confirmedCurrency,
-      planCodeSnapshot: planVersion.planCode,
-      planVersionNumberSnapshot: planVersion.versionNumber,
-      payoutKind: 'own_signup',
-      paymentStatus: 'accredited',
-      status: 'generated',
-      basisAmount: confirmedAmount,
-      commissionRate: rule.rate,
-      commissionAmount,
-      depthLevel: 0,
-      idempotencyKey: `${CLIENT_REQUEST_ACTIVATION_SOURCE}:${request.id}:own_signup:${request.partnerId}`,
-      details: {
-        requestId: request.id,
-        clientName: request.clientName,
-        ruleCode: rule.ruleCode,
-        partnerRankCode: rule.rankCode,
-        tenantCreated: tenantResult.created,
-        paymentConfirmationMethod: paymentMethod
+    const commissionResult = await ensureOwnSignupCommissionForClientRequest({
+      request: {
+        ...request,
+        paymentConfirmation: {
+          ...(request.paymentConfirmation || {}),
+          confirmedAt: eventAt,
+          amount: confirmedAmount,
+          currency: confirmedCurrency,
+          method: paymentMethod
+        }
       },
-      createdByStaffUserId: actorId
+      partner,
+      planVersion,
+      attributionId: attribution.id,
+      clinicId: tenantResult.clinic.id,
+      externalTenantId: tenantResult.externalTenantId,
+      actorStaffUserId: actorId,
+      confirmedAmount,
+      confirmedCurrency,
+      paymentMethod,
+      tenantCreated: tenantResult.created
     }, client);
+    if (!commissionResult.ok) return commissionResult;
+    const { commissionEntry, rule, commissionAmount } = commissionResult;
 
     const processed = await markPartnerClientRequestProcessed(request.id, {
       paymentConfirmedAt: eventAt,

@@ -38,6 +38,19 @@ function testTenantAttributionAndIdempotency() {
   assert.match(service, /alreadyProcessed: true/);
 }
 
+function testProcessedRequestsRepairMissingCommission() {
+  const service = read('src/services/partner-client-requests.service.js');
+  const processedBranchStart = service.indexOf("if (request.processingStatus === 'processed')");
+  const approvalGuardStart = service.indexOf("if (request.status !== 'approved')");
+  const processedBranch = service.slice(processedBranchStart, approvalGuardStart);
+  assert.match(service, /async function ensureOwnSignupCommissionForClientRequest/);
+  assert.match(processedBranch, /findCommissionEntriesBySource\(CLIENT_REQUEST_ACTIVATION_SOURCE, request\.id, request\.id, client\)/);
+  assert.match(processedBranch, /ensureOwnSignupCommissionForClientRequest/);
+  assert.match(processedBranch, /commissionRepaired/);
+  assert.match(processedBranch, /markPartnerClientRequestProcessed/);
+  assert.match(processedBranch, /commissionEntryId: commissionResult\.commissionEntry\.id/);
+}
+
 function testNoCommissionOnApproval() {
   const service = read('src/services/partner-client-requests.service.js');
   const reviewStart = service.indexOf('async function reviewRequestAsAdmin');
@@ -50,5 +63,6 @@ function testNoCommissionOnApproval() {
 testMigrationAddsProcessingFields();
 testActivationIsSeparateFromApproval();
 testTenantAttributionAndIdempotency();
+testProcessedRequestsRepairMissingCommission();
 testNoCommissionOnApproval();
 console.log('partner-client-activation.test.js: ok');

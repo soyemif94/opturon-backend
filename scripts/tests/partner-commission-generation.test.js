@@ -24,11 +24,14 @@ function testOwnSignupOnly() {
 function testLedgerSnapshotAndIdempotency() {
   const service = read('src/services/partner-client-requests.service.js');
   const migration = read('db/migrations/055_partner_client_request_activation.sql');
-  assert.match(service, /basisAmount: confirmedAmount/);
+  assert.match(service, /resolveRequestConfirmedAmount/);
+  assert.match(service, /basisAmount: baseAmount/);
   assert.match(service, /commissionRate: rule\.rate/);
   assert.match(service, /commissionAmount/);
   assert.match(service, /commissionRuleCode/);
   assert.match(service, /findCommissionEntriesBySource/);
+  assert.match(service, /basisSource: 'confirmed_amount'/);
+  assert.match(service, /planCode: request\.planCode \|\| null/);
   assert.match(migration, /partner_commission_entries_client_request_signup_unique_idx/);
   assert.match(migration, /"sourceType", "sourceRef", "eventType", "payoutKind", "partnerId"/);
 }
