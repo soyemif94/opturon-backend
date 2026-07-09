@@ -22,6 +22,7 @@ const {
   postAdminPartnerResendInvite,
   postAdminPartnerCancelInvitation,
   postAdminPartnerDeactivate,
+  deleteAdminPartner,
   postAdminPartnerRankEvaluation,
   getAdminPartnerCommissionPlans,
   postAdminPartnerCommissionPlan,
@@ -75,6 +76,7 @@ router.get('/partners/recruitment-applications/:applicationId', requireAdminInte
 router.post('/partners/recruitment-applications/:applicationId/send-invitation', requireAdminInternalActor, postAdminPartnerRecruitmentApplicationSendInvitation);
 router.post('/partners/recruitment-applications/:applicationId/:action(approve|reject|request_changes)', requireAdminInternalActor, postAdminPartnerRecruitmentApplicationReview);
 router.get('/partners/:partnerId', requireAdminInternalActor, getAdminPartner);
+router.delete('/partners/:partnerId', requireAdminInternalActor, deleteAdminPartner);
 router.patch('/partners/:partnerId/status', requireAdminInternalActor, patchAdminPartnerStatus);
 router.post('/partners/:partnerId/resend-invite', requireAdminInternalActor, postAdminPartnerResendInvite);
 router.post('/partners/:partnerId/cancel-invitation', requireAdminInternalActor, postAdminPartnerCancelInvitation);

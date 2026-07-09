@@ -23,6 +23,7 @@ const {
   changePartnerStatus,
   cancelPartnerInvitation,
   deactivatePartner,
+  deletePartnerSafely,
   assignPartnerSponsor,
   attributeTenantToPartner,
   createCommissionPlanWithVersion,
@@ -564,6 +565,31 @@ async function postAdminPartnerDeactivate(req, res) {
   }
 }
 
+async function deleteAdminPartner(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await deletePartnerSafely(String(req.params.partnerId || '').trim(), {
+      actorStaffUserId: actorUserId
+    });
+    if (!result.ok) {
+      const status = result.reason === 'partner_not_found'
+        ? 404
+        : result.reason === 'partner_delete_status_not_allowed' || result.reason === 'partner_delete_blocked_by_activity'
+          ? 409
+          : 400;
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        lifecycle: result.lifecycle,
+        partner: result.partner
+      });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'partner_delete_failed', details: error.message });
+  }
+}
+
 async function postAdminPartnerRankEvaluation(req, res) {
   const { actorUserId } = getAdminActor(req);
   try {
@@ -818,6 +844,7 @@ module.exports = {
   postAdminPartnerResendInvite,
   postAdminPartnerCancelInvitation,
   postAdminPartnerDeactivate,
+  deleteAdminPartner,
   postAdminPartnerRankEvaluation,
   getAdminPartnerCommissionPlans,
   postAdminPartnerCommissionPlan,

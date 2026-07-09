@@ -45,6 +45,8 @@ const {
   createRankHistory,
   listRankHistory,
   getPartnerLifecycleSummary,
+  getPartnerDeletionSafetySummary,
+  deletePartnerAccountById,
   createPartnerAuditLog,
   listPartnerAuditLog
 } = require('../repositories/partners.repository');
@@ -896,6 +898,36 @@ async function invitePartner(input, options = {}) {
   };
 }
 
+function buildPartnerDeletionSnapshot(summary) {
+  const safe = summary && typeof summary === 'object' ? summary : {};
+  const activeClients = Math.max(0, Number(safe.activeAttributionCount || 0));
+  const totalAttributions = Math.max(0, Number(safe.totalAttributionCount || 0));
+  const commissionEntries = Math.max(0, Number(safe.commissionEntryCount || 0));
+  const directDescendants = Math.max(0, Number(safe.activeDirectDescendantCount || 0));
+  const rankHistoryEntries = Math.max(0, Number(safe.rankHistoryCount || 0));
+  const clientRequests = Math.max(0, Number(safe.clientRequestCount || 0));
+  const recruitmentApplications = Math.max(0, Number(safe.recruitmentApplicationCount || 0));
+  const blockers = [];
+
+  if (totalAttributions > 0 || activeClients > 0) blockers.push('partner_has_client_attributions');
+  if (commissionEntries > 0) blockers.push('partner_has_commissions');
+  if (directDescendants > 0) blockers.push('partner_has_active_downline');
+  if (rankHistoryEntries > 0) blockers.push('partner_has_rank_history');
+  if (clientRequests > 0) blockers.push('partner_has_client_requests');
+  if (recruitmentApplications > 0) blockers.push('partner_has_recruitment_applications');
+
+  return {
+    activeClients,
+    totalAttributions,
+    commissionEntries,
+    directDescendants,
+    rankHistoryEntries,
+    clientRequests,
+    recruitmentApplications,
+    blockers
+  };
+}
+
 async function resendPartnerInvitation(partnerId, options = {}) {
   const actorStaffUserId = isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null;
   const invitationToken = generateInvitationToken();
@@ -1219,6 +1251,66 @@ async function deactivatePartner(partnerId, options = {}) {
       ok: true,
       partner: await findPartnerById(partnerId, client),
       lifecycle: buildPartnerLifecycleSnapshot(await getPartnerLifecycleSummary(partnerId, client))
+    };
+  });
+}
+
+async function deletePartnerSafely(partnerId, options = {}) {
+  const actorStaffUserId = isUuid(options.actorStaffUserId) ? options.actorStaffUserId : null;
+  const allowedStatuses = new Set(['invited', 'suspended', 'disabled', 'invitation_canceled']);
+
+  return withTransaction(async (client) => {
+    const partner = await findPartnerById(partnerId, client);
+    if (!partner) return { ok: false, reason: 'partner_not_found' };
+
+    const lifecycle = buildPartnerDeletionSnapshot(await getPartnerDeletionSafetySummary(partnerId, client));
+    if (!allowedStatuses.has(String(partner.status || '').trim())) {
+      return { ok: false, reason: 'partner_delete_status_not_allowed', partner, lifecycle };
+    }
+
+    if (lifecycle.blockers.length > 0) {
+      return { ok: false, reason: 'partner_delete_blocked_by_activity', partner, lifecycle };
+    }
+
+    const deletedAt = new Date().toISOString();
+    await revokePendingPartnerInvitationsByPartnerId(partnerId, client);
+    await revokePendingPartnerInvitationsByEmail(partner.email, client);
+    await appendAuditLog(
+      {
+        partnerId,
+        entityType: 'partner_account',
+        entityId: partnerId,
+        action: 'partner_deleted',
+        reason: 'admin_safe_delete',
+        actorType: actorStaffUserId ? 'staff' : 'system',
+        actorStaffUserId,
+        metadata: {
+          email: partner.email,
+          code: partner.profile && partner.profile.code ? partner.profile.code : null,
+          displayName: partner.profile && partner.profile.displayName ? partner.profile.displayName : null,
+          previousStatus: partner.status,
+          actorStaffUserId,
+          deletedAt,
+          lifecycle
+        }
+      },
+      client
+    );
+
+    const deleted = await deletePartnerAccountById(partnerId, client);
+    if (!deleted) return { ok: false, reason: 'partner_not_found' };
+
+    return {
+      ok: true,
+      partnerId,
+      deletedPartner: {
+        id: partner.id,
+        email: partner.email,
+        code: partner.profile && partner.profile.code ? partner.profile.code : null,
+        displayName: partner.profile && partner.profile.displayName ? partner.profile.displayName : null,
+        status: partner.status
+      },
+      lifecycle
     };
   });
 }
@@ -2036,6 +2128,7 @@ module.exports = {
   changePartnerStatus,
   cancelPartnerInvitation,
   deactivatePartner,
+  deletePartnerSafely,
   assignPartnerSponsor,
   attributeTenantToPartner,
   createCommissionPlanWithVersion,

@@ -1089,6 +1089,63 @@ async function getPartnerLifecycleSummary(partnerId, client = null) {
   return result.rows[0] || null;
 }
 
+async function getPartnerDeletionSafetySummary(partnerId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT (
+        SELECT COUNT(*)::INT
+        FROM partner_client_attributions pca
+        WHERE pca."partnerId" = $1
+      ) AS "totalAttributionCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_client_attributions pca
+        WHERE pca."partnerId" = $1
+          AND pca.status = 'active'
+      ) AS "activeAttributionCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_commission_entries pce
+        WHERE pce."partnerId" = $1
+      ) AS "commissionEntryCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_relationships rel
+        WHERE rel."sponsorPartnerId" = $1
+          AND rel.status = 'active'
+      ) AS "activeDirectDescendantCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_rank_history prh
+        WHERE prh."partnerId" = $1
+      ) AS "rankHistoryCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_client_requests pcr
+        WHERE pcr."partnerId" = $1
+      ) AS "clientRequestCount",
+      (
+        SELECT COUNT(*)::INT
+        FROM partner_recruitment_applications app
+        WHERE app."sponsorPartnerId" = $1
+           OR app."createdPartnerId" = $1
+      ) AS "recruitmentApplicationCount"`,
+    [partnerId]
+  );
+  return result.rows[0] || null;
+}
+
+async function deletePartnerAccountById(partnerId, client = null) {
+  const result = await dbQuery(
+    client,
+    `DELETE FROM partner_accounts
+     WHERE id = $1
+     RETURNING id, email, status`,
+    [partnerId]
+  );
+  return result.rows[0] || null;
+}
+
 async function createPartnerAuditLog(input, client = null) {
   const result = await dbQuery(
     client,
@@ -1191,6 +1248,8 @@ module.exports = {
   createRankHistory,
   listRankHistory,
   getPartnerLifecycleSummary,
+  getPartnerDeletionSafetySummary,
+  deletePartnerAccountById,
   createPartnerAuditLog,
   listPartnerAuditLog,
   findStaffUserByEmail

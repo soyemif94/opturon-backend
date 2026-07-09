@@ -223,6 +223,16 @@ function setup(overrides = {}) {
       pendingInvitationCount: 0,
       rankHistoryCount: 0
     }),
+    getPartnerDeletionSafetySummary: async () => ({
+      activeAttributionCount: 0,
+      totalAttributionCount: 0,
+      commissionEntryCount: 0,
+      activeDirectDescendantCount: 0,
+      rankHistoryCount: 0,
+      clientRequestCount: 0,
+      recruitmentApplicationCount: 0
+    }),
+    deletePartnerAccountById: async (partnerId) => ({ id: partnerId, email: 'deleted@test.com', status: 'invited' }),
     createPartnerAuditLog: async () => ({ id: 'audit-1' }),
     listPartnerAuditLog: async () => [],
     ...overrides
@@ -521,6 +531,146 @@ async function testDeactivatePartnerRequiresReasonAndDisablesAccount() {
   const result = await service.deactivatePartner('partner-1', { reason: 'manual_offboarding' });
   assert.strictEqual(result.ok, true);
   assert.strictEqual(updatedStatus, 'disabled');
+}
+
+async function testDeletePartnerSafelyDeletesInactivePartnerAndAllowsReuse() {
+  let deleted = false;
+  let deletedPartnerId = null;
+  let auditEntry = null;
+  setup({
+    findPartnerById: async (partnerId) => {
+      if (partnerId === 'partner-delete' && !deleted) {
+        return {
+          id: 'partner-delete',
+          email: 'qa-delete@test.com',
+          status: 'invited',
+          sponsorPartnerId: null,
+          currentRankCode: null,
+          profile: { displayName: 'QA Delete', code: 'QA-DELETE' }
+        };
+      }
+      if (partnerId === 'partner-new') {
+        return {
+          id: 'partner-new',
+          email: 'qa-delete@test.com',
+          status: 'invited',
+          sponsorPartnerId: null,
+          currentRankCode: null,
+          profile: { displayName: 'QA Delete', code: 'QA-DELETE' }
+        };
+      }
+      return null;
+    },
+    findPartnerByEmail: async (email) => (email === 'qa-delete@test.com' && !deleted ? { id: 'partner-delete' } : null),
+    findPartnerByCode: async (code) => (code === 'QA-DELETE' && !deleted ? { id: 'partner-delete' } : null),
+    deletePartnerAccountById: async (partnerId) => {
+      deleted = true;
+      deletedPartnerId = partnerId;
+      return { id: partnerId, email: 'qa-delete@test.com', status: 'invited' };
+    },
+    createPartnerAuditLog: async (payload) => {
+      auditEntry = payload;
+      return { id: 'audit-delete', ...payload };
+    },
+    createPartnerAccount: async (payload) => {
+      assert.strictEqual(payload.email, 'qa-delete@test.com');
+      assert.strictEqual(payload.status, 'invited');
+      return { id: 'partner-new', email: payload.email, status: 'invited' };
+    },
+    createPartnerProfile: async (payload) => {
+      assert.strictEqual(payload.code, 'QA-DELETE');
+      return { partnerId: payload.partnerId, code: payload.code };
+    }
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.deletePartnerSafely('partner-delete', {
+    actorStaffUserId: '11111111-1111-4111-8111-111111111111'
+  });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.deletedPartner.email, 'qa-delete@test.com');
+  assert.strictEqual(result.deletedPartner.code, 'QA-DELETE');
+  assert.strictEqual(deletedPartnerId, 'partner-delete');
+  assert.strictEqual(auditEntry.action, 'partner_deleted');
+  assert.strictEqual(auditEntry.metadata.email, 'qa-delete@test.com');
+  assert.strictEqual(auditEntry.metadata.code, 'QA-DELETE');
+  assert.strictEqual(auditEntry.metadata.actorStaffUserId, '11111111-1111-4111-8111-111111111111');
+  assert.ok(auditEntry.metadata.deletedAt);
+
+  const reinvite = await service.invitePartner({
+    email: 'qa-delete@test.com',
+    displayName: 'QA Delete',
+    code: 'QA-DELETE'
+  }, {});
+  assert.strictEqual(reinvite.ok, true);
+  assert.strictEqual(reinvite.partner.status, 'invited');
+}
+
+async function testDeletePartnerSafelyRejectsActivePartner() {
+  setup();
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.deletePartnerSafely('partner-1', {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_delete_status_not_allowed');
+}
+
+async function testDeletePartnerSafelyBlocksCommercialActivity() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': {
+        id: 'partner-1',
+        email: 'partner1@test.com',
+        status: 'disabled',
+        sponsorPartnerId: null,
+        currentRankCode: null,
+        profile: { displayName: 'Partner Uno', code: 'PARTNER-UNO' }
+      }
+    }[partnerId] || null),
+    getPartnerDeletionSafetySummary: async () => ({
+      activeAttributionCount: 1,
+      totalAttributionCount: 1,
+      commissionEntryCount: 2,
+      activeDirectDescendantCount: 0,
+      rankHistoryCount: 0,
+      clientRequestCount: 0,
+      recruitmentApplicationCount: 0
+    })
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.deletePartnerSafely('partner-1', {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_delete_blocked_by_activity');
+  assert.ok(result.lifecycle.blockers.includes('partner_has_client_attributions'));
+  assert.ok(result.lifecycle.blockers.includes('partner_has_commissions'));
+}
+
+async function testDeletePartnerSafelyBlocksActiveDownline() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': {
+        id: 'partner-1',
+        email: 'partner1@test.com',
+        status: 'suspended',
+        sponsorPartnerId: null,
+        currentRankCode: null,
+        profile: { displayName: 'Partner Uno', code: 'PARTNER-UNO' }
+      }
+    }[partnerId] || null),
+    getPartnerDeletionSafetySummary: async () => ({
+      activeAttributionCount: 0,
+      totalAttributionCount: 0,
+      commissionEntryCount: 0,
+      activeDirectDescendantCount: 1,
+      rankHistoryCount: 0,
+      clientRequestCount: 0,
+      recruitmentApplicationCount: 0
+    })
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.deletePartnerSafely('partner-1', {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_delete_blocked_by_activity');
+  assert.ok(result.lifecycle.blockers.includes('partner_has_active_downline'));
 }
 
 async function testSimulateCommissionEntriesBuildsDirectAndIndirectPayouts() {
@@ -1174,6 +1324,10 @@ async function run() {
   await testCancelPendingInvitationBlocksCommercialHistory();
   await testDeactivatePartnerBlocksDependencies();
   await testDeactivatePartnerRequiresReasonAndDisablesAccount();
+  await testDeletePartnerSafelyDeletesInactivePartnerAndAllowsReuse();
+  await testDeletePartnerSafelyRejectsActivePartner();
+  await testDeletePartnerSafelyBlocksCommercialActivity();
+  await testDeletePartnerSafelyBlocksActiveDownline();
   await testSimulateCommissionEntriesBuildsDirectAndIndirectPayouts();
   await testReverseCommissionEntryCreatesNegativeReversal();
   await testEvaluateRankUsesThresholds();
