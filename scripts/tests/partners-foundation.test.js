@@ -293,6 +293,38 @@ async function testInvitePartnerCreatesPendingInvitationWithoutPassword() {
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.partner.status, 'invited');
   assert.strictEqual(result.invitation.status, 'pending');
+  assert.match(result.invitation.inviteUrl, /^https:\/\/www\.opturon\.com\/partners\/invite\?token=[a-f0-9]{64}$/);
+}
+
+async function testResendPartnerInvitationReturnsInviteUrlForPendingPartner() {
+  setup({
+    findPartnerById: async (partnerId) => ({
+      'partner-1': {
+        id: 'partner-1',
+        email: 'partner1@test.com',
+        status: 'invited',
+        sponsorPartnerId: null,
+        currentRankCode: null,
+        profile: { displayName: 'Partner Uno', code: 'PARTNER-UNO' }
+      }
+    }[partnerId] || null),
+    findRawPartnerAuthByEmail: async () => ({ id: 'partner-1', email: 'partner1@test.com', status: 'invited', passwordHash: null })
+  });
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.resendPartnerInvitation('partner-1', {});
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.partner.status, 'invited');
+  assert.strictEqual(result.invitation.status, 'pending');
+  assert.match(result.invitation.inviteUrl, /^https:\/\/www\.opturon\.com\/partners\/invite\?token=[a-f0-9]{64}$/);
+}
+
+async function testResendPartnerInvitationDoesNotExposeInviteUrlForActivePartner() {
+  setup();
+  const service = require(modulePath('src/services/partners.service.js'));
+  const result = await service.resendPartnerInvitation('partner-1', {});
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'partner_invitation_not_pending');
+  assert.strictEqual(result.invitation, undefined);
 }
 
 async function testInvitePartnerRejectsDuplicateCode() {
@@ -1132,6 +1164,8 @@ async function testGetPartnerCommissionLedgerRejectsInvalidQuery() {
 async function run() {
   await testCreatePartnerRejectsDuplicateEmail();
   await testInvitePartnerCreatesPendingInvitationWithoutPassword();
+  await testResendPartnerInvitationReturnsInviteUrlForPendingPartner();
+  await testResendPartnerInvitationDoesNotExposeInviteUrlForActivePartner();
   await testInvitePartnerRejectsDuplicateCode();
   await testResolvePartnerInvitationReturnsSafeSummary();
   await testAcceptPartnerInvitationActivatesCredentials();

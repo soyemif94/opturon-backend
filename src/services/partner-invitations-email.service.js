@@ -11,6 +11,10 @@ function normalizeEmail(value) {
   return email && email.includes('@') ? email : null;
 }
 
+function firstNonEmpty(values) {
+  return values.map((value) => normalizeString(value)).find(Boolean) || '';
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -30,12 +34,18 @@ function resolveInvitationEmailFrom() {
 }
 
 function resolvePartnerPortalBaseUrl() {
-  return String(
-    process.env.PARTNER_PORTAL_INVITATION_BASE_URL
-    || env.partnerPortalInvitationBaseUrl
-    || process.env.PARTNER_PORTAL_BASE_URL
-    || 'https://asesores.opturon.com'
-  )
+  return firstNonEmpty([
+    process.env.PARTNER_PORTAL_INVITATION_BASE_URL,
+    env.partnerPortalInvitationBaseUrl,
+    process.env.APP_PUBLIC_URL,
+    process.env.FRONTEND_PUBLIC_URL,
+    process.env.WEB_PUBLIC_URL,
+    process.env.NEXT_PUBLIC_APP_URL,
+    process.env.OPTURON_PUBLIC_APP_URL,
+    env.opturonPublicAppUrl,
+    process.env.PARTNER_PORTAL_BASE_URL,
+    'https://www.opturon.com'
+  ])
     .trim()
     .replace(/\/$/, '');
 }
@@ -47,7 +57,7 @@ function buildPartnerInvitationAcceptLink(token) {
     error.code = 'partner_invitation_base_url_not_configured';
     throw error;
   }
-  const invitationPath = baseUrl.endsWith('/invite') || baseUrl.endsWith('/partners/invite') ? '' : '/invite';
+  const invitationPath = baseUrl.endsWith('/invite') || baseUrl.endsWith('/partners/invite') ? '' : '/partners/invite';
   return `${baseUrl}${invitationPath}?token=${encodeURIComponent(token)}`;
 }
 

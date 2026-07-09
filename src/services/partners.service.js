@@ -334,19 +334,25 @@ function mapPartnerClientAttribution(row) {
   };
 }
 
-function buildPartnerInvitationSummary(partner, invitation) {
+function buildPartnerInvitationSummary(partner, invitation, options = {}) {
   if (!invitation) return null;
-  return {
-    status: invitation.acceptedAt
-      ? 'accepted'
-      : invitation.revokedAt
-        ? 'replaced'
-        : new Date(invitation.expiresAt).getTime() <= Date.now()
-          ? 'expired'
-          : 'pending',
+  const status = invitation.acceptedAt
+    ? 'accepted'
+    : invitation.revokedAt
+      ? 'replaced'
+      : new Date(invitation.expiresAt).getTime() <= Date.now()
+        ? 'expired'
+        : 'pending';
+  const summary = {
+    status,
     expiresAt: invitation.expiresAt || null,
     sentAt: invitation.createdAt || null
   };
+  const invitationToken = normalizeString(options.invitationToken);
+  if (status === 'pending' && invitationToken && partner && partner.status === 'invited') {
+    summary.inviteUrl = buildPartnerInvitationAcceptLink(invitationToken);
+  }
+  return summary;
 }
 
 function enrichPartnerAdminRecord(partner, invitation) {
@@ -886,7 +892,7 @@ async function invitePartner(input, options = {}) {
   return {
     ok: true,
     partner: enrichPartnerAdminRecord(created.partner, created.invitation),
-    invitation: buildPartnerInvitationSummary(created.partner, created.invitation)
+    invitation: buildPartnerInvitationSummary(created.partner, created.invitation, { invitationToken })
   };
 }
 
@@ -973,7 +979,7 @@ async function resendPartnerInvitation(partnerId, options = {}) {
   return {
     ok: true,
     partner: enrichPartnerAdminRecord(created.partner, created.invitation),
-    invitation: buildPartnerInvitationSummary(created.partner, created.invitation)
+    invitation: buildPartnerInvitationSummary(created.partner, created.invitation, { invitationToken })
   };
 }
 
