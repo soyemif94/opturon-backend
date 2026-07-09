@@ -69,6 +69,44 @@ function mapPortalConversationMessage(message) {
   };
 }
 
+function normalizeInboxChannelFilter(value) {
+  const safeValue = String(value || '').trim().toLowerCase();
+  if (safeValue === 'whatsapp' || safeValue === 'instagram') return safeValue;
+  return null;
+}
+
+function normalizeChannelType(channel) {
+  const explicitType = String(channel && channel.type ? channel.type : '').trim().toLowerCase();
+  if (explicitType === 'instagram' || explicitType === 'whatsapp') return explicitType;
+
+  const provider = String(channel && channel.provider ? channel.provider : '').trim().toLowerCase();
+  if (provider === 'instagram_graph') return 'instagram';
+  if (provider === 'whatsapp_cloud') return 'whatsapp';
+  if (!explicitType && !provider) return 'whatsapp';
+  return 'unknown';
+}
+
+function buildChannelLabel(channel) {
+  const type = normalizeChannelType(channel);
+  if (type === 'instagram') {
+    return (
+      normalizeString(channel && channel.instagramUsername) ||
+      normalizeString(channel && channel.externalPageName) ||
+      'Instagram'
+    );
+  }
+
+  if (type === 'whatsapp') {
+    return (
+      normalizeString(channel && channel.verifiedName) ||
+      normalizeString(channel && channel.displayPhoneNumber) ||
+      'WhatsApp'
+    );
+  }
+
+  return normalizeString(channel && channel.provider) || 'Canal';
+}
+
 async function resolveConversationRuntimeChannel(context, conversation) {
   if (!context || !conversation) return null;
 
@@ -362,9 +400,21 @@ function mapConversationRow(row) {
   const transferPayment = getTransferPaymentContext(context);
   const assignedSeller = buildAssignedSeller(row, context);
   const leadStatus = normalizeLeadStatus(row.leadStatus);
+  const channelLike = {
+    type: row.channelType,
+    provider: row.channelProvider,
+    verifiedName: row.channelVerifiedName,
+    displayPhoneNumber: row.channelDisplayPhoneNumber,
+    externalPageName: row.channelExternalPageName,
+    instagramUsername: row.channelInstagramUsername
+  };
+  const channelType = normalizeChannelType(channelLike);
   return {
     id: row.id,
     channelId: row.channelId || null,
+    channelType,
+    channelProvider: row.channelProvider || null,
+    channelLabel: row.channelLabel || buildChannelLabel(channelLike),
     status: normalizePortalStatus(row.status, row),
     leadStatus,
     leadStatusLabel: leadStatusLabel(leadStatus),
@@ -404,8 +454,15 @@ function toPortalChannel(channel) {
   return {
     id: channel.id,
     clinicId: channel.clinicId,
+    type: normalizeChannelType(channel),
     provider: channel.provider || null,
+    label: buildChannelLabel(channel),
     phoneNumberId: channel.phoneNumberId || null,
+    externalId: channel.externalId || null,
+    externalPageId: channel.externalPageId || null,
+    externalPageName: channel.externalPageName || null,
+    instagramUserId: channel.instagramUserId || null,
+    instagramUsername: channel.instagramUsername || null,
     displayPhoneNumber: channel.displayPhoneNumber || null,
     verifiedName: channel.verifiedName || null,
     wabaId: channel.wabaId || null,
@@ -471,8 +528,14 @@ async function resolveRuntimeContext(tenantId) {
       ? {
           id: channel.id,
           clinicId: channel.clinicId,
+          type: channel.type || null,
           provider: channel.provider || null,
           phoneNumberId: channel.phoneNumberId || null,
+          externalId: channel.externalId || null,
+          externalPageId: channel.externalPageId || null,
+          externalPageName: channel.externalPageName || null,
+          instagramUserId: channel.instagramUserId || null,
+          instagramUsername: channel.instagramUsername || null,
           displayPhoneNumber: channel.displayPhoneNumber || null,
           verifiedName: channel.verifiedName || null,
           wabaId: channel.wabaId || null,
@@ -581,15 +644,33 @@ async function listPortalConversations(tenantId, options = {}) {
   const visibility = String(options && options.visibility ? options.visibility : 'active').trim().toLowerCase() === 'archived'
     ? 'archived'
     : 'active';
+  const channelFilter = normalizeInboxChannelFilter(options && options.channel);
   const visibilityClause =
     visibility === 'archived'
       ? `AND NULLIF(c.context->>'portalHiddenAt', '') IS NOT NULL`
       : `AND NULLIF(c.context->>'portalHiddenAt', '') IS NULL`;
+  const channelFilterClause = channelFilter
+    ? `AND COALESCE(NULLIF(ch.type, ''), CASE WHEN ch.provider = 'instagram_graph' THEN 'instagram' ELSE 'whatsapp' END) = $2`
+    : '';
+  const queryParams = channelFilter ? [context.clinic.id, channelFilter] : [context.clinic.id];
 
   const result = await query(
     `SELECT
        c.id,
        c."channelId" AS "channelId",
+       ch.type AS "channelType",
+       ch.provider AS "channelProvider",
+       ch."displayPhoneNumber" AS "channelDisplayPhoneNumber",
+       ch."verifiedName" AS "channelVerifiedName",
+       ch."externalPageName" AS "channelExternalPageName",
+       ch."instagramUsername" AS "channelInstagramUsername",
+       CASE
+         WHEN COALESCE(NULLIF(ch.type, ''), CASE WHEN ch.provider = 'instagram_graph' THEN 'instagram' ELSE 'whatsapp' END) = 'instagram'
+           THEN COALESCE(NULLIF(ch."instagramUsername", ''), NULLIF(ch."externalPageName", ''), 'Instagram')
+         WHEN COALESCE(NULLIF(ch.type, ''), CASE WHEN ch.provider = 'instagram_graph' THEN 'instagram' ELSE 'whatsapp' END) = 'whatsapp'
+           THEN COALESCE(NULLIF(ch."verifiedName", ''), NULLIF(ch."displayPhoneNumber", ''), 'WhatsApp')
+         ELSE COALESCE(NULLIF(ch.provider, ''), 'Canal')
+       END AS "channelLabel",
        c.status,
        c."leadStatus" AS "leadStatus",
        c."nextActionAt" AS "nextActionAt",
@@ -611,6 +692,7 @@ async function listPortalConversations(tenantId, options = {}) {
        COALESCE(unread.total, 0)::int AS "unreadCount"
      FROM conversations c
      INNER JOIN contacts ct ON ct.id = c."contactId"
+     LEFT JOIN channels ch ON ch.id = c."channelId"
      LEFT JOIN staff_users su ON su.id = c."assignedSellerUserId"
      LEFT JOIN LATERAL (
        SELECT m.text, m."createdAt"
@@ -638,8 +720,9 @@ async function listPortalConversations(tenantId, options = {}) {
       WHERE c."clinicId" = $1::uuid
        AND COALESCE(ct.status, 'active') <> 'deleted'
        ${visibilityClause}
+       ${channelFilterClause}
       ORDER BY COALESCE(latest."createdAt", c."updatedAt") DESC, c."updatedAt" DESC`,
-    [context.clinic.id]
+    queryParams
   );
 
   return {
@@ -649,6 +732,7 @@ async function listPortalConversations(tenantId, options = {}) {
     channel: toPortalChannel(context.channel),
     conversations: result.rows.map(mapConversationRow),
     visibility,
+    channelFilter,
     reason: 'resolved'
   };
 }
@@ -690,6 +774,13 @@ async function getPortalConversationDetail(tenantId, conversationId) {
     contactName: contact ? contact.name : null,
     contactPhone: contact ? contact.phone : null,
     waFrom: contact ? contact.waId : null,
+    channelType: conversationChannel ? conversationChannel.type : null,
+    channelProvider: conversationChannel ? conversationChannel.provider : null,
+    channelLabel: conversationChannel ? buildChannelLabel(conversationChannel) : null,
+    channelDisplayPhoneNumber: conversationChannel ? conversationChannel.displayPhoneNumber : null,
+    channelVerifiedName: conversationChannel ? conversationChannel.verifiedName : null,
+    channelExternalPageName: conversationChannel ? conversationChannel.externalPageName : null,
+    channelInstagramUsername: conversationChannel ? conversationChannel.instagramUsername : null,
     lastMessageAt:
       messages.length > 0 ? messages[messages.length - 1].createdAt : conversation.updatedAt,
     lastMessagePreview: messages.length > 0 ? messages[messages.length - 1].text : null,
@@ -1394,6 +1485,16 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       clinic: context.clinic,
       channel: toPortalChannel(context.channel),
       reason: 'conversation_channel_not_found'
+    };
+  }
+
+  if (String(runtimeChannel.provider || '').trim().toLowerCase() !== 'whatsapp_cloud') {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(runtimeChannel),
+      reason: 'conversation_channel_read_only'
     };
   }
 

@@ -252,9 +252,10 @@ async function postPortalTenantProvision(req, res) {
 async function getPortalConversations(req, res) {
   const tenantId = getRequestTenantId(req);
   const visibility = String(req.query.visibility || 'active').trim().toLowerCase() === 'archived' ? 'archived' : 'active';
+  const channel = String(req.query.channel || '').trim().toLowerCase();
 
   try {
-    const result = await listPortalConversations(tenantId, { visibility });
+    const result = await listPortalConversations(tenantId, { visibility, channel });
     if (!result.ok) {
       const status = result.reason === 'missing_tenant_id' ? 400 : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
@@ -374,6 +375,7 @@ async function postPortalMessage(req, res) {
         result.reason === 'missing_tenant_id' || result.reason === 'missing_text' ? 400
           : result.reason === 'mapped_clinic_without_whatsapp_channel' ? 409
             : result.reason === 'conversation_channel_inactive' ? 409
+              : result.reason === 'conversation_channel_read_only' ? 409
             : result.reason === 'contact_without_waid' ? 422
               : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
