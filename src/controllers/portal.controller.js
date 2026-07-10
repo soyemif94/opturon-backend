@@ -4587,6 +4587,9 @@ async function postPortalInstagramConnect(req, res) {
     const result = await connectPortalInstagramChannel(tenantId, {
       code: req.body && req.body.code,
       redirectUri: req.body && req.body.redirectUri,
+      selectionToken: req.body && req.body.selectionToken,
+      selectedPageId: req.body && req.body.selectedPageId,
+      selectedInstagramUserId: req.body && req.body.selectedInstagramUserId,
       requestId: req.requestId || null
     });
 
@@ -4594,7 +4597,9 @@ async function postPortalInstagramConnect(req, res) {
       const status =
         result.reason === 'missing_tenant_id' ||
         result.reason === 'missing_instagram_oauth_code' ||
-        result.reason === 'missing_instagram_redirect_uri'
+        result.reason === 'missing_instagram_redirect_uri' ||
+        result.reason === 'instagram_asset_selection_expired' ||
+        result.reason === 'instagram_asset_selection_not_found'
           ? 400
           : result.reason === 'tenant_mapping_not_found'
             ? 404
@@ -4618,7 +4623,15 @@ async function postPortalInstagramConnect(req, res) {
     const status =
       error && (error.reason === 'instagram_channel_already_bound_to_other_clinic' || error.code === 'INSTAGRAM_CHANNEL_CROSS_CLINIC_CONFLICT')
         ? 409
-        : 500;
+        : error && (
+          error.reason === 'instagram_business_account_not_found' ||
+          error.reason === 'instagram_pages_lookup_failed' ||
+          error.reason === 'instagram_page_subscription_failed' ||
+          error.reason === 'instagram_oauth_exchange_failed' ||
+          error.reason === 'meta_instagram_credentials_missing'
+        )
+          ? 409
+          : 500;
 
     return res.status(status).json({
       success: false,
