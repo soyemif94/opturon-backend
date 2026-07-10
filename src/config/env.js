@@ -73,7 +73,11 @@ const env = {
   whatsappAppId: String(process.env.WHATSAPP_APP_ID || '').trim(),
   whatsappWabaId: String(process.env.WHATSAPP_WABA_ID || '').trim(),
 
+  metaAppId: String(process.env.META_APP_ID || '').trim(),
   metaAppSecret: String(process.env.META_APP_SECRET || '').trim(),
+  whatsappAppSecret: String(process.env.META_WHATSAPP_APP_SECRET || '').trim(),
+  instagramAppId: String(process.env.META_INSTAGRAM_APP_ID || '').trim(),
+  instagramAppSecret: String(process.env.META_INSTAGRAM_APP_SECRET || '').trim(),
   verifySignature: parseBoolean(process.env.VERIFY_SIGNATURE, false),
   whatsappSandboxArNormalize: parseBoolean(process.env.WHATSAPP_SANDBOX_AR_NORMALIZE, false),
   tokensEncryptionKey: String(process.env.TOKENS_ENCRYPTION_KEY || '').trim(),
@@ -189,8 +193,8 @@ function validateEnvOrExit() {
     });
   }
 
-  if (!env.metaAppSecret && env.verifySignature) {
-    logWarn('VERIFY_SIGNATURE=true but META_APP_SECRET is empty. Signature validation will fail.');
+  if (!env.metaAppSecret && !env.whatsappAppSecret && !env.instagramAppSecret && env.verifySignature) {
+    logWarn('VERIFY_SIGNATURE=true but no Meta App Secret is configured. Signature validation will fail.');
   }
 
   if (env.tokensEncryptionKey) {

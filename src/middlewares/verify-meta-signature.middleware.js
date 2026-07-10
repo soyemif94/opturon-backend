@@ -9,9 +9,24 @@ function previewDigest(value) {
   return normalized ? normalized.slice(0, 12) : null;
 }
 
-function buildExpectedSignature(rawBody) {
-  const digest = crypto.createHmac('sha256', env.metaAppSecret).update(rawBody).digest('hex');
+function getMetaAppSecrets() {
+  return [...new Set([env.whatsappAppSecret, env.metaAppSecret, env.instagramAppSecret]
+    .map((secret) => String(secret || '').trim())
+    .filter(Boolean))];
+}
+
+function buildExpectedSignature(rawBody, appSecret) {
+  const digest = crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex');
   return `sha256=${digest}`;
+}
+
+function isSignatureValid(rawBody, providedSignature, appSecrets) {
+  const providedBuffer = Buffer.from(providedSignature, 'utf8');
+  return appSecrets.some((secret) => {
+    const expectedBuffer = Buffer.from(buildExpectedSignature(rawBody, secret), 'utf8');
+    return expectedBuffer.length === providedBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+  });
 }
 
 function parseRawBody(bufferValue, parsedBody) {
@@ -149,9 +164,10 @@ async function verifyMetaSignature(req, res, next) {
     return next();
   }
 
-  if (!env.metaAppSecret) {
+  const appSecrets = getMetaAppSecrets();
+  if (!appSecrets.length) {
     req.metaSignatureValid = null;
-    logWarn('Meta signature skipped: VERIFY_SIGNATURE=true but META_APP_SECRET is empty', {
+    logWarn('Meta signature skipped: VERIFY_SIGNATURE=true but no Meta App Secret is configured', {
       requestId: req.requestId || null
     });
     return next();
@@ -192,20 +208,13 @@ async function verifyMetaSignature(req, res, next) {
     });
   }
 
-  const expectedSignature = buildExpectedSignature(rawBody);
-  const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
-  const providedBuffer = Buffer.from(providedSignature, 'utf8');
-
-  const isValid =
-    expectedBuffer.length === providedBuffer.length &&
-    crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+  const isValid = isSignatureValid(rawBody, providedSignature, appSecrets);
 
   if (!isValid) {
     return rejectInvalidSignature(req, res, 'invalid_digest', {
       signatureAlgorithm,
-      expected: expectedSignature,
       received: providedSignature,
-      expectedLength: expectedSignature.length,
+      expectedLength: buildExpectedSignature(rawBody, appSecrets[0]).length,
       receivedLength: providedSignature.length,
       signatureHeaderRawLength: signatureHeaderRaw.length,
       signatureHeaderTrimmedLength: signatureHeader.length,
@@ -242,5 +251,11 @@ function parseMetaWebhookJson(req, res, next) {
   }
 }
 
-module.exports = { verifyMetaSignature, parseMetaWebhookJson };
+module.exports = {
+  verifyMetaSignature,
+  parseMetaWebhookJson,
+  buildExpectedSignature,
+  getMetaAppSecrets,
+  isSignatureValid
+};
 
