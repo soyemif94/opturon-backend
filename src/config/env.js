@@ -76,6 +76,8 @@ const env = {
   metaAppId: String(process.env.META_APP_ID || '').trim(),
   metaAppSecret: String(process.env.META_APP_SECRET || '').trim(),
   whatsappAppSecret: String(process.env.META_WHATSAPP_APP_SECRET || '').trim(),
+  // Meta/Facebook App ID used as OAuth client_id; never the Instagram product's internal App ID.
+  instagramOauthAppId: String(process.env.META_INSTAGRAM_OAUTH_APP_ID || '').trim(),
   instagramAppId: String(process.env.META_INSTAGRAM_APP_ID || '').trim(),
   instagramAppSecret: String(process.env.META_INSTAGRAM_APP_SECRET || '').trim(),
   verifySignature: parseBoolean(process.env.VERIFY_SIGNATURE, false),

@@ -15,7 +15,9 @@ function buildOAuthError(result, fallbackReason) {
 }
 
 async function exchangeOAuthCodeForAccessToken({ code, redirectUri, requestId = null }) {
-  const appId = String(env.instagramAppId || env.metaAppId || env.whatsappAppId || '').trim();
+  const appId = String(
+    env.instagramOauthAppId || env.instagramAppId || env.metaAppId || env.whatsappAppId || ''
+  ).trim();
   const appSecret = String(env.instagramAppSecret || env.metaAppSecret || '').trim();
 
   if (!appId || !appSecret) {

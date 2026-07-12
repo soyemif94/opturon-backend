@@ -34,6 +34,7 @@ async function testWebhookMultiSecret() {
 
 async function testInstagramExchangeCredentials() {
   const previousEnv = {
+    instagramOauthAppId: env.instagramOauthAppId,
     instagramAppId: env.instagramAppId,
     instagramAppSecret: env.instagramAppSecret,
     metaAppId: env.metaAppId,
@@ -42,6 +43,7 @@ async function testInstagramExchangeCredentials() {
   };
   const previousFetch = global.fetch;
   let requestedUrl = null;
+  env.instagramOauthAppId = 'instagram-oauth-app-id';
   env.instagramAppId = 'instagram-app-id';
   env.instagramAppSecret = 'instagram-app-secret';
   env.metaAppId = 'legacy-app-id';
@@ -54,8 +56,12 @@ async function testInstagramExchangeCredentials() {
 
   try {
     await exchangeOAuthCodeForAccessToken({ code: 'oauth-code', redirectUri: 'https://example.com/callback' });
-    assert.equal(requestedUrl.searchParams.get('client_id'), 'instagram-app-id');
+    assert.equal(requestedUrl.searchParams.get('client_id'), 'instagram-oauth-app-id');
     assert.equal(requestedUrl.searchParams.get('client_secret'), 'instagram-app-secret');
+
+    env.instagramOauthAppId = '';
+    await exchangeOAuthCodeForAccessToken({ code: 'oauth-code', redirectUri: 'https://example.com/callback' });
+    assert.equal(requestedUrl.searchParams.get('client_id'), 'instagram-app-id');
   } finally {
     global.fetch = previousFetch;
     Object.assign(env, previousEnv);
