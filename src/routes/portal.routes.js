@@ -343,7 +343,7 @@ router.patch('/tenants/:tenantId/products/:productId', catalogModule, updatePort
 router.patch('/tenants/:tenantId/product-categories/:categoryId', catalogModule, updatePortalProductCategory);
 router.delete('/tenants/:tenantId/product-categories/:categoryId', catalogModule, destroyPortalProductCategory);
 router.patch('/tenants/:tenantId/products/:productId/status', catalogModule, updatePortalProductStatus);
-router.delete('/tenants/:tenantId/products/:productId', catalogModule, destroyPortalProduct);
+router.delete('/tenants/:tenantId/products/:productId', requirePortalInternalAuth, catalogModule, destroyPortalProduct);
 router.get('/tenants/:tenantId/contacts', getPortalContacts);
 router.patch('/tenants/:tenantId/contacts/archive', patchPortalContactsArchive);
 router.patch('/tenants/:tenantId/contacts/restore', patchPortalContactsRestore);
