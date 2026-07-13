@@ -13,6 +13,8 @@ const {
   patchPortalConversationsArchive,
   patchPortalConversationsRestore,
   postPortalMessage,
+  postPortalWhatsAppImportPreview,
+  postPortalWhatsAppImportConfirm,
   getPortalOrders,
   getPortalOrdersPaymentMetrics,
   getPortalSellerMetricsController,
@@ -214,6 +216,44 @@ function handleCatalogImportUpload(req, res, next) {
   });
 }
 
+const whatsappChatImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: Number(process.env.WHATSAPP_CHAT_IMPORT_MAX_FILE_SIZE_BYTES || 5 * 1024 * 1024),
+    files: 1
+  },
+  fileFilter: (_req, file, callback) => {
+    const name = String(file && file.originalname ? file.originalname : '').toLowerCase();
+    const mimeType = String(file && file.mimetype ? file.mimetype : '').toLowerCase();
+    if (name.endsWith('.txt') || mimeType === 'text/plain') {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('invalid_whatsapp_import_file_type'));
+  }
+});
+
+function handleWhatsAppChatImportUpload(req, res, next) {
+  whatsappChatImportUpload.single('file')(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ success: false, error: 'file_too_large' });
+      return;
+    }
+
+    if (error && error.message === 'invalid_whatsapp_import_file_type') {
+      res.status(400).json({ success: false, error: 'invalid_file_type' });
+      return;
+    }
+
+    next(error);
+  });
+}
+
 const loyaltyRewardImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -267,6 +307,8 @@ router.patch('/tenants/:tenantId/conversations/:conversationId/lead-status', inb
 router.patch('/tenants/:tenantId/conversations/:conversationId/next-action', inboxModule, patchPortalConversationNextActionController);
 router.patch('/tenants/:tenantId/conversations/:conversationId', inboxModule, updatePortalConversation);
 router.post('/tenants/:tenantId/messages', inboxModule, postPortalMessage);
+router.post('/tenants/:tenantId/whatsapp-imports/preview', requirePortalInternalAuth, inboxModule, handleWhatsAppChatImportUpload, postPortalWhatsAppImportPreview);
+router.post('/tenants/:tenantId/whatsapp-imports/:importId/confirm', requirePortalInternalAuth, inboxModule, postPortalWhatsAppImportConfirm);
 router.get('/tenants/:tenantId/orders', getPortalOrders);
 router.get('/tenants/:tenantId/orders/payment-metrics', getPortalOrdersPaymentMetrics);
 router.get('/tenants/:tenantId/seller-metrics', getPortalSellerMetricsController);

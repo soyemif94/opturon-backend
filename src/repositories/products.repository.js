@@ -426,7 +426,59 @@ async function updateProductStatus(productId, clinicId, status, client = null) {
   return findProductById(productId, clinicId, client);
 }
 
+function buildProductDeleteReferenceSummary(row = {}) {
+  const summary = {
+    inventoryLots: Number(row.inventoryLots || 0),
+    inventoryMovements: Number(row.inventoryMovements || 0),
+    inventoryAllocations: Number(row.inventoryAllocations || 0),
+    orderItems: Number(row.orderItems || 0),
+    invoiceItems: Number(row.invoiceItems || 0)
+  };
+
+  return {
+    ...summary,
+    total:
+      summary.inventoryLots +
+      summary.inventoryMovements +
+      summary.inventoryAllocations +
+      summary.orderItems +
+      summary.invoiceItems
+  };
+}
+
+async function getProductDeleteReferenceSummary(productId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT
+       (SELECT COUNT(*)::int FROM inventory_lots il
+        WHERE il."tenantId" = $2::uuid AND il."productId" = $1::uuid) AS "inventoryLots",
+       (SELECT COUNT(*)::int FROM inventory_movements im
+        WHERE im."tenantId" = $2::uuid AND im."productId" = $1::uuid) AS "inventoryMovements",
+       (SELECT COUNT(*)::int FROM inventory_lot_allocations ila
+        WHERE ila."tenantId" = $2::uuid AND ila."productId" = $1::uuid) AS "inventoryAllocations",
+       (SELECT COUNT(*)::int FROM order_items oi
+        INNER JOIN orders o ON o.id = oi."orderId"
+        WHERE o."clinicId" = $2::uuid AND oi."productId" = $1::uuid) AS "orderItems",
+       (SELECT COUNT(*)::int FROM invoice_items ii
+        INNER JOIN invoices i ON i.id = ii."invoiceId"
+        WHERE i."clinicId" = $2::uuid AND ii."productId" = $1::uuid) AS "invoiceItems"`,
+    [productId, clinicId]
+  );
+
+  return buildProductDeleteReferenceSummary(result.rows[0] || {});
+}
+
 async function deleteProductById(productId, clinicId, client = null) {
+  const references = await getProductDeleteReferenceSummary(productId, clinicId, client);
+  if (references.total > 0) {
+    return {
+      deleted: false,
+      blocked: true,
+      reason: 'product_delete_blocked',
+      references
+    };
+  }
+
   const result = await dbQuery(
     client,
     `DELETE FROM products
@@ -436,7 +488,11 @@ async function deleteProductById(productId, clinicId, client = null) {
     [productId, clinicId]
   );
 
-  return Boolean(result.rows[0]);
+  return {
+    deleted: Boolean(result.rows[0]),
+    blocked: false,
+    references
+  };
 }
 
 module.exports = {
@@ -445,5 +501,6 @@ module.exports = {
   createProduct,
   updateProduct,
   updateProductStatus,
+  getProductDeleteReferenceSummary,
   deleteProductById
 };

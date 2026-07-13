@@ -426,6 +426,7 @@ function mapConversationRow(row) {
     lastMessagePreview: row.lastMessagePreview || undefined,
     priority: String(context.portalPriority || 'normal') === 'hot' ? 'hot' : 'normal',
     botEnabled: boolFromContext(context, 'portalBotEnabled', true),
+    importedHistory: Boolean(context.importedHistory || context.importSource === 'whatsapp_export'),
     botFlowLock: normalizeBotFlowLock(context.botFlowLock),
     botDomainOverride: normalizeBotDomainOverride(context.botDomainOverride),
     unreadCount: Number(row.unreadCount || 0),

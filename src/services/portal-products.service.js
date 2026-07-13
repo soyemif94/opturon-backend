@@ -839,7 +839,19 @@ async function deletePortalProduct(tenantId, productId) {
 
   try {
     const deleted = await withTransaction((client) => deleteProductById(safeProductId, context.clinic.id, client));
-    if (!deleted) {
+    if (deleted?.blocked) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        reason: deleted.reason || 'product_delete_blocked',
+        message: 'No se puede eliminar porque tiene ventas, pedidos o movimientos de stock asociados. Podés mantenerlo archivado.',
+        details: {
+          references: deleted.references || null
+        }
+      };
+    }
+
+    if (!deleted?.deleted) {
       return { ok: false, tenantId: context.tenantId, reason: 'product_not_found' };
     }
 
@@ -855,7 +867,10 @@ async function deletePortalProduct(tenantId, productId) {
         ok: false,
         tenantId: context.tenantId,
         reason: 'product_delete_blocked',
-        details: error.detail || null
+        message: 'No se puede eliminar porque tiene ventas, pedidos o movimientos de stock asociados. Podés mantenerlo archivado.',
+        details: {
+          databaseDetail: error.detail || null
+        }
       };
     }
     throw error;

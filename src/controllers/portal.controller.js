@@ -180,6 +180,10 @@ const {
   createPortalWhatsAppTemplateFromBlueprint,
   syncPortalWhatsAppTemplates
 } = require('../services/portal-whatsapp-templates.service');
+const {
+  previewImport: previewWhatsAppChatImport,
+  confirmImport: confirmWhatsAppChatImport
+} = require('../services/portal-whatsapp-imports.service');
 
 function getRequestTenantId(req) {
   return String(req.activeTenantId || req.params.tenantId || '').trim();
@@ -389,6 +393,91 @@ async function postPortalMessage(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_message_send_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalWhatsAppImportPreview(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await previewWhatsAppChatImport({
+      tenantId,
+      actor,
+      file: req.file
+    });
+
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_file' || result.reason === 'invalid_file_type'
+          ? 400
+          : result.reason === 'file_too_large'
+            ? 413
+            : result.reason === 'whatsapp_import_unrecognized_format' || result.reason === 'whatsapp_import_too_many_messages'
+              ? 422
+              : 404;
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId,
+        detail: result.detail || null
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.import
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_import_preview_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalWhatsAppImportConfirm(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const importId = String(req.params.importId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await confirmWhatsAppChatImport({
+      tenantId,
+      actor,
+      importId,
+      selectedContactId: req.body && req.body.selectedContactId
+    });
+
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_import_id'
+          ? 400
+          : result.reason === 'whatsapp_import_not_found' || result.reason === 'whatsapp_import_contact_not_found'
+            ? 404
+            : result.reason === 'whatsapp_import_channel_not_found' || result.reason === 'whatsapp_import_not_ready'
+              ? 409
+              : 422;
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId,
+        detail: result.detail || null
+      });
+    }
+
+    return res.status(result.idempotent ? 200 : 201).json({
+      success: true,
+      data: result.import,
+      idempotent: Boolean(result.idempotent)
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_whatsapp_import_confirm_failed',
       details: error.message
     });
   }
@@ -1697,6 +1786,7 @@ async function destroyPortalProduct(req, res) {
       return res.status(status).json({
         success: false,
         error: result.reason,
+        message: result.message || null,
         tenantId: result.tenantId,
         details: result.details || null
       });
@@ -4796,6 +4886,8 @@ module.exports = {
   patchPortalConversationsArchive,
   patchPortalConversationsRestore,
   postPortalMessage,
+  postPortalWhatsAppImportPreview,
+  postPortalWhatsAppImportConfirm,
   getPortalOrders,
   getPortalOrdersPaymentMetrics,
   getPortalSellerMetricsController,
