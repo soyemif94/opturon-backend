@@ -223,6 +223,7 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
   });
   const assets = await fetchInstagramBusinessAssets({
     accessToken: token.accessToken,
+    userId: token.userId,
     requestId: input.requestId || null
   });
 

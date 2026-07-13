@@ -79,6 +79,11 @@ const env = {
   // Meta/Facebook App ID used as OAuth client_id; never the Instagram product's internal App ID.
   instagramOauthAppId: String(process.env.META_INSTAGRAM_OAUTH_APP_ID || '').trim(),
   instagramAppId: String(process.env.META_INSTAGRAM_APP_ID || '').trim(),
+  instagramOauthProvider: String(process.env.META_INSTAGRAM_OAUTH_PROVIDER || 'facebook_login').trim().toLowerCase(),
+  instagramBusinessAppId: String(
+    process.env.META_INSTAGRAM_BUSINESS_APP_ID || process.env.META_INSTAGRAM_APP_ID_INTERNAL || ''
+  ).trim(),
+  instagramBusinessAppSecret: String(process.env.META_INSTAGRAM_BUSINESS_APP_SECRET || '').trim(),
   instagramAppSecret: String(process.env.META_INSTAGRAM_APP_SECRET || '').trim(),
   verifySignature: parseBoolean(process.env.VERIFY_SIGNATURE, false),
   whatsappSandboxArNormalize: parseBoolean(process.env.WHATSAPP_SANDBOX_AR_NORMALIZE, false),
@@ -195,7 +200,7 @@ function validateEnvOrExit() {
     });
   }
 
-  if (!env.metaAppSecret && !env.whatsappAppSecret && !env.instagramAppSecret && env.verifySignature) {
+  if (!env.metaAppSecret && !env.whatsappAppSecret && !env.instagramAppSecret && !env.instagramBusinessAppSecret && env.verifySignature) {
     logWarn('VERIFY_SIGNATURE=true but no Meta App Secret is configured. Signature validation will fail.');
   }
 

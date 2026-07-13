@@ -10,7 +10,7 @@ function previewDigest(value) {
 }
 
 function getMetaAppSecrets() {
-  return [...new Set([env.whatsappAppSecret, env.metaAppSecret, env.instagramAppSecret]
+  return [...new Set([env.whatsappAppSecret, env.metaAppSecret, env.instagramAppSecret, env.instagramBusinessAppSecret]
     .map((secret) => String(secret || '').trim())
     .filter(Boolean))];
 }
