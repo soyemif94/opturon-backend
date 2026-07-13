@@ -111,8 +111,7 @@ async function countProductsForCategory(categoryId, clinicId, client = null) {
     `SELECT COUNT(*)::int AS count
      FROM products
      WHERE "clinicId" = $1::uuid
-       AND "categoryId" = $2::uuid
-       AND "deletedAt" IS NULL`,
+       AND "categoryId" = $2::uuid`,
     [clinicId, categoryId]
   );
 

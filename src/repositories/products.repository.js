@@ -225,10 +225,6 @@ function normalizeProduct(row) {
     expirationDate: normalizeDateOnly(row.expirationDate),
     discountPercentage,
     metadata,
-    deletedAt: row.deletedAt || null,
-    deletedBy: row.deletedBy || null,
-    deleteReason: row.deleteReason || null,
-    deletionMetadata: normalizeMetadataObject(row.deletionMetadata),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
   };
@@ -254,17 +250,12 @@ async function listProductsByClinicId(clinicId, client = null) {
        p."discountPercentage",
        c.name AS "categoryName",
        p.metadata,
-       p."deletedAt",
-       p."deletedBy",
-       p."deleteReason",
-       p."deletionMetadata",
        p."createdAt",
        p."updatedAt"
      FROM products p
      LEFT JOIN product_categories c
        ON c.id = p."categoryId"
      WHERE p."clinicId" = $1::uuid
-       AND p."deletedAt" IS NULL
      ORDER BY p."createdAt" DESC`,
     [clinicId]
   );
@@ -292,10 +283,6 @@ async function findProductById(productId, clinicId, client = null) {
        p."discountPercentage",
        c.name AS "categoryName",
        p.metadata,
-       p."deletedAt",
-       p."deletedBy",
-       p."deleteReason",
-       p."deletionMetadata",
        p."createdAt",
        p."updatedAt"
      FROM products p
@@ -303,7 +290,6 @@ async function findProductById(productId, clinicId, client = null) {
        ON c.id = p."categoryId"
      WHERE p.id = $1::uuid
        AND p."clinicId" = $2::uuid
-       AND p."deletedAt" IS NULL
      LIMIT 1`,
     [productId, clinicId]
   );
@@ -509,32 +495,6 @@ async function deleteProductById(productId, clinicId, client = null) {
   };
 }
 
-async function tombstoneProductById(productId, clinicId, deletion = {}, client = null) {
-  const result = await dbQuery(
-    client,
-    `UPDATE products
-     SET status = 'archived',
-         "deletedAt" = NOW(),
-         "deletedBy" = $3,
-         "deleteReason" = $4,
-         "deletionMetadata" = COALESCE($5::jsonb, '{}'::jsonb),
-         "updatedAt" = NOW()
-     WHERE id = $1::uuid
-       AND "clinicId" = $2::uuid
-       AND "deletedAt" IS NULL
-     RETURNING id, "deletedAt"`,
-    [
-      productId,
-      clinicId,
-      deletion.deletedBy || null,
-      deletion.deleteReason || 'forced_catalog_delete',
-      JSON.stringify(normalizeMetadataObject(deletion.deletionMetadata))
-    ]
-  );
-
-  return result.rows[0] || null;
-}
-
 module.exports = {
   listProductsByClinicId,
   findProductById,
@@ -542,6 +502,5 @@ module.exports = {
   updateProduct,
   updateProductStatus,
   getProductDeleteReferenceSummary,
-  deleteProductById,
-  tombstoneProductById
+  deleteProductById
 };
