@@ -10,8 +10,11 @@ const {
   createProduct,
   updateProduct,
   updateProductStatus,
-  deleteProductById
+  deleteProductById,
+  getProductDeleteReferenceSummary,
+  tombstoneProductById
 } = require('../repositories/products.repository');
+const { createPortalUserAuditEvent } = require('../repositories/portal-user-audit.repository');
 const {
   saveUploadedProductImage,
   readUploadedProductImage
@@ -821,7 +824,7 @@ async function deletePortalProductCategoryRecord(tenantId, categoryId) {
   }
 }
 
-async function deletePortalProduct(tenantId, productId) {
+async function deletePortalProduct(tenantId, productId, options = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
     return context;
@@ -832,12 +835,94 @@ async function deletePortalProduct(tenantId, productId) {
     return { ok: false, tenantId: context.tenantId, reason: 'missing_product_id' };
   }
 
+  const force = options.force === true;
+  if (force && options.confirmForceDelete !== true) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      reason: 'force_delete_confirmation_required',
+      message: 'Tenés que confirmar explícitamente que entendés el impacto antes de eliminar el producto del catálogo.'
+    };
+  }
+
   const current = await findProductById(safeProductId, context.clinic.id);
   if (!current) {
     return { ok: false, tenantId: context.tenantId, reason: 'product_not_found' };
   }
 
   try {
+    if (force) {
+      const forced = await withTransaction(async (client) => {
+        const references = await getProductDeleteReferenceSummary(safeProductId, context.clinic.id, client);
+        if (references.total === 0) {
+          const deleted = await deleteProductById(safeProductId, context.clinic.id, client);
+          if (deleted?.deleted) {
+            await createPortalUserAuditEvent({
+              tenantId: context.tenantId,
+              clinicId: context.clinic.id,
+              actorUserId: options.actor?.actorId || null,
+              action: 'catalog_product_force_deleted',
+              payload: {
+                productId: safeProductId,
+                productName: current.name,
+                productSku: current.sku || null,
+                references,
+                deletionMode: 'hard_delete'
+              }
+            }, client);
+          }
+          return deleted;
+        }
+
+        const deletionMetadata = {
+          forced: true,
+          references,
+          productSnapshot: {
+            name: current.name,
+            sku: current.sku || null,
+            description: current.description || null,
+            price: current.price,
+            currency: current.currency
+          }
+        };
+        const tombstone = await tombstoneProductById(safeProductId, context.clinic.id, {
+          deletedBy: options.actor?.actorId || options.actor?.actorName || null,
+          deleteReason: 'forced_catalog_delete',
+          deletionMetadata
+        }, client);
+        if (!tombstone) return { deleted: false, blocked: false, references };
+
+        await createPortalUserAuditEvent({
+          tenantId: context.tenantId,
+          clinicId: context.clinic.id,
+          actorUserId: options.actor?.actorId || null,
+          action: 'catalog_product_force_deleted',
+          payload: {
+            productId: safeProductId,
+            productName: current.name,
+            productSku: current.sku || null,
+            references,
+            deletionMode: 'tombstone'
+          }
+        }, client);
+
+        return { deleted: true, tombstoned: true, references, deletedAt: tombstone.deletedAt };
+      });
+
+      if (!forced?.deleted) {
+        return { ok: false, tenantId: context.tenantId, reason: 'product_not_found' };
+      }
+
+      return {
+        ok: true,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        deletedProductId: safeProductId,
+        deletionMode: forced.tombstoned ? 'tombstone' : 'hard_delete',
+        referencesPreserved: Boolean(forced.tombstoned)
+      };
+    }
+
     const deleted = await withTransaction((client) => deleteProductById(safeProductId, context.clinic.id, client));
     if (deleted?.blocked) {
       return {

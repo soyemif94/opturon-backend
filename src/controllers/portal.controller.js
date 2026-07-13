@@ -1772,12 +1772,20 @@ async function updatePortalProductStatus(req, res) {
 async function destroyPortalProduct(req, res) {
   const tenantId = getRequestTenantId(req);
   const productId = String(req.params.productId || '').trim();
+  const force = String(req.query.force || '').trim().toLowerCase() === 'true';
+  const actor = getPortalActorMeta(req);
 
   try {
-    const result = await deletePortalProduct(tenantId, productId);
+    const result = await deletePortalProduct(tenantId, productId, {
+      force,
+      confirmForceDelete: req.body?.confirmForceDelete === true && req.body?.acknowledgedReferences === true,
+      actor
+    });
     if (!result.ok) {
       const status =
-        result.reason === 'missing_tenant_id' || result.reason === 'missing_product_id'
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_id' ||
+        result.reason === 'force_delete_confirmation_required'
           ? 400
           : result.reason === 'product_delete_blocked'
             ? 409
@@ -1796,7 +1804,9 @@ async function destroyPortalProduct(req, res) {
       success: true,
       data: {
         tenantId: result.tenantId,
-        productId: result.deletedProductId
+        productId: result.deletedProductId,
+        deletionMode: result.deletionMode || 'hard_delete',
+        referencesPreserved: result.referencesPreserved === true
       }
     });
   } catch (error) {
