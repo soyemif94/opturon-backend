@@ -2,6 +2,16 @@ function normalizeString(value) {
   return value === null || value === undefined ? '' : String(value).trim();
 }
 
+const DIRECTIONAL_MARKS_PATTERN = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const NON_BREAKING_SPACES_PATTERN = /[\u00a0\u202f]/g;
+
+function normalizeParserInput(value) {
+  return String(value || '')
+    .replace(/^\uFEFF/, '')
+    .replace(DIRECTIONAL_MARKS_PATTERN, '')
+    .replace(NON_BREAKING_SPACES_PATTERN, ' ');
+}
+
 function expandYear(value) {
   const year = Number(value);
   if (!Number.isInteger(year)) return null;
@@ -9,15 +19,31 @@ function expandYear(value) {
   return year;
 }
 
-function parseDateTime(day, month, year, hour, minute, second) {
+function parseDateTime(day, month, year, hour, minute, second, meridiem) {
   const yyyy = expandYear(String(year));
   const dd = Number(day);
   const mm = Number(month);
-  const hh = Number(hour);
+  const rawHour = Number(hour);
   const mi = Number(minute);
   const ss = second === undefined || second === null || second === '' ? 0 : Number(second);
-  if (![yyyy, dd, mm, hh, mi, ss].every(Number.isInteger)) return null;
-  if (yyyy < 2000 || yyyy > 2099 || mm < 1 || mm > 12 || dd < 1 || dd > 31 || hh > 23 || mi > 59 || ss > 59) return null;
+  if (![yyyy, dd, mm, rawHour, mi, ss].every(Number.isInteger)) return null;
+  if (yyyy < 2000 || yyyy > 2099 || mm < 1 || mm > 12 || dd < 1 || dd > 31 || mi > 59 || ss > 59) return null;
+
+  let hh = rawHour;
+  const normalizedMeridiem = normalizeString(meridiem).toLowerCase();
+  if (normalizedMeridiem) {
+    if (hh < 1 || hh > 12) return null;
+    if (normalizedMeridiem === 'a') {
+      hh = hh === 12 ? 0 : hh;
+    } else if (normalizedMeridiem === 'p') {
+      hh = hh === 12 ? 12 : hh + 12;
+    } else {
+      return null;
+    }
+  } else if (hh > 23) {
+    return null;
+  }
+
   const date = new Date(Date.UTC(yyyy, mm - 1, dd, hh, mi, ss));
   if (date.getUTCFullYear() !== yyyy || date.getUTCMonth() !== mm - 1 || date.getUTCDate() !== dd) return null;
   return date.toISOString();
@@ -34,21 +60,21 @@ function classifySystemMessage(text) {
 }
 
 function parseMessageLine(line) {
-  const bracket = line.match(/^\[(\d{1,2})[/-](\d{1,2})[/-](\d{2,4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\]\s*(.*)$/);
+  const bracket = line.match(/^\[(\d{1,2})[/-](\d{1,2})[/-](\d{2,4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s+([apAP])\s*\.?\s*[mM]\s*\.?)?\]\s*(.*)$/);
   if (bracket) {
     return {
       detectedFormat: 'bracketed',
-      timestamp: parseDateTime(bracket[1], bracket[2], bracket[3], bracket[4], bracket[5], bracket[6]),
-      rest: bracket[7] || ''
+      timestamp: parseDateTime(bracket[1], bracket[2], bracket[3], bracket[4], bracket[5], bracket[6], bracket[7]),
+      rest: bracket[8] || ''
     };
   }
 
-  const plain = line.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s+-\s*(.*)$/);
+  const plain = line.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s+([apAP])\s*\.?\s*[mM]\s*\.?)?\s+-\s*(.*)$/);
   if (plain) {
     return {
       detectedFormat: 'plain',
-      timestamp: parseDateTime(plain[1], plain[2], plain[3], plain[4], plain[5], plain[6]),
-      rest: plain[7] || ''
+      timestamp: parseDateTime(plain[1], plain[2], plain[3], plain[4], plain[5], plain[6], plain[7]),
+      rest: plain[8] || ''
     };
   }
 
@@ -74,7 +100,7 @@ function buildDateRange(messages) {
 }
 
 function parseWhatsAppChatExport(input) {
-  const text = String(input || '').replace(/^\uFEFF/, '');
+  const text = normalizeParserInput(input);
   const lines = text.split(/\r?\n/);
   const messages = [];
   const participants = new Set();
