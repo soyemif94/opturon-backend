@@ -276,6 +276,38 @@ async function findAnyPortalUserByEmailAndClinicId(email, clinicId, client = nul
   return result.rows[0] || null;
 }
 
+async function findAnyPortalUserByEmail(email, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT su.id,
+            su."clinicId",
+            su.name,
+            su.email,
+            su."accountRootUserId",
+            CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS role,
+            su.active,
+            su."passwordHash",
+            su."createdAt",
+            su."updatedAt",
+            c."externalTenantId" AS "tenantId",
+            COALESCE(
+              c.settings #>> '{portal,accountScope}',
+              c.settings #>> '{accountScope}',
+              'client'
+            ) AS "accountScope"
+     FROM staff_users su
+     INNER JOIN clinics c ON c.id = su."clinicId"
+     WHERE LOWER(su.email) = LOWER($1)
+       AND su."accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND su.email IS NOT NULL
+       AND su.role IN ${PORTAL_ROLE_SQL}
+     LIMIT 1`,
+    [email]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function updatePortalUserProfileById(payload, client = null) {
   const result = await dbQuery(
     client,
@@ -323,6 +355,33 @@ async function updatePortalUserCredentialsById(payload, client = null) {
                "createdAt",
                "updatedAt"`,
     [payload.userId, payload.clinicId, payload.passwordHash || null, payload.active]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function updatePortalUserClinicById(payload, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE staff_users
+     SET "clinicId" = $3,
+         "accountRootUserId" = COALESCE($4::uuid, "accountRootUserId"),
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+       AND "accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND role IN ${PORTAL_ROLE_SQL}
+     RETURNING id,
+               "clinicId",
+               name,
+               email,
+               "accountRootUserId",
+               CASE WHEN role = 'editor' THEN 'seller' ELSE role END AS role,
+               active,
+               "passwordHash",
+               "createdAt",
+               "updatedAt"`,
+    [payload.userId, payload.currentClinicId, payload.nextClinicId, payload.accountRootUserId || null]
   );
 
   return result.rows[0] || null;
@@ -459,8 +518,10 @@ module.exports = {
   updatePortalUserRole,
   updatePortalUserProfileById,
   updatePortalUserCredentialsById,
+  updatePortalUserClinicById,
   deletePortalUserById,
   findPortalUserByEmail,
+  findAnyPortalUserByEmail,
   findAnyPortalUserByEmailAndClinicId,
   findPortalUserByEmailAndTenantId,
   findPortalUserById,

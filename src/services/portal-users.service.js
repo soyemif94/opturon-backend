@@ -14,9 +14,11 @@ const {
   createPortalUser,
   updatePortalUserAccountRootById,
   updatePortalUserCredentialsById,
+  updatePortalUserClinicById,
   updatePortalUserProfileById,
   updatePortalUserRole,
   deletePortalUserById,
+  findAnyPortalUserByEmail,
   findAnyPortalUserByEmailAndClinicId,
   findPortalUserByEmail,
   findPortalUserByEmailAndTenantId,
@@ -319,8 +321,20 @@ async function invitePortalUser(tenantId, payload, options = {}) {
       const currentUsers = await listPortalUsersForManagementByClinicId(context.clinic.id, client);
       const accountConfig = await resolvePrimaryPortalUserId(context.clinic.id, currentUsers, client);
 
-      if (accountConfig.accountScope === 'opturon_admin' && role === 'owner' && password) {
-        const provisionedTenantId = buildProvisionedTenantId({ name, email });
+      if (accountConfig.accountScope === 'opturon_admin' && role === 'owner') {
+        const existingPortalUser = await findAnyPortalUserByEmail(email, client);
+        const reusableClientOwner =
+          existingPortalUser &&
+          normalizeAccountScope(existingPortalUser.accountScope) === 'client' &&
+          String(existingPortalUser.role || '').toLowerCase() === 'owner' &&
+          existingPortalUser.active === true &&
+          String(existingPortalUser.accountRootUserId || '') === String(existingPortalUser.id || '')
+            ? existingPortalUser
+            : null;
+
+        const provisionedTenantId = reusableClientOwner
+          ? String(reusableClientOwner.tenantId || '').trim()
+          : buildProvisionedTenantId({ name, email });
         const targetClinic = await provisionCleanClinicForExternalTenant(
           {
             externalTenantId: provisionedTenantId,
@@ -330,17 +344,64 @@ async function invitePortalUser(tenantId, payload, options = {}) {
           client
         );
 
-        let createdUser = await createPortalUser(
-          {
-            clinicId: targetClinic.id,
-            name,
-            email,
-            passwordHash: hashSync(password, 10),
-            role,
-            accountRootUserId: null
-          },
-          client
-        );
+        let createdUser = reusableClientOwner;
+        if (!createdUser) {
+          createdUser = await createPortalUser(
+            {
+              clinicId: targetClinic.id,
+              name,
+              email,
+              passwordHash: password ? hashSync(password, 10) : null,
+              role,
+              active: Boolean(password),
+              accountRootUserId: null
+            },
+            client
+          );
+        } else {
+          if (createdUser.clinicId !== targetClinic.id) {
+            createdUser = await updatePortalUserClinicById(
+              {
+                userId: createdUser.id,
+                currentClinicId: createdUser.clinicId,
+                nextClinicId: targetClinic.id,
+                accountRootUserId: createdUser.id
+              },
+              client
+            ) || createdUser;
+          }
+          if (name && name !== String(createdUser.name || '').trim()) {
+            createdUser = await updatePortalUserProfileById(
+              {
+                userId: createdUser.id,
+                clinicId: targetClinic.id,
+                name
+              },
+              client
+            ) || createdUser;
+          }
+          if (String(createdUser.role || '').toLowerCase() !== 'owner') {
+            createdUser = await updatePortalUserRole(
+              {
+                userId: createdUser.id,
+                clinicId: targetClinic.id,
+                role: 'owner'
+              },
+              client
+            ) || createdUser;
+          }
+          if (!password) {
+            createdUser = await updatePortalUserCredentialsById(
+              {
+                userId: createdUser.id,
+                clinicId: targetClinic.id,
+                passwordHash: null,
+                active: false
+              },
+              client
+            ) || createdUser;
+          }
+        }
 
         await updateClinicPortalPrimaryUserIdById(targetClinic.id, createdUser.id, client);
         createdUser = await updatePortalUserAccountRootById(
@@ -354,6 +415,67 @@ async function invitePortalUser(tenantId, payload, options = {}) {
 
         const targetAccountConfig = await getClinicPortalAccountConfigById(targetClinic.id, client);
         const normalizedCreatedUser = normalizePortalUserRecord(createdUser, createdUser.id);
+        const targetMeta = buildPortalUsersMeta(
+          [normalizedCreatedUser],
+          {
+            subaccountLimit: targetAccountConfig.subaccountLimit,
+            unlimitedSubaccounts: targetAccountConfig.unlimitedSubaccounts,
+            accountScope: targetAccountConfig.accountScope,
+            source: targetAccountConfig.limitSource
+          },
+          createdUser.id
+        );
+
+        if (!password) {
+          await revokePendingPortalUserInvitationsByUserId(createdUser.id, client);
+          const invitation = await createPortalUserInvitation(
+            {
+              clinicId: targetClinic.id,
+              tenantId: provisionedTenantId,
+              userId: createdUser.id,
+              email,
+              role,
+              tokenHash: invitationTokenHash,
+              expiresAt: invitationExpiresAt.toISOString(),
+              createdByUserId: actorUserId
+            },
+            client
+          );
+
+          await createPortalUserAuditEvent(
+            {
+              tenantId: provisionedTenantId,
+              clinicId: targetClinic.id,
+              actorUserId,
+              targetUserId: createdUser.id,
+              action: 'tenant_portal_user_invited',
+              payload: {
+                targetUserId: createdUser.id,
+                name: createdUser.name,
+                email: createdUser.email,
+                role: createdUser.role,
+                accountKind: normalizedCreatedUser.accountKind,
+                invitationExpiresAt: invitation.expiresAt,
+                managedFrom: 'opturon_admin',
+                provisionedTenantId,
+                reusedClientTenant: Boolean(reusableClientOwner)
+              }
+            },
+            client
+          );
+
+          return {
+            tenantId: provisionedTenantId,
+            clinic: targetClinic,
+            user: enrichPortalUserRecord(createdUser, createdUser.id, invitation),
+            invitation: {
+              token: invitationToken,
+              expiresAt: invitation.expiresAt,
+              sentAt: invitation.createdAt
+            },
+            meta: targetMeta
+          };
+        }
 
         await createPortalUserAuditEvent(
           {
@@ -369,7 +491,8 @@ async function invitePortalUser(tenantId, payload, options = {}) {
               role: createdUser.role,
               accountKind: normalizedCreatedUser.accountKind,
               managedFrom: 'opturon_admin',
-              provisionedTenantId
+              provisionedTenantId,
+              reusedClientTenant: Boolean(reusableClientOwner)
             }
           },
           client
@@ -379,16 +502,7 @@ async function invitePortalUser(tenantId, payload, options = {}) {
           tenantId: provisionedTenantId,
           clinic: targetClinic,
           user: normalizedCreatedUser,
-          meta: buildPortalUsersMeta(
-            [normalizedCreatedUser],
-            {
-              subaccountLimit: targetAccountConfig.subaccountLimit,
-              unlimitedSubaccounts: targetAccountConfig.unlimitedSubaccounts,
-              accountScope: targetAccountConfig.accountScope,
-              source: targetAccountConfig.limitSource
-            },
-            createdUser.id
-          )
+          meta: targetMeta
         };
       }
 

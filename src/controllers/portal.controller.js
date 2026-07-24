@@ -1,4 +1,5 @@
 const { resolvePortalTenantContext } = require('../services/portal-context.service');
+const env = require('../config/env');
 const { logError } = require('../utils/logger');
 const {
   listPortalConversations,
@@ -83,6 +84,12 @@ const {
   authenticatePortalUser,
   getPortalAuthUserByEmail
 } = require('../services/portal-users.service');
+const {
+  requestPortalPasswordReset,
+  validatePortalPasswordResetToken,
+  resetPortalPassword,
+  invalidatePortalPasswordResetToken
+} = require('../services/portal-password-reset.service');
 const { resolveAdminPortalActor } = require('../services/portal-active-tenant.service');
 const {
   listPortalPayments,
@@ -4085,6 +4092,108 @@ async function postPortalAuthLogin(req, res) {
   }
 }
 
+function isPortalInternalRequest(req) {
+  const configuredKey = String(env.portalInternalKey || '').trim();
+  if (!configuredKey) {
+    return String(env.nodeEnv || '').toLowerCase() !== 'production';
+  }
+  return String(req.get('x-portal-key') || '').trim() === configuredKey;
+}
+
+async function postPortalAuthForgotPassword(req, res) {
+  const email = req.body && req.body.email;
+
+  try {
+    const result = await requestPortalPasswordReset(email, {
+      includeDelivery: isPortalInternalRequest(req),
+      requestedFrom: 'portal_controller_forgot_password'
+    });
+    return res.status(200).json({
+      success: true,
+      data: {
+        ok: true,
+        delivery: result.delivery || null
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_auth_forgot_password_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalAuthForgotPasswordInvalidate(req, res) {
+  if (!isPortalInternalRequest(req)) {
+    return res.status(403).json({ success: false, error: 'forbidden' });
+  }
+
+  const token = req.body && req.body.token;
+
+  try {
+    const result = await invalidatePortalPasswordResetToken(token);
+    return res.status(200).json({
+      success: true,
+      data: {
+        ok: true,
+        invalidated: result.invalidated === true
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_auth_forgot_password_invalidate_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalAuthResetPasswordValidation(req, res) {
+  const token = req.query && req.query.token;
+
+  try {
+    const result = await validatePortalPasswordResetToken(token);
+    return res.status(200).json({
+      success: true,
+      data: {
+        ok: true,
+        valid: result.valid === true
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_auth_reset_password_validation_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalAuthResetPassword(req, res) {
+  const token = req.body && req.body.token;
+  const password = req.body && req.body.password;
+
+  try {
+    const result = await resetPortalPassword(token, password);
+    if (!result.ok) {
+      return res.status(400).json({ success: false, error: result.reason || 'invalid_or_expired_reset_token' });
+    }
+    return res.status(200).json({
+      success: true,
+      data: {
+        ok: true
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_auth_reset_password_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalAuthUser(req, res) {
   const email = String(req.query.email || '').trim();
   const tenantId = String(req.query.tenantId || '').trim() || null;
@@ -5000,6 +5109,10 @@ module.exports = {
   getPortalInvitation,
   postPortalInvitationAccept,
   postPortalAuthLogin,
+  postPortalAuthForgotPassword,
+  postPortalAuthForgotPasswordInvalidate,
+  getPortalAuthResetPasswordValidation,
+  postPortalAuthResetPassword,
   getPortalAuthUser,
   getPortalAuthAdminActor,
   postPortalWhatsAppEmbeddedSignupBootstrap,

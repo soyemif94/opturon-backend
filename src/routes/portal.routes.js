@@ -117,6 +117,10 @@ const {
   patchPortalUser,
   destroyPortalUser,
   postPortalAuthLogin,
+  postPortalAuthForgotPassword,
+  postPortalAuthForgotPasswordInvalidate,
+  getPortalAuthResetPasswordValidation,
+  postPortalAuthResetPassword,
   getPortalAuthUser,
   getPortalAuthAdminActor,
   postPortalWhatsAppEmbeddedSignupBootstrap,
@@ -437,6 +441,10 @@ router.delete('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, des
 router.get('/auth/invitations', getPortalInvitation);
 router.post('/auth/invitations/accept', postPortalInvitationAccept);
 router.post('/auth/login', postPortalAuthLogin);
+router.post('/auth/forgot-password', postPortalAuthForgotPassword);
+router.post('/auth/forgot-password/invalidate', postPortalAuthForgotPasswordInvalidate);
+router.get('/auth/reset-password/validate', getPortalAuthResetPasswordValidation);
+router.post('/auth/reset-password', postPortalAuthResetPassword);
 router.get('/auth/users/by-email', requirePortalInternalAuth, getPortalAuthUser);
 router.get('/auth/admin-actor', requirePortalInternalAuth, getPortalAuthAdminActor);
 
