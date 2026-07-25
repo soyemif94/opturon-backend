@@ -272,6 +272,88 @@ async function listProductsByClinicId(clinicId, client = null) {
   return result.rows.map(normalizeProduct);
 }
 
+async function listProductsByClinicIdIncludingDeleted(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT
+       p.id,
+       p."clinicId",
+       p.name,
+       p.description,
+       p.price,
+       p."unitPrice",
+       p.currency,
+       p."vatRate",
+       p.stock,
+       p.status,
+       p.sku,
+       p."categoryId",
+       p."expirationDate",
+       p."discountPercentage",
+       c.name AS "categoryName",
+       p.metadata,
+       p."deletedAt",
+       p."deletedBy",
+       p."deleteReason",
+       p."deletionMetadata",
+       p."createdAt",
+       p."updatedAt"
+     FROM products p
+     LEFT JOIN product_categories c
+       ON c.id = p."categoryId"
+     WHERE p."clinicId" = $1::uuid
+     ORDER BY p."createdAt" DESC`,
+    [clinicId]
+  );
+
+  return result.rows.map(normalizeProduct);
+}
+
+async function findProductsByIds(clinicId, productIds, client = null, options = {}) {
+  const ids = Array.isArray(productIds)
+    ? Array.from(new Set(productIds.map((value) => String(value || '').trim()).filter(Boolean)))
+    : [];
+  if (!ids.length) return [];
+
+  const includeDeleted = options.includeDeleted === true;
+  const result = await dbQuery(
+    client,
+    `SELECT
+       p.id,
+       p."clinicId",
+       p.name,
+       p.description,
+       p.price,
+       p."unitPrice",
+       p.currency,
+       p."vatRate",
+       p.stock,
+       p.status,
+       p.sku,
+       p."categoryId",
+       p."expirationDate",
+       p."discountPercentage",
+       c.name AS "categoryName",
+       p.metadata,
+       p."deletedAt",
+       p."deletedBy",
+       p."deleteReason",
+       p."deletionMetadata",
+       p."createdAt",
+       p."updatedAt"
+     FROM products p
+     LEFT JOIN product_categories c
+       ON c.id = p."categoryId"
+     WHERE p."clinicId" = $1::uuid
+       AND p.id = ANY($2::uuid[])
+       ${includeDeleted ? '' : 'AND p."deletedAt" IS NULL'}
+     ORDER BY p."createdAt" DESC`,
+    [clinicId, ids]
+  );
+
+  return result.rows.map(normalizeProduct);
+}
+
 async function findProductById(productId, clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -537,6 +619,8 @@ async function tombstoneProductById(productId, clinicId, deletion = {}, client =
 
 module.exports = {
   listProductsByClinicId,
+  listProductsByClinicIdIncludingDeleted,
+  findProductsByIds,
   findProductById,
   createProduct,
   updateProduct,

@@ -68,7 +68,35 @@ async function listPortalUserAuditEventsByClinicId(clinicId, limit = 10, client 
   return result.rows;
 }
 
+async function findLatestPortalUserAuditEventByIdempotencyKey(clinicId, action, idempotencyKey, client = null) {
+  const safeAction = String(action || '').trim();
+  const safeKey = String(idempotencyKey || '').trim();
+  if (!clinicId || !safeAction || !safeKey) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT id,
+            "tenantId",
+            "clinicId",
+            "actorUserId",
+            "targetUserId",
+            action,
+            payload,
+            "createdAt"
+     FROM portal_user_audit_log
+     WHERE "clinicId" = $1::uuid
+       AND action = $2
+       AND payload ->> 'idempotencyKey' = $3
+     ORDER BY "createdAt" DESC
+     LIMIT 1`,
+    [clinicId, safeAction, safeKey]
+  );
+
+  return result.rows[0] || null;
+}
+
 module.exports = {
   createPortalUserAuditEvent,
-  listPortalUserAuditEventsByClinicId
+  listPortalUserAuditEventsByClinicId,
+  findLatestPortalUserAuditEventByIdempotencyKey
 };

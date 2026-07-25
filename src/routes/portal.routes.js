@@ -31,10 +31,15 @@ const {
   postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,
+  postPortalProductsBulkDeletePreview,
+  postPortalProductsBulkDeleteExecute,
   postPortalCatalogImportAnalyze,
+  getPortalCatalogImports,
   getPortalCatalogImport,
   postPortalCatalogImportConfirm,
   postPortalCatalogImportCancel,
+  postPortalCatalogImportRollbackPreview,
+  postPortalCatalogImportRollbackExecute,
   getPortalCatalogImportErrors,
   getPortalCatalogImportTemplate,
   getPortalInventoryLots,
@@ -335,11 +340,16 @@ router.post('/tenants/:tenantId/products', catalogModule, postPortalProduct);
 router.post('/tenants/:tenantId/products/image-upload', requirePortalInternalAuth, catalogModule, handleCatalogImageUpload, postPortalProductImageUpload);
 router.post('/tenants/:tenantId/product-categories', catalogModule, postPortalProductCategory);
 router.post('/tenants/:tenantId/products/bulk', catalogModule, postPortalProductsBulk);
+router.post('/tenants/:tenantId/products/bulk-delete/preview', requirePortalInternalAuth, catalogModule, postPortalProductsBulkDeletePreview);
+router.post('/tenants/:tenantId/products/bulk-delete/execute', requirePortalInternalAuth, catalogModule, postPortalProductsBulkDeleteExecute);
+router.get('/tenants/:tenantId/catalog-imports', requirePortalInternalAuth, catalogModule, getPortalCatalogImports);
 router.get('/tenants/:tenantId/catalog-imports/template', requirePortalInternalAuth, catalogModule, getPortalCatalogImportTemplate);
 router.post('/tenants/:tenantId/catalog-imports/analyze', requirePortalInternalAuth, catalogModule, handleCatalogImportUpload, postPortalCatalogImportAnalyze);
 router.get('/tenants/:tenantId/catalog-imports/:importId', requirePortalInternalAuth, catalogModule, getPortalCatalogImport);
 router.post('/tenants/:tenantId/catalog-imports/:importId/confirm', requirePortalInternalAuth, catalogModule, postPortalCatalogImportConfirm);
 router.post('/tenants/:tenantId/catalog-imports/:importId/cancel', requirePortalInternalAuth, catalogModule, postPortalCatalogImportCancel);
+router.post('/tenants/:tenantId/catalog-imports/:importId/rollback/preview', requirePortalInternalAuth, catalogModule, postPortalCatalogImportRollbackPreview);
+router.post('/tenants/:tenantId/catalog-imports/:importId/rollback', requirePortalInternalAuth, catalogModule, postPortalCatalogImportRollbackExecute);
 router.get('/tenants/:tenantId/catalog-imports/:importId/errors', requirePortalInternalAuth, catalogModule, getPortalCatalogImportErrors);
 router.get('/tenants/:tenantId/inventory/lots', catalogModule, getPortalInventoryLots);
 router.post('/tenants/:tenantId/inventory/lots', catalogModule, postPortalInventoryLot);

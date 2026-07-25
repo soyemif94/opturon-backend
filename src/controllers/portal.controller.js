@@ -49,6 +49,8 @@ const {
   deletePortalProductCategoryRecord,
   patchPortalProduct,
   patchPortalProductStatus,
+  previewPortalProductsBulkDelete,
+  executePortalProductsBulkDelete,
   deletePortalProduct,
   uploadPortalProductImage,
   getPortalProductImageAsset
@@ -66,6 +68,7 @@ const {
 } = require('../services/inventory-lots.service');
 const {
   analyzeCatalogImport,
+  listCatalogImports,
   getCatalogImport,
   cancelCatalogImport,
   confirmCatalogImport,
@@ -4127,6 +4130,186 @@ async function getPortalTenantPolicy(req, res) {
   }
 }
 
+async function postPortalCatalogImportRollbackPreview(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const importId = String(req.params.importId || '').trim();
+
+  try {
+    const result = await previewPortalProductsBulkDelete(tenantId, {
+      mode: 'import_batch',
+      importId
+    });
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_catalog_import_id'
+          ? 400
+          : result.reason === 'catalog_import_not_found'
+            ? 404
+            : 422;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_import_rollback_preview_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalCatalogImportRollbackExecute(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const importId = String(req.params.importId || '').trim();
+  const actor = getPortalActorMeta(req);
+  const body = req.body || {};
+
+  try {
+    const result = await executePortalProductsBulkDelete(
+      tenantId,
+      {
+        mode: 'import_batch',
+        importId
+      },
+      {
+        force: body.force === true,
+        confirmForceDelete: body.confirmForceDelete === true,
+        idempotencyKey: body.idempotencyKey,
+        actor,
+        auditAction: 'catalog_import_rollback'
+      }
+    );
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_catalog_import_id' ||
+        result.reason === 'missing_bulk_delete_idempotency_key'
+          ? 400
+          : result.reason === 'catalog_import_not_found'
+            ? 404
+            : result.reason === 'force_delete_confirmation_required'
+              ? 409
+              : 422;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(result.idempotent ? 200 : 201).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_import_rollback_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalCatalogImports(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await listCatalogImports(tenantId, {
+      limit: Number.parseInt(String(req.query.limit || 10), 10)
+    });
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        imports: result.imports
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_catalog_imports_list_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalProductsBulkDeletePreview(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await previewPortalProductsBulkDelete(tenantId, req.body || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_bulk_delete_selection_mode' ||
+        result.reason === 'missing_bulk_delete_ids' ||
+        result.reason === 'missing_catalog_import_id'
+          ? 400
+          : result.reason === 'catalog_import_not_found'
+            ? 404
+            : 422;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_bulk_delete_preview_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalProductsBulkDeleteExecute(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+  const body = req.body || {};
+
+  try {
+    const result = await executePortalProductsBulkDelete(tenantId, body.selection || {}, {
+      force: body.force === true,
+      confirmForceDelete: body.confirmForceDelete === true,
+      idempotencyKey: body.idempotencyKey,
+      actor
+    });
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_bulk_delete_selection_mode' ||
+        result.reason === 'missing_bulk_delete_ids' ||
+        result.reason === 'missing_catalog_import_id' ||
+        result.reason === 'missing_bulk_delete_idempotency_key'
+          ? 400
+          : result.reason === 'catalog_import_not_found'
+            ? 404
+            : result.reason === 'force_delete_confirmation_required'
+              ? 409
+              : 422;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(result.idempotent ? 200 : 201).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_bulk_delete_execute_failed',
+      details: error.message
+    });
+  }
+}
+
 async function patchPortalTenantPolicy(req, res) {
   const tenantId = getRequestTenantId(req);
   const actor = getPortalActorMeta(req);
@@ -5087,10 +5270,15 @@ module.exports = {
   postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,
+  postPortalProductsBulkDeletePreview,
+  postPortalProductsBulkDeleteExecute,
   postPortalCatalogImportAnalyze,
+  getPortalCatalogImports,
   getPortalCatalogImport,
   postPortalCatalogImportConfirm,
   postPortalCatalogImportCancel,
+  postPortalCatalogImportRollbackPreview,
+  postPortalCatalogImportRollbackExecute,
   getPortalCatalogImportErrors,
   getPortalCatalogImportTemplate,
   getPortalInventoryLots,

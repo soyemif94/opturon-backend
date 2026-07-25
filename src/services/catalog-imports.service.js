@@ -6,6 +6,7 @@ const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   createCatalogImportJob,
   findCatalogImportJobById,
+  listCatalogImportJobsByClinicId,
   updateCatalogImportJob
 } = require('../repositories/catalog-imports.repository');
 const { createCatalogImportAuditEvent } = require('../repositories/catalog-import-audit.repository');
@@ -1212,6 +1213,18 @@ function buildAnalysisResponse(importJob) {
   };
 }
 
+async function listCatalogImports(tenantId, options = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+  const imports = await listCatalogImportJobsByClinicId(context.clinic.id, { limit: options.limit });
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    imports: imports.map(buildAnalysisResponse)
+  };
+}
+
 async function analyzeCatalogImport(tenantId, file, options = {}, actor = {}) {
   const context = await resolveImportContext(tenantId, actor);
   if (!context.ok || !context.clinic?.id) {
@@ -1625,7 +1638,17 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
     sku: values.sku || null,
     categoryId: categoryResolution.categoryId,
     image: values.image || null,
-    metadata: {}
+    metadata: {
+      source: 'catalog_import',
+      import: {
+        importId: runtime.importId,
+        batchId: runtime.importId,
+        source: 'catalog_import',
+        createdByImport: true,
+        sourceRowNumber: row.sourceRowNumber,
+        originalFileName: runtime.originalFileName || null
+      }
+    }
   };
 
   if (values.hasLot) {
@@ -1988,6 +2011,7 @@ module.exports = {
   PREVIEW_LIMIT,
   PROCESSING_CHUNK_SIZE,
   analyzeCatalogImport,
+  listCatalogImports,
   getCatalogImport,
   cancelCatalogImport,
   confirmCatalogImport,

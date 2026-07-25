@@ -6,6 +6,8 @@ const { buildCatalogRiskDiscountSuggestion } = require('./catalog-risk-discount.
 const { insertAutomationActionEvent } = require('../repositories/automation-action-events.repository');
 const {
   listProductsByClinicId,
+  listProductsByClinicIdIncludingDeleted,
+  findProductsByIds,
   findProductById,
   createProduct,
   updateProduct,
@@ -14,7 +16,12 @@ const {
   getProductDeleteReferenceSummary,
   tombstoneProductById
 } = require('../repositories/products.repository');
-const { createPortalUserAuditEvent } = require('../repositories/portal-user-audit.repository');
+const {
+  createPortalUserAuditEvent,
+  findLatestPortalUserAuditEventByIdempotencyKey
+} = require('../repositories/portal-user-audit.repository');
+const { findCatalogImportJobById } = require('../repositories/catalog-imports.repository');
+const { calculateInventoryExpirationStatus } = require('../utils/inventory-expiration');
 const {
   saveUploadedProductImage,
   readUploadedProductImage
@@ -204,6 +211,89 @@ function validateProductPayload(product) {
     }
   }
   return null;
+}
+
+function normalizeIdList(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((item) => normalizeString(item)).filter(Boolean)));
+}
+
+function normalizeBulkDeleteFilter(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const expiration = normalizeString(source.expiration).toLowerCase();
+  return {
+    query: normalizeString(source.query).toLowerCase(),
+    categoryId: normalizeString(source.categoryId) || null,
+    expiration: ['all', 'critical', 'expired', 'expiring_soon'].includes(expiration) ? expiration : 'all'
+  };
+}
+
+function matchesBulkDeleteFilter(product, filter) {
+  const normalized = normalizeBulkDeleteFilter(filter);
+  if (normalized.categoryId && String(product.categoryId || '') !== normalized.categoryId) return false;
+
+  if (normalized.query) {
+    const haystack = [product.name, product.sku, product.description, product.barcode].filter(Boolean).join(' ').toLowerCase();
+    if (!haystack.includes(normalized.query)) return false;
+  }
+
+  if (normalized.expiration !== 'all') {
+    const expiration = calculateInventoryExpirationStatus(product.expirationDate);
+    if (normalized.expiration === 'expired' && expiration.status !== 'expired') return false;
+    if (normalized.expiration === 'critical' && expiration.status !== 'critical') return false;
+    if (
+      normalized.expiration === 'expiring_soon' &&
+      !['critical', 'urgent', 'warning', 'upcoming', 'today'].includes(expiration.status)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function resolveBulkActorId(actor = {}) {
+  return normalizeString(actor.actorId || actor.id) || null;
+}
+
+function resolveBulkActorName(actor = {}) {
+  return normalizeString(actor.actorName || actor.name) || null;
+}
+
+function summarizeBlockedReferences(references) {
+  if (!references || typeof references !== 'object') return {};
+  const summary = {};
+  for (const [key, value] of Object.entries(references)) {
+    const count = Number(value || 0);
+    if (key !== 'total' && count > 0) summary[key] = count;
+  }
+  return summary;
+}
+
+function computeBulkDeleteExecutionStatus(summary) {
+  if ((summary.deleted || 0) === 0 && (summary.blocked || 0) > 0) return 'blocked';
+  if ((summary.deleted || 0) === 0 && (summary.alreadyDeleted || 0) > 0 && (summary.failed || 0) === 0) return 'already_completed';
+  if ((summary.failed || 0) > 0 || (summary.blocked || 0) > 0 || (summary.notFound || 0) > 0 || (summary.alreadyDeleted || 0) > 0) {
+    return 'partially_completed';
+  }
+  return 'completed';
+}
+
+function extractCreatedProductIdsFromImport(importJob) {
+  const resultRows = Array.isArray(importJob?.result?.rows) ? importJob.result.rows : [];
+  return Array.from(
+    new Set(
+      resultRows
+        .filter((row) => row && row.status === 'created' && normalizeString(row.productId))
+        .map((row) => normalizeString(row.productId))
+    )
+  );
+}
+
+async function withBulkDeleteAdvisoryLock(client, clinicId, action, idempotencyKey) {
+  const namespace = `catalog_bulk_delete:${normalizeString(clinicId)}`;
+  const key = `${normalizeString(action)}:${normalizeString(idempotencyKey)}`;
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [namespace, key]);
 }
 
 function buildCategoryPayload(payload, fallbackIsActive = true) {
@@ -830,6 +920,14 @@ async function deletePortalProduct(tenantId, productId, options = {}) {
     return context;
   }
 
+  return executePortalProductDeletionWithClient(context, productId, options, null);
+}
+
+async function executePortalProductDeletionWithClient(context, productId, options = {}, client = null) {
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
   const safeProductId = normalizeString(productId);
   if (!safeProductId) {
     return { ok: false, tenantId: context.tenantId, reason: 'missing_product_id' };
@@ -845,17 +943,17 @@ async function deletePortalProduct(tenantId, productId, options = {}) {
     };
   }
 
-  const current = await findProductById(safeProductId, context.clinic.id);
+  const current = await findProductById(safeProductId, context.clinic.id, client);
   if (!current) {
     return { ok: false, tenantId: context.tenantId, reason: 'product_not_found' };
   }
 
   try {
     if (force) {
-      const forced = await withTransaction(async (client) => {
-        const references = await getProductDeleteReferenceSummary(safeProductId, context.clinic.id, client);
+      const performForcedDelete = async (transactionClient) => {
+        const references = await getProductDeleteReferenceSummary(safeProductId, context.clinic.id, transactionClient);
         if (references.total === 0) {
-          const deleted = await deleteProductById(safeProductId, context.clinic.id, client);
+          const deleted = await deleteProductById(safeProductId, context.clinic.id, transactionClient);
           if (deleted?.deleted) {
             await createPortalUserAuditEvent({
               tenantId: context.tenantId,
@@ -869,13 +967,14 @@ async function deletePortalProduct(tenantId, productId, options = {}) {
                 references,
                 deletionMode: 'hard_delete'
               }
-            }, client);
+            }, transactionClient);
           }
           return deleted;
         }
 
         const deletionMetadata = {
           forced: true,
+          bulkOperation: options.bulkOperation || null,
           references,
           productSnapshot: {
             name: current.name,
@@ -889,7 +988,7 @@ async function deletePortalProduct(tenantId, productId, options = {}) {
           deletedBy: options.actor?.actorId || options.actor?.actorName || null,
           deleteReason: 'forced_catalog_delete',
           deletionMetadata
-        }, client);
+        }, transactionClient);
         if (!tombstone) return { deleted: false, blocked: false, references };
 
         await createPortalUserAuditEvent({
@@ -904,10 +1003,11 @@ async function deletePortalProduct(tenantId, productId, options = {}) {
             references,
             deletionMode: 'tombstone'
           }
-        }, client);
+        }, transactionClient);
 
         return { deleted: true, tombstoned: true, references, deletedAt: tombstone.deletedAt };
-      });
+      };
+      const forced = client ? await performForcedDelete(client) : await withTransaction(performForcedDelete);
 
       if (!forced?.deleted) {
         return { ok: false, tenantId: context.tenantId, reason: 'product_not_found' };
@@ -923,7 +1023,9 @@ async function deletePortalProduct(tenantId, productId, options = {}) {
       };
     }
 
-    const deleted = await withTransaction((client) => deleteProductById(safeProductId, context.clinic.id, client));
+    const deleted = client
+      ? await deleteProductById(safeProductId, context.clinic.id, client)
+      : await withTransaction((transactionClient) => deleteProductById(safeProductId, context.clinic.id, transactionClient));
     if (deleted?.blocked) {
       return {
         ok: false,
@@ -960,6 +1062,210 @@ async function deletePortalProduct(tenantId, productId, options = {}) {
     }
     throw error;
   }
+}
+
+async function resolveBulkDeleteSelection(context, selection = {}, options = {}, client = null) {
+  const mode = normalizeString(selection.mode).toLowerCase();
+  if (!mode) return { ok: false, tenantId: context.tenantId, reason: 'missing_bulk_delete_selection_mode' };
+
+  if (mode === 'ids') {
+    const ids = normalizeIdList(selection.ids);
+    if (!ids.length) return { ok: false, tenantId: context.tenantId, reason: 'missing_bulk_delete_ids' };
+    const products = await findProductsByIds(context.clinic.id, ids, client, { includeDeleted: options.includeDeleted === true });
+    return { ok: true, mode, filter: null, importJob: null, requestedIds: ids, products };
+  }
+
+  if (mode === 'filter') {
+    const filter = normalizeBulkDeleteFilter(selection.filter);
+    const catalog = options.includeDeleted === true
+      ? await listProductsByClinicIdIncludingDeleted(context.clinic.id, client)
+      : await listProductsByClinicId(context.clinic.id, client);
+    const products = catalog.filter((product) => matchesBulkDeleteFilter(product, filter));
+    return { ok: true, mode, filter, importJob: null, requestedIds: products.map((product) => product.id), products };
+  }
+
+  if (mode === 'import_batch') {
+    const importId = normalizeString(selection.importId);
+    if (!importId) return { ok: false, tenantId: context.tenantId, reason: 'missing_catalog_import_id' };
+    const importJob = await findCatalogImportJobById(importId, context.clinic.id, client);
+    if (!importJob) return { ok: false, tenantId: context.tenantId, reason: 'catalog_import_not_found' };
+    const requestedIds = extractCreatedProductIdsFromImport(importJob);
+    const products = requestedIds.length
+      ? await findProductsByIds(context.clinic.id, requestedIds, client, { includeDeleted: options.includeDeleted === true })
+      : [];
+    return { ok: true, mode, filter: null, importJob, requestedIds, products };
+  }
+
+  return { ok: false, tenantId: context.tenantId, reason: 'invalid_bulk_delete_selection_mode' };
+}
+
+async function previewPortalProductsBulkDelete(tenantId, selection = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const resolved = await resolveBulkDeleteSelection(context, selection, { includeDeleted: true });
+  if (!resolved.ok) return resolved;
+
+  const productsById = new Map(resolved.products.map((product) => [product.id, product]));
+  const summary = { totalSelected: resolved.requestedIds.length, deletable: 0, blocked: 0, alreadyDeleted: 0, notFound: 0 };
+  const blocked = [];
+  const deletable = [];
+  const alreadyDeleted = [];
+  const notFound = [];
+
+  for (const requestedId of resolved.requestedIds) {
+    const product = productsById.get(requestedId);
+    if (!product) {
+      summary.notFound += 1;
+      notFound.push({ productId: requestedId });
+      continue;
+    }
+    if (product.deletedAt) {
+      summary.alreadyDeleted += 1;
+      alreadyDeleted.push({ productId: requestedId });
+      continue;
+    }
+    const references = await getProductDeleteReferenceSummary(product.id, context.clinic.id);
+    if (references.total > 0) {
+      summary.blocked += 1;
+      blocked.push({ productId: product.id, name: product.name, sku: product.sku || null, references: summarizeBlockedReferences(references) });
+      continue;
+    }
+    summary.deletable += 1;
+    deletable.push({ productId: product.id, name: product.name, sku: product.sku || null });
+  }
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    selection: {
+      mode: resolved.mode,
+      filter: resolved.filter,
+      importId: resolved.importJob?.id || null
+    },
+    import: resolved.importJob
+      ? {
+          importId: resolved.importJob.id,
+          fileName: resolved.importJob.originalFileName,
+          status: resolved.importJob.status,
+          rollbackStatus: resolved.importJob.result?.rollback?.status || null
+        }
+      : null,
+    summary,
+    deletable,
+    blocked,
+    alreadyDeleted,
+    notFound,
+    forceDeleteAvailable: true
+  };
+}
+
+async function executePortalProductsBulkDelete(tenantId, selection = {}, options = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const force = options.force === true;
+  const idempotencyKey = normalizeString(options.idempotencyKey);
+  if (!idempotencyKey) return { ok: false, tenantId: context.tenantId, reason: 'missing_bulk_delete_idempotency_key' };
+  if (force && options.confirmForceDelete !== true) {
+    return { ok: false, tenantId: context.tenantId, reason: 'force_delete_confirmation_required' };
+  }
+
+  const auditAction = normalizeString(options.auditAction) || (normalizeString(selection.mode).toLowerCase() === 'import_batch' ? 'catalog_import_rollback' : 'catalog_bulk_delete');
+  return withTransaction(async (client) => {
+    await withBulkDeleteAdvisoryLock(client, context.clinic.id, auditAction, idempotencyKey);
+
+    const existingAudit = await findLatestPortalUserAuditEventByIdempotencyKey(context.clinic.id, auditAction, idempotencyKey, client);
+    if (existingAudit && existingAudit.payload && existingAudit.payload.result) {
+      return {
+        ok: true,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        status: existingAudit.payload.result.status || 'already_completed',
+        summary: existingAudit.payload.result.summary || {},
+        results: existingAudit.payload.result.results || [],
+        idempotent: true
+      };
+    }
+
+    const resolved = await resolveBulkDeleteSelection(context, selection, { includeDeleted: true }, client);
+    if (!resolved.ok) return resolved;
+
+    const productsById = new Map(resolved.products.map((product) => [product.id, product]));
+    const summary = { requested: resolved.requestedIds.length, deleted: 0, blocked: 0, alreadyDeleted: 0, notFound: 0, failed: 0 };
+    const results = [];
+
+    for (const requestedId of resolved.requestedIds) {
+      const product = productsById.get(requestedId);
+      if (!product) {
+        summary.notFound += 1;
+        results.push({ productId: requestedId, status: 'not_found' });
+        continue;
+      }
+      if (product.deletedAt) {
+        summary.alreadyDeleted += 1;
+        results.push({ productId: requestedId, status: 'already_deleted' });
+        continue;
+      }
+
+      const deletion = await executePortalProductDeletionWithClient(context, requestedId, {
+        force,
+        confirmForceDelete: options.confirmForceDelete === true,
+        actor: options.actor,
+        bulkOperation: {
+          action: auditAction,
+          idempotencyKey
+        }
+      }, client);
+
+      if (deletion.ok) {
+        summary.deleted += 1;
+        results.push({ productId: requestedId, status: 'deleted', deletionMode: deletion.deletionMode || 'hard_delete' });
+        continue;
+      }
+      if (deletion.reason === 'product_delete_blocked') {
+        summary.blocked += 1;
+        results.push({ productId: requestedId, status: 'blocked', reason: deletion.reason, details: deletion.details || null });
+        continue;
+      }
+      summary.failed += 1;
+      results.push({ productId: requestedId, status: 'failed', reason: deletion.reason || 'bulk_delete_failed' });
+    }
+
+    const status = computeBulkDeleteExecutionStatus(summary);
+    await createPortalUserAuditEvent({
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      actorUserId: resolveBulkActorId(options.actor),
+      action: auditAction,
+      payload: {
+        idempotencyKey,
+        mode: resolved.mode,
+        force,
+        requestedCount: summary.requested,
+        selection: {
+          filter: resolved.filter || null,
+          importId: resolved.importJob?.id || null
+        },
+        result: {
+          status,
+          summary,
+          results
+        }
+      }
+    }, client);
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      status,
+      summary,
+      results,
+      idempotent: false
+    };
+  });
 }
 
 async function uploadPortalProductImage(tenantId, file, options = {}) {
@@ -1028,6 +1334,8 @@ module.exports = {
   deletePortalProductCategoryRecord,
   patchPortalProduct,
   patchPortalProductStatus,
+  previewPortalProductsBulkDelete,
+  executePortalProductsBulkDelete,
   deletePortalProduct,
   uploadPortalProductImage,
   getPortalProductImageAsset

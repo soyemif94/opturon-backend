@@ -40,7 +40,8 @@ assert.match(serviceSource, /reason: deleted\.reason \|\| 'product_delete_blocke
 assert.match(serviceSource, /No se puede eliminar porque tiene ventas, pedidos o movimientos de stock asociados/);
 assert.match(serviceSource, /error\.code === '23503'/);
 assert.match(serviceSource, /force_delete_confirmation_required/);
-assert.match(serviceSource, /getProductDeleteReferenceSummary\(safeProductId, context\.clinic\.id, client\)/);
+assert.match(serviceSource, /getProductDeleteReferenceSummary\(safeProductId, context\.clinic\.id, transactionClient\)/);
+assert.match(serviceSource, /const forced = client \? await performForcedDelete\(client\) : await withTransaction\(performForcedDelete\)/);
 assert.match(serviceSource, /createPortalUserAuditEvent/);
 assert.match(serviceSource, /action: 'catalog_product_force_deleted'/);
 assert.doesNotMatch(serviceSource, /DELETE FROM inventory_(lots|movements|lot_allocations)/);

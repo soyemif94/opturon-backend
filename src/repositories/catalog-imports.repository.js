@@ -91,6 +91,21 @@ async function findCatalogImportJobById(importId, clinicId, client = null, { for
   return normalizeImportJob(result.rows[0] || null);
 }
 
+async function listCatalogImportJobsByClinicId(clinicId, options = {}, client = null) {
+  const safeLimit = Number.isInteger(options.limit) && options.limit > 0 ? Math.min(options.limit, 50) : 20;
+  const result = await dbQuery(
+    client,
+    `SELECT *
+     FROM catalog_import_jobs
+     WHERE "clinicId" = $1::uuid
+     ORDER BY COALESCE("completedAt", "confirmedAt", "createdAt") DESC, "createdAt" DESC
+     LIMIT $2`,
+    [clinicId, safeLimit]
+  );
+
+  return result.rows.map(normalizeImportJob);
+}
+
 async function updateCatalogImportJob(importId, clinicId, patch, client = null) {
   const current = await findCatalogImportJobById(importId, clinicId, client);
   if (!current) return null;
@@ -131,5 +146,6 @@ async function updateCatalogImportJob(importId, clinicId, patch, client = null) 
 module.exports = {
   createCatalogImportJob,
   findCatalogImportJobById,
+  listCatalogImportJobsByClinicId,
   updateCatalogImportJob
 };
