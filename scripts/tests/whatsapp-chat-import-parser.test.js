@@ -68,6 +68,25 @@ function parse(text) {
 }
 
 {
+  const result = parse('10/4/26, 10:01 p. m. - Nombre: Android tarde');
+  assert.equal(result.detectedFormat, 'plain');
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].originalTimestamp, '2026-04-10T22:01:00.000Z');
+}
+
+{
+  const result = parse('10/04/2026, 22:01 - Nombre: Android 24h');
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].originalTimestamp, '2026-04-10T22:01:00.000Z');
+}
+
+{
+  const result = parse('[10/4/2026, 22:01] Nombre: iPhone 24h');
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].originalTimestamp, '2026-04-10T22:01:00.000Z');
+}
+
+{
   const result = parse('[12/7/26, 18:45] John: Hello\nthis is multiline\n[12/7/26, 18:46] Mary: <Media omitted>');
   assert.equal(result.messages.length, 2);
   assert.match(result.messages[0].text, /this is multiline/);
@@ -75,10 +94,16 @@ function parse(text) {
 }
 
 {
-  const result = parse('[10/4/26, 10:01:40 a. m.] José Pérez ✨: primer mensaje\nsegunda linea');
+  const result = parse('[10/4/26, 10:01:40 a. m.] Jose Perez ✨: primer mensaje\nsegunda linea');
   assert.equal(result.messages.length, 1);
-  assert.equal(result.messages[0].participant, 'José Pérez ✨');
+  assert.equal(result.messages[0].participant, 'Jose Perez ✨');
   assert.equal(result.messages[0].text, 'primer mensaje\nsegunda linea');
+}
+
+{
+  const result = parse('[10/4/26, 10:01:40 a. m.] Nombre: emoji 😄 y unicode áéíóú');
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].text, 'emoji 😄 y unicode áéíóú');
 }
 
 {
@@ -102,16 +127,22 @@ function parse(text) {
 }
 
 {
+  const invalidTimestamp = parse('10/4/26, 25:99 - Nombre: imposible');
+  assert.equal(invalidTimestamp.messages.length, 0);
+  assert(invalidTimestamp.warnings.some((warning) => warning.code === 'invalid_timestamp'));
+}
+
+{
   const mixed = parse(
     [
-      '[10/4/26, 10:01:40 a. m.] José Pérez ✨: Hola',
+      '[10/4/26, 10:01:40 a. m.] Jose Perez ✨: Hola',
       'continuacion en multilinea',
       '[10/4/26, 12:05:00 p. m.] Sistema raro',
       '10/4/2026, 18:46 - Ana: Formato anterior ok'
     ].join('\n')
   );
   assert.equal(mixed.messages.length, 3);
-  assert.equal(mixed.messages[0].participant, 'José Pérez ✨');
+  assert.equal(mixed.messages[0].participant, 'Jose Perez ✨');
   assert.equal(mixed.messages[0].text, 'Hola\ncontinuacion en multilinea');
   assert.equal(mixed.messages[0].originalTimestamp, '2026-04-10T10:01:40.000Z');
   assert.equal(mixed.messages[1].participant, null);
@@ -133,6 +164,10 @@ function parse(text) {
   assert.match(service, /messages: _discardedMessages/);
   assert.match(service, /summaryWithoutSensitiveMessages/);
   assert.match(service, /invalid_file_type/);
+  assert.match(service, /invalid_file_mime_type/);
+  assert.match(service, /empty_file/);
+  assert.match(service, /binary_file/);
+  assert.match(service, /whatsapp_import_self_participant_required/);
   assert.match(service, /file_too_large/);
 }
 

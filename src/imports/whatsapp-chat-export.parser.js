@@ -2,14 +2,20 @@ function normalizeString(value) {
   return value === null || value === undefined ? '' : String(value).trim();
 }
 
-const DIRECTIONAL_MARKS_PATTERN = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
-const NON_BREAKING_SPACES_PATTERN = /[\u00a0\u202f]/g;
+const STRUCTURAL_MARKS = '\u200e\u200f\u202a-\u202e\u2066-\u2069';
+const STRUCTURAL_SPACES = ' \t\u00a0\u202f';
+const STRUCTURAL_FILL = `${STRUCTURAL_MARKS}${STRUCTURAL_SPACES}`;
+
+const BRACKETED_LINE_PATTERN = new RegExp(
+  `^[${STRUCTURAL_MARKS}]*\\[[${STRUCTURAL_FILL}]*(\\d{1,2})[/-](\\d{1,2})[/-](\\d{2,4}),?[${STRUCTURAL_FILL}]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?:[${STRUCTURAL_FILL}]+([apAP])[${STRUCTURAL_FILL}]*\\.?[${STRUCTURAL_FILL}]*[mM][${STRUCTURAL_FILL}]*\\.?)?\\][${STRUCTURAL_FILL}]*(.*)$`
+);
+
+const PLAIN_LINE_PATTERN = new RegExp(
+  `^[${STRUCTURAL_MARKS}]*(\\d{1,2})[/-](\\d{1,2})[/-](\\d{2,4}),?[${STRUCTURAL_FILL}]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?:[${STRUCTURAL_FILL}]+([apAP])[${STRUCTURAL_FILL}]*\\.?[${STRUCTURAL_FILL}]*[mM][${STRUCTURAL_FILL}]*\\.?)?[${STRUCTURAL_FILL}]*-[${STRUCTURAL_FILL}]*(.*)$`
+);
 
 function normalizeParserInput(value) {
-  return String(value || '')
-    .replace(/^\uFEFF/, '')
-    .replace(DIRECTIONAL_MARKS_PATTERN, '')
-    .replace(NON_BREAKING_SPACES_PATTERN, ' ');
+  return String(value || '').replace(/^\uFEFF/, '');
 }
 
 function expandYear(value) {
@@ -60,7 +66,7 @@ function classifySystemMessage(text) {
 }
 
 function parseMessageLine(line) {
-  const bracket = line.match(/^\[(\d{1,2})[/-](\d{1,2})[/-](\d{2,4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s+([apAP])\s*\.?\s*[mM]\s*\.?)?\]\s*(.*)$/);
+  const bracket = line.match(BRACKETED_LINE_PATTERN);
   if (bracket) {
     return {
       detectedFormat: 'bracketed',
@@ -69,7 +75,7 @@ function parseMessageLine(line) {
     };
   }
 
-  const plain = line.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s+([apAP])\s*\.?\s*[mM]\s*\.?)?\s+-\s*(.*)$/);
+  const plain = line.match(PLAIN_LINE_PATTERN);
   if (plain) {
     return {
       detectedFormat: 'plain',

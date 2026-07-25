@@ -8,6 +8,7 @@ const { logInfo } = require('../utils/logger');
 
 const MAX_FILE_SIZE_BYTES = Number(process.env.WHATSAPP_CHAT_IMPORT_MAX_FILE_SIZE_BYTES || 5 * 1024 * 1024);
 const MAX_PREVIEW_MESSAGES = Number(process.env.WHATSAPP_CHAT_IMPORT_MAX_PREVIEW_MESSAGES || 5000);
+const ACCEPTED_TEXT_MIME_TYPES = new Set(['', 'text/plain', 'application/octet-stream']);
 
 function normalizeString(value) {
   return value === null || value === undefined ? '' : String(value).trim();
@@ -27,10 +28,28 @@ function safeFileName(value) {
 
 function validateTextFile(file) {
   const originalName = normalizeString(file && file.originalname);
+  const mimeType = normalizeString(file && file.mimetype).toLowerCase();
   if (!file || !file.buffer) return 'missing_file';
   if (!originalName.toLowerCase().endsWith('.txt')) return 'invalid_file_type';
   if (Number(file.size || file.buffer.length || 0) > MAX_FILE_SIZE_BYTES) return 'file_too_large';
+  if (!ACCEPTED_TEXT_MIME_TYPES.has(mimeType)) return 'invalid_file_mime_type';
+  if (!Buffer.isBuffer(file.buffer) || file.buffer.length === 0) return 'empty_file';
   return null;
+}
+
+function decodeUtf8Text(buffer) {
+  const text = buffer.toString('utf8');
+  if (!normalizeString(text)) {
+    return { ok: false, reason: 'empty_file' };
+  }
+  if (buffer.includes(0)) {
+    return { ok: false, reason: 'binary_file' };
+  }
+  const replacementCount = (text.match(/\uFFFD/g) || []).length;
+  if (replacementCount > 0 && replacementCount >= Math.max(3, Math.ceil(text.length * 0.01))) {
+    return { ok: false, reason: 'binary_file' };
+  }
+  return { ok: true, text };
 }
 
 function normalizeMessageText(value) {
@@ -47,18 +66,7 @@ function buildMessageHash(tenantId, message, index) {
   ].join('|'));
 }
 
-function inferSelfParticipant(parsed) {
-  const counts = new Map();
-  for (const message of parsed.messages || []) {
-    if (!message.participant) continue;
-    counts.set(message.participant, (counts.get(message.participant) || 0) + 1);
-  }
-  const sorted = Array.from(counts.entries()).sort((left, right) => right[1] - left[1]);
-  return sorted.length > 1 ? sorted[sorted.length - 1][0] : null;
-}
-
-function buildNormalizedMessages(tenantId, parsed) {
-  const selfParticipant = inferSelfParticipant(parsed);
+function buildNormalizedMessages(tenantId, parsed, selfParticipant = null) {
   return (parsed.messages || []).map((message, index) => {
     const hash = buildMessageHash(tenantId, message, index);
     const direction = selfParticipant && message.participant === selfParticipant ? 'outbound' : 'inbound';
@@ -107,6 +115,7 @@ async function createPreviewRecord(context, actor, file, parsed, normalizedMessa
     duplicateEstimated,
     ignoredLines: parsed.ignoredLines,
     participants: parsed.participants,
+    selfParticipantRequired: parsed.participants.length > 1,
     dateRange: parsed.dateRange,
     detectedFormat: parsed.detectedFormat,
     messages: normalizedMessages
@@ -152,6 +161,7 @@ function buildPreviewPayload(record) {
     duplicateEstimated: Number(summary.duplicateEstimated || 0),
     ignoredLines: Number(summary.ignoredLines || 0),
     participants: Array.isArray(summary.participants) ? summary.participants : [],
+    selfParticipantRequired: Boolean(summary.selfParticipantRequired),
     dateRange: summary.dateRange || { from: null, to: null },
     detectedFormat: summary.detectedFormat || 'unknown',
     warnings: Array.isArray(record.warnings) ? record.warnings : [],
@@ -167,16 +177,19 @@ async function previewImport({ tenantId, actor, file }) {
   const fileError = validateTextFile(file);
   if (fileError) return buildError(context.tenantId, fileError);
 
-  const text = file.buffer.toString('utf8');
+  const decoded = decodeUtf8Text(file.buffer);
+  if (!decoded.ok) return buildError(context.tenantId, decoded.reason);
+
+  const text = decoded.text;
   const parsed = parseWhatsAppChatExport(text);
   if (!parsed.messages.length || parsed.detectedFormat === 'unknown') {
     return buildError(context.tenantId, 'whatsapp_import_unrecognized_format');
   }
-  if (parsed.messages.length > MAX_PREVIEW_MESSAGES) {
+  const normalizedMessages = buildNormalizedMessages(context.tenantId, parsed);
+  if (normalizedMessages.length > MAX_PREVIEW_MESSAGES) {
     return buildError(context.tenantId, 'whatsapp_import_too_many_messages', { maxMessages: MAX_PREVIEW_MESSAGES });
   }
 
-  const normalizedMessages = buildNormalizedMessages(context.tenantId, parsed);
   const duplicateEstimated = await countDuplicates(
     normalizedMessages.map((message) => message.waMessageId),
     context.clinic.id
@@ -229,13 +242,15 @@ async function createImportedContact(context, participantName, client) {
   return { id: contactId, name: safeName, waId: `imported:${contactId}` };
 }
 
-async function resolveTargetContact(context, selectedContactId, summary, client) {
+async function resolveTargetContact(context, selectedContactId, summary, selectedSelfParticipant, client) {
   if (selectedContactId) {
     const contact = await findPortalContactById(context.clinic.id, selectedContactId, client);
     if (!contact) return null;
     return contact;
   }
-  const participants = Array.isArray(summary.participants) ? summary.participants : [];
+  const participants = (Array.isArray(summary.participants) ? summary.participants : []).filter(
+    (participant) => participant && participant !== selectedSelfParticipant
+  );
   const detectedName = participants[0] || 'Contacto importado';
   return createImportedContact(context, detectedName, client);
 }
@@ -317,10 +332,11 @@ async function insertImportedMessages(context, conversationId, channel, contact,
   return { inserted, duplicates };
 }
 
-async function confirmImport({ tenantId, actor, importId, selectedContactId }) {
+async function confirmImport({ tenantId, actor, importId, selectedContactId, selectedSelfParticipant }) {
   const context = await resolveContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
   const safeImportId = normalizeString(importId);
+  const safeSelfParticipant = normalizeString(selectedSelfParticipant) || null;
   if (!safeImportId) return buildError(context.tenantId, 'missing_import_id');
 
   return withTransaction(async (client) => {
@@ -340,18 +356,33 @@ async function confirmImport({ tenantId, actor, importId, selectedContactId }) {
     const summary = importRecord.summary || {};
     const messages = Array.isArray(summary.messages) ? summary.messages : [];
     if (!messages.length) return buildError(context.tenantId, 'whatsapp_import_empty_preview');
+    const participants = Array.isArray(summary.participants) ? summary.participants : [];
+    const requiresSelfParticipant = participants.length > 1;
+    if (requiresSelfParticipant && (!safeSelfParticipant || !participants.includes(safeSelfParticipant))) {
+      return buildError(context.tenantId, 'whatsapp_import_self_participant_required');
+    }
 
     const channel = await findPreferredWhatsAppChannelByClinicId(context.clinic.id, client);
     if (!channel) return buildError(context.tenantId, 'whatsapp_import_channel_not_found');
 
-    const contact = await resolveTargetContact(context, selectedContactId, summary, client);
+    const contact = await resolveTargetContact(context, selectedContactId, summary, safeSelfParticipant, client);
     if (!contact) return buildError(context.tenantId, 'whatsapp_import_contact_not_found');
 
     const conversationId = await findOrCreateConversation(context, channel, contact, client);
-    const result = await insertImportedMessages(context, conversationId, channel, contact, messages, safeImportId, client);
+    const normalizedMessages = messages.map((message) => ({
+      ...message,
+      direction:
+        safeSelfParticipant && message.participant === safeSelfParticipant
+          ? 'outbound'
+          : message.participant
+            ? 'inbound'
+            : 'inbound'
+    }));
+    const result = await insertImportedMessages(context, conversationId, channel, contact, normalizedMessages, safeImportId, client);
     const { messages: _discardedMessages, ...summaryWithoutSensitiveMessages } = summary;
     const nextSummary = {
       ...summaryWithoutSensitiveMessages,
+      selectedSelfParticipant: safeSelfParticipant,
       insertedMessages: result.inserted,
       duplicateMessages: result.duplicates,
       confirmedAt: new Date().toISOString()

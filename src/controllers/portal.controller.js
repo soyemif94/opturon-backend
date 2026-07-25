@@ -418,7 +418,7 @@ async function postPortalWhatsAppImportPreview(req, res) {
 
     if (!result.ok) {
       const status =
-        result.reason === 'missing_tenant_id' || result.reason === 'missing_file' || result.reason === 'invalid_file_type'
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_file' || result.reason === 'invalid_file_type' || result.reason === 'invalid_file_mime_type' || result.reason === 'empty_file' || result.reason === 'binary_file'
           ? 400
           : result.reason === 'file_too_large'
             ? 413
@@ -465,9 +465,11 @@ async function postPortalWhatsAppImportConfirm(req, res) {
           ? 400
           : result.reason === 'whatsapp_import_not_found' || result.reason === 'whatsapp_import_contact_not_found'
             ? 404
-            : result.reason === 'whatsapp_import_channel_not_found' || result.reason === 'whatsapp_import_not_ready'
+          : result.reason === 'whatsapp_import_channel_not_found' || result.reason === 'whatsapp_import_not_ready'
               ? 409
-              : 422;
+              : result.reason === 'whatsapp_import_self_participant_required'
+                ? 422
+                : 422;
       return res.status(status).json({
         success: false,
         error: result.reason,
