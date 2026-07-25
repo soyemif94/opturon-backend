@@ -1,19 +1,18 @@
 const { query } = require('../db/client');
-
+const { createTenantPolicyAuditEvent } = require('../repositories/tenant-policy-audit.repository');
+const {
+  POLICY_VERSION,
+  CAPABILITY_CATALOG,
+  IMPLEMENTED_MODULES,
+  MODULE_TO_CAPABILITY,
+  normalizeUniqueCapabilities,
+  normalizeOperatingProfile,
+  buildRecommendedCapabilities,
+  buildEnabledModules,
+  hasExplicitOperatingConfiguration
+} = require('./tenant-operating-profile.service');
 const PLAN_CODES = new Set(['basic', 'growth', 'pro', 'enterprise']);
-const CAPABILITIES = new Set([
-  'whatsapp',
-  'contacts',
-  'crm',
-  'agenda',
-  'catalog',
-  'automations',
-  'sales',
-  'payments',
-  'payments_transfer',
-  'loyalty'
-]);
-const MODULES = ['inbox', 'agenda', 'catalog', 'automations', 'sales', 'loyalty', 'payments'];
+const MODULES = IMPLEMENTED_MODULES;
 
 const DEFAULT_LIMITS = {
   maxPortalUsers: 5,
@@ -26,18 +25,12 @@ const MAX_LIMITS = {
   maxContacts: 1000000
 };
 
-const DEFAULT_MODULES = Object.freeze({
-  inbox: true,
-  agenda: true,
-  catalog: true,
-  automations: true,
-  sales: true,
-  loyalty: true,
-  payments: true
-});
-
 function normalizeString(value) {
   return String(value || '').trim();
+}
+
+function getDbClient(client = null) {
+  return client && typeof client.query === 'function' ? client : { query };
 }
 
 function parseSettings(raw) {
@@ -57,8 +50,7 @@ function normalizePlanCode(value) {
 }
 
 function normalizeCapabilities(value) {
-  const items = Array.isArray(value) ? value : [];
-  return Array.from(new Set(items.map((item) => normalizeString(item).toLowerCase()).filter((item) => CAPABILITIES.has(item))));
+  return normalizeUniqueCapabilities(value);
 }
 
 function parsePositiveInt(value, fallback, max) {
@@ -84,12 +76,18 @@ function pickBooleanModules(value) {
   }, {});
 }
 
-function normalizeEnabledModules(value) {
-  const input = pickBooleanModules(value);
-  return MODULES.reduce((acc, key) => {
-    acc[key] = input[key] === undefined ? DEFAULT_MODULES[key] : input[key] === true;
-    return acc;
-  }, {});
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerialize(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sameValue(left, right) {
+  return stableSerialize(left) === stableSerialize(right);
 }
 
 function buildTenantPolicyFromSettings(settings) {
@@ -100,8 +98,26 @@ function buildTenantPolicyFromSettings(settings) {
     : {};
   const policy = portal.policy && typeof portal.policy === 'object' && !Array.isArray(portal.policy) ? portal.policy : {};
   const legacyLimit = portal.limits && typeof portal.limits === 'object' ? portal.limits : {};
+  const operatingProfile = normalizeOperatingProfile(
+    policy.operatingProfile ||
+      safeSettings.operatingProfile ||
+      businessProfile.operatingProfile ||
+      {
+        industryProfile: businessProfile.industryProfile || businessProfile.businessType || 'custom',
+        operatingModel: businessProfile.operatingModel || 'hybrid',
+        businessSubtype: businessProfile.businessSubtype || null
+      }
+  );
+  const capabilities = normalizeCapabilities(policy.capabilities || businessProfile.capabilities);
+  const legacyMode = !hasExplicitOperatingConfiguration(policy);
+  const enabledModules = buildEnabledModules({
+    capabilities,
+    explicitModules: pickBooleanModules(policy.enabledModules),
+    legacyMode
+  });
 
   return {
+    policyVersion: Number(policy.policyVersion) >= POLICY_VERSION ? POLICY_VERSION : 0,
     planCode: normalizePlanCode(policy.planCode || portal.planCode),
     limits: normalizeLimits({
       ...legacyLimit,
@@ -115,9 +131,14 @@ function buildTenantPolicyFromSettings(settings) {
         legacyLimit.subaccounts ??
         portal.subaccountLimit
     }),
-    capabilities: normalizeCapabilities(policy.capabilities || businessProfile.capabilities),
-    enabledModules: normalizeEnabledModules(policy.enabledModules),
-    source: policy && Object.keys(policy).length ? 'settings.portal.policy' : 'defaults'
+    operatingProfile,
+    recommendedCapabilities: buildRecommendedCapabilities(operatingProfile.presetKey),
+    capabilities,
+    enabledModules,
+    implementedModules: MODULES,
+    capabilityCatalog: CAPABILITY_CATALOG,
+    moduleCapabilities: MODULE_TO_CAPABILITY,
+    source: legacyMode ? 'legacy_fallback' : policy && Object.keys(policy).length ? 'settings.portal.policy' : 'defaults'
   };
 }
 
@@ -195,7 +216,7 @@ function buildClinicBasicsPatch(input, currentClinic) {
 }
 
 async function resolveTenantPolicyByClinicId(clinicId, client = null) {
-  const result = await (client || { query }).query(
+  const result = await getDbClient(client).query(
     `SELECT settings
      FROM clinics
      WHERE id = $1::uuid
@@ -205,9 +226,9 @@ async function resolveTenantPolicyByClinicId(clinicId, client = null) {
   return buildTenantPolicyFromSettings(result.rows[0] && result.rows[0].settings);
 }
 
-async function resolveTenantPolicyByExternalTenantId(externalTenantId) {
+async function resolveTenantPolicyByExternalTenantId(externalTenantId, client = null) {
   const safeTenantId = normalizeString(externalTenantId);
-  const result = await query(
+  const result = await getDbClient(client).query(
     `SELECT c.id,
             c.name,
             c.timezone,
@@ -330,42 +351,140 @@ async function listTenantPolicies() {
   };
 }
 
-function sanitizeTenantPolicyPatch(payload) {
+function sanitizeTenantPolicyPatch(payload, options = {}) {
   const input = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const mode = normalizeString(options.mode || 'admin').toLowerCase() === 'tenant' ? 'tenant' : 'admin';
+
+  if (mode === 'tenant') {
+    return {
+      enabledModules: pickBooleanModules(input.enabledModules),
+      operatingProfile: {
+        businessSubtype: normalizeString(input.businessSubtype ?? input.operatingProfile?.businessSubtype) || null
+      }
+    };
+  }
+
   return {
     planCode: normalizePlanCode(input.planCode),
     limits: normalizeLimits(input.limits),
     capabilities: normalizeCapabilities(input.capabilities),
-    enabledModules: normalizeEnabledModules(input.enabledModules)
+    enabledModules: pickBooleanModules(input.enabledModules),
+    operatingProfile: normalizeOperatingProfile(input.operatingProfile || input)
   };
 }
 
-async function updateTenantPolicyByExternalTenantId(externalTenantId, payload) {
+async function updateTenantPolicyByExternalTenantId(externalTenantId, payload, options = {}) {
   const safeTenantId = normalizeString(externalTenantId);
   if (!safeTenantId) return { ok: false, reason: 'missing_tenant_id' };
+  const db = getDbClient(options.client);
+  const mode = normalizeString(options.mode || options.permissionScope || '').toLowerCase() === 'tenant' ? 'tenant' : 'admin';
 
-  const current = await resolveTenantPolicyByExternalTenantId(safeTenantId);
+  const current = await resolveTenantPolicyByExternalTenantId(safeTenantId, options.client);
   if (!current.ok) return current;
 
   const input = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
-  const clinicPatch = buildClinicBasicsPatch(input, {
-    ...current.clinic,
-    settings: current.clinic.settings,
-    primaryEmail: current.primaryEmail
-  });
-  const nextPolicy = sanitizeTenantPolicyPatch({
-    planCode: input.planCode ?? current.policy.planCode,
-    limits: {
-      ...current.policy.limits,
-      ...(input.limits && typeof input.limits === 'object' && !Array.isArray(input.limits) ? input.limits : {})
-    },
-    capabilities: input.capabilities === undefined ? current.policy.capabilities : input.capabilities,
+  const clinicPatch = mode === 'admin'
+    ? buildClinicBasicsPatch(input, {
+        ...current.clinic,
+        settings: current.clinic.settings,
+        primaryEmail: current.primaryEmail
+      })
+    : {
+        displayName: buildTenantDisplayName({ ...current.clinic, primaryEmail: current.primaryEmail }),
+        primaryEmail: current.primaryEmail || null
+      };
+  const sanitizedPatch = sanitizeTenantPolicyPatch(input, { mode });
+  const currentOperatingProfile = current.policy.operatingProfile || {};
+  const mergedOperatingProfile = mode === 'tenant'
+    ? normalizeOperatingProfile({
+        ...currentOperatingProfile,
+        businessSubtype:
+          sanitizedPatch.operatingProfile.businessSubtype === null
+            ? null
+            : sanitizedPatch.operatingProfile.businessSubtype || currentOperatingProfile.businessSubtype
+      }, currentOperatingProfile.presetKey || currentOperatingProfile.industryProfile || 'custom')
+    : normalizeOperatingProfile({
+        ...currentOperatingProfile,
+        ...(input.operatingProfile && typeof input.operatingProfile === 'object' && !Array.isArray(input.operatingProfile)
+          ? input.operatingProfile
+          : {}),
+        industryProfile:
+          input.industryProfile ??
+          input.presetKey ??
+          input.operatingProfile?.industryProfile ??
+          currentOperatingProfile.industryProfile,
+        operatingModel:
+          input.operatingModel ??
+          input.operatingProfile?.operatingModel ??
+          currentOperatingProfile.operatingModel,
+        businessSubtype:
+          input.businessSubtype ??
+          input.operatingProfile?.businessSubtype ??
+          currentOperatingProfile.businessSubtype
+      });
+  const nextPolicyDraft = {
+    planCode: mode === 'tenant' ? current.policy.planCode : normalizePlanCode(input.planCode ?? current.policy.planCode),
+    limits: mode === 'tenant'
+      ? current.policy.limits
+      : normalizeLimits({
+          ...current.policy.limits,
+          ...(input.limits && typeof input.limits === 'object' && !Array.isArray(input.limits) ? input.limits : {})
+        }),
+    capabilities: mode === 'tenant'
+      ? current.policy.capabilities
+      : normalizeCapabilities(input.capabilities === undefined ? current.policy.capabilities : input.capabilities),
     enabledModules: {
       ...current.policy.enabledModules,
-      ...pickBooleanModules(input.enabledModules)
+      ...pickBooleanModules(sanitizedPatch.enabledModules)
+    },
+    operatingProfile: mergedOperatingProfile
+  };
+  const nextPolicy = {
+    policyVersion: POLICY_VERSION,
+    ...nextPolicyDraft,
+    enabledModules: buildEnabledModules({
+      capabilities: nextPolicyDraft.capabilities,
+      explicitModules: nextPolicyDraft.enabledModules,
+      legacyMode: false
+    })
+  };
+
+  const beforeSnapshot = {
+    displayName: buildTenantDisplayName({ ...current.clinic, primaryEmail: current.primaryEmail }),
+    primaryEmail: current.primaryEmail || null,
+    policy: current.policy
+  };
+  const afterSnapshot = {
+    displayName: clinicPatch.displayName || beforeSnapshot.displayName,
+    primaryEmail: clinicPatch.primaryEmail || null,
+    policy: {
+      ...current.policy,
+      ...nextPolicy,
+      recommendedCapabilities: buildRecommendedCapabilities(nextPolicy.operatingProfile.presetKey),
+      implementedModules: MODULES,
+      capabilityCatalog: CAPABILITY_CATALOG,
+      moduleCapabilities: MODULE_TO_CAPABILITY,
+      source: 'settings.portal.policy'
     }
-  });
-  const result = await query(
+  };
+
+  if (sameValue(beforeSnapshot, afterSnapshot)) {
+    return {
+      ok: true,
+      tenantId: current.tenantId,
+      clinic: {
+        id: current.clinic.id,
+        name: current.clinic.name || null,
+        externalTenantId: current.clinic.externalTenantId || null,
+        primaryEmail: current.primaryEmail || null
+      },
+      primaryEmail: current.primaryEmail || null,
+      policy: current.policy,
+      idempotent: true
+    };
+  }
+
+  const result = await db.query(
     `WITH updated_clinic AS (
        UPDATE clinics
        SET name = $2,
@@ -434,6 +553,30 @@ async function updateTenantPolicyByExternalTenantId(externalTenantId, payload) {
   const clinic = result.rows[0] || null;
   if (!clinic) return { ok: false, reason: 'tenant_not_found', tenantId: safeTenantId };
 
+  const savedPolicy = buildTenantPolicyFromSettings(clinic.settings);
+  await createTenantPolicyAuditEvent({
+    clinicId: current.clinic.id,
+    tenantId: safeTenantId,
+    actorUserId: options.actorUserId || null,
+    actorRole: options.actorRole || null,
+    actorScope: options.actorScope || null,
+    action: options.action || 'tenant_policy_updated',
+    beforeSnapshot: {
+      displayName: beforeSnapshot.displayName,
+      primaryEmail: beforeSnapshot.primaryEmail,
+      policy: beforeSnapshot.policy
+    },
+    afterSnapshot: {
+      displayName: clinic.name || null,
+      primaryEmail: clinic.primaryEmail || null,
+      policy: savedPolicy
+    },
+    metadata: {
+      source: options.source || 'tenant_policy_service',
+      mode
+    }
+  }, options.client);
+
   return {
     ok: true,
     tenantId: clinic.externalTenantId,
@@ -444,7 +587,7 @@ async function updateTenantPolicyByExternalTenantId(externalTenantId, payload) {
       primaryEmail: clinic.primaryEmail || null
     },
     primaryEmail: clinic.primaryEmail || null,
-    policy: buildTenantPolicyFromSettings(clinic.settings)
+    policy: savedPolicy
   };
 }
 
@@ -452,7 +595,11 @@ function isModuleEnabled(policy, moduleName) {
   const key = normalizeString(moduleName);
   if (!key || !MODULES.includes(key)) return true;
   const safePolicy = policy && typeof policy === 'object' ? policy : {};
-  const enabledModules = normalizeEnabledModules(safePolicy.enabledModules);
+  const enabledModules = buildEnabledModules({
+    capabilities: normalizeCapabilities(safePolicy.capabilities),
+    explicitModules: safePolicy.enabledModules,
+    legacyMode: !hasExplicitOperatingConfiguration(safePolicy)
+  });
   return enabledModules[key] !== false;
 }
 

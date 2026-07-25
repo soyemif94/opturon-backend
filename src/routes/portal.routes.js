@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const {
   getPortalTenantContext,
+  getPortalTenantPolicy,
   postPortalTenantProvision,
   getPortalConversations,
   getPortalConversation,
@@ -144,11 +145,12 @@ const {
   postPortalWhatsAppTemplateFromBlueprint,
   postPortalWhatsAppTemplatesSync,
   patchPortalAgenda,
-  deletePortalAgenda
+  deletePortalAgenda,
+  patchPortalTenantPolicy
 } = require('../controllers/portal.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
-const { requirePortalModule } = require('../middlewares/portal-module-gate.middleware');
+const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
 
 const router = express.Router();
 
@@ -159,6 +161,10 @@ const automationsModule = requirePortalModule('automations');
 const salesModule = requirePortalModule('sales');
 const loyaltyModule = requirePortalModule('loyalty');
 const paymentsModule = requirePortalModule('payments');
+const contactsCapability = requirePortalCapability('contacts');
+const ordersCapability = requirePortalCapability('orders');
+const receiptsCapability = requirePortalCapability('receipts');
+const cashCapability = requirePortalCapability('cash_management');
 const catalogImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -300,7 +306,9 @@ router.use('/tenants/:tenantId', applyPortalActiveTenant);
 router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
 router.get('/loyalty-reward-images/:tenantId/:fileName', getPortalLoyaltyRewardImagePublic);
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
+router.get('/tenants/:tenantId/policy', requirePortalInternalAuth, getPortalTenantPolicy);
 router.post('/tenants/:tenantId/provision', requirePortalInternalAuth, postPortalTenantProvision);
+router.patch('/tenants/:tenantId/policy', requirePortalInternalAuth, patchPortalTenantPolicy);
 router.get('/tenants/:tenantId/conversations', inboxModule, getPortalConversations);
 router.patch('/tenants/:tenantId/conversations/archive', inboxModule, patchPortalConversationsArchive);
 router.patch('/tenants/:tenantId/conversations/restore', inboxModule, patchPortalConversationsRestore);
@@ -313,14 +321,14 @@ router.patch('/tenants/:tenantId/conversations/:conversationId', inboxModule, up
 router.post('/tenants/:tenantId/messages', inboxModule, postPortalMessage);
 router.post('/tenants/:tenantId/whatsapp-imports/preview', requirePortalInternalAuth, inboxModule, handleWhatsAppChatImportUpload, postPortalWhatsAppImportPreview);
 router.post('/tenants/:tenantId/whatsapp-imports/:importId/confirm', requirePortalInternalAuth, inboxModule, postPortalWhatsAppImportConfirm);
-router.get('/tenants/:tenantId/orders', getPortalOrders);
-router.get('/tenants/:tenantId/orders/payment-metrics', getPortalOrdersPaymentMetrics);
+router.get('/tenants/:tenantId/orders', ordersCapability, getPortalOrders);
+router.get('/tenants/:tenantId/orders/payment-metrics', ordersCapability, getPortalOrdersPaymentMetrics);
 router.get('/tenants/:tenantId/seller-metrics', getPortalSellerMetricsController);
-router.post('/tenants/:tenantId/orders', postPortalOrder);
-router.get('/tenants/:tenantId/orders/:orderId', getPortalOrder);
-router.patch('/tenants/:tenantId/orders/:orderId', patchPortalOrderController);
-router.patch('/tenants/:tenantId/orders/:orderId/status', updatePortalOrderStatus);
-router.post('/tenants/:tenantId/orders/:orderId/payment-validation', postPortalOrderPaymentValidation);
+router.post('/tenants/:tenantId/orders', ordersCapability, postPortalOrder);
+router.get('/tenants/:tenantId/orders/:orderId', ordersCapability, getPortalOrder);
+router.patch('/tenants/:tenantId/orders/:orderId', ordersCapability, patchPortalOrderController);
+router.patch('/tenants/:tenantId/orders/:orderId/status', ordersCapability, updatePortalOrderStatus);
+router.post('/tenants/:tenantId/orders/:orderId/payment-validation', ordersCapability, postPortalOrderPaymentValidation);
 router.get('/tenants/:tenantId/products', catalogModule, getPortalProducts);
 router.get('/tenants/:tenantId/product-categories', catalogModule, getPortalProductCategories);
 router.post('/tenants/:tenantId/products', catalogModule, postPortalProduct);
@@ -348,35 +356,35 @@ router.patch('/tenants/:tenantId/product-categories/:categoryId', catalogModule,
 router.delete('/tenants/:tenantId/product-categories/:categoryId', catalogModule, destroyPortalProductCategory);
 router.patch('/tenants/:tenantId/products/:productId/status', catalogModule, updatePortalProductStatus);
 router.delete('/tenants/:tenantId/products/:productId', requirePortalInternalAuth, catalogModule, destroyPortalProduct);
-router.get('/tenants/:tenantId/contacts', getPortalContacts);
-router.patch('/tenants/:tenantId/contacts/archive', patchPortalContactsArchive);
-router.patch('/tenants/:tenantId/contacts/restore', patchPortalContactsRestore);
-router.delete('/tenants/:tenantId/contacts/archived', deletePortalArchivedContactsController);
-router.post('/tenants/:tenantId/contacts', postPortalContact);
-router.get('/tenants/:tenantId/contacts/:contactId', getPortalContact);
-router.patch('/tenants/:tenantId/contacts/:contactId', patchPortalContact);
-router.get('/tenants/:tenantId/invoices', getPortalInvoices);
-router.post('/tenants/:tenantId/invoices', postPortalInvoice);
-router.get('/tenants/:tenantId/invoices/export.csv', getPortalInvoicesCsvExport);
-router.patch('/tenants/:tenantId/invoices/bulk-status', patchPortalInvoicesBulkStatus);
-router.post('/tenants/:tenantId/invoices/bulk-download', postPortalInvoicesBulkDownload);
-router.get('/tenants/:tenantId/invoices/:invoiceId', getPortalInvoice);
-router.get('/tenants/:tenantId/invoices/:invoiceId/document', getPortalInvoiceDocumentController);
-router.get('/tenants/:tenantId/invoices/:invoiceId/download', getPortalInvoiceDownloadController);
-router.get('/tenants/:tenantId/invoices/:invoiceId/allocations', getPortalInvoiceAllocations);
-router.patch('/tenants/:tenantId/invoices/:invoiceId', patchPortalInvoice);
-router.patch('/tenants/:tenantId/invoices/:invoiceId/accounting', patchPortalInvoiceAccountingController);
-router.post('/tenants/:tenantId/invoices/:invoiceId/issue', postPortalInvoiceIssue);
-router.post('/tenants/:tenantId/invoices/:invoiceId/void', postPortalInvoiceVoid);
+router.get('/tenants/:tenantId/contacts', contactsCapability, getPortalContacts);
+router.patch('/tenants/:tenantId/contacts/archive', contactsCapability, patchPortalContactsArchive);
+router.patch('/tenants/:tenantId/contacts/restore', contactsCapability, patchPortalContactsRestore);
+router.delete('/tenants/:tenantId/contacts/archived', contactsCapability, deletePortalArchivedContactsController);
+router.post('/tenants/:tenantId/contacts', contactsCapability, postPortalContact);
+router.get('/tenants/:tenantId/contacts/:contactId', contactsCapability, getPortalContact);
+router.patch('/tenants/:tenantId/contacts/:contactId', contactsCapability, patchPortalContact);
+router.get('/tenants/:tenantId/invoices', receiptsCapability, getPortalInvoices);
+router.post('/tenants/:tenantId/invoices', receiptsCapability, postPortalInvoice);
+router.get('/tenants/:tenantId/invoices/export.csv', receiptsCapability, getPortalInvoicesCsvExport);
+router.patch('/tenants/:tenantId/invoices/bulk-status', receiptsCapability, patchPortalInvoicesBulkStatus);
+router.post('/tenants/:tenantId/invoices/bulk-download', receiptsCapability, postPortalInvoicesBulkDownload);
+router.get('/tenants/:tenantId/invoices/:invoiceId', receiptsCapability, getPortalInvoice);
+router.get('/tenants/:tenantId/invoices/:invoiceId/document', receiptsCapability, getPortalInvoiceDocumentController);
+router.get('/tenants/:tenantId/invoices/:invoiceId/download', receiptsCapability, getPortalInvoiceDownloadController);
+router.get('/tenants/:tenantId/invoices/:invoiceId/allocations', receiptsCapability, getPortalInvoiceAllocations);
+router.patch('/tenants/:tenantId/invoices/:invoiceId', receiptsCapability, patchPortalInvoice);
+router.patch('/tenants/:tenantId/invoices/:invoiceId/accounting', receiptsCapability, patchPortalInvoiceAccountingController);
+router.post('/tenants/:tenantId/invoices/:invoiceId/issue', receiptsCapability, postPortalInvoiceIssue);
+router.post('/tenants/:tenantId/invoices/:invoiceId/void', receiptsCapability, postPortalInvoiceVoid);
 router.get('/tenants/:tenantId/payments', paymentsModule, getPortalPayments);
 router.post('/tenants/:tenantId/payments', paymentsModule, postPortalPayment);
 router.get('/tenants/:tenantId/payment-destinations', paymentsModule, getPortalPaymentDestinations);
 router.post('/tenants/:tenantId/payment-destinations', paymentsModule, postPortalPaymentDestination);
 router.patch('/tenants/:tenantId/payment-destinations/:destinationId', paymentsModule, patchPortalPaymentDestinationController);
-router.get('/tenants/:tenantId/cash-sessions', getPortalCashOverview);
-router.post('/tenants/:tenantId/cash-sessions', postPortalCashSession);
-router.post('/tenants/:tenantId/cash-sessions/:sessionId/close', postPortalCashSessionClose);
-router.post('/tenants/:tenantId/cash-sessions/:sessionId/movements', postPortalCashSessionMovement);
+router.get('/tenants/:tenantId/cash-sessions', cashCapability, getPortalCashOverview);
+router.post('/tenants/:tenantId/cash-sessions', cashCapability, postPortalCashSession);
+router.post('/tenants/:tenantId/cash-sessions/:sessionId/close', cashCapability, postPortalCashSessionClose);
+router.post('/tenants/:tenantId/cash-sessions/:sessionId/movements', cashCapability, postPortalCashSessionMovement);
 router.get('/tenants/:tenantId/agenda', requirePortalInternalAuth, agendaModule, getPortalAgenda);
 router.get('/tenants/:tenantId/agenda/availability', requirePortalInternalAuth, agendaModule, getPortalAgendaAvailabilityController);
 router.post('/tenants/:tenantId/agenda', requirePortalInternalAuth, agendaModule, postPortalAgenda);

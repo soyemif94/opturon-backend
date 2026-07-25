@@ -220,7 +220,12 @@ async function patchTenantPolicy(req, res) {
       return res.status(access.status || 400).json({ success: false, error: access.reason });
     }
 
-    const result = await updateTenantPolicyByExternalTenantId(tenantId, req.body || {});
+    const result = await updateTenantPolicyByExternalTenantId(tenantId, req.body || {}, {
+      mode: 'admin',
+      ...getAdminActor(req),
+      action: 'tenant_policy_updated_by_opturon_admin',
+      source: 'admin_api'
+    });
     if (!result.ok) {
       return res.status(result.reason === 'tenant_not_found' ? 404 : 400).json({
         success: false,

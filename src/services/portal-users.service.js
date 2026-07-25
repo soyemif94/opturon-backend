@@ -35,6 +35,7 @@ const {
   createPortalUserAuditEvent,
   listPortalUserAuditEventsByClinicId
 } = require('../repositories/portal-user-audit.repository');
+const { updateTenantPolicyByExternalTenantId } = require('./tenant-policy.service');
 const {
   normalizePortalUserRole,
   isOperationalPortalAssigneeRole
@@ -305,6 +306,7 @@ async function invitePortalUser(tenantId, payload, options = {}) {
   const email = normalizeEmail(payload && payload.email);
   const role = normalizeRole(payload && payload.role);
   const password = normalizeString(payload && payload.password);
+  const tenantName = normalizeString(payload && payload.tenantName);
 
   if (!name || name.length < 2) return { ok: false, tenantId: context.tenantId, reason: 'invalid_name' };
   if (!email || !email.includes('@')) return { ok: false, tenantId: context.tenantId, reason: 'invalid_email' };
@@ -338,10 +340,29 @@ async function invitePortalUser(tenantId, payload, options = {}) {
         const targetClinic = await provisionCleanClinicForExternalTenant(
           {
             externalTenantId: provisionedTenantId,
-            name,
+            name: tenantName || name,
             timezone: context.clinic.timezone || 'America/Argentina/Buenos_Aires'
           },
           client
+        );
+
+        await updateTenantPolicyByExternalTenantId(
+          provisionedTenantId,
+          {
+            operatingProfile: payload && payload.operatingProfile,
+            capabilities: payload && payload.capabilities,
+            enabledModules: payload && payload.enabledModules,
+            displayName: tenantName || name
+          },
+          {
+            client,
+            mode: 'admin',
+            actorUserId,
+            actorRole: 'opturon_admin',
+            actorScope: 'opturon_admin',
+            action: 'tenant_policy_initialized_on_owner_invite',
+            source: 'portal_users_service'
+          }
         );
 
         let createdUser = reusableClientOwner;

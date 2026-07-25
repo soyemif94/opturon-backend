@@ -1,5 +1,6 @@
 const { provisionCleanClinicForExternalTenant } = require('../repositories/tenant.repository');
 const { ensurePortalAutomationFoundation } = require('./portal-automations.service');
+const { updateTenantPolicyByExternalTenantId } = require('./tenant-policy.service');
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -33,6 +34,27 @@ async function provisionPortalTenant(tenantId, payload = {}) {
   }
 
   await ensurePortalAutomationFoundation(safeTenantId);
+
+  const hasPolicyInput =
+    (payload.operatingProfile && typeof payload.operatingProfile === 'object') ||
+    Array.isArray(payload.capabilities) ||
+    (payload.enabledModules && typeof payload.enabledModules === 'object');
+
+  if (hasPolicyInput) {
+    await updateTenantPolicyByExternalTenantId(
+      safeTenantId,
+      {
+        operatingProfile: payload.operatingProfile || {},
+        capabilities: payload.capabilities || [],
+        enabledModules: payload.enabledModules || {}
+      },
+      {
+        mode: 'admin',
+        action: 'tenant_policy_initialized_on_provision',
+        source: 'portal_provisioning_service'
+      }
+    );
+  }
 
   return {
     ok: true,

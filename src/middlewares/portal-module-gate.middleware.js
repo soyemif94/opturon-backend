@@ -2,6 +2,7 @@ const {
   resolveTenantPolicyByExternalTenantId,
   isModuleEnabled
 } = require('../services/tenant-policy.service');
+const { MODULE_TO_CAPABILITY } = require('../services/tenant-operating-profile.service');
 
 function requirePortalModule(moduleName) {
   return async function portalModuleGate(req, res, next) {
@@ -29,6 +30,39 @@ function requirePortalModule(moduleName) {
   };
 }
 
+function requirePortalCapability(capabilityName) {
+  const targetCapability = String(capabilityName || '').trim().toLowerCase();
+
+  return async function portalCapabilityGate(req, res, next) {
+    const tenantId = String(req.activeTenantId || req.params.tenantId || '').trim();
+    if (!tenantId || !targetCapability) return next();
+
+    try {
+      const result = await resolveTenantPolicyByExternalTenantId(tenantId);
+      if (!result.ok) return next();
+      if (Array.isArray(result.policy?.capabilities) && result.policy.capabilities.includes(targetCapability)) {
+        return next();
+      }
+
+      return res.status(403).json({
+        success: false,
+        error: 'tenant_capability_disabled',
+        tenantId,
+        capability: targetCapability,
+        module:
+          Object.entries(MODULE_TO_CAPABILITY).find(([, capability]) => capability === targetCapability)?.[0] || null
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: 'tenant_capability_gate_failed',
+        details: error.message
+      });
+    }
+  };
+}
+
 module.exports = {
-  requirePortalModule
+  requirePortalModule,
+  requirePortalCapability
 };

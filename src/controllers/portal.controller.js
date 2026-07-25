@@ -164,6 +164,10 @@ const {
 } = require('../services/portal-bot-settings.service');
 const { provisionPortalTenant } = require('../services/portal-provisioning.service');
 const {
+  resolveTenantPolicyByExternalTenantId,
+  updateTenantPolicyByExternalTenantId
+} = require('../services/tenant-policy.service');
+const {
   createPortalWhatsAppSignupSession,
   getPortalWhatsAppSignupStatus,
   refreshPortalWhatsAppSignupSession,
@@ -4094,6 +4098,63 @@ async function postPortalAuthLogin(req, res) {
   }
 }
 
+async function getPortalTenantPolicy(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await resolveTenantPolicyByExternalTenantId(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'tenant_not_found' ? 404 : 400;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ok: true,
+        tenantId,
+        clinic: result.clinic,
+        primaryEmail: result.primaryEmail || null,
+        policy: result.policy
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_tenant_policy_read_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalTenantPolicy(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await updateTenantPolicyByExternalTenantId(tenantId, req.body || {}, {
+      mode: 'tenant',
+      actorUserId: actor.actorId,
+      actorRole: 'client_portal',
+      actorScope: 'client',
+      action: 'tenant_policy_updated_by_tenant',
+      source: 'portal_internal_api'
+    });
+    if (!result.ok) {
+      const status = result.reason === 'tenant_not_found' ? 404 : 400;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId || tenantId });
+    }
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_tenant_policy_update_failed',
+      details: error.message
+    });
+  }
+}
+
 function isPortalInternalRequest(req) {
   const configuredKey = String(env.portalInternalKey || '').trim();
   if (!configuredKey) {
@@ -4996,7 +5057,9 @@ async function postPortalBotTransferConfigController(req, res) {
 
 module.exports = {
   getPortalTenantContext,
+  getPortalTenantPolicy,
   postPortalTenantProvision,
+  patchPortalTenantPolicy,
   getPortalConversations,
   getPortalConversation,
   getPortalConversationMessageMedia,

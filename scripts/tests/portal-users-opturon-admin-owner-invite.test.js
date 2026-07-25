@@ -27,6 +27,7 @@ function buildService(overrides = {}) {
     invitations: [],
     auditEvents: [],
     provisionCalls: [],
+    policyCalls: [],
     movedUsers: [],
     roleUpdates: [],
     credentialUpdates: [],
@@ -169,6 +170,13 @@ function buildService(overrides = {}) {
     listPortalUserAuditEventsByClinicId: async () => []
   });
 
+  mockModule('src/services/tenant-policy.service.js', {
+    updateTenantPolicyByExternalTenantId: async (tenantId, payload) => {
+      state.policyCalls.push({ tenantId, payload: clone(payload) });
+      return { ok: true, tenantId };
+    }
+  });
+
   mockModule('src/utils/portal-users.js', {
     normalizePortalUserRole: (value) => String(value || '').trim().toLowerCase(),
     isOperationalPortalAssigneeRole: (role) => ['seller', 'manager', 'owner'].includes(String(role || '').trim().toLowerCase())
@@ -199,6 +207,8 @@ async function testOwnerInviteProvisionsClientTenant() {
   assert.strictEqual(state.createdUsers[0].clinicId, 'provisioned-clinic');
   assert.strictEqual(state.createdUsers[0].active, false);
   assert.strictEqual(state.createdUsers[0].passwordHash, null);
+  assert.strictEqual(state.policyCalls.length, 1);
+  assert.strictEqual(state.policyCalls[0].tenantId, result.tenantId);
   assert.strictEqual(state.invitations.length, 1);
   assert.strictEqual(state.invitations[0].clinicId, 'provisioned-clinic');
   assert.strictEqual(state.invitations[0].tenantId, result.tenantId);
@@ -224,6 +234,7 @@ async function testManagerInviteDoesNotProvisionTenant() {
   assert.strictEqual(state.provisionCalls.length, 0);
   assert.strictEqual(state.createdUsers.length, 1);
   assert.strictEqual(state.createdUsers[0].clinicId, 'admin-clinic');
+  assert.strictEqual(state.policyCalls.length, 0);
 }
 
 async function testOwnerInviteRetryReusesExistingClientTenant() {
@@ -258,6 +269,7 @@ async function testOwnerInviteRetryReusesExistingClientTenant() {
   assert.strictEqual(state.createdUsers.length, 0);
   assert.strictEqual(state.provisionCalls.length, 1);
   assert.strictEqual(state.provisionCalls[0].externalTenantId, 'tenant_existing_client');
+  assert.strictEqual(state.policyCalls.length, 1);
   assert.strictEqual(state.movedUsers.length, 0);
   assert.strictEqual(state.invitations.length, 1);
   assert.strictEqual(state.invitations[0].tenantId, 'tenant_existing_client');
