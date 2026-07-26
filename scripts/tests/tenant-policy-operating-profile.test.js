@@ -165,6 +165,27 @@ function testBuildTenantPolicyExplicitRestrictions() {
   assert.strictEqual(policy.enabledModules.contacts, true);
   assert.strictEqual(policy.enabledModules.agenda, false);
   assert.strictEqual(policy.enabledModules.orders, false);
+  assert.strictEqual(policy.enabledModules.inventory, false);
+}
+
+function testBuildTenantPolicyInventoryCapabilityEnablesInventoryModule() {
+  const { service } = buildServiceHarness();
+  const policy = service.buildTenantPolicyFromSettings({
+    portal: {
+      policy: {
+        policyVersion: 1,
+        capabilities: ['inventory'],
+        enabledModules: {},
+        operatingProfile: {
+          presetKey: 'retail_commerce',
+          industryProfile: 'retail_commerce',
+          operatingModel: 'physical_goods'
+        }
+      }
+    }
+  });
+
+  assert.strictEqual(policy.enabledModules.inventory, true);
 }
 
 async function testTenantPatchCannotEscalateCapabilities() {
@@ -233,6 +254,7 @@ async function testIdempotentPatchSkipsAudit() {
 async function run() {
   testBuildTenantPolicyLegacyFallback();
   testBuildTenantPolicyExplicitRestrictions();
+  testBuildTenantPolicyInventoryCapabilityEnablesInventoryModule();
   await testTenantPatchCannotEscalateCapabilities();
   await testIdempotentPatchSkipsAudit();
   console.log('tenant-policy-operating-profile.test.js: ok');

@@ -45,6 +45,7 @@ const MODULE_TO_CAPABILITY = Object.freeze({
   inbox: 'inbox',
   contacts: 'contacts',
   catalog: 'catalog',
+  inventory: 'inventory',
   orders: 'orders',
   invoices: 'receipts',
   payments: 'payments',
@@ -65,8 +66,7 @@ const LEGACY_ALWAYS_ENABLED_MODULES = Object.freeze([
   'settings',
   'users',
   'business',
-  'faqs',
-  'inventory'
+  'faqs'
 ]);
 
 const PRESET_DEFINITIONS = Object.freeze({
