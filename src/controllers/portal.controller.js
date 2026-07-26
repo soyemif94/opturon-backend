@@ -67,6 +67,11 @@ const {
   setPortalProductInventoryMode
 } = require('../services/inventory-lots.service');
 const {
+  listPortalInventoryProducts,
+  getPortalInventoryProductHistory,
+  createPortalInventoryMovement
+} = require('../services/inventory-base.service');
+const {
   analyzeCatalogImport,
   listCatalogImports,
   getCatalogImport,
@@ -4101,6 +4106,121 @@ async function postPortalAuthLogin(req, res) {
   }
 }
 
+async function getPortalInventoryProductsController(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await listPortalInventoryProducts(tenantId, {
+      search: req.query.search,
+      stockFilter: req.query.stockFilter,
+      page: req.query.page,
+      pageSize: req.query.pageSize
+    });
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        location: result.location,
+        page: result.page,
+        pageSize: result.pageSize,
+        total: result.total,
+        products: result.products
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_products_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalInventoryProductHistoryController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const productId = String(req.params.productId || '').trim();
+
+  try {
+    const result = await getPortalInventoryProductHistory(tenantId, productId, {
+      page: req.query.page,
+      pageSize: req.query.pageSize
+    });
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_product_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        product: result.product,
+        movements: result.movements
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_product_history_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInventoryMovementController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const productId = String(req.params.productId || req.body?.productId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await createPortalInventoryMovement(tenantId, productId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_product_id' ||
+        result.reason === 'missing_inventory_idempotency_key' ||
+        result.reason === 'invalid_inventory_movement_type' ||
+        result.reason === 'invalid_inventory_quantity' ||
+        result.reason === 'invalid_inventory_counted_stock'
+          ? 400
+          : result.reason === 'inventory_negative_stock_blocked' ||
+              result.reason === 'inventory_opening_balance_already_exists' ||
+              result.reason === 'inventory_zero_delta_not_allowed'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(result.idempotent ? 200 : 201).json({
+      success: true,
+      data: {
+        product: result.product,
+        location: result.location,
+        balance: result.balance,
+        movement: result.movement,
+        internalCode: result.internalCode,
+        idempotent: result.idempotent
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_movement_create_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalTenantPolicy(req, res) {
   const tenantId = getRequestTenantId(req);
 
@@ -5281,14 +5401,17 @@ module.exports = {
   postPortalCatalogImportRollbackExecute,
   getPortalCatalogImportErrors,
   getPortalCatalogImportTemplate,
+  getPortalInventoryProductsController,
   getPortalInventoryLots,
   getPortalInventoryLot,
+  getPortalInventoryProductHistoryController,
   getPortalInventoryExpirationSummary,
   getPortalInventoryExpirationSettings,
   putPortalInventoryExpirationSettings,
   postPortalInventoryExpiredBulkWriteoff,
   postPortalInventoryLot,
   postPortalInventoryLotAdjustment,
+  postPortalInventoryMovementController,
   postPortalProductInventoryMode,
   updatePortalProduct,
   updatePortalProductCategory,

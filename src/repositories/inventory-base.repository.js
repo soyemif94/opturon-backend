@@ -1,0 +1,334 @@
+const { query } = require('../db/client');
+
+function dbQuery(client, text, params) {
+  if (client && typeof client.query === 'function') return client.query(text, params);
+  return query(text, params);
+}
+
+function normalizeMetadata(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function numberValue(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeLocation(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    code: row.code,
+    name: row.name,
+    isPrimary: row.isPrimary === true,
+    active: row.active !== false,
+    metadata: normalizeMetadata(row.metadata),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt
+  };
+}
+
+function normalizeBalance(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    productId: row.productId,
+    locationId: row.locationId,
+    quantity: numberValue(row.quantity),
+    metadata: normalizeMetadata(row.metadata),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt
+  };
+}
+
+async function reserveNextInternalCodeNumber(clinicId, client) {
+  const result = await dbQuery(
+    client,
+    `INSERT INTO product_internal_code_allocators ("clinicId", "nextValue", "updatedAt")
+     VALUES ($1::uuid, 1, NOW())
+     ON CONFLICT ("clinicId")
+     DO UPDATE SET
+       "nextValue" = product_internal_code_allocators."nextValue" + 1,
+       "updatedAt" = NOW()
+     RETURNING "nextValue" - 1 AS value`,
+    [clinicId]
+  );
+  return Number(result.rows[0] && result.rows[0].value);
+}
+
+async function ensurePrimaryInventoryLocation(tenantId, client) {
+  await dbQuery(
+    client,
+    `INSERT INTO inventory_locations ("tenantId", code, name, "isPrimary", active, metadata, "updatedAt")
+     VALUES ($1::uuid, 'main', 'Principal', TRUE, TRUE, '{"source":"inventory_base"}'::jsonb, NOW())
+     ON CONFLICT ("tenantId", code)
+     DO UPDATE SET
+       name = EXCLUDED.name,
+       "isPrimary" = TRUE,
+       active = TRUE,
+       "updatedAt" = NOW()`,
+    [tenantId]
+  );
+
+  const result = await dbQuery(
+    client,
+    `SELECT id, "tenantId", code, name, "isPrimary", active, metadata, "createdAt", "updatedAt"
+     FROM inventory_locations
+     WHERE "tenantId" = $1::uuid
+       AND code = 'main'
+     LIMIT 1`,
+    [tenantId]
+  );
+  return normalizeLocation(result.rows[0] || null);
+}
+
+async function findPrimaryInventoryLocation(tenantId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "tenantId", code, name, "isPrimary", active, metadata, "createdAt", "updatedAt"
+     FROM inventory_locations
+     WHERE "tenantId" = $1::uuid
+       AND "isPrimary" = TRUE
+     LIMIT 1`,
+    [tenantId]
+  );
+  return normalizeLocation(result.rows[0] || null);
+}
+
+async function ensureInventoryBalanceRow(tenantId, productId, locationId, client, options = {}) {
+  const initialQuantity = Math.max(0, Number(options.initialQuantity || 0));
+  const metadata = JSON.stringify(normalizeMetadata(options.metadata));
+  await dbQuery(
+    client,
+    `INSERT INTO inventory_balances ("tenantId", "productId", "locationId", quantity, metadata, "updatedAt")
+     VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb, NOW())
+     ON CONFLICT ("tenantId", "productId", "locationId")
+     DO NOTHING`,
+    [tenantId, productId, locationId, initialQuantity, metadata]
+  );
+
+  const result = await dbQuery(
+    client,
+    `SELECT id, "tenantId", "productId", "locationId", quantity, metadata, "createdAt", "updatedAt"
+     FROM inventory_balances
+     WHERE "tenantId" = $1::uuid
+       AND "productId" = $2::uuid
+       AND "locationId" = $3::uuid
+     FOR UPDATE`,
+    [tenantId, productId, locationId]
+  );
+  return normalizeBalance(result.rows[0] || null);
+}
+
+async function updateInventoryBalanceQuantity(balanceId, tenantId, quantity, metadata, client) {
+  const result = await dbQuery(
+    client,
+    `UPDATE inventory_balances
+     SET quantity = $3,
+         metadata = COALESCE($4::jsonb, metadata),
+         "updatedAt" = NOW()
+     WHERE id = $1::uuid
+       AND "tenantId" = $2::uuid
+     RETURNING id, "tenantId", "productId", "locationId", quantity, metadata, "createdAt", "updatedAt"`,
+    [balanceId, tenantId, quantity, metadata === undefined ? null : JSON.stringify(normalizeMetadata(metadata))]
+  );
+  return normalizeBalance(result.rows[0] || null);
+}
+
+async function listInventoryBalancesByTenant(tenantId, filters = {}, client = null) {
+  const params = [tenantId];
+  const conditions = [
+    'p."clinicId" = $1::uuid',
+    'p."deletedAt" IS NULL',
+    `COALESCE(p.metadata->'catalog'->>'inventoryTrackingMode', 'legacy') <> 'lot_based'`
+  ];
+
+  if (filters.search) {
+    params.push(`%${String(filters.search).trim()}%`);
+    conditions.push(`(
+      p.name ILIKE $${params.length}
+      OR COALESCE(p.sku, '') ILIKE $${params.length}
+      OR COALESCE(p."internalCode", '') ILIKE $${params.length}
+      OR COALESCE(p.metadata->'catalog'->>'barcode', '') ILIKE $${params.length}
+    )`);
+  }
+
+  if (filters.stockFilter === 'with_stock') {
+    conditions.push('COALESCE(b.quantity, p.stock, 0) > 0');
+  } else if (filters.stockFilter === 'without_stock') {
+    conditions.push('COALESCE(b.quantity, p.stock, 0) <= 0');
+  }
+
+  const pageSize = Math.min(Math.max(Number(filters.pageSize || 50), 1), 100);
+  const page = Math.max(Number(filters.page || 1), 1);
+  params.push(pageSize);
+  const limitIndex = params.length;
+  params.push((page - 1) * pageSize);
+  const offsetIndex = params.length;
+
+  const result = await dbQuery(
+    client,
+    `WITH scoped AS (
+       SELECT
+         p.id,
+         p."clinicId",
+         p.name,
+         p.description,
+         p.price,
+         p."unitPrice",
+         p.currency,
+         p."vatRate",
+         p.stock,
+         p.status,
+         p.sku,
+         p."internalCode",
+         p."categoryId",
+         c.name AS "categoryName",
+         p.metadata,
+         p."createdAt",
+         p."updatedAt",
+         l.id AS "locationId",
+         l.name AS "locationName",
+         COALESCE(b.quantity, p.stock, 0) AS "balanceQuantity",
+         (
+           SELECT im."createdAt"
+           FROM inventory_movements im
+           WHERE im."tenantId" = p."clinicId"
+             AND im."productId" = p.id
+           ORDER BY im."createdAt" DESC
+           LIMIT 1
+         ) AS "lastMovementAt",
+         (
+           SELECT im."movementType"
+           FROM inventory_movements im
+           WHERE im."tenantId" = p."clinicId"
+             AND im."productId" = p.id
+           ORDER BY im."createdAt" DESC
+           LIMIT 1
+         ) AS "lastMovementType"
+       FROM products p
+       LEFT JOIN product_categories c
+         ON c.id = p."categoryId"
+       LEFT JOIN inventory_locations l
+         ON l."tenantId" = p."clinicId"
+        AND l."isPrimary" = TRUE
+       LEFT JOIN inventory_balances b
+         ON b."tenantId" = p."clinicId"
+        AND b."productId" = p.id
+        AND b."locationId" = l.id
+       WHERE ${conditions.join(' AND ')}
+     ),
+     counted AS (
+       SELECT COUNT(*)::int AS total FROM scoped
+     )
+     SELECT scoped.*, counted.total
+     FROM scoped
+     CROSS JOIN counted
+     ORDER BY scoped."internalCode" ASC NULLS LAST, scoped."createdAt" ASC, scoped.id ASC
+     LIMIT $${limitIndex}
+     OFFSET $${offsetIndex}`,
+    params
+  );
+
+  return {
+    total: Number(result.rows[0] && result.rows[0].total || 0),
+    rows: result.rows
+  };
+}
+
+async function listInventoryMovementsByProductId(tenantId, productId, options = {}, client = null) {
+  const pageSize = Math.min(Math.max(Number(options.pageSize || 25), 1), 100);
+  const page = Math.max(Number(options.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+  const result = await dbQuery(
+    client,
+    `SELECT
+       im.id,
+       im."tenantId",
+       im."productId",
+       im."lotId",
+       im."locationId",
+       im."movementType",
+       im.quantity,
+       im."quantityBefore",
+       im."quantityAfter",
+       im."referenceType",
+       im."referenceId",
+       im.reason,
+       im.metadata,
+       im."createdBy",
+       im."createdAt",
+       im."idempotencyKey",
+       im.unit,
+       im.status,
+       l.name AS "locationName"
+     FROM inventory_movements im
+     LEFT JOIN inventory_locations l
+       ON l.id = im."locationId"
+      AND l."tenantId" = im."tenantId"
+     WHERE im."tenantId" = $1::uuid
+       AND im."productId" = $2::uuid
+     ORDER BY im."createdAt" DESC, im.id DESC
+     LIMIT $3
+     OFFSET $4`,
+    [tenantId, productId, pageSize, offset]
+  );
+
+  return result.rows;
+}
+
+async function findInventoryMovementByIdempotencyKey(tenantId, movementType, idempotencyKey, client = null) {
+  const safeTenantId = String(tenantId || '').trim();
+  const safeMovementType = String(movementType || '').trim();
+  const safeKey = String(idempotencyKey || '').trim();
+  if (!safeTenantId || !safeMovementType || !safeKey) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT
+       im.id,
+       im."tenantId",
+       im."productId",
+       im."lotId",
+       im."locationId",
+       im."movementType",
+       im.quantity,
+       im."quantityBefore",
+       im."quantityAfter",
+       im."referenceType",
+       im."referenceId",
+       im.reason,
+       im.metadata,
+       im."createdBy",
+       im."createdAt",
+       im."idempotencyKey",
+       im.unit,
+       im.status,
+       l.name AS "locationName"
+     FROM inventory_movements im
+     LEFT JOIN inventory_locations l
+       ON l.id = im."locationId"
+      AND l."tenantId" = im."tenantId"
+     WHERE im."tenantId" = $1::uuid
+       AND im."movementType" = $2
+       AND im."idempotencyKey" = $3
+     ORDER BY im."createdAt" DESC, im.id DESC
+     LIMIT 1`,
+    [safeTenantId, safeMovementType, safeKey]
+  );
+
+  return result.rows[0] || null;
+}
+
+module.exports = {
+  reserveNextInternalCodeNumber,
+  ensurePrimaryInventoryLocation,
+  findPrimaryInventoryLocation,
+  ensureInventoryBalanceRow,
+  updateInventoryBalanceQuantity,
+  listInventoryBalancesByTenant,
+  listInventoryMovementsByProductId,
+  findInventoryMovementByIdempotencyKey
+};

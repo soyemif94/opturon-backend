@@ -28,6 +28,7 @@ const {
   syncProductStockFromLots,
   setProductInventoryTrackingMode
 } = require('../repositories/inventory.repository');
+const { reserveNextInternalCode } = require('./inventory-base.service');
 const { calculateInventoryExpirationStatus } = require('../utils/inventory-expiration');
 
 const MAX_FILE_SIZE_BYTES = Number(process.env.CATALOG_IMPORT_MAX_FILE_SIZE_BYTES || 10 * 1024 * 1024);
@@ -1470,7 +1471,8 @@ async function applyLotImport(context, row, importConfig, runtime, client, paylo
         clinicId: context.clinic.id,
         ...payload,
         stock: 0,
-        inventoryTrackingMode: 'lot_based'
+        inventoryTrackingMode: 'lot_based',
+        internalCode: await reserveNextInternalCode(context.clinic.id, client)
       },
       client
     );
@@ -1633,7 +1635,7 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
     currency: values.currency || 'ARS',
     vatRate: 0,
     taxRate: 0,
-    stock: values.stock ?? 0,
+    stock: 0,
     status: STATUS_VALUES.has(values.status) ? values.status : 'active',
     sku: values.sku || null,
     categoryId: categoryResolution.categoryId,
@@ -1687,7 +1689,7 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
       unitPrice: values.price !== null && values.price !== undefined ? payload.unitPrice : current.unitPrice,
       price: values.price !== null && values.price !== undefined ? payload.price : current.unitPrice,
       currency: payload.currency || current.currency,
-      stock: values.stock !== null && values.stock !== undefined ? payload.stock : current.stock,
+      stock: current.stock,
       status: payload.status || current.status,
       categoryId: categoryResolution.categoryId || current.categoryId,
       image: payload.image !== null ? payload.image : current.image,
@@ -1703,7 +1705,9 @@ async function applyRowImport(context, row, importConfig, runtime, client) {
     const created = await createProduct(
       {
         clinicId: context.clinic.id,
-        ...payload
+        ...payload,
+        stock: 0,
+        internalCode: await reserveNextInternalCode(context.clinic.id, client)
       },
       client
     );

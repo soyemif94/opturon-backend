@@ -42,14 +42,17 @@ const {
   postPortalCatalogImportRollbackExecute,
   getPortalCatalogImportErrors,
   getPortalCatalogImportTemplate,
+  getPortalInventoryProductsController,
   getPortalInventoryLots,
   getPortalInventoryLot,
+  getPortalInventoryProductHistoryController,
   getPortalInventoryExpirationSummary,
   getPortalInventoryExpirationSettings,
   putPortalInventoryExpirationSettings,
   postPortalInventoryExpiredBulkWriteoff,
   postPortalInventoryLot,
   postPortalInventoryLotAdjustment,
+  postPortalInventoryMovementController,
   postPortalProductInventoryMode,
   updatePortalProduct,
   updatePortalProductCategory,
@@ -170,6 +173,7 @@ const contactsCapability = requirePortalCapability('contacts');
 const ordersCapability = requirePortalCapability('orders');
 const receiptsCapability = requirePortalCapability('receipts');
 const cashCapability = requirePortalCapability('cash_management');
+const inventoryCapability = requirePortalCapability('inventory');
 const catalogImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -351,14 +355,17 @@ router.post('/tenants/:tenantId/catalog-imports/:importId/cancel', requirePortal
 router.post('/tenants/:tenantId/catalog-imports/:importId/rollback/preview', requirePortalInternalAuth, catalogModule, postPortalCatalogImportRollbackPreview);
 router.post('/tenants/:tenantId/catalog-imports/:importId/rollback', requirePortalInternalAuth, catalogModule, postPortalCatalogImportRollbackExecute);
 router.get('/tenants/:tenantId/catalog-imports/:importId/errors', requirePortalInternalAuth, catalogModule, getPortalCatalogImportErrors);
-router.get('/tenants/:tenantId/inventory/lots', catalogModule, getPortalInventoryLots);
-router.post('/tenants/:tenantId/inventory/lots', catalogModule, postPortalInventoryLot);
-router.get('/tenants/:tenantId/inventory/expiration-summary', catalogModule, getPortalInventoryExpirationSummary);
-router.get('/tenants/:tenantId/inventory/expiration-settings', catalogModule, getPortalInventoryExpirationSettings);
-router.put('/tenants/:tenantId/inventory/expiration-settings', catalogModule, putPortalInventoryExpirationSettings);
-router.post('/tenants/:tenantId/inventory/lots/bulk-writeoff-expired', catalogModule, postPortalInventoryExpiredBulkWriteoff);
-router.get('/tenants/:tenantId/inventory/lots/:lotId', catalogModule, getPortalInventoryLot);
-router.post('/tenants/:tenantId/inventory/lots/:lotId/adjust', catalogModule, postPortalInventoryLotAdjustment);
+router.get('/tenants/:tenantId/inventory/products', inventoryCapability, getPortalInventoryProductsController);
+router.get('/tenants/:tenantId/inventory/products/:productId/movements', inventoryCapability, getPortalInventoryProductHistoryController);
+router.post('/tenants/:tenantId/inventory/products/:productId/movements', requirePortalInternalAuth, inventoryCapability, postPortalInventoryMovementController);
+router.get('/tenants/:tenantId/inventory/lots', inventoryCapability, getPortalInventoryLots);
+router.post('/tenants/:tenantId/inventory/lots', inventoryCapability, postPortalInventoryLot);
+router.get('/tenants/:tenantId/inventory/expiration-summary', inventoryCapability, getPortalInventoryExpirationSummary);
+router.get('/tenants/:tenantId/inventory/expiration-settings', inventoryCapability, getPortalInventoryExpirationSettings);
+router.put('/tenants/:tenantId/inventory/expiration-settings', inventoryCapability, putPortalInventoryExpirationSettings);
+router.post('/tenants/:tenantId/inventory/lots/bulk-writeoff-expired', inventoryCapability, postPortalInventoryExpiredBulkWriteoff);
+router.get('/tenants/:tenantId/inventory/lots/:lotId', inventoryCapability, getPortalInventoryLot);
+router.post('/tenants/:tenantId/inventory/lots/:lotId/adjust', inventoryCapability, postPortalInventoryLotAdjustment);
 router.get('/tenants/:tenantId/products/:productId', catalogModule, getPortalProduct);
 router.post('/tenants/:tenantId/products/:productId/inventory-mode', catalogModule, postPortalProductInventoryMode);
 router.patch('/tenants/:tenantId/products/:productId', catalogModule, updatePortalProduct);

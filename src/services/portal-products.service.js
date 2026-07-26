@@ -26,6 +26,7 @@ const {
   saveUploadedProductImage,
   readUploadedProductImage
 } = require('./portal-product-images.service');
+const { reserveNextInternalCode } = require('./inventory-base.service');
 const {
   listProductCategoriesByClinicId,
   findProductCategoryById,
@@ -328,6 +329,7 @@ function normalizeBulkCategoryLabel(value) {
 
 async function createProductForContext(context, payload) {
   const product = buildProductPayload(payload, 'active');
+  product.stock = 0;
   const reason = validateProductPayload(product);
   if (reason) {
     return { ok: false, tenantId: context.tenantId, reason };
@@ -341,11 +343,12 @@ async function createProductForContext(context, payload) {
   }
 
   try {
-    const created = await withTransaction((client) =>
+    const created = await withTransaction(async (client) =>
       createProduct(
         {
           clinicId: context.clinic.id,
-          ...product
+          ...product,
+          internalCode: await reserveNextInternalCode(context.clinic.id, client)
         },
         client
       )
@@ -526,7 +529,7 @@ async function patchPortalProduct(tenantId, productId, payload) {
           : payload && payload.vatRate !== undefined
             ? payload.vatRate
             : current.taxRate,
-      stock: payload && payload.stock !== undefined ? payload.stock : payload && payload.stockQty !== undefined ? payload.stockQty : current.stock
+      stock: current.stock
     },
     current.status
   );
@@ -650,6 +653,7 @@ async function createPortalProductsBulk(tenantId, payload) {
           },
           'active'
         );
+        product.stock = 0;
         const reason = validateProductPayload(product);
         if (reason) {
           return { ok: false, reason };
@@ -665,7 +669,8 @@ async function createPortalProductsBulk(tenantId, payload) {
         const createdProduct = await createProduct(
           {
             clinicId: context.clinic.id,
-            ...product
+            ...product,
+            internalCode: await reserveNextInternalCode(context.clinic.id, client)
           },
           client
         );

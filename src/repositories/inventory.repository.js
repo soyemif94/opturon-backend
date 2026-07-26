@@ -68,6 +68,8 @@ function normalizeMovement(row) {
     tenantId: row.tenantId,
     productId: row.productId,
     lotId: row.lotId || null,
+    locationId: row.locationId || null,
+    locationName: row.locationName || null,
     movementType: row.movementType,
     quantity: numberValue(row.quantity),
     quantityBefore: row.quantityBefore == null ? null : numberValue(row.quantityBefore),
@@ -77,7 +79,12 @@ function normalizeMovement(row) {
     reason: row.reason || null,
     metadata: metadataValue(row.metadata),
     createdBy: row.createdBy || null,
-    createdAt: row.createdAt
+    createdAt: row.createdAt,
+    idempotencyKey: row.idempotencyKey || null,
+    unit: row.unit || null,
+    status: row.status || 'posted',
+    reversalOfMovementId: row.reversalOfMovementId || null,
+    reversedByMovementId: row.reversedByMovementId || null
   };
 }
 
@@ -366,6 +373,7 @@ async function insertInventoryMovement(input, client = null) {
        "tenantId",
        "productId",
        "lotId",
+       "locationId",
        "movementType",
        quantity,
        "quantityBefore",
@@ -374,14 +382,20 @@ async function insertInventoryMovement(input, client = null) {
        "referenceId",
        reason,
        metadata,
-       "createdBy"
+       "createdBy",
+       "idempotencyKey",
+       unit,
+       status,
+       "reversalOfMovementId",
+       "reversedByMovementId"
      )
-     VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9::uuid, $10, $11::jsonb, $12::uuid)
+     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, $10::uuid, $11, $12::jsonb, $13::uuid, $14, $15, $16, $17::uuid, $18::uuid)
      RETURNING *`,
     [
       input.tenantId,
       input.productId,
       input.lotId || null,
+      input.locationId || null,
       input.movementType,
       input.quantity,
       input.quantityBefore == null ? null : input.quantityBefore,
@@ -390,7 +404,12 @@ async function insertInventoryMovement(input, client = null) {
       input.referenceId || null,
       input.reason || null,
       JSON.stringify(metadataValue(input.metadata)),
-      input.createdBy || null
+      input.createdBy || null,
+      input.idempotencyKey || null,
+      input.unit || null,
+      input.status || 'posted',
+      input.reversalOfMovementId || null,
+      input.reversedByMovementId || null
     ]
   );
   return normalizeMovement(result.rows[0]);
@@ -399,11 +418,14 @@ async function insertInventoryMovement(input, client = null) {
 async function listInventoryMovementsForLot(lotId, tenantId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT *
-     FROM inventory_movements
-     WHERE "tenantId" = $1::uuid
-       AND "lotId" = $2::uuid
-     ORDER BY "createdAt" DESC`,
+    `SELECT im.*, l.name AS "locationName"
+     FROM inventory_movements im
+     LEFT JOIN inventory_locations l
+       ON l.id = im."locationId"
+      AND l."tenantId" = im."tenantId"
+     WHERE im."tenantId" = $1::uuid
+       AND im."lotId" = $2::uuid
+     ORDER BY im."createdAt" DESC`,
     [tenantId, lotId]
   );
   return result.rows.map(normalizeMovement);
