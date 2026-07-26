@@ -60,5 +60,8 @@ assert.match(backfillScript, /--chunk=/);
 assert.match(backfillScript, /process\.argv\.includes\('--apply'\)/);
 assert.match(backfillScript, /"deletedAt" IS NULL/);
 assert.match(backfillScript, /product_internal_code_backfilled/);
+assert.match(backfillScript, /async function getAllocatorBaseline/);
+assert.match(backfillScript, /allocatorBaseline/);
+assert.match(backfillScript, /if \(options\.mode !== 'apply'\)/);
 
 console.log('inventory-base-phase1.test.js passed');

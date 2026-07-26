@@ -80,6 +80,40 @@ async function ensureAllocatorBaseline(client, clinicId) {
   );
 }
 
+async function getAllocatorBaseline(client, clinicId) {
+  const result = await client.query(
+    `SELECT
+       COALESCE(
+         MAX(
+           ((ASCII(SPLIT_PART(p."internalCode", '-', 1)) - 65) * 10000)
+           + SPLIT_PART(p."internalCode", '-', 2)::int
+         ),
+         -1
+       ) AS "maxValue",
+       (
+         SELECT pia."nextValue"
+         FROM product_internal_code_allocators pia
+         WHERE pia."clinicId" = $1::uuid
+         LIMIT 1
+       ) AS "allocatorNextValue"
+     FROM products p
+     WHERE p."clinicId" = $1::uuid
+       AND p."internalCode" ~ '^[A-Z]-[0-9]{4}$'`,
+    [clinicId]
+  );
+
+  const row = result.rows[0] || {};
+  const maxValue = Number(row.maxValue);
+  const nextFromCodes = maxValue + 1;
+  const allocatorNextValue = row.allocatorNextValue == null ? null : Number(row.allocatorNextValue);
+  const baselineNextValue = allocatorNextValue == null ? nextFromCodes : Math.max(allocatorNextValue, nextFromCodes);
+  return {
+    maxValue,
+    allocatorNextValue,
+    baselineNextValue
+  };
+}
+
 async function reserveNextValue(client, clinicId) {
   const result = await client.query(
     `INSERT INTO product_internal_code_allocators ("clinicId", "nextValue", "updatedAt")
@@ -123,6 +157,7 @@ async function countMissingProducts(client, clinicId) {
 async function processClinic(clinic, options) {
   return withTransaction(async (client) => {
     const missingBefore = await countMissingProducts(client, clinic.clinicId);
+    const allocatorBaseline = await getAllocatorBaseline(client, clinic.clinicId);
     if (missingBefore === 0) {
       return {
         clinicId: clinic.clinicId,
@@ -131,12 +166,14 @@ async function processClinic(clinic, options) {
         missingBefore: 0,
         assigned: 0,
         skipped: 0,
-        overflow: false
+        overflow: false,
+        allocatorBaseline
       };
     }
 
-    await ensureAllocatorBaseline(client, clinic.clinicId);
     const productIds = await listMissingProducts(client, clinic.clinicId, options.chunkSize);
+    const previewUpperBound = allocatorBaseline.baselineNextValue + Math.max(0, productIds.length - 1);
+    const overflow = allocatorBaseline.baselineNextValue > 259999 || previewUpperBound > 259999;
 
     if (options.mode !== 'apply') {
       throw {
@@ -149,11 +186,17 @@ async function processClinic(clinic, options) {
           assigned: 0,
           skipped: Math.max(0, missingBefore - productIds.length),
           previewChunk: productIds.length,
-          overflow: false
+          overflow,
+          allocatorBaseline
         }
       };
     }
 
+    if (overflow) {
+      throw new Error(`internal_code_range_exhausted:${clinic.clinicId}`);
+    }
+
+    await ensureAllocatorBaseline(client, clinic.clinicId);
     let assigned = 0;
     for (const productId of productIds) {
       const nextValue = await reserveNextValue(client, clinic.clinicId);
@@ -210,7 +253,11 @@ async function processClinic(clinic, options) {
       missingBefore,
       assigned,
       skipped: Math.max(0, missingBefore - assigned),
-      overflow: false
+      overflow: false,
+      allocatorBaseline: {
+        ...allocatorBaseline,
+        baselineNextValue: allocatorBaseline.baselineNextValue + assigned
+      }
     };
   }).catch((error) => {
     if (error && error.dryRun) {
