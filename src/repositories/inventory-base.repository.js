@@ -1,4 +1,5 @@
 const { query } = require('../db/client');
+const { normalizeInventoryMovementTypeForApi } = require('../utils/inventory-movement-types');
 
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') return client.query(text, params);
@@ -12,6 +13,16 @@ function normalizeMetadata(value) {
 function numberValue(value) {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeInventoryMovementRow(row) {
+  if (!row) return null;
+  const metadata = normalizeMetadata(row.metadata);
+  return {
+    ...row,
+    movementType: normalizeInventoryMovementTypeForApi(row.movementType),
+    metadata
+  };
 }
 
 function normalizeLocation(row) {
@@ -276,7 +287,7 @@ async function listInventoryMovementsByProductId(tenantId, productId, options = 
     [tenantId, productId, pageSize, offset]
   );
 
-  return result.rows;
+  return result.rows.map(normalizeInventoryMovementRow);
 }
 
 async function findInventoryMovementByIdempotencyKey(tenantId, movementType, idempotencyKey, client = null) {
@@ -319,7 +330,7 @@ async function findInventoryMovementByIdempotencyKey(tenantId, movementType, ide
     [safeTenantId, safeMovementType, safeKey]
   );
 
-  return result.rows[0] || null;
+  return normalizeInventoryMovementRow(result.rows[0] || null);
 }
 
 module.exports = {

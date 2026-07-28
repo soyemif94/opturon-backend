@@ -196,12 +196,10 @@ async function testConstraints(client) {
     [tenantA.clinicId, tenantA.productId, lotId],
     'zero movement quantity'
   );
-  await expectDbReject(
-    client,
-    `INSERT INTO inventory_movements("tenantId", "productId", "lotId", "movementType", quantity)
-     VALUES ($1::uuid, $2::uuid, $3::uuid, 'sale', 1)`,
-    [tenantA.clinicId, tenantA.productId, lotId],
-    'unsupported movement type'
+  await client.query(
+    `INSERT INTO inventory_movements("tenantId", "productId", "lotId", "movementType", quantity, "quantityBefore", "quantityAfter")
+     VALUES ($1::uuid, $2::uuid, $3::uuid, 'sale', 1, 10, 9)`,
+    [tenantA.clinicId, tenantA.productId, lotId]
   );
   await expectDbReject(
     client,

@@ -4,6 +4,7 @@ const {
   humanExpirationLabel,
   normalizeDateOnly
 } = require('../utils/inventory-expiration');
+const { normalizeInventoryMovementTypeForApi } = require('../utils/inventory-movement-types');
 
 const LOT_STATUSES = new Set(['active', 'depleted', 'expired', 'quarantined', 'cancelled']);
 const MOVEMENT_TYPES = new Set([
@@ -63,6 +64,7 @@ function normalizeLot(row, options = {}) {
 
 function normalizeMovement(row) {
   if (!row) return null;
+  const metadata = metadataValue(row.metadata);
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -70,14 +72,14 @@ function normalizeMovement(row) {
     lotId: row.lotId || null,
     locationId: row.locationId || null,
     locationName: row.locationName || null,
-    movementType: row.movementType,
+    movementType: normalizeInventoryMovementTypeForApi(row.movementType),
     quantity: numberValue(row.quantity),
     quantityBefore: row.quantityBefore == null ? null : numberValue(row.quantityBefore),
     quantityAfter: row.quantityAfter == null ? null : numberValue(row.quantityAfter),
     referenceType: row.referenceType || null,
     referenceId: row.referenceId || null,
     reason: row.reason || null,
-    metadata: metadataValue(row.metadata),
+    metadata,
     createdBy: row.createdBy || null,
     createdAt: row.createdAt,
     idempotencyKey: row.idempotencyKey || null,

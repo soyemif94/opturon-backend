@@ -12,6 +12,7 @@ const {
   listInventoryMovementsByProductId,
   findInventoryMovementByIdempotencyKey
 } = require('../repositories/inventory-base.repository');
+const { normalizeInventoryMovementTypeForApi } = require('../utils/inventory-movement-types');
 
 const MOVEMENT_TYPES = new Set([
   'opening_balance',
@@ -125,7 +126,7 @@ async function listPortalInventoryProducts(tenantId, filters = {}) {
       locationId: row.locationId || location.id,
       locationName: row.locationName || location.name,
       lastMovementAt: row.lastMovementAt || null,
-      lastMovementType: row.lastMovementType || null,
+      lastMovementType: normalizeInventoryMovementTypeForApi(row.lastMovementType || null),
       stockState: classifyStockState(resolveDisplayedStock(row)),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt

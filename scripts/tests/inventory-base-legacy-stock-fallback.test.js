@@ -42,6 +42,8 @@ async function main() {
     let balanceQuantity = null;
     let updatedProductStock = null;
     let updatedBalanceQuantity = null;
+    const createdMovements = [];
+    const auditEntries = [];
 
     touched.push(
       mockModule('src/repositories/products.repository.js', {
@@ -75,21 +77,27 @@ async function main() {
 
     touched.push(
       mockModule('src/repositories/portal-user-audit.repository.js', {
-        createPortalUserAuditEvent: async () => ({ ok: true })
+        createPortalUserAuditEvent: async (entry) => {
+          auditEntries.push(entry);
+          return { ok: true };
+        }
       })
     );
 
     touched.push(
       mockModule('src/repositories/inventory.repository.js', {
-        insertInventoryMovement: async (input) => ({
-          id: 'mov-1',
-          movementType: input.movementType,
-          quantity: input.quantity,
-          quantityBefore: input.quantityBefore,
-          quantityAfter: input.quantityAfter,
-          idempotencyKey: input.idempotencyKey,
-          reason: input.reason || null
-        })
+        insertInventoryMovement: async (input) => {
+          createdMovements.push(input);
+          return {
+            id: `mov-${createdMovements.length}`,
+            movementType: input.movementType,
+            quantity: input.quantity,
+            quantityBefore: input.quantityBefore,
+            quantityAfter: input.quantityAfter,
+            idempotencyKey: input.idempotencyKey,
+            reason: input.reason || null
+          };
+        }
       })
     );
 
@@ -178,6 +186,32 @@ async function main() {
     assert.equal(movement.balance.quantity, 30);
     assert.equal(updatedBalanceQuantity, 30);
     assert.equal(updatedProductStock, 30);
+    assert.equal(createdMovements[0].movementType, 'manual_increase');
+    assert.equal(auditEntries.length, 1);
+    assert.equal(auditEntries[0].payload.movementType, 'manual_increase');
+
+    const decrease = await createPortalInventoryMovement(
+      'tenant-1',
+      'prod-1',
+      {
+        movementType: 'manual_decrease',
+        quantity: 5,
+        reason: 'QA reversa',
+        idempotencyKey: 'legacy-seed-2'
+      },
+      { actorId: 'actor-1' }
+    );
+
+    assert.equal(decrease.ok, true);
+    assert.equal(decrease.movement.movementType, 'manual_decrease');
+    assert.equal(decrease.movement.quantityBefore, 30);
+    assert.equal(decrease.movement.quantityAfter, 25);
+    assert.equal(decrease.balance.quantity, 25);
+    assert.equal(updatedBalanceQuantity, 25);
+    assert.equal(updatedProductStock, 25);
+    assert.equal(createdMovements[1].movementType, 'manual_decrease');
+    assert.equal(auditEntries.length, 2);
+    assert.equal(auditEntries[1].payload.movementType, 'manual_decrease');
 
     console.log('inventory-base-legacy-stock-fallback.test.js passed');
   } finally {
