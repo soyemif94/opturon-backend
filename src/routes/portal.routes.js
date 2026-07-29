@@ -25,12 +25,9 @@ const {
   updatePortalOrderStatus,
   postPortalOrderPaymentValidation,
   getPortalProducts,
-  getPortalSuppliers,
-  getPortalSupplier,
   getPortalProductCategories,
   getPortalProduct,
   postPortalProduct,
-  postPortalSupplier,
   postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,
@@ -65,8 +62,6 @@ const {
   postPortalInventoryMovementController,
   postPortalProductInventoryMode,
   updatePortalProduct,
-  patchPortalSupplier,
-  patchPortalSupplierStatus,
   updatePortalProductCategory,
   destroyPortalProductCategory,
   updatePortalProductStatus,
@@ -354,11 +349,6 @@ router.patch('/tenants/:tenantId/orders/:orderId', ordersCapability, patchPortal
 router.patch('/tenants/:tenantId/orders/:orderId/status', ordersCapability, updatePortalOrderStatus);
 router.post('/tenants/:tenantId/orders/:orderId/payment-validation', ordersCapability, postPortalOrderPaymentValidation);
 router.get('/tenants/:tenantId/products', catalogModule, getPortalProducts);
-router.get('/tenants/:tenantId/suppliers', inventoryCapability, getPortalSuppliers);
-router.get('/tenants/:tenantId/suppliers/:supplierId', inventoryCapability, getPortalSupplier);
-router.post('/tenants/:tenantId/suppliers', inventoryCapability, inventoryReceiptRole, postPortalSupplier);
-router.patch('/tenants/:tenantId/suppliers/:supplierId', inventoryCapability, inventoryReceiptRole, patchPortalSupplier);
-router.patch('/tenants/:tenantId/suppliers/:supplierId/status', inventoryCapability, inventoryReceiptRole, patchPortalSupplierStatus);
 router.get('/tenants/:tenantId/product-categories', catalogModule, getPortalProductCategories);
 router.post('/tenants/:tenantId/products', catalogModule, postPortalProduct);
 router.post('/tenants/:tenantId/products/image-upload', requirePortalInternalAuth, catalogModule, handleCatalogImageUpload, postPortalProductImageUpload);

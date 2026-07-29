@@ -192,8 +192,6 @@ function normalizeProduct(row) {
   const status = row.status || 'active';
   const metadata = normalizeMetadataObject(row.metadata);
   const catalogMetadata = extractCatalogMetadata(metadata);
-  const structuredSupplierDisplayName = normalizeCatalogText(row.defaultSupplierDisplayName);
-  const structuredSupplierStatus = normalizeCatalogText(row.defaultSupplierStatus);
 
   return {
     id: row.id,
@@ -217,10 +215,7 @@ function normalizeProduct(row) {
     barcode: catalogMetadata.barcode,
     unitOfMeasure: catalogMetadata.unitOfMeasure,
     cost: catalogMetadata.cost,
-    defaultSupplierId: row.defaultSupplierId || null,
-    defaultSupplier: structuredSupplierDisplayName || catalogMetadata.defaultSupplier,
-    defaultSupplierLegacyName: catalogMetadata.defaultSupplier,
-    defaultSupplierStatus: structuredSupplierStatus || null,
+    defaultSupplier: catalogMetadata.defaultSupplier,
     weight: catalogMetadata.weight,
     weightUnit: catalogMetadata.weightUnit,
     presentation: catalogMetadata.presentation,
@@ -257,12 +252,9 @@ async function listProductsByClinicId(clinicId, client = null) {
        p.sku,
        p."internalCode",
        p."categoryId",
-       p."defaultSupplierId",
        p."expirationDate",
        p."discountPercentage",
        c.name AS "categoryName",
-       s.status AS "defaultSupplierStatus",
-       COALESCE(s."tradeName", s."legalName") AS "defaultSupplierDisplayName",
        p.metadata,
        p."deletedAt",
        p."deletedBy",
@@ -299,12 +291,9 @@ async function listProductsByClinicIdIncludingDeleted(clinicId, client = null) {
        p.sku,
        p."internalCode",
        p."categoryId",
-       p."defaultSupplierId",
        p."expirationDate",
        p."discountPercentage",
        c.name AS "categoryName",
-       s.status AS "defaultSupplierStatus",
-       COALESCE(s."tradeName", s."legalName") AS "defaultSupplierDisplayName",
        p.metadata,
        p."deletedAt",
        p."deletedBy",
@@ -315,9 +304,6 @@ async function listProductsByClinicIdIncludingDeleted(clinicId, client = null) {
      FROM products p
      LEFT JOIN product_categories c
        ON c.id = p."categoryId"
-     LEFT JOIN suppliers s
-       ON s.id = p."defaultSupplierId"
-      AND s."tenantId" = p."clinicId"
      WHERE p."clinicId" = $1::uuid
      ORDER BY p."createdAt" DESC`,
     [clinicId]
@@ -349,12 +335,9 @@ async function findProductsByIds(clinicId, productIds, client = null, options = 
        p.sku,
        p."internalCode",
        p."categoryId",
-       p."defaultSupplierId",
        p."expirationDate",
        p."discountPercentage",
        c.name AS "categoryName",
-       s.status AS "defaultSupplierStatus",
-       COALESCE(s."tradeName", s."legalName") AS "defaultSupplierDisplayName",
        p.metadata,
        p."deletedAt",
        p."deletedBy",
@@ -365,9 +348,6 @@ async function findProductsByIds(clinicId, productIds, client = null, options = 
      FROM products p
      LEFT JOIN product_categories c
        ON c.id = p."categoryId"
-     LEFT JOIN suppliers s
-       ON s.id = p."defaultSupplierId"
-      AND s."tenantId" = p."clinicId"
      WHERE p."clinicId" = $1::uuid
        AND p.id = ANY($2::uuid[])
        ${includeDeleted ? '' : 'AND p."deletedAt" IS NULL'}
@@ -395,12 +375,9 @@ async function findProductById(productId, clinicId, client = null) {
        p.sku,
        p."internalCode",
        p."categoryId",
-       p."defaultSupplierId",
        p."expirationDate",
        p."discountPercentage",
        c.name AS "categoryName",
-       s.status AS "defaultSupplierStatus",
-       COALESCE(s."tradeName", s."legalName") AS "defaultSupplierDisplayName",
        p.metadata,
        p."deletedAt",
        p."deletedBy",
@@ -411,9 +388,6 @@ async function findProductById(productId, clinicId, client = null) {
      FROM products p
      LEFT JOIN product_categories c
        ON c.id = p."categoryId"
-     LEFT JOIN suppliers s
-       ON s.id = p."defaultSupplierId"
-      AND s."tenantId" = p."clinicId"
      WHERE p.id = $1::uuid
        AND p."clinicId" = $2::uuid
        AND p."deletedAt" IS NULL
@@ -444,13 +418,12 @@ async function createProduct(input, client = null) {
        sku,
        "internalCode",
        "categoryId",
-       "defaultSupplierId",
        "expirationDate",
        "discountPercentage",
        metadata,
        "updatedAt"
      )
-     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::uuid, $13::uuid, $14::date, $15, $16::jsonb, NOW())
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::uuid, $13::date, $14, $15::jsonb, NOW())
       RETURNING id`,
     [
       input.clinicId,
@@ -465,7 +438,6 @@ async function createProduct(input, client = null) {
       input.sku || null,
       input.internalCode || null,
       input.categoryId || null,
-      input.defaultSupplierId || null,
       input.expirationDate || null,
       input.discountPercentage == null ? null : quantizeDecimal(input.discountPercentage, 2, 0),
       JSON.stringify(storedMetadata)
@@ -513,10 +485,9 @@ async function updateProduct(productId, clinicId, payload, client = null) {
        sku = $11,
        "internalCode" = $12,
        "categoryId" = $13::uuid,
-       "defaultSupplierId" = $14::uuid,
-       "expirationDate" = $15::date,
-       "discountPercentage" = $16,
-       metadata = $17::jsonb,
+       "expirationDate" = $14::date,
+       "discountPercentage" = $15,
+       metadata = $16::jsonb,
        "updatedAt" = NOW()
      WHERE id = $1::uuid
        AND "clinicId" = $2::uuid`,
@@ -534,7 +505,6 @@ async function updateProduct(productId, clinicId, payload, client = null) {
       payload.sku || null,
       payload.internalCode || current.internalCode || null,
       payload.categoryId || null,
-      payload.defaultSupplierId || null,
       payload.expirationDate || null,
       payload.discountPercentage == null ? null : quantizeDecimal(payload.discountPercentage, 2, 0),
       JSON.stringify(storedMetadata)
