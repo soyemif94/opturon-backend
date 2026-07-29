@@ -1,5 +1,6 @@
 const { detectInventoryLotSchemaCapabilities } = require('../../src/utils/inventory-lot-schema-capabilities');
 const { beginReadOnlyTransaction, readOnlyQuery } = require('./postgres-cli');
+const { summarizeProductStockDivergence, shorten: shortenValue } = require('./inventory-lot-stock-divergence');
 
 function parseArgs(argv) {
   const options = { apply: false, readOnly: true };
@@ -28,8 +29,7 @@ function parseArgs(argv) {
 }
 
 function shorten(value) {
-  const text = String(value || '');
-  return text.length <= 12 ? text : `${text.slice(0, 8)}...${text.slice(-4)}`;
+  return shortenValue(value);
 }
 
 function toNumber(value) {
@@ -103,6 +103,136 @@ async function fetchScalarCount(client, sql, params = []) {
   const result = await readOnlyQuery(client, sql, params);
   const row = result.rows[0] || {};
   return toNumber(row.count || row.total || row.value || 0);
+}
+
+async function listDivergentLotBasedProducts(client, tenantIds, capabilities) {
+  const activePredicate = getStockAvailabilityPredicate(capabilities);
+  const result = await readOnlyQuery(
+    client,
+    `WITH lot_based_product_stock AS (
+       SELECT
+         p."clinicId" AS tenant_id,
+         p.id AS product_id,
+         p.stock AS product_stock,
+         p.status AS product_status,
+         p."deletedAt" AS deleted_at,
+         p."updatedAt" AS updated_at,
+         COALESCE(p.metadata->'catalog'->>'inventoryTrackingMode', 'legacy') AS tracking_mode,
+         c.timezone,
+         COUNT(l.id) AS lot_count,
+         FLOOR(
+           COALESCE(SUM(l."availableQuantity") FILTER (
+             WHERE l.status <> 'cancelled'
+               AND ${activePredicate}
+               AND (l."expiresAt" IS NULL OR l."expiresAt" >= CURRENT_DATE)
+           ), 0)
+         )::numeric AS expected_stock,
+         COALESCE((SELECT COUNT(*) FROM inventory_movements im WHERE im."tenantId" = p."clinicId" AND im."productId" = p.id), 0) AS movement_count,
+         COALESCE((SELECT COUNT(*) FROM inventory_lot_allocations a WHERE a."tenantId" = p."clinicId" AND a."productId" = p.id), 0) AS allocation_count
+       FROM products p
+       INNER JOIN clinics c ON c.id = p."clinicId"
+       LEFT JOIN inventory_lots l
+         ON l."tenantId" = p."clinicId"
+        AND l."productId" = p.id
+       WHERE p."clinicId" = ANY($1::uuid[])
+         AND COALESCE(p.metadata->'catalog'->>'inventoryTrackingMode', 'legacy') = 'lot_based'
+       GROUP BY p."clinicId", p.id, p.stock, p.status, p."deletedAt", p."updatedAt", tracking_mode, c.timezone
+     )
+     SELECT *
+     FROM lot_based_product_stock
+     WHERE COALESCE(product_stock, 0) <> COALESCE(expected_stock, 0)
+     ORDER BY tenant_id, product_id`,
+    [tenantIds]
+  );
+  return result.rows;
+}
+
+async function loadDivergentProductDetails(client, divergentRows) {
+  const productIds = divergentRows.map((row) => row.product_id);
+  if (!productIds.length) return [];
+
+  const lotRows = await readOnlyQuery(
+    client,
+    `SELECT
+       l.id,
+       l."tenantId" AS tenant_id,
+       l."productId" AS product_id,
+       l.status,
+       l."availableQuantity" AS available_quantity,
+       l."expiresAt" AS expires_at,
+       l."receivedAt" AS received_at,
+       l."manufacturedAt" AS manufactured_at,
+       l."createdAt" AS created_at,
+       l."updatedAt" AS updated_at,
+       COALESCE((
+         SELECT SUM(a.quantity)
+         FROM inventory_lot_allocations a
+         WHERE a."tenantId" = l."tenantId"
+           AND a."lotId" = l.id
+           AND a.status = 'allocated'
+       ), 0) AS committed_quantity,
+       (
+         SELECT MAX(im."createdAt")
+         FROM inventory_movements im
+         WHERE im."tenantId" = l."tenantId"
+           AND im."lotId" = l.id
+       ) AS last_movement_at,
+       (
+         SELECT MAX(a."createdAt")
+         FROM inventory_lot_allocations a
+         WHERE a."tenantId" = l."tenantId"
+           AND a."lotId" = l.id
+       ) AS last_allocation_at
+     FROM inventory_lots l
+     WHERE l."productId" = ANY($1::uuid[])
+     ORDER BY l."productId", l."createdAt", l.id`,
+    [productIds]
+  );
+
+  const movementRows = await readOnlyQuery(
+    client,
+    `SELECT
+       im.id,
+       im."tenantId" AS tenant_id,
+       im."productId" AS product_id,
+       im."lotId" AS lot_id,
+       im."movementType" AS movement_type,
+       im.quantity,
+       im."quantityBefore" AS quantity_before,
+       im."quantityAfter" AS quantity_after,
+       im."createdAt" AS created_at,
+       im."referenceType" AS reference_type
+     FROM inventory_movements im
+     WHERE im."productId" = ANY($1::uuid[])
+     ORDER BY im."productId", im."createdAt", im.id`,
+    [productIds]
+  );
+
+  const allocationRows = await readOnlyQuery(
+    client,
+    `SELECT
+       a.id,
+       a."tenantId" AS tenant_id,
+       a."productId" AS product_id,
+       a."lotId" AS lot_id,
+       a.quantity,
+       a.status,
+       a."createdAt" AS created_at,
+       a."releasedAt" AS released_at
+     FROM inventory_lot_allocations a
+     WHERE a."productId" = ANY($1::uuid[])
+     ORDER BY a."productId", a."createdAt", a.id`,
+    [productIds]
+  );
+
+  return divergentRows.map((row) =>
+    summarizeProductStockDivergence(
+      row,
+      lotRows.rows.filter((lot) => lot.product_id === row.product_id),
+      movementRows.rows.filter((movement) => movement.product_id === row.product_id),
+      allocationRows.rows.filter((allocation) => allocation.product_id === row.product_id)
+    )
+  );
 }
 
 async function collectBaseCounts(client, tenantIds, capabilities) {
@@ -685,6 +815,9 @@ async function runInventoryLotConsistencyReport(client, args = {}) {
     });
     const tenantIds = await listVisibleClientTenantIds(client, args);
     const counts = await collectBaseCounts(client, tenantIds, schemaCapabilities);
+    const divergentProducts = args.details === 'product_stock_divergent'
+      ? await loadDivergentProductDetails(client, await listDivergentLotBasedProducts(client, tenantIds, schemaCapabilities))
+      : [];
 
     if (schemaCapabilities.hasLocationId && schemaCapabilities.hasNormalizedLotNumber) {
       Object.assign(counts, await collectPost067Counts(client, tenantIds));
@@ -711,7 +844,37 @@ async function runInventoryLotConsistencyReport(client, args = {}) {
       tenantsReviewed: tenantIds.length,
       tenantScope: tenantIds.map((tenantId) => shorten(tenantId)),
       checks,
-      summary
+      summary,
+      details:
+        args.details === 'product_stock_divergent'
+          ? {
+              requested: 'product_stock_divergent',
+              products: divergentProducts.map((item) => ({
+                tenantId: shorten(item.tenantId),
+                productId: shorten(item.productId),
+                productStock: item.productStock,
+                physicalTotal: item.physicalTotal,
+                commercialAvailableTotal: item.commercialAvailableTotal,
+                expectedProductStock: item.expectedProductStock,
+                committedTotal: item.committedTotal,
+                diffPhysical: item.diffPhysical,
+                diffCommercial: item.diffCommercial,
+                diffExpected: item.diffExpected,
+                expectedSemantics: item.expectedSemantics,
+                rootCauseCode: item.rootCauseCode,
+                sourceOfTruth: item.sourceOfTruth,
+                repairSafe: item.repairSafe,
+                productStatus: item.productStatus,
+                deletedAt: item.deletedAt,
+                trackingMode: item.trackingMode,
+                lotCount: item.lotCount,
+                movementCount: item.movementCount,
+                allocationCount: item.allocationCount,
+                timezone: item.timezone,
+                ledgerConsistency: item.ledgerConsistency.status
+              }))
+            }
+          : null
     };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -874,9 +1037,11 @@ module.exports = {
   buildSkippedCheck,
   classifyLocationProposal,
   listVisibleClientTenantIds,
+  loadDivergentProductDetails,
   normalizeText,
   parseArgs,
   runInventoryLotConsistencyReport,
   runInventoryLotLocationBackfill,
+  listDivergentLotBasedProducts,
   shorten
 };
