@@ -58,13 +58,20 @@ const {
 const {
   listPortalInventoryLots,
   getPortalInventoryLot: getPortalInventoryLotDetail,
+  getPortalInventoryLotHistory,
   getPortalInventoryExpirationSummary: getPortalInventoryExpirationSummaryService,
   getPortalInventoryExpirationSettings: getPortalInventoryExpirationSettingsService,
   updatePortalInventoryExpirationSettings: updatePortalInventoryExpirationSettingsService,
   createPortalInventoryLot,
   adjustPortalInventoryLot,
   bulkWriteoffExpiredPortalInventoryLots,
-  setPortalProductInventoryMode
+  setPortalProductInventoryMode,
+  listPortalInventoryLocations,
+  createPortalInventoryLocation,
+  updatePortalInventoryLocation,
+  blockPortalInventoryLot,
+  unblockPortalInventoryLot,
+  updatePortalInventoryLotExpiration
 } = require('../services/inventory-lots.service');
 const {
   listPortalInventoryProducts,
@@ -4141,6 +4148,165 @@ async function getPortalInventoryProductsController(req, res) {
   }
 }
 
+async function postPortalInventoryLotBlock(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const lotId = String(req.params.lotId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await blockPortalInventoryLot(tenantId, lotId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_lot_id' ||
+        result.reason === 'missing_block_reason' ||
+        result.reason === 'missing_inventory_lot_idempotency_key'
+          ? 400
+          : result.reason === 'inventory_lot_cancelled' || result.reason === 'inventory_lot_written_off' || result.reason === 'inventory_lot_depleted_cannot_block'
+            ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({ success: true, data: { lot: result.lot, idempotent: result.idempotent === true } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'portal_inventory_lot_block_failed', details: error.message });
+  }
+}
+
+async function postPortalInventoryLotUnblock(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const lotId = String(req.params.lotId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await unblockPortalInventoryLot(tenantId, lotId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_lot_id' ||
+        result.reason === 'missing_unblock_reason' ||
+        result.reason === 'missing_inventory_lot_idempotency_key'
+          ? 400
+          : result.reason === 'inventory_lot_cancelled' ||
+              result.reason === 'inventory_lot_written_off' ||
+              result.reason === 'inventory_lot_depleted_cannot_unblock'
+            ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({ success: true, data: { lot: result.lot, idempotent: result.idempotent === true } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'portal_inventory_lot_unblock_failed', details: error.message });
+  }
+}
+
+async function patchPortalInventoryLotExpiration(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const lotId = String(req.params.lotId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await updatePortalInventoryLotExpiration(tenantId, lotId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_lot_id' ||
+        result.reason === 'invalid_lot_expires_at' ||
+        result.reason === 'missing_expiration_change_reason' ||
+        result.reason === 'missing_inventory_lot_idempotency_key'
+          ? 400
+          : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({ success: true, data: { lot: result.lot, idempotent: result.idempotent === true } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'portal_inventory_lot_expiration_update_failed', details: error.message });
+  }
+}
+
+async function getPortalInventoryLocationsController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  try {
+    const result = await listPortalInventoryLocations(tenantId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+    return res.status(200).json({ success: true, data: { locations: result.locations } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'portal_inventory_locations_fetch_failed', details: error.message });
+  }
+}
+
+async function postPortalInventoryLocationController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+  try {
+    const result = await createPortalInventoryLocation(tenantId, req.body || {}, actor);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'invalid_inventory_location' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+    return res.status(201).json({ success: true, data: { location: result.location } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'portal_inventory_location_create_failed', details: error.message });
+  }
+}
+
+async function patchPortalInventoryLocationController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const locationId = String(req.params.locationId || '').trim();
+  const actor = getPortalActorMeta(req);
+  try {
+    const result = await updatePortalInventoryLocation(tenantId, locationId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_inventory_location_id'
+          ? 400
+          : result.reason === 'inventory_location_primary_cannot_deactivate' || result.reason === 'inventory_location_in_use'
+            ? 409
+            : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+    return res.status(200).json({ success: true, data: { location: result.location } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'portal_inventory_location_update_failed', details: error.message });
+  }
+}
+
+async function getPortalInventoryLotHistoryController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const lotId = String(req.params.lotId || '').trim();
+
+  try {
+    const result = await getPortalInventoryLotHistory(tenantId, lotId, {
+      pageSize: req.query.pageSize,
+      offset: req.query.offset
+    });
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_lot_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        history: result.history
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_lot_history_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalInventoryProductHistoryController(req, res) {
   const tenantId = getRequestTenantId(req);
   const productId = String(req.params.productId || '').trim();
@@ -5404,6 +5570,7 @@ module.exports = {
   getPortalInventoryProductsController,
   getPortalInventoryLots,
   getPortalInventoryLot,
+  getPortalInventoryLotHistoryController,
   getPortalInventoryProductHistoryController,
   getPortalInventoryExpirationSummary,
   getPortalInventoryExpirationSettings,
@@ -5411,6 +5578,12 @@ module.exports = {
   postPortalInventoryExpiredBulkWriteoff,
   postPortalInventoryLot,
   postPortalInventoryLotAdjustment,
+  postPortalInventoryLotBlock,
+  postPortalInventoryLotUnblock,
+  patchPortalInventoryLotExpiration,
+  getPortalInventoryLocationsController,
+  postPortalInventoryLocationController,
+  patchPortalInventoryLocationController,
   postPortalInventoryMovementController,
   postPortalProductInventoryMode,
   updatePortalProduct,

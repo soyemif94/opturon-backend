@@ -27,7 +27,9 @@ const {
 } = require('../repositories/products.repository');
 const {
   listEligibleLotsForFefo,
+  findInventoryLotById,
   updateInventoryLotQuantity,
+  updateInventoryLotState,
   createInventoryLotAllocation,
   listInventoryLotAllocationsByOrder,
   markInventoryLotAllocationsReleased,
@@ -41,6 +43,7 @@ const conversationStateRepo = require('../conversations/conversation.repo');
 const { sendPortalMessage } = require('./portal-inbox.service');
 const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
+const { resolveLotStatusAfterRestore } = require('../utils/inventory-lot-state');
 
 const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
 const LEGACY_ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
@@ -689,14 +692,30 @@ async function restoreOrderLotAllocations(context, order, client) {
   let restored = 0;
   const restoredProductIds = new Set();
   for (const allocation of activeAllocations) {
-    const lots = await listEligibleLotsForFefo(context.clinic.id, allocation.productId, client);
-    const lot =
-      lots.find((candidate) => candidate.id === allocation.lotId) ||
-      (await updateInventoryLotQuantity(allocation.lotId, context.clinic.id, allocation.productId, 0, 'active', client));
-    const currentLot = lot && lot.id === allocation.lotId ? lot : null;
-    const before = Number(currentLot?.availableQuantity || 0);
+    const currentLot = await findInventoryLotById(allocation.lotId, context.clinic.id, client, { forUpdate: true });
+    if (!currentLot) {
+      return buildError(context.tenantId, 'inventory_lot_restore_requires_manual_review', { lotId: allocation.lotId, reason: 'lot_not_found' });
+    }
+    if (currentLot.legacyStatus === 'cancelled' || currentLot.operationalStatus === 'written_off' || currentLot.status === 'written_off') {
+      return buildError(context.tenantId, 'inventory_lot_restore_requires_manual_review', {
+        lotId: allocation.lotId,
+        status: currentLot.status,
+        operationalStatus: currentLot.operationalStatus
+      });
+    }
+
+    const before = Number(currentLot.availableQuantity || 0);
     const after = Number((before + Number(allocation.quantity || 0)).toFixed(3));
-    await updateInventoryLotQuantity(allocation.lotId, context.clinic.id, allocation.productId, after, 'active', client);
+    const nextStatus = resolveLotStatusAfterRestore(currentLot, after);
+    await updateInventoryLotState(
+      allocation.lotId,
+      context.clinic.id,
+      {
+        availableQuantity: after,
+        status: nextStatus
+      },
+      client
+    );
     await insertInventoryMovement(
       {
         tenantId: context.clinic.id,
@@ -1760,5 +1779,8 @@ module.exports = {
   patchPortalOrder,
   patchPortalOrderStatus,
   patchOrderStatusForClinic,
-  validatePortalOrderTransferPayment
+  validatePortalOrderTransferPayment,
+  __private__: {
+    restoreOrderLotAllocations
+  }
 };

@@ -258,6 +258,7 @@ async function setActiveTenantForAdmin(actorUserId, tenantId) {
 }
 
 module.exports = {
+  hasPortalInternalAuth,
   findPortalActorContext,
   resolveAdminPortalActor,
   selectAdminActorCandidate,
