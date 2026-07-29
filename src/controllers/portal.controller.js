@@ -56,6 +56,13 @@ const {
   getPortalProductImageAsset
 } = require('../services/portal-products.service');
 const {
+  listPortalSuppliers,
+  getPortalSupplierDetail,
+  createPortalSupplier,
+  updatePortalSupplier,
+  setPortalSupplierStatus
+} = require('../services/portal-suppliers.service');
+const {
   listPortalInventoryLots,
   getPortalInventoryLot: getPortalInventoryLotDetail,
   getPortalInventoryLotHistory,
@@ -1046,8 +1053,11 @@ async function postPortalProduct(req, res) {
         result.reason === 'invalid_product_attributes' ||
         result.reason === 'invalid_product_cost' ||
         result.reason === 'invalid_product_weight' ||
-        result.reason === 'invalid_product_image'
+        result.reason === 'invalid_product_image' ||
+        result.reason === 'invalid_product_default_supplier'
           ? 400
+        : result.reason === 'product_default_supplier_inactive'
+          ? 409
           : 404;
 
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
@@ -1677,8 +1687,11 @@ async function updatePortalProduct(req, res) {
         result.reason === 'invalid_product_attributes' ||
         result.reason === 'invalid_product_cost' ||
         result.reason === 'invalid_product_weight' ||
-        result.reason === 'invalid_product_image'
+        result.reason === 'invalid_product_image' ||
+        result.reason === 'invalid_product_default_supplier'
           ? 400
+        : result.reason === 'product_default_supplier_inactive'
+          ? 409
           : 404;
 
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
@@ -4113,6 +4126,168 @@ async function postPortalAuthLogin(req, res) {
   }
 }
 
+async function getPortalSuppliers(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await listPortalSuppliers(tenantId, req.query || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        items: result.items,
+        pagination: result.pagination,
+        filters: result.filters,
+        summary: result.summary
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_suppliers_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalSupplier(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const supplierId = String(req.params.supplierId || '').trim();
+
+  try {
+    const result = await getPortalSupplierDetail(tenantId, supplierId);
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' || result.reason === 'missing_supplier_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.supplier
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_supplier_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalSupplier(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await createPortalSupplier(tenantId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_supplier_legal_name' ||
+        result.reason === 'invalid_supplier_legal_name' ||
+        result.reason === 'invalid_supplier_trade_name' ||
+        result.reason === 'invalid_supplier_tax_id' ||
+        result.reason === 'invalid_supplier_email' ||
+        result.reason === 'invalid_supplier_phone' ||
+        result.reason === 'invalid_supplier_address' ||
+        result.reason === 'invalid_supplier_notes'
+          ? 400
+          : result.reason === 'duplicate_supplier_tax_id'
+            ? 409
+            : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: result.supplier
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_supplier_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalSupplier(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const supplierId = String(req.params.supplierId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await updatePortalSupplier(tenantId, supplierId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_supplier_id' ||
+        result.reason === 'missing_supplier_legal_name' ||
+        result.reason === 'invalid_supplier_legal_name' ||
+        result.reason === 'invalid_supplier_trade_name' ||
+        result.reason === 'invalid_supplier_tax_id' ||
+        result.reason === 'invalid_supplier_email' ||
+        result.reason === 'invalid_supplier_phone' ||
+        result.reason === 'invalid_supplier_address' ||
+        result.reason === 'invalid_supplier_notes'
+          ? 400
+          : result.reason === 'duplicate_supplier_tax_id'
+            ? 409
+            : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.supplier
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_supplier_update_failed',
+      details: error.message
+    });
+  }
+}
+
+async function patchPortalSupplierStatus(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const supplierId = String(req.params.supplierId || '').trim();
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await setPortalSupplierStatus(tenantId, supplierId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_supplier_id' ||
+        result.reason === 'invalid_supplier_status'
+          ? 400
+          : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.supplier
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_supplier_status_update_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalInventoryProductsController(req, res) {
   const tenantId = getRequestTenantId(req);
 
@@ -5550,9 +5725,12 @@ module.exports = {
   updatePortalOrderStatus,
   postPortalOrderPaymentValidation,
   getPortalProducts,
+  getPortalSuppliers,
+  getPortalSupplier,
   getPortalProductCategories,
   getPortalProduct,
   postPortalProduct,
+  postPortalSupplier,
   postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,
@@ -5587,6 +5765,8 @@ module.exports = {
   postPortalInventoryMovementController,
   postPortalProductInventoryMode,
   updatePortalProduct,
+  patchPortalSupplier,
+  patchPortalSupplierStatus,
   updatePortalProductCategory,
   destroyPortalProductCategory,
   updatePortalProductStatus,
