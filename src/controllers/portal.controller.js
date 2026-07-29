@@ -1603,7 +1603,7 @@ async function postPortalInventoryLotAdjustment(req, res) {
         result.reason === 'invalid_movement_quantity' ||
         result.reason === 'invalid_movement_reference_id'
           ? 400
-          : result.reason === 'insufficient_lot_quantity' || result.reason === 'inventory_lot_cancelled'
+          : result.reason === 'insufficient_lot_quantity' || result.reason === 'inventory_lot_cancelled' || result.reason === 'inventory_lot_not_expired'
             ? 409
             : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });

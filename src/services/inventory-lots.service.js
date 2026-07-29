@@ -44,11 +44,15 @@ const {
   normalizeLotOperationalStatus,
   validateLotStateConsistency
 } = require('../utils/inventory-lot-state');
+const {
+  isManualLotWriteoffReference,
+  resolveLotAdjustmentSemantics
+} = require('../utils/inventory-lot-writeoff');
 
 const LOT_STATUS_SET = new Set(LOT_STATUSES);
 const MOVEMENT_TYPE_SET = new Set(MOVEMENT_TYPES);
 const INBOUND_TYPES = new Set(['initial_stock', 'purchase_receipt', 'manual_adjustment_in']);
-const OUTBOUND_TYPES = new Set(['manual_adjustment_out', 'expired_writeoff', 'cancellation']);
+const OUTBOUND_TYPES = new Set(['manual_adjustment_out', 'manual_decrease', 'expired_writeoff', 'cancellation']);
 const LOCATION_TYPES = new Set(['main', 'warehouse', 'shelf', 'other']);
 
 function normalizeString(value) {
@@ -485,6 +489,10 @@ async function adjustPortalInventoryLot(tenantId, lotId, payload, actor = {}) {
   const reason = validateAdjustment(adjustment);
   if (reason) return { ok: false, tenantId: context.tenantId, reason };
   const runtime = await resolveInventoryRuntime(context);
+  const semantics = resolveLotAdjustmentSemantics(adjustment);
+  if (isManualLotWriteoffReference(adjustment.referenceType) && !semantics.isManualWriteoff) {
+    return { ok: false, tenantId: context.tenantId, reason: 'invalid_movement_type' };
+  }
 
   const result = await withTransaction(async (client) => {
     const lot = await findInventoryLotById(safeLotId, context.clinic.id, client, { forUpdate: true, todayISO: runtime.todayISO, thresholds: runtime.thresholds });
@@ -493,18 +501,22 @@ async function adjustPortalInventoryLot(tenantId, lotId, payload, actor = {}) {
     if (normalizeLotOperationalStatus(lot) === 'written_off') return { ok: false, reason: 'inventory_lot_written_off' };
     const consistencyError = assertLotStateConsistency(lot);
     if (consistencyError) return { ok: false, reason: consistencyError };
+    const expiration = calculateInventoryExpirationStatus(lot.expiresAt, { todayISO: runtime.todayISO, thresholds: runtime.thresholds });
+    if (semantics.isExpiredWriteoff && expiration.status !== 'expired') return { ok: false, reason: 'inventory_lot_not_expired' };
 
     const operationStart = await beginInventoryLotOperation(
       {
         tenantId: context.clinic.id,
         productId: lot.productId,
         lotId: lot.id,
-        operationType: adjustment.movementType === 'expired_writeoff' ? 'writeoff' : 'increment_lot',
+        operationType: semantics.operationType,
         idempotencyKey: adjustment.idempotencyKey,
         requestMetadata: {
           movementType: adjustment.movementType,
           quantity: adjustment.quantity,
-          reason: adjustment.reason
+          reason: adjustment.reason,
+          referenceType: adjustment.referenceType,
+          writeoffKind: semantics.writeoffKind
         },
         createdBy: normalizeActorId(actor)
       },
@@ -524,7 +536,7 @@ async function adjustPortalInventoryLot(tenantId, lotId, payload, actor = {}) {
     const after = before + direction * adjustment.quantity;
     if (direction === 0) return { ok: false, reason: 'invalid_movement_type' };
     if (after < 0) return { ok: false, reason: 'insufficient_lot_quantity' };
-    if (adjustment.movementType === 'expired_writeoff' && adjustment.quantity > freePhysicalQuantity) {
+    if (semantics.isWriteoff && adjustment.quantity > freePhysicalQuantity) {
       await updateInventoryLotOperation(operation.id, context.clinic.id, { status: 'failed', failureCode: 'inventory_lot_writeoff_conflicts_with_committed_stock' }, client);
       return { ok: false, reason: 'inventory_lot_writeoff_conflicts_with_committed_stock' };
     }
@@ -536,7 +548,8 @@ async function adjustPortalInventoryLot(tenantId, lotId, payload, actor = {}) {
           ? 'active'
           : 'depleted';
     const previousOperationalStatus = normalizeLotOperationalStatus(lot);
-    const nextOperationalStatus = adjustment.movementType === 'expired_writeoff' && after === 0
+    const completedWriteoff = semantics.isWriteoff && after === 0;
+    const nextOperationalStatus = completedWriteoff
       ? 'written_off'
       : previousOperationalStatus === 'blocked'
         ? 'blocked'
@@ -554,9 +567,9 @@ async function adjustPortalInventoryLot(tenantId, lotId, payload, actor = {}) {
           lastMovementType: adjustment.movementType,
           lastMovementAt: new Date().toISOString()
         },
-        writtenOffAt: adjustment.movementType === 'expired_writeoff' && after === 0 ? new Date().toISOString() : lot.writtenOffAt,
-        writtenOffBy: adjustment.movementType === 'expired_writeoff' && after === 0 ? normalizeActorId(actor) : lot.writtenOffBy,
-        writeoffReason: adjustment.movementType === 'expired_writeoff' ? adjustment.reason : lot.writeoffReason
+        writtenOffAt: completedWriteoff ? new Date().toISOString() : lot.writtenOffAt,
+        writtenOffBy: completedWriteoff ? normalizeActorId(actor) : lot.writtenOffBy,
+        writeoffReason: completedWriteoff ? adjustment.reason : lot.writeoffReason
       },
       client
     );
@@ -575,7 +588,8 @@ async function adjustPortalInventoryLot(tenantId, lotId, payload, actor = {}) {
         reason: adjustment.reason,
         metadata: {
           ...adjustment.metadata,
-          auditAction: adjustment.movementType === 'expired_writeoff' ? 'inventory_stock_written_off' : 'inventory_stock_adjusted'
+          auditAction: semantics.auditAction,
+          writeoffKind: semantics.writeoffKind
         },
         createdBy: normalizeActorId(actor),
         idempotencyKey: adjustment.idempotencyKey

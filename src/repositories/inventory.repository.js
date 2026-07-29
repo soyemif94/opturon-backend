@@ -22,10 +22,23 @@ const MOVEMENT_TYPES = new Set([
   'purchase_receipt',
   'manual_adjustment_in',
   'manual_adjustment_out',
+  'manual_decrease',
   'expired_writeoff',
   'cancellation',
   'sale'
 ]);
+
+function normalizeLotHistoryType(type, metadata) {
+  const normalizedType = normalizeInventoryMovementTypeForApi(type);
+  const safeMetadata = metadataValue(metadata);
+  if (normalizedType === 'manual_decrease' && safeMetadata.auditAction === 'inventory_stock_written_off') return 'manual_writeoff';
+  if (normalizedType === 'writeoff') {
+    const writeoffKind = String(safeMetadata.requestMetadata && safeMetadata.requestMetadata.writeoffKind || '').trim();
+    if (writeoffKind === 'manual') return 'manual_writeoff';
+    if (writeoffKind === 'expired') return 'expired_writeoff';
+  }
+  return normalizedType;
+}
 
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') return client.query(text, params);
@@ -661,7 +674,7 @@ async function listInventoryLotHistory(tenantId, lotId, options = {}, client = n
   return result.rows.map((row) => ({
     id: row.id,
     kind: row.kind,
-    type: normalizeInventoryMovementTypeForApi(row.type),
+    type: normalizeLotHistoryType(row.type, row.metadata),
     quantity: row.quantity == null ? null : numberValue(row.quantity),
     quantityBefore: row.quantityBefore == null ? null : numberValue(row.quantityBefore),
     quantityAfter: row.quantityAfter == null ? null : numberValue(row.quantityAfter),
