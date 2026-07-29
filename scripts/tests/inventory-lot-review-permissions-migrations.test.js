@@ -86,6 +86,7 @@ function testMigrationsAndScripts() {
   const migration069 = fs.readFileSync(path.join(root, 'db/migrations/069_inventory_lot_operation_idempotency.sql'), 'utf8');
   const reportScript = fs.readFileSync(path.join(root, 'scripts/report-inventory-lot-consistency.js'), 'utf8');
   const backfillScript = fs.readFileSync(path.join(root, 'scripts/backfill-inventory-lot-locations.js'), 'utf8');
+  const preflightLib = fs.readFileSync(path.join(root, 'scripts/lib/inventory-lot-preflight.js'), 'utf8');
   const routes = fs.readFileSync(path.join(root, 'src/routes/portal.routes.js'), 'utf8');
 
   assert.match(migration067, /ADD COLUMN IF NOT EXISTS "locationId" UUID NULL/);
@@ -102,12 +103,14 @@ function testMigrationsAndScripts() {
   assert.match(migration069, /CHECK \(status IN \('pending', 'processing', 'completed', 'partially_completed', 'failed'\)\)/);
   assert.match(migration069, /CREATE UNIQUE INDEX IF NOT EXISTS uniq_inventory_lot_operations_tenant_type_key/);
 
-  assert.match(reportScript, /SET TRANSACTION READ ONLY/);
-  assert.match(reportScript, /conflicting_physical_identity/);
-  assert.match(reportScript, /written_off_with_quantity/);
+  assert.match(reportScript, /runInventoryLotConsistencyReport/);
+  assert.match(preflightLib, /SET TRANSACTION READ ONLY/);
+  assert.match(preflightLib, /conflicting_physical_identity/);
+  assert.match(preflightLib, /written_off_with_quantity/);
 
-  assert.match(backfillScript, /if \(!args\.apply\) \{\s*await client\.query\('SET TRANSACTION READ ONLY'\);/);
-  assert.match(backfillScript, /if \(args\.apply\) \{\s*await client\.query\('COMMIT'\);\s*\} else \{\s*await client\.query\('ROLLBACK'\);/);
+  assert.match(backfillScript, /runInventoryLotLocationBackfill/);
+  assert.match(preflightLib, /if \(!args\.apply \|\| args\.readOnly\) \{\s*await client\.query\('SET TRANSACTION READ ONLY'\);/);
+  assert.match(preflightLib, /if \(args\.apply\) await client\.query\('COMMIT'\);\s*else await client\.query\('ROLLBACK'\);/);
 
   assert.match(routes, /requireSensitiveInventoryRole/);
   assert.match(routes, /inventory\/lots\/:lotId\/block', inventoryCapability, sensitiveInventoryRole/);
