@@ -246,6 +246,18 @@ async function completeOrReuseOperation(tenantId, operationType, idempotencyKey,
   return null;
 }
 
+function resolveInventoryLotReceiptIdempotencyKey(context, lotInput, payload = {}) {
+  return normalizeNullableString(payload.idempotencyKey)
+    || buildStableIdempotencyKey('inventory_lot_receipt', [
+      context.clinic.id,
+      lotInput.productId,
+      lotInput.locationId,
+      lotInput.normalizedLotNumber,
+      lotInput.expiresAt,
+      lotInput.initialQuantity
+    ]);
+}
+
 async function beginInventoryLotOperation(input, client, onExisting) {
   const operation = await createInventoryLotOperation(input, client);
   if (!operation) {
@@ -341,12 +353,181 @@ async function updatePortalInventoryExpirationSettings(tenantId, payload, actor 
   return { ok: true, tenantId: context.tenantId, clinic: context.clinic, thresholds, timezone, auditAction: 'inventory_expiration_settings_updated' };
 }
 
+async function receiveInventoryLotWithClient(context, payload, actor = {}, client, options = {}) {
+  const lotInput = buildLotPayload(payload || {}, context, actor);
+  const idempotencyKey = resolveInventoryLotReceiptIdempotencyKey(context, lotInput, payload);
+  const reason = validateLotPayload(lotInput);
+  if (reason) return { ok: false, reason };
+
+  const product = options.product || await findProductById(lotInput.productId, context.clinic.id, client);
+  if (!product) return { ok: false, reason: 'product_not_found' };
+  if (product.deletedAt) return { ok: false, reason: 'product_deleted_cannot_receive_inventory_lots' };
+  if (product.inventoryTrackingMode !== 'lot_based') return { ok: false, reason: 'inventory_lot_product_mode_required' };
+
+  const runtime = options.runtime || await resolveInventoryRuntime(context);
+  const movementIdempotencyKey = normalizeNullableString(payload && payload.movementIdempotencyKey) || idempotencyKey;
+  const locationResult = await ensureLocationForTenant(context.clinic.id, lotInput.locationId, client);
+  if (!locationResult.ok) return locationResult;
+
+  const operationStart = await beginInventoryLotOperation(
+    {
+      tenantId: context.clinic.id,
+      productId: lotInput.productId,
+      operationType: 'create_lot',
+      idempotencyKey,
+      requestMetadata: {
+        locationId: lotInput.locationId,
+        lotNumber: lotInput.lotNumber,
+        normalizedLotNumber: lotInput.normalizedLotNumber,
+        expiresAt: lotInput.expiresAt,
+        quantity: lotInput.initialQuantity
+      },
+      createdBy: lotInput.createdBy
+    },
+    client,
+    async (existing) => {
+      if (existing.lotId) {
+        const lot = await findInventoryLotById(existing.lotId, context.clinic.id, client, {
+          todayISO: runtime.todayISO,
+          thresholds: runtime.thresholds
+        });
+        return { ok: true, idempotent: true, lot, movement: null };
+      }
+      return { ok: false, reason: existing.failureCode || 'inventory_lot_operation_conflict' };
+    }
+  );
+  if (!operationStart.ok || operationStart.idempotent === true || operationStart.reason) return operationStart;
+  const operation = operationStart.operation;
+
+  const exact = await findPhysicalInventoryLot(
+    {
+      tenantId: context.clinic.id,
+      productId: lotInput.productId,
+      locationId: lotInput.locationId,
+      lotNumber: lotInput.lotNumber,
+      expiresAt: lotInput.expiresAt
+    },
+    client,
+    { forUpdate: true, todayISO: runtime.todayISO, thresholds: runtime.thresholds }
+  );
+
+  let lot = exact;
+  const conflicting = exact
+    ? null
+    : await findConflictingInventoryLot(
+        {
+          tenantId: context.clinic.id,
+          productId: lotInput.productId,
+          locationId: lotInput.locationId,
+          lotNumber: lotInput.lotNumber
+        },
+        client,
+        { forUpdate: true, todayISO: runtime.todayISO, thresholds: runtime.thresholds }
+      );
+
+  if (conflicting && normalizeDateOnly(conflicting.expiresAt) !== lotInput.expiresAt) {
+    await updateInventoryLotOperation(
+      operation.id,
+      context.clinic.id,
+      { status: 'failed', failureCode: 'inventory_lot_conflict_requires_new_physical_lot' },
+      client
+    );
+    return { ok: false, reason: 'inventory_lot_conflict_requires_new_physical_lot' };
+  }
+
+  let movement;
+  if (lot) {
+    const previous = Number(lot.availableQuantity || 0);
+    lot = await incrementInventoryLot(lot.id, context.clinic.id, { incrementQuantity: lotInput.initialQuantity }, client);
+    movement = await insertInventoryMovement(
+      {
+        tenantId: context.clinic.id,
+        productId: lot.productId,
+        lotId: lot.id,
+        locationId: lot.locationId,
+        movementType: 'purchase_receipt',
+        quantity: lotInput.initialQuantity,
+        quantityBefore: previous,
+        quantityAfter: Number(lot.availableQuantity || 0),
+        referenceType: normalizeNullableString(payload && payload.referenceType),
+        referenceId: normalizeNullableString(payload && payload.referenceId),
+        reason: normalizeNullableString(payload && payload.reason) || 'Ingreso de lote',
+        metadata: {
+          ...lot.metadata,
+          auditAction: 'inventory_lot_incremented',
+          source: 'inventory_lot_create',
+          idempotencyKey
+        },
+        createdBy: lotInput.createdBy,
+        idempotencyKey: movementIdempotencyKey
+      },
+      client
+    );
+    await updateInventoryLotOperation(
+      operation.id,
+      context.clinic.id,
+      { lotId: lot.id, status: 'completed', result: { mode: 'incremented', lotId: lot.id, movementId: movement.id } },
+      client
+    );
+  } else {
+    lot = await createInventoryLot(lotInput, client);
+    movement = await insertInventoryMovement(
+      {
+        tenantId: context.clinic.id,
+        productId: lot.productId,
+        lotId: lot.id,
+        locationId: lot.locationId,
+        movementType: MOVEMENT_TYPE_SET.has(normalizeString(payload && payload.movementType).toLowerCase())
+          ? normalizeString(payload.movementType).toLowerCase()
+          : 'purchase_receipt',
+        quantity: lot.initialQuantity,
+        quantityBefore: 0,
+        quantityAfter: lot.availableQuantity,
+        referenceType: normalizeNullableString(payload && payload.referenceType),
+        referenceId: normalizeNullableString(payload && payload.referenceId),
+        reason: normalizeNullableString(payload && payload.reason) || 'Ingreso de lote',
+        metadata: {
+          ...lot.metadata,
+          auditAction: 'inventory_lot_created',
+          source: 'inventory_lot_create',
+          idempotencyKey
+        },
+        createdBy: lot.createdBy,
+        idempotencyKey: movementIdempotencyKey
+      },
+      client
+    );
+    await updateInventoryLotOperation(
+      operation.id,
+      context.clinic.id,
+      { lotId: lot.id, status: 'completed', result: { mode: 'created', lotId: lot.id, movementId: movement.id } },
+      client
+    );
+  }
+
+  await syncProductStockFromLots(lot.productId, context.clinic.id, client, { todayISO: runtime.todayISO });
+  if (options.skipAudit !== true) {
+    await createInventoryAuditEvent(
+      context,
+      actor,
+      'inventory_lot_receipt_created',
+      {
+        productId: lot.productId,
+        lotId: lot.id,
+        locationId: lot.locationId,
+        quantity: lotInput.initialQuantity,
+        idempotencyKey
+      },
+      client
+    );
+  }
+  return { ok: true, idempotent: false, lot, movement };
+}
+
 async function createPortalInventoryLot(tenantId, payload, actor = {}) {
   const context = await resolveInventoryContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
   const lotInput = buildLotPayload(payload || {}, context, actor);
-  const idempotencyKey = normalizeNullableString(payload && payload.idempotencyKey)
-    || buildStableIdempotencyKey('inventory_lot_receipt', [context.clinic.id, lotInput.productId, lotInput.locationId, lotInput.normalizedLotNumber, lotInput.expiresAt, lotInput.initialQuantity]);
   const reason = validateLotPayload(lotInput);
   if (reason) return { ok: false, tenantId: context.tenantId, reason };
 
@@ -357,123 +538,7 @@ async function createPortalInventoryLot(tenantId, payload, actor = {}) {
 
   const runtime = await resolveInventoryRuntime(context);
   const created = await withTransaction(async (client) => {
-    const locationResult = await ensureLocationForTenant(context.clinic.id, lotInput.locationId, client);
-    if (!locationResult.ok) return locationResult;
-
-    const operationStart = await beginInventoryLotOperation(
-      {
-        tenantId: context.clinic.id,
-        productId: lotInput.productId,
-        operationType: 'create_lot',
-        idempotencyKey,
-        requestMetadata: {
-          locationId: lotInput.locationId,
-          lotNumber: lotInput.lotNumber,
-          normalizedLotNumber: lotInput.normalizedLotNumber,
-          expiresAt: lotInput.expiresAt,
-          quantity: lotInput.initialQuantity
-        },
-        createdBy: lotInput.createdBy
-      },
-      client,
-      async (existing) => {
-        if (existing.lotId) {
-          const lot = await findInventoryLotById(existing.lotId, context.clinic.id, client, { todayISO: runtime.todayISO, thresholds: runtime.thresholds });
-          return { ok: true, idempotent: true, lot };
-        }
-        return { ok: false, reason: existing.failureCode || 'inventory_lot_operation_conflict' };
-      }
-    );
-    if (!operationStart.ok || operationStart.idempotent === true || operationStart.reason) return operationStart;
-    const operation = operationStart.operation;
-
-    const exact = await findPhysicalInventoryLot(
-      {
-        tenantId: context.clinic.id,
-        productId: lotInput.productId,
-        locationId: lotInput.locationId,
-        lotNumber: lotInput.lotNumber,
-        expiresAt: lotInput.expiresAt
-      },
-      client,
-      { forUpdate: true, todayISO: runtime.todayISO, thresholds: runtime.thresholds }
-    );
-
-    let lot = exact;
-    const conflicting = exact
-      ? null
-      : await findConflictingInventoryLot(
-          {
-            tenantId: context.clinic.id,
-            productId: lotInput.productId,
-            locationId: lotInput.locationId,
-            lotNumber: lotInput.lotNumber
-          },
-          client,
-          { forUpdate: true, todayISO: runtime.todayISO, thresholds: runtime.thresholds }
-        );
-
-    if (conflicting && normalizeDateOnly(conflicting.expiresAt) !== lotInput.expiresAt) {
-      await updateInventoryLotOperation(operation.id, context.clinic.id, { status: 'failed', failureCode: 'inventory_lot_conflict_requires_new_physical_lot' }, client);
-      return { ok: false, reason: 'inventory_lot_conflict_requires_new_physical_lot' };
-    }
-
-    if (lot) {
-      const previous = Number(lot.availableQuantity || 0);
-      lot = await incrementInventoryLot(lot.id, context.clinic.id, { incrementQuantity: lotInput.initialQuantity }, client);
-      await insertInventoryMovement(
-        {
-          tenantId: context.clinic.id,
-          productId: lot.productId,
-          lotId: lot.id,
-          locationId: lot.locationId,
-          movementType: 'purchase_receipt',
-          quantity: lotInput.initialQuantity,
-          quantityBefore: previous,
-          quantityAfter: Number(lot.availableQuantity || 0),
-          referenceType: normalizeNullableString(payload && payload.referenceType),
-          referenceId: normalizeNullableString(payload && payload.referenceId),
-          reason: normalizeNullableString(payload && payload.reason) || 'Ingreso de lote',
-          metadata: { ...lot.metadata, auditAction: 'inventory_lot_incremented', source: 'inventory_lot_create', idempotencyKey },
-          createdBy: lotInput.createdBy,
-          idempotencyKey
-        },
-        client
-      );
-      await updateInventoryLotOperation(operation.id, context.clinic.id, { lotId: lot.id, status: 'completed', result: { mode: 'incremented', lotId: lot.id } }, client);
-    } else {
-      lot = await createInventoryLot(lotInput, client);
-      await insertInventoryMovement(
-        {
-          tenantId: context.clinic.id,
-          productId: lot.productId,
-          lotId: lot.id,
-          locationId: lot.locationId,
-          movementType: MOVEMENT_TYPE_SET.has(normalizeString(payload && payload.movementType).toLowerCase()) ? normalizeString(payload.movementType).toLowerCase() : 'purchase_receipt',
-          quantity: lot.initialQuantity,
-          quantityBefore: 0,
-          quantityAfter: lot.availableQuantity,
-          referenceType: normalizeNullableString(payload && payload.referenceType),
-          referenceId: normalizeNullableString(payload && payload.referenceId),
-          reason: normalizeNullableString(payload && payload.reason) || 'Ingreso de lote',
-          metadata: { ...lot.metadata, auditAction: 'inventory_lot_created', source: 'inventory_lot_create', idempotencyKey },
-          createdBy: lot.createdBy,
-          idempotencyKey
-        },
-        client
-      );
-      await updateInventoryLotOperation(operation.id, context.clinic.id, { lotId: lot.id, status: 'completed', result: { mode: 'created', lotId: lot.id } }, client);
-    }
-
-    await syncProductStockFromLots(lot.productId, context.clinic.id, client, { todayISO: runtime.todayISO });
-    await createInventoryAuditEvent(context, actor, 'inventory_lot_receipt_created', {
-      productId: lot.productId,
-      lotId: lot.id,
-      locationId: lot.locationId,
-      quantity: lotInput.initialQuantity,
-      idempotencyKey
-    }, client);
-    return { ok: true, idempotent: false, lot };
+    return receiveInventoryLotWithClient(context, payload, actor, client, { runtime, product });
   });
 
   if (!created.ok) return { ok: false, tenantId: context.tenantId, reason: created.reason };
@@ -914,5 +979,6 @@ module.exports = {
   updatePortalInventoryLocation,
   blockPortalInventoryLot,
   unblockPortalInventoryLot,
-  updatePortalInventoryLotExpiration
+  updatePortalInventoryLotExpiration,
+  receiveInventoryLotWithClient
 };

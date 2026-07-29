@@ -63,6 +63,11 @@ const {
   setPortalSupplierStatus
 } = require('../services/portal-suppliers.service');
 const {
+  listPortalPurchaseReceipts,
+  getPortalPurchaseReceiptDetail,
+  createPortalPurchaseReceipt
+} = require('../services/purchase-receipts.service');
+const {
   listPortalInventoryLots,
   getPortalInventoryLot: getPortalInventoryLotDetail,
   getPortalInventoryLotHistory,
@@ -4155,6 +4160,137 @@ async function getPortalSuppliers(req, res) {
   }
 }
 
+async function getPortalPurchaseReceiptsController(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await listPortalPurchaseReceipts(tenantId, req.query || {});
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_purchase_receipt_page' ||
+        result.reason === 'invalid_purchase_receipt_page_size' ||
+        result.reason === 'invalid_purchase_receipt_sort' ||
+        result.reason === 'invalid_supplier_id' ||
+        result.reason === 'invalid_inventory_location_id' ||
+        result.reason === 'invalid_purchase_receipt_date_from' ||
+        result.reason === 'invalid_purchase_receipt_date_to' ||
+        result.reason === 'invalid_purchase_receipt_date_range'
+          ? 400
+          : 404;
+
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        items: result.items,
+        page: result.page,
+        pageSize: result.pageSize,
+        total: result.total
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_purchase_receipts_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
+async function getPortalPurchaseReceiptController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const receiptId = String(req.params.receiptId || '').trim();
+
+  try {
+    const result = await getPortalPurchaseReceiptDetail(tenantId, receiptId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_purchase_receipt_id' ||
+        result.reason === 'invalid_purchase_receipt_id'
+          ? 400
+          : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.receipt
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_purchase_receipt_fetch_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalPurchaseReceiptController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await createPortalPurchaseReceipt(tenantId, req.body || {}, actor);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'missing_supplier_id' ||
+        result.reason === 'invalid_supplier_id' ||
+        result.reason === 'missing_inventory_location_id' ||
+        result.reason === 'invalid_inventory_location_id' ||
+        result.reason === 'missing_purchase_receipt_received_at' ||
+        result.reason === 'invalid_purchase_receipt_received_at' ||
+        result.reason === 'missing_purchase_receipt_idempotency_key' ||
+        result.reason === 'missing_purchase_receipt_items' ||
+        result.reason === 'invalid_purchase_receipt_item_operational_fields' ||
+        result.reason === 'missing_product_id' ||
+        result.reason === 'invalid_product_id' ||
+        result.reason === 'invalid_purchase_receipt_quantity' ||
+        result.reason === 'invalid_purchase_receipt_unit_cost' ||
+        result.reason === 'invalid_purchase_receipt_expires_at' ||
+        result.reason === 'purchase_receipt_legacy_lot_not_allowed' ||
+        result.reason === 'purchase_receipt_lot_number_required' ||
+        result.reason === 'duplicate_purchase_receipt_item' ||
+        result.reason === 'legacy_purchase_receipt_quantity_must_be_integer'
+          ? 400
+          : result.reason === 'supplier_inactive' ||
+              result.reason === 'purchase_receipt_lot_expired' ||
+              result.reason === 'inventory_lot_conflict_requires_new_physical_lot' ||
+              result.reason === 'purchase_receipt_idempotency_payload_mismatch' ||
+              result.reason === 'inventory_negative_stock_blocked' ||
+              result.reason === 'inventory_zero_delta_not_allowed'
+            ? 409
+            : 404;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(result.idempotent ? 200 : 201).json({
+      success: true,
+      data: {
+        receipt: result.receipt,
+        idempotent: result.idempotent
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_purchase_receipt_create_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalSupplier(req, res) {
   const tenantId = getRequestTenantId(req);
   const supplierId = String(req.params.supplierId || '').trim();
@@ -5726,11 +5862,14 @@ module.exports = {
   postPortalOrderPaymentValidation,
   getPortalProducts,
   getPortalSuppliers,
+  getPortalPurchaseReceiptsController,
+  getPortalPurchaseReceiptController,
   getPortalSupplier,
   getPortalProductCategories,
   getPortalProduct,
   postPortalProduct,
   postPortalSupplier,
+  postPortalPurchaseReceiptController,
   postPortalProductImageUpload,
   postPortalProductCategory,
   postPortalProductsBulk,

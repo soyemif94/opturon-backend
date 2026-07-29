@@ -25,11 +25,14 @@ const {
   updatePortalOrderStatus,
   postPortalOrderPaymentValidation,
   getPortalProducts,
+  getPortalPurchaseReceiptsController,
+  getPortalPurchaseReceiptController,
   getPortalSuppliers,
   getPortalSupplier,
   getPortalProductCategories,
   getPortalProduct,
   postPortalProduct,
+  postPortalPurchaseReceiptController,
   postPortalSupplier,
   postPortalProductImageUpload,
   postPortalProductCategory,
@@ -355,8 +358,11 @@ router.patch('/tenants/:tenantId/orders/:orderId/status', ordersCapability, upda
 router.post('/tenants/:tenantId/orders/:orderId/payment-validation', ordersCapability, postPortalOrderPaymentValidation);
 router.get('/tenants/:tenantId/products', catalogModule, getPortalProducts);
 router.get('/tenants/:tenantId/suppliers', inventoryCapability, getPortalSuppliers);
+router.get('/tenants/:tenantId/purchase-receipts', inventoryCapability, getPortalPurchaseReceiptsController);
+router.get('/tenants/:tenantId/purchase-receipts/:receiptId', inventoryCapability, getPortalPurchaseReceiptController);
 router.get('/tenants/:tenantId/suppliers/:supplierId', inventoryCapability, getPortalSupplier);
 router.post('/tenants/:tenantId/suppliers', inventoryCapability, inventoryReceiptRole, postPortalSupplier);
+router.post('/tenants/:tenantId/purchase-receipts', inventoryCapability, inventoryReceiptRole, postPortalPurchaseReceiptController);
 router.patch('/tenants/:tenantId/suppliers/:supplierId', inventoryCapability, inventoryReceiptRole, patchPortalSupplier);
 router.patch('/tenants/:tenantId/suppliers/:supplierId/status', inventoryCapability, inventoryReceiptRole, patchPortalSupplierStatus);
 router.get('/tenants/:tenantId/product-categories', catalogModule, getPortalProductCategories);
