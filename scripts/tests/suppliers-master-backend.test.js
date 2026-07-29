@@ -21,6 +21,33 @@ function sanitizeMigrationForIsolatedExecution(source) {
     .replace(/DEFAULT gen_random_uuid\(\)/g, '');
 }
 
+function extractFunctionBlock(source, functionName) {
+  const start = source.indexOf(`async function ${functionName}`);
+  if (start === -1) {
+    throw new Error(`function not found: ${functionName}`);
+  }
+  const nextStart = source.indexOf('\nasync function ', start + 1);
+  return source.slice(start, nextStart === -1 ? source.length : nextStart);
+}
+
+function loadProductsRepositoryWithDb(db) {
+  const repoPath = path.join(root, 'src/repositories/products.repository.js');
+  const dbClientPath = path.join(root, 'src/db/client.js');
+  delete require.cache[repoPath];
+  delete require.cache[dbClientPath];
+  require.cache[dbClientPath] = {
+    id: dbClientPath,
+    filename: dbClientPath,
+    loaded: true,
+    exports: {
+      query: (text, params) => db.query(text, params),
+      withTransaction: async (fn) => fn({ query: (text, params) => db.query(text, params) }),
+      closePool: async () => {}
+    }
+  };
+  return require(repoPath);
+}
+
 async function assertRejectsQuery(db, query, expectedPattern, params = []) {
   try {
     await db.query(query, params);
@@ -48,12 +75,35 @@ async function runSchemaBehaviorChecks() {
       name TEXT NOT NULL
     );
 
+    CREATE TABLE product_categories (
+      id UUID PRIMARY KEY,
+      "clinicId" UUID NOT NULL REFERENCES clinics(id) ON DELETE CASCADE,
+      name TEXT NOT NULL
+    );
+
     CREATE TABLE products (
       id UUID PRIMARY KEY,
       "clinicId" UUID NOT NULL REFERENCES clinics(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
+      description TEXT NULL,
+      price NUMERIC NULL,
+      "unitPrice" NUMERIC NULL,
+      currency TEXT NULL,
+      "vatRate" NUMERIC NULL,
+      stock INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active',
-      "deletedAt" TIMESTAMPTZ NULL
+      sku TEXT NULL,
+      "internalCode" TEXT NULL,
+      "categoryId" UUID NULL REFERENCES product_categories(id) ON DELETE SET NULL,
+      "expirationDate" DATE NULL,
+      "discountPercentage" NUMERIC NULL,
+      metadata JSONB NULL DEFAULT '{}'::jsonb,
+      "deletedAt" TIMESTAMPTZ NULL,
+      "deletedBy" TEXT NULL,
+      "deleteReason" TEXT NULL,
+      "deletionMetadata" JSONB NULL DEFAULT '{}'::jsonb,
+      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 
@@ -145,6 +195,24 @@ async function runSchemaBehaviorChecks() {
   const inactiveLinked = await db.query(`SELECT "defaultSupplierId" FROM products WHERE id = $1`, [productA]);
   assert.strictEqual(inactiveLinked.rows[0].defaultSupplierId, supplierA);
 
+  const productsRepository = loadProductsRepositoryWithDb(db);
+  const listedProducts = await productsRepository.listProductsByClinicId(clinicA);
+  assert.strictEqual(listedProducts.length, 1);
+  assert.strictEqual(listedProducts[0].id, productA);
+  assert.strictEqual(listedProducts[0].defaultSupplierId, supplierA);
+  assert.strictEqual(listedProducts[0].defaultSupplierStatus, 'inactive');
+  assert.strictEqual(listedProducts[0].defaultSupplier, 'Distribuidora A');
+  assert.strictEqual(listedProducts[0].defaultSupplierLegacyName, null);
+
+  const listedProductsForClinicB = await productsRepository.listProductsByClinicId(clinicB);
+  assert.strictEqual(listedProductsForClinicB.length, 1);
+  assert.strictEqual(listedProductsForClinicB[0].id, productB);
+  assert.strictEqual(listedProductsForClinicB[0].defaultSupplierId, null);
+
+  const crossTenantProducts = await productsRepository.findProductsByIds(clinicA, [productA, productB], null, { includeDeleted: true });
+  assert.strictEqual(crossTenantProducts.length, 1);
+  assert.strictEqual(crossTenantProducts[0].id, productA);
+
   await assertRejectsQuery(
     db,
     `DELETE FROM suppliers WHERE id = $1`,
@@ -198,6 +266,10 @@ assert(service.includes("replace(/[^a-z0-9]+/gi, '').toUpperCase()"));
 assert.match(productRepo, /defaultSupplierId/);
 assert.match(productRepo, /defaultSupplierLegacyName/);
 assert.match(productRepo, /defaultSupplierStatus/);
+assert.match(
+  extractFunctionBlock(productRepo, 'listProductsByClinicId'),
+  /LEFT JOIN suppliers s\s+ON s\.id = p\."defaultSupplierId"\s+AND s\."tenantId" = p\."clinicId"/
+);
 assert.match(productService, /product_default_supplier_not_found/);
 assert.match(productService, /product_default_supplier_inactive/);
 assert.match(productService, /invalid_product_default_supplier/);

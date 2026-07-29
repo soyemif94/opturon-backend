@@ -273,6 +273,9 @@ async function listProductsByClinicId(clinicId, client = null) {
      FROM products p
      LEFT JOIN product_categories c
        ON c.id = p."categoryId"
+     LEFT JOIN suppliers s
+       ON s.id = p."defaultSupplierId"
+      AND s."tenantId" = p."clinicId"
      WHERE p."clinicId" = $1::uuid
        AND p."deletedAt" IS NULL
      ORDER BY p."createdAt" DESC`,
