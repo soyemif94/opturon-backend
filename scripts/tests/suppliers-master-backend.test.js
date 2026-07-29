@@ -48,6 +48,24 @@ function loadProductsRepositoryWithDb(db) {
   return require(repoPath);
 }
 
+function loadSuppliersRepositoryWithDb(db) {
+  const repoPath = path.join(root, 'src/repositories/suppliers.repository.js');
+  const dbClientPath = path.join(root, 'src/db/client.js');
+  delete require.cache[repoPath];
+  delete require.cache[dbClientPath];
+  require.cache[dbClientPath] = {
+    id: dbClientPath,
+    filename: dbClientPath,
+    loaded: true,
+    exports: {
+      query: (text, params) => db.query(text, params),
+      withTransaction: async (fn) => fn({ query: (text, params) => db.query(text, params) }),
+      closePool: async () => {}
+    }
+  };
+  return require(repoPath);
+}
+
 async function assertRejectsQuery(db, query, expectedPattern, params = []) {
   try {
     await db.query(query, params);
@@ -183,6 +201,18 @@ async function runSchemaBehaviorChecks() {
   await db.query(`UPDATE products SET "defaultSupplierId" = $1 WHERE id = $2`, [supplierA, productA]);
   await db.query(`UPDATE products SET "defaultSupplierId" = $1 WHERE id = $2`, [supplierB, productB]);
   await db.query(`UPDATE products SET "defaultSupplierId" = NULL WHERE id = $1`, [productB]);
+
+  const suppliersRepository = loadSuppliersRepositoryWithDb(db);
+  const listedSuppliers = await suppliersRepository.listSuppliersByTenantId(clinicA, {
+    page: 1,
+    pageSize: 100,
+    sort: 'name_asc'
+  });
+  assert.strictEqual(listedSuppliers.total, 1);
+  assert.strictEqual(listedSuppliers.items.length, 1);
+  assert.strictEqual(listedSuppliers.items[0].id, supplierA);
+  assert.strictEqual(listedSuppliers.items[0].displayName, 'Distribuidora A');
+  assert.strictEqual(listedSuppliers.items[0].linkedProductsCount, 1);
 
   await assertRejectsQuery(
     db,

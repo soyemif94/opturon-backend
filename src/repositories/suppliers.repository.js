@@ -59,10 +59,10 @@ function buildListWhereClause(filters, params) {
 }
 
 function resolveOrderBy(sort) {
-  if (sort === 'name_desc') return 'display_name DESC, s."updatedAt" DESC';
-  if (sort === 'updated_asc') return 's."updatedAt" ASC, display_name ASC';
-  if (sort === 'updated_desc') return 's."updatedAt" DESC, display_name ASC';
-  return 'display_name ASC, s."updatedAt" DESC';
+  if (sort === 'name_desc') return 'filtered.display_name DESC, filtered."updatedAt" DESC';
+  if (sort === 'updated_asc') return 'filtered."updatedAt" ASC, filtered.display_name ASC';
+  if (sort === 'updated_desc') return 'filtered."updatedAt" DESC, filtered.display_name ASC';
+  return 'filtered.display_name ASC, filtered."updatedAt" DESC';
 }
 
 async function listSuppliersByTenantId(tenantId, filters = {}, client = null) {
