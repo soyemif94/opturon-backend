@@ -36,6 +36,7 @@ const {
   countProductsForCategory,
   deleteProductCategory
 } = require('../repositories/product-categories.repository');
+const { findSupplierById } = require('../repositories/suppliers.repository');
 
 const PRODUCT_STATUSES = new Set(['active', 'archived']);
 
@@ -152,6 +153,18 @@ function normalizeDateOnly(value) {
   return normalized;
 }
 
+async function resolveStructuredSupplierAssignment(clinicId, supplierId, options = {}) {
+  const safeSupplierId = normalizeString(supplierId);
+  if (!safeSupplierId) return { ok: true, supplier: null };
+
+  const supplier = await findSupplierById(safeSupplierId, clinicId, options.client || null);
+  if (!supplier) return { ok: false, reason: 'product_default_supplier_not_found' };
+  if (options.allowInactive !== true && supplier.status !== 'active') {
+    return { ok: false, reason: 'product_default_supplier_inactive' };
+  }
+  return { ok: true, supplier };
+}
+
 function buildProductPayload(payload, fallbackStatus = 'active') {
   const requestedStatus = normalizeString(payload && payload.status).toLowerCase();
   const unitPrice = normalizeNumber(payload && (payload.unitPrice ?? payload.price));
@@ -179,6 +192,7 @@ function buildProductPayload(payload, fallbackStatus = 'active') {
     unitOfMeasure: normalizeString(payload && payload.unitOfMeasure) || null,
     cost,
     defaultSupplier: normalizeString(payload && payload.defaultSupplier) || null,
+    defaultSupplierId: normalizeString(payload && payload.defaultSupplierId) || null,
     weight,
     weightUnit: normalizeString(payload && payload.weightUnit) || null,
     presentation: normalizeString(payload && payload.presentation) || null,
@@ -206,6 +220,9 @@ function validateProductPayload(product) {
     if (!Number.isFinite(product.weight) || product.weight < 0) return 'invalid_product_weight';
   }
   if (product.image === '__invalid__') return 'invalid_product_image';
+  if (product.defaultSupplierId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(product.defaultSupplierId)) {
+    return 'invalid_product_default_supplier';
+  }
   if (product.discountPercentage !== null && product.discountPercentage !== undefined) {
     if (!Number.isFinite(product.discountPercentage) || product.discountPercentage <= 0 || product.discountPercentage > 100) {
       return 'invalid_product_discount_percentage';
@@ -339,6 +356,13 @@ async function createProductForContext(context, payload) {
     const category = await findProductCategoryById(product.categoryId, context.clinic.id);
     if (!category) {
       return { ok: false, tenantId: context.tenantId, reason: 'product_category_not_found' };
+    }
+  }
+
+  if (product.defaultSupplierId) {
+    const supplierResolution = await resolveStructuredSupplierAssignment(context.clinic.id, product.defaultSupplierId);
+    if (!supplierResolution.ok) {
+      return { ok: false, tenantId: context.tenantId, reason: supplierResolution.reason };
     }
   }
 
@@ -542,6 +566,14 @@ async function patchPortalProduct(tenantId, productId, payload) {
     const category = await findProductCategoryById(next.categoryId, context.clinic.id);
     if (!category) {
       return { ok: false, tenantId: context.tenantId, reason: 'product_category_not_found' };
+    }
+  }
+
+  if (next.defaultSupplierId) {
+    const allowInactive = current.defaultSupplierId === next.defaultSupplierId && current.defaultSupplierStatus === 'inactive';
+    const supplierResolution = await resolveStructuredSupplierAssignment(context.clinic.id, next.defaultSupplierId, { allowInactive });
+    if (!supplierResolution.ok) {
+      return { ok: false, tenantId: context.tenantId, reason: supplierResolution.reason };
     }
   }
 
