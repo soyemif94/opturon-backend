@@ -52,6 +52,7 @@ const {
   getPortalInventoryLots,
   getPortalInventoryLot,
   getPortalInventoryLotHistoryController,
+  getPortalInventoryMovementsController,
   getPortalInventoryProductHistoryController,
   getPortalInventoryExpirationSummary,
   getPortalInventoryExpirationSettings,
@@ -382,6 +383,7 @@ router.post('/tenants/:tenantId/catalog-imports/:importId/rollback/preview', req
 router.post('/tenants/:tenantId/catalog-imports/:importId/rollback', requirePortalInternalAuth, catalogModule, postPortalCatalogImportRollbackExecute);
 router.get('/tenants/:tenantId/catalog-imports/:importId/errors', requirePortalInternalAuth, catalogModule, getPortalCatalogImportErrors);
 router.get('/tenants/:tenantId/inventory/products', inventoryCapability, getPortalInventoryProductsController);
+router.get('/tenants/:tenantId/inventory/movements', inventoryCapability, getPortalInventoryMovementsController);
 router.get('/tenants/:tenantId/inventory/products/:productId/movements', inventoryCapability, getPortalInventoryProductHistoryController);
 router.post('/tenants/:tenantId/inventory/products/:productId/movements', requirePortalInternalAuth, inventoryCapability, postPortalInventoryMovementController);
 router.get('/tenants/:tenantId/inventory/lots', inventoryCapability, getPortalInventoryLots);

@@ -10,6 +10,7 @@ const {
   updateInventoryBalanceQuantity,
   listInventoryBalancesByTenant,
   listInventoryMovementsByProductId,
+  listInventoryMovementsByTenant,
   findInventoryMovementByIdempotencyKey
 } = require('../repositories/inventory-base.repository');
 const { normalizeInventoryMovementTypeForApi } = require('../utils/inventory-movement-types');
@@ -25,6 +26,22 @@ const MOVEMENT_TYPES = new Set([
   'return_out'
 ]);
 
+const MOVEMENT_LIST_TYPES = new Set([
+  'initial_stock',
+  'opening_balance',
+  'purchase_receipt',
+  'manual_increase',
+  'manual_decrease',
+  'correction',
+  'return_in',
+  'return_out',
+  'manual_adjustment_in',
+  'manual_adjustment_out',
+  'expired_writeoff',
+  'cancellation',
+  'sale'
+]);
+
 function normalizeString(value) {
   return String(value || '').trim();
 }
@@ -33,6 +50,17 @@ function normalizeNumber(value) {
   if (value === undefined || value === null || value === '') return NaN;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim());
+}
+
+function normalizeDateOnly(value) {
+  const normalized = normalizeString(value);
+  if (!normalized) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null;
+  return normalized;
 }
 
 function normalizeMetadata(value) {
@@ -150,6 +178,73 @@ async function getPortalInventoryProductHistory(tenantId, productId, options = {
     clinic: context.clinic,
     product,
     movements
+  };
+}
+
+function normalizeInventoryMovementsListFilters(filters = {}) {
+  const page = Number.parseInt(String(filters.page || '1'), 10);
+  if (!Number.isInteger(page) || page <= 0) return { ok: false, reason: 'invalid_inventory_movements_page' };
+
+  const pageSize = Number.parseInt(String(filters.pageSize || '25'), 10);
+  if (!Number.isInteger(pageSize) || pageSize <= 0 || pageSize > 100) {
+    return { ok: false, reason: 'invalid_inventory_movements_page_size' };
+  }
+
+  const movementType = normalizeString(filters.movementType).toLowerCase() || null;
+  if (movementType && !MOVEMENT_LIST_TYPES.has(movementType)) {
+    return { ok: false, reason: 'invalid_inventory_movements_type' };
+  }
+
+  const productId = normalizeString(filters.productId) || null;
+  if (productId && !isUuid(productId)) return { ok: false, reason: 'invalid_inventory_movements_product_id' };
+
+  const locationId = normalizeString(filters.locationId) || null;
+  if (locationId && !isUuid(locationId)) return { ok: false, reason: 'invalid_inventory_movements_location_id' };
+
+  const dateFrom = filters.dateFrom == null || filters.dateFrom === '' ? null : normalizeDateOnly(filters.dateFrom);
+  if (filters.dateFrom && !dateFrom) return { ok: false, reason: 'invalid_inventory_movements_date_from' };
+
+  const dateTo = filters.dateTo == null || filters.dateTo === '' ? null : normalizeDateOnly(filters.dateTo);
+  if (filters.dateTo && !dateTo) return { ok: false, reason: 'invalid_inventory_movements_date_to' };
+
+  if (dateFrom && dateTo && dateFrom > dateTo) {
+    return { ok: false, reason: 'invalid_inventory_movements_date_range' };
+  }
+
+  return {
+    ok: true,
+    filters: {
+      page,
+      pageSize,
+      search: normalizeString(filters.search) || null,
+      movementType,
+      locationId,
+      productId,
+      lotNumber: normalizeString(filters.lotNumber) || null,
+      dateFrom,
+      dateTo
+    }
+  };
+}
+
+async function listPortalInventoryMovements(tenantId, filters = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const normalized = normalizeInventoryMovementsListFilters(filters);
+  if (!normalized.ok) {
+    return { ok: false, tenantId: context.tenantId, reason: normalized.reason };
+  }
+
+  const result = await listInventoryMovementsByTenant(context.clinic.id, normalized.filters);
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    page: result.page,
+    pageSize: result.pageSize,
+    total: result.total,
+    items: result.items
   };
 }
 
@@ -380,6 +475,7 @@ module.exports = {
   reserveNextInternalCode,
   assignInternalCodeToProduct,
   listPortalInventoryProducts,
+  listPortalInventoryMovements,
   getPortalInventoryProductHistory,
   createPortalInventoryMovement,
   applyInventoryMovementWithClient

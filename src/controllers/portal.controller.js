@@ -87,6 +87,7 @@ const {
 } = require('../services/inventory-lots.service');
 const {
   listPortalInventoryProducts,
+  listPortalInventoryMovements,
   getPortalInventoryProductHistory,
   createPortalInventoryMovement
 } = require('../services/inventory-base.service');
@@ -4648,6 +4649,56 @@ async function getPortalInventoryProductHistoryController(req, res) {
   }
 }
 
+async function getPortalInventoryMovementsController(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await listPortalInventoryMovements(tenantId, {
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+      search: req.query.search,
+      movementType: req.query.movementType,
+      locationId: req.query.locationId,
+      productId: req.query.productId,
+      lotNumber: req.query.lotNumber,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo
+    });
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' ||
+        result.reason === 'invalid_inventory_movements_page' ||
+        result.reason === 'invalid_inventory_movements_page_size' ||
+        result.reason === 'invalid_inventory_movements_type' ||
+        result.reason === 'invalid_inventory_movements_location_id' ||
+        result.reason === 'invalid_inventory_movements_product_id' ||
+        result.reason === 'invalid_inventory_movements_date_from' ||
+        result.reason === 'invalid_inventory_movements_date_to' ||
+        result.reason === 'invalid_inventory_movements_date_range'
+          ? 400
+          : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        page: result.page,
+        pageSize: result.pageSize,
+        total: result.total,
+        items: result.items
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_movements_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalInventoryMovementController(req, res) {
   const tenantId = getRequestTenantId(req);
   const productId = String(req.params.productId || req.body?.productId || '').trim();
@@ -5888,6 +5939,7 @@ module.exports = {
   getPortalInventoryLots,
   getPortalInventoryLot,
   getPortalInventoryLotHistoryController,
+  getPortalInventoryMovementsController,
   getPortalInventoryProductHistoryController,
   getPortalInventoryExpirationSummary,
   getPortalInventoryExpirationSettings,

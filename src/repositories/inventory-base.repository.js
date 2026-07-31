@@ -15,6 +15,11 @@ function numberValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function stringValue(value) {
+  if (value === undefined || value === null) return null;
+  return String(value);
+}
+
 function normalizeInventoryMovementRow(row) {
   if (!row) return null;
   const metadata = normalizeMetadata(row.metadata);
@@ -22,6 +27,37 @@ function normalizeInventoryMovementRow(row) {
     ...row,
     movementType: normalizeInventoryMovementTypeForApi(row.movementType),
     metadata
+  };
+}
+
+function normalizeInventoryMovementListRow(row) {
+  if (!row) return null;
+  const metadata = normalizeMetadata(row.metadata);
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    productId: row.productId,
+    productName: row.productName || null,
+    productSku: row.productSku || null,
+    internalCode: row.internalCode || null,
+    lotId: row.lotId || null,
+    lotNumber: row.lotNumber || null,
+    locationId: row.locationId || null,
+    locationName: row.locationName || null,
+    movementType: normalizeInventoryMovementTypeForApi(row.movementType),
+    quantity: stringValue(row.quantity) || '0',
+    quantityBefore: stringValue(row.quantityBefore),
+    quantityAfter: stringValue(row.quantityAfter),
+    referenceType: row.referenceType || null,
+    referenceId: row.referenceId || null,
+    reason: row.reason || null,
+    metadata,
+    createdBy: row.createdBy || null,
+    actorName: row.actorName || null,
+    createdAt: row.createdAt,
+    idempotencyKey: row.idempotencyKey || null,
+    unit: row.unit || null,
+    status: row.status || 'posted'
   };
 }
 
@@ -290,6 +326,125 @@ async function listInventoryMovementsByProductId(tenantId, productId, options = 
   return result.rows.map(normalizeInventoryMovementRow);
 }
 
+async function listInventoryMovementsByTenant(tenantId, filters = {}, client = null) {
+  const params = [tenantId];
+  const conditions = ['im."tenantId" = $1::uuid'];
+
+  if (filters.productId) {
+    params.push(filters.productId);
+    conditions.push(`im."productId" = $${params.length}::uuid`);
+  }
+
+  if (filters.locationId) {
+    params.push(filters.locationId);
+    conditions.push(`im."locationId" = $${params.length}::uuid`);
+  }
+
+  if (filters.movementType) {
+    params.push(filters.movementType);
+    conditions.push(`im."movementType" = $${params.length}`);
+  }
+
+  if (filters.dateFrom) {
+    params.push(filters.dateFrom);
+    conditions.push(`im."createdAt" >= $${params.length}::date`);
+  }
+
+  if (filters.dateTo) {
+    params.push(filters.dateTo);
+    conditions.push(`im."createdAt" < ($${params.length}::date + INTERVAL '1 day')`);
+  }
+
+  if (filters.lotNumber) {
+    params.push(`%${String(filters.lotNumber).trim()}%`);
+    conditions.push(`COALESCE(l."lotNumber", '') ILIKE $${params.length}`);
+  }
+
+  if (filters.search) {
+    params.push(`%${String(filters.search).trim()}%`);
+    conditions.push(`(
+      p.name ILIKE $${params.length}
+      OR COALESCE(p.sku, '') ILIKE $${params.length}
+      OR COALESCE(p."internalCode", '') ILIKE $${params.length}
+      OR COALESCE(l."lotNumber", '') ILIKE $${params.length}
+    )`);
+  }
+
+  const pageSize = Math.min(Math.max(Number(filters.pageSize || 25), 1), 100);
+  const page = Math.max(Number(filters.page || 1), 1);
+  params.push(pageSize);
+  const limitIndex = params.length;
+  params.push((page - 1) * pageSize);
+  const offsetIndex = params.length;
+
+  const result = await dbQuery(
+    client,
+    `WITH scoped AS (
+       SELECT
+         im.id,
+         im."tenantId",
+         im."productId",
+         p.name AS "productName",
+         p.sku AS "productSku",
+         p."internalCode",
+         im."lotId",
+         l."lotNumber",
+         im."locationId",
+         loc.name AS "locationName",
+         im."movementType",
+         (
+           CASE
+             WHEN im."movementType" IN ('sale', 'manual_decrease', 'return_out', 'manual_adjustment_out', 'expired_writeoff', 'cancellation')
+               THEN -im.quantity
+             ELSE im.quantity
+           END
+         )::text AS quantity,
+         im."quantityBefore"::text AS "quantityBefore",
+         im."quantityAfter"::text AS "quantityAfter",
+         im."referenceType",
+         im."referenceId",
+         im.reason,
+         im.metadata,
+         im."createdBy",
+         actor.name AS "actorName",
+         im."createdAt",
+         im."idempotencyKey",
+         im.unit,
+         im.status
+       FROM inventory_movements im
+       INNER JOIN products p
+         ON p.id = im."productId"
+        AND p."clinicId" = im."tenantId"
+       LEFT JOIN inventory_lots l
+         ON l.id = im."lotId"
+        AND l."tenantId" = im."tenantId"
+       LEFT JOIN inventory_locations loc
+         ON loc.id = im."locationId"
+        AND loc."tenantId" = im."tenantId"
+       LEFT JOIN staff_users actor
+         ON actor.id = im."createdBy"
+       WHERE ${conditions.join(' AND ')}
+     ),
+     counted AS (
+       SELECT COUNT(*)::int AS total FROM scoped
+     )
+     SELECT scoped.*, counted.total
+     FROM scoped
+     CROSS JOIN counted
+     ORDER BY scoped."createdAt" DESC, scoped.id DESC
+     LIMIT $${limitIndex}
+     OFFSET $${offsetIndex}`,
+    params
+  );
+
+  return {
+    page,
+    pageSize,
+    total: Number((result.rows[0] && result.rows[0].total) || 0),
+    items: result.rows.map(normalizeInventoryMovementListRow)
+  };
+}
+
 async function findInventoryMovementByIdempotencyKey(tenantId, movementType, idempotencyKey, client = null) {
   const safeTenantId = String(tenantId || '').trim();
   const safeMovementType = String(movementType || '').trim();
@@ -341,5 +496,6 @@ module.exports = {
   updateInventoryBalanceQuantity,
   listInventoryBalancesByTenant,
   listInventoryMovementsByProductId,
+  listInventoryMovementsByTenant,
   findInventoryMovementByIdempotencyKey
 };
