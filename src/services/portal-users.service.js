@@ -1260,9 +1260,11 @@ async function getPortalAuthUserByEmail(email, tenantId = null) {
   const safeEmail = normalizeEmail(email);
   const safeTenantId = normalizeString(tenantId);
   if (!safeEmail) return { ok: false, reason: 'invalid_email' };
-  if (!safeTenantId) return { ok: false, reason: 'missing_tenant_id' };
-
-  const user = await findPortalUserByEmailAndTenantId(safeEmail, safeTenantId);
+  // `staff_users.email` is globally unique, so server-side recovery by email is safe
+  // for restoring tenant-scoped sessions that lost `tenantId` in the signed JWT.
+  const user = safeTenantId
+    ? await findPortalUserByEmailAndTenantId(safeEmail, safeTenantId)
+    : await findPortalUserByEmail(safeEmail);
   if (!user || user.active !== true) {
     return { ok: true, user: null };
   }
