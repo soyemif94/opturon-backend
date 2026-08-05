@@ -4,6 +4,31 @@ const {
 } = require('../services/tenant-policy.service');
 const { MODULE_TO_CAPABILITY } = require('../services/tenant-operating-profile.service');
 
+function normalizeString(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isOpturonAdminTenant(result) {
+  const settings = result && result.clinic && result.clinic.settings && typeof result.clinic.settings === 'object'
+    ? result.clinic.settings
+    : {};
+  const candidates = [
+    settings?.portal?.accountScope,
+    settings?.portal?.scope,
+    settings?.accountScope,
+    settings?.tenantScope
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeString(candidate);
+    if (normalized === 'opturon_admin' || normalized === 'global_admin' || normalized === 'superadmin') {
+      return true;
+    }
+  }
+
+  return settings?.portal?.isOpturonAdmin === true || settings?.portal?.isGlobalAdmin === true;
+}
+
 function requirePortalModule(moduleName) {
   return async function portalModuleGate(req, res, next) {
     const tenantId = String(req.activeTenantId || req.params.tenantId || '').trim();
@@ -12,6 +37,7 @@ function requirePortalModule(moduleName) {
     try {
       const result = await resolveTenantPolicyByExternalTenantId(tenantId);
       if (!result.ok) return next();
+      if (isOpturonAdminTenant(result)) return next();
       if (isModuleEnabled(result.policy, moduleName)) return next();
 
       return res.status(403).json({
@@ -40,6 +66,7 @@ function requirePortalCapability(capabilityName) {
     try {
       const result = await resolveTenantPolicyByExternalTenantId(tenantId);
       if (!result.ok) return next();
+      if (isOpturonAdminTenant(result)) return next();
       if (Array.isArray(result.policy?.capabilities) && result.policy.capabilities.includes(targetCapability)) {
         return next();
       }
