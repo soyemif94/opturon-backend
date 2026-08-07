@@ -68,9 +68,6 @@ const {
   createPortalPurchaseReceipt
 } = require('../services/purchase-receipts.service');
 const {
-  extractPortalPurchaseReceiptDocument
-} = require('../services/purchase-receipt-extractions.service');
-const {
   listPortalInventoryLots,
   getPortalInventoryLot: getPortalInventoryLotDetail,
   getPortalInventoryLotHistory,
@@ -4205,61 +4202,6 @@ async function getPortalPurchaseReceiptsController(req, res) {
   }
 }
 
-async function postPortalPurchaseReceiptExtractionController(req, res) {
-  const tenantId = getRequestTenantId(req);
-  const actor = getPortalActorMeta(req);
-
-  try {
-    const result = await extractPortalPurchaseReceiptDocument(tenantId, req.file, actor);
-    if (!result.ok) {
-      const status =
-        result.reason === 'purchase_receipt_document_too_large'
-          ? 413
-          : result.reason === 'purchase_receipt_extraction_rate_limited'
-            ? 429
-            : result.reason === 'purchase_receipt_extraction_configuration_missing'
-              ? 503
-              : result.reason === 'purchase_receipt_extraction_invalid_api_key' ||
-                  result.reason === 'purchase_receipt_extraction_permission_denied' ||
-                  result.reason === 'purchase_receipt_extraction_insufficient_quota' ||
-                  result.reason === 'purchase_receipt_extraction_model_not_found' ||
-                  result.reason === 'purchase_receipt_extraction_invalid_request' ||
-                  result.reason === 'purchase_receipt_extraction_schema_rejected' ||
-                  result.reason === 'purchase_receipt_extraction_network_failed' ||
-                  result.reason === 'purchase_receipt_extraction_timeout' ||
-                  result.reason === 'purchase_receipt_extraction_provider_unavailable' ||
-                  result.reason === 'purchase_receipt_extraction_invalid_response' ||
-                  result.reason === 'purchase_receipt_extraction_provider_failed'
-                ? 502
-          : result.reason === 'tenant_mapping_not_found'
-            ? 404
-            : 400;
-      return res.status(status).json({
-        success: false,
-        error: result.reason,
-        tenantId: result.tenantId || tenantId,
-        canContinueManually: result.canContinueManually === true,
-        fallbackExtraction: result.fallbackExtraction || null
-      });
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: {
-        tenantId: result.tenantId,
-        extraction: result.extraction,
-        usage: result.usage || null
-      }
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: 'portal_purchase_receipt_extraction_failed',
-      details: error.message
-    });
-  }
-}
-
 async function getPortalPurchaseReceiptController(req, res) {
   const tenantId = getRequestTenantId(req);
   const receiptId = String(req.params.receiptId || '').trim();
@@ -5974,7 +5916,6 @@ module.exports = {
   getPortalProducts,
   getPortalSuppliers,
   getPortalPurchaseReceiptsController,
-  postPortalPurchaseReceiptExtractionController,
   getPortalPurchaseReceiptController,
   getPortalSupplier,
   getPortalProductCategories,
