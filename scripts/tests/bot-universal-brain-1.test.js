@@ -750,7 +750,7 @@ async function run() {
     },
     inboundText: '30/40 por dia, agenda una sola persona y tenemos todo en un excel y un calendario'
   });
-  assert.match(explanationDiscoveryReply.replyText, /opci[oÃ³]n intermedia|Crecimiento/i);
+  assert.match(explanationDiscoveryReply.replyText, /opci[oó]n intermedia|Crecimiento/i);
   assert.match(explanationDiscoveryReply.replyText, /te explico r[aá]pido por qu[eé]/i);
   assert.strictEqual(explanationDiscoveryReply.contextPatch.commercialSalesContext.estimatedDailyConversations, 40);
   assert.strictEqual(explanationDiscoveryReply.contextPatch.commercialSalesContext.teamSizeValue, 1);
@@ -1048,6 +1048,50 @@ async function run() {
   });
   assert.doesNotMatch(industryPlanDiscoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
   assert.match(industryPlanDiscoveryReply.replyText, /3 preguntas r[aá]pidas/i);
+
+  const portfolioEmptyTemplateReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: discoveryAuditConversation,
+    inboundText: [
+      'Hola Opturon. Vengo desde Portfolio y quiero probar cómo funciona el sistema de Opturon en una conversación real por WhatsApp.',
+      '',
+      'Rubro:',
+      'Tipo de consultas que recibo:',
+      'Objetivo principal:'
+    ].join('\n')
+  });
+  assert.doesNotMatch(portfolioEmptyTemplateReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.doesNotMatch(portfolioEmptyTemplateReply.replyText, /precio|precios|\$/i);
+  assert.match(portfolioEmptyTemplateReply.replyText, /Rubro/i);
+  assert.match(portfolioEmptyTemplateReply.replyText, /Tipo de consultas que recibo/i);
+  assert.match(portfolioEmptyTemplateReply.replyText, /Objetivo principal/i);
+  assert.strictEqual(getActiveCommercialDiscoveryPending(portfolioEmptyTemplateReply.contextPatch).field, 'portfolio_context');
+
+  const portfolioCompleteTemplateReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: discoveryAuditConversation,
+    inboundText: [
+      'Hola Opturon. Vengo desde Portfolio y quiero probar cómo funciona el sistema de Opturon en una conversación real por WhatsApp.',
+      '',
+      'Rubro: Distribuidora',
+      'Tipo de consultas que recibo: pedidos y consultas de stock',
+      'Objetivo principal: automatizar atención'
+    ].join('\n')
+  });
+  assert.doesNotMatch(portfolioCompleteTemplateReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.match(portfolioCompleteTemplateReply.replyText, /distribuidora/i);
+  assert.match(portfolioCompleteTemplateReply.replyText, /3 preguntas r[aá]pidas|cu[aá]ntas consultas|cu[aá]ntas personas/i);
+  assert.strictEqual(portfolioCompleteTemplateReply.contextPatch.commercialSalesContext.businessTypeRaw, 'distribuidora');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(portfolioCompleteTemplateReply.contextPatch).field, 'team_size');
+
+  const tryOpturonDiscoveryReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: discoveryAuditConversation,
+    inboundText: 'Quiero probar Opturon'
+  });
+  assert.doesNotMatch(tryOpturonDiscoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+  assert.match(tryOpturonDiscoveryReply.replyText, /Rubro|Tipo de consultas que recibo|Objetivo principal/i);
+  assert.strictEqual(getActiveCommercialDiscoveryPending(tryOpturonDiscoveryReply.contextPatch).field, 'portfolio_context');
 
   const rotiseriaDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -1404,6 +1448,42 @@ async function run() {
   assert.match(explicitCatalogReply.replyText, /Plan Crecimiento/i);
   assert.match(explicitCatalogReply.replyText, /Plan Empresa/i);
 
+  const explicitPricingReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce'
+      }
+    },
+    inboundText: '¿Cuánto cuestan los planes?'
+  });
+  assert.match(explicitPricingReply.replyText, /Plan Inicial/i);
+  assert.match(explicitPricingReply.replyText, /Plan Crecimiento/i);
+  assert.match(explicitPricingReply.replyText, /Plan Empresa/i);
+
+  const knownContextRecommendationReply = await buildSafeCommercialIntentReply({
+    clinic,
+    conversation: {
+      ...conversation,
+      context: {
+        activeBotDomain: 'commerce',
+        commercialSalesContext: {
+          updatedAt: new Date().toISOString(),
+          businessType: 'distribution',
+          businessTypeRaw: 'distribuidora',
+          teamSizeSignal: 'team',
+          teamSizeValue: 3,
+          whatsappVolume: 'high',
+          estimatedDailyConversations: 80,
+          painPoints: ['sales_organization']
+        }
+      }
+    },
+    inboundText: '¿Qué plan me recomendás?'
+  });
+  assert.match(knownContextRecommendationReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
+
   const contaminatedReply = await buildSafeCommercialIntentReply({
     clinic,
     conversation: {
@@ -1452,7 +1532,7 @@ async function run() {
     },
     inboundText: 'Por que Empresa y no Crecimiento'
   });
-  assert.doesNotMatch(contaminatedDefenseReply.replyText, /est[eÃ©]tica|uÃ±as|uñas/i);
+  assert.doesNotMatch(contaminatedDefenseReply.replyText, /est[eé]tica|uñas/i);
 
   assert.strictEqual(detectIntent('quiero un turno'), 'appointment');
   assert.strictEqual(parseTransferPaymentIntent('como te transfiero'), 'request');

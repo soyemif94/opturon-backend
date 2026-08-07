@@ -2239,6 +2239,171 @@ function sanitizeOpenBusinessLabel(value) {
     .trim();
 }
 
+const PORTFOLIO_DISCOVERY_FIELD_LABELS = {
+  businessTypeRaw: 'Rubro',
+  inquiryTypes: 'Tipo de consultas que recibo',
+  goal: 'Objetivo principal'
+};
+
+function parsePortfolioDiscoveryTemplate(rawText) {
+  const raw = String(rawText || '');
+  if (!raw.trim()) return null;
+
+  const lines = raw
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => String(line || '').trim());
+
+  const fieldPatterns = [
+    ['businessTypeRaw', /^rubro\s*:\s*(.*)$/i],
+    ['inquiryTypes', /^tipo\s+de\s+consultas\s+que\s+recibo\s*:\s*(.*)$/i],
+    ['goal', /^objetivo\s+principal\s*:\s*(.*)$/i]
+  ];
+
+  const fieldEntries = Object.fromEntries(
+    Object.keys(PORTFOLIO_DISCOVERY_FIELD_LABELS).map((key) => [key, { present: false, value: null }])
+  );
+
+  for (const line of lines) {
+    for (const [fieldKey, pattern] of fieldPatterns) {
+      const match = line.match(pattern);
+      if (!match) continue;
+      fieldEntries[fieldKey] = {
+        present: true,
+        value: sanitizeOpenBusinessLabel(match[1] || '') || null
+      };
+    }
+  }
+
+  const presentFieldKeys = Object.entries(fieldEntries)
+    .filter(([, entry]) => entry.present === true)
+    .map(([fieldKey]) => fieldKey);
+  if (!presentFieldKeys.length) return null;
+
+  const emptyFieldKeys = presentFieldKeys.filter((fieldKey) => !fieldEntries[fieldKey].value);
+  const completedFieldKeys = presentFieldKeys.filter((fieldKey) => Boolean(fieldEntries[fieldKey].value));
+
+  return {
+    hasTemplate: true,
+    fields: fieldEntries,
+    presentFieldKeys,
+    emptyFieldKeys,
+    completedFieldKeys
+  };
+}
+
+function hasPortfolioDiscoveryIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+
+  return (
+    text.includes('vengo desde portfolio') ||
+    text.includes('quiero probar opturon') ||
+    text.includes('quiero probar como funciona') ||
+    text.includes('quiero probar cómo funciona') ||
+    text.includes('quiero probar el sistema') ||
+    text.includes('como funciona el sistema de opturon') ||
+    text.includes('cómo funciona el sistema de opturon') ||
+    text.includes('conversacion real por whatsapp') ||
+    text.includes('conversación real por whatsapp')
+  );
+}
+
+function buildPortfolioDiscoveryReply(missingFieldKeys = []) {
+  const safeMissingFieldKeys = Array.isArray(missingFieldKeys) ? missingFieldKeys.filter(Boolean) : [];
+  const fieldLines = safeMissingFieldKeys.length
+    ? safeMissingFieldKeys.map((fieldKey) => `- ${PORTFOLIO_DISCOVERY_FIELD_LABELS[fieldKey] || fieldKey}`)
+    : [
+        `- ${PORTFOLIO_DISCOVERY_FIELD_LABELS.businessTypeRaw}`,
+        `- ${PORTFOLIO_DISCOVERY_FIELD_LABELS.inquiryTypes}`,
+        `- ${PORTFOLIO_DISCOVERY_FIELD_LABELS.goal}`
+      ];
+
+  return [
+    'Antes de recomendarte un plan o mostrarte una demo útil, necesito completar un poco el contexto de tu negocio 😊',
+    '',
+    'Pasame por favor:',
+    ...fieldLines
+  ].join('\n');
+}
+
+function buildPortfolioDiscoveryPendingPatch(missingFieldKeys = []) {
+  return buildCommercialDiscoveryPendingPatch({
+    field: 'portfolio_context',
+    sourceIntent: 'portfolio_discovery',
+    meta: {
+      missingFields: Array.isArray(missingFieldKeys) ? [...new Set(missingFieldKeys.filter(Boolean))] : []
+    }
+  });
+}
+
+function getPortfolioDiscoveryMissingFields({
+  template = null,
+  salesContext = null,
+  requiredFieldKeys = null
+} = {}) {
+  const safeTemplate = template && typeof template === 'object' ? template : null;
+  const safeSalesContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
+  const targetFieldKeys = Array.isArray(requiredFieldKeys) && requiredFieldKeys.length
+    ? requiredFieldKeys
+    : Object.keys(PORTFOLIO_DISCOVERY_FIELD_LABELS);
+
+  return targetFieldKeys.filter((fieldKey) => {
+    if (fieldKey === 'businessTypeRaw') {
+      const hasTemplateValue = Boolean(safeTemplate && safeTemplate.fields && safeTemplate.fields.businessTypeRaw && safeTemplate.fields.businessTypeRaw.value);
+      return !hasTemplateValue && !safeSalesContext.businessTypeRaw && !safeSalesContext.businessType && !safeSalesContext.businessCategory;
+    }
+
+    if (fieldKey === 'inquiryTypes') {
+      const hasTemplateValue = Boolean(safeTemplate && safeTemplate.fields && safeTemplate.fields.inquiryTypes && safeTemplate.fields.inquiryTypes.value);
+      return !hasTemplateValue;
+    }
+
+    if (fieldKey === 'goal') {
+      const hasTemplateValue = Boolean(safeTemplate && safeTemplate.fields && safeTemplate.fields.goal && safeTemplate.fields.goal.value);
+      return !hasTemplateValue;
+    }
+
+    return true;
+  });
+}
+
+function buildPortfolioTemplateSalesContext(template) {
+  const safeTemplate = template && typeof template === 'object' ? template : null;
+  if (!safeTemplate || !safeTemplate.fields) return null;
+
+  const businessTypeRaw = safeTemplate.fields.businessTypeRaw && safeTemplate.fields.businessTypeRaw.value
+    ? safeTemplate.fields.businessTypeRaw.value
+    : null;
+  const inquiryTypes = safeTemplate.fields.inquiryTypes && safeTemplate.fields.inquiryTypes.value
+    ? safeTemplate.fields.inquiryTypes.value
+    : null;
+  const goal = safeTemplate.fields.goal && safeTemplate.fields.goal.value
+    ? safeTemplate.fields.goal.value
+    : null;
+
+  if (!businessTypeRaw && !inquiryTypes && !goal) return null;
+
+  const inferredSourceText = [inquiryTypes, goal].filter(Boolean).join('. ');
+  const inferredSalesContext = inferredSourceText ? detectCommercialSalesContext(inferredSourceText) : null;
+  const businessCategory = inferBusinessCategoryFromRawBusinessType(businessTypeRaw);
+
+  return {
+    ...(inferredSalesContext || {}),
+    businessTypeRaw: businessTypeRaw || (inferredSalesContext && inferredSalesContext.businessTypeRaw) || null,
+    businessCategory: businessCategory || (inferredSalesContext && inferredSalesContext.businessCategory) || null,
+    likelyNeeds: businessCategory
+      ? inferLikelyNeedsFromBusinessCategory(businessCategory, businessTypeRaw)
+      : (inferredSalesContext && Array.isArray(inferredSalesContext.likelyNeeds) ? inferredSalesContext.likelyNeeds : []),
+    commercialFit: businessCategory
+      ? inferCommercialFitFromBusinessCategory(businessCategory, businessTypeRaw)
+      : (inferredSalesContext && inferredSalesContext.commercialFit) || null,
+    nextDiscoveryField: businessCategory
+      ? inferNextDiscoveryFieldFromBusinessCategory(businessCategory)
+      : (inferredSalesContext && inferredSalesContext.nextDiscoveryField) || null
+  };
+}
+
 function extractOpenBusinessTypeRaw(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return null;
@@ -3003,12 +3168,14 @@ function buildSoftCommercialPlanRecommendationReply(businessContext = {}, salesC
 function buildCommercialOrientationReply({
   salesContext,
   businessContext,
-  sourceIntent = null
+  sourceIntent = null,
+  allowSoftRecommendation = true
 }) {
   const safeSalesContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
   const safeBusinessContext = businessContext && typeof businessContext === 'object' ? businessContext : null;
 
   if (
+    allowSoftRecommendation &&
     safeBusinessContext &&
     safeBusinessContext.recommendationLevel &&
     hasEnoughCommercialSignalsForSoftRecommendation(safeSalesContext)
@@ -3074,12 +3241,14 @@ function buildChannelMixDiscoveryFollowUp(salesContext = {}, businessContext = n
 function buildCommercialDiscoveryResponse({
   salesContext,
   businessContext,
-  sourceIntent = null
+  sourceIntent = null,
+  allowSoftRecommendation = true
 }) {
   const orientation = buildCommercialOrientationReply({
     salesContext,
     businessContext,
-    sourceIntent
+    sourceIntent,
+    allowSoftRecommendation
   });
 
   return {
@@ -3114,6 +3283,50 @@ function resolveCommercialDiscoveryPendingReply({
 }) {
   const currentSalesContext = effectiveSalesContext && typeof effectiveSalesContext === 'object' ? effectiveSalesContext : {};
   if (!pending || !pending.field) return null;
+
+  if (pending.field === 'portfolio_context') {
+    const portfolioTemplate = parsePortfolioDiscoveryTemplate(inboundText);
+    const pendingMissingFields = pending.meta && Array.isArray(pending.meta.missingFields)
+      ? pending.meta.missingFields.map((fieldKey) => String(fieldKey || '').trim()).filter(Boolean)
+      : [];
+    const nextSalesContext = mergeCommercialSalesContext(
+      currentSalesContext,
+      buildPortfolioTemplateSalesContext(portfolioTemplate)
+    );
+    const missingFields = getPortfolioDiscoveryMissingFields({
+      template: portfolioTemplate,
+      salesContext: nextSalesContext,
+      requiredFieldKeys: pendingMissingFields
+    });
+
+    if (missingFields.length) {
+      return {
+        type: 'recommendation',
+        replyText: buildPortfolioDiscoveryReply(missingFields),
+        contextPatch: mergeContextPatches(
+          buildCommercialSalesContextPatch(nextSalesContext),
+          buildPortfolioDiscoveryPendingPatch(missingFields)
+        )
+      };
+    }
+
+    const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
+    const response = buildCommercialDiscoveryResponse({
+      salesContext: nextSalesContext,
+      businessContext,
+      sourceIntent: 'portfolio_discovery',
+      allowSoftRecommendation: false
+    });
+
+    return {
+      type: 'recommendation',
+      replyText: response.replyText,
+      contextPatch: mergeContextPatches(
+        buildCommercialSalesContextPatch(nextSalesContext),
+        response.contextPatch
+      )
+    };
+  }
 
   if (pending.field === 'team_size') {
     const discoveryEntities = extractCommercialDiscoveryEntities(inboundText);
@@ -9564,6 +9777,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const commercialIntent = detectCommercialIntent(inboundText);
   const normalizedText = normalizeCommandText(inboundText);
   const kbMatch = findCommercialKnowledgeMatch(inboundText);
+  const portfolioTemplate = parsePortfolioDiscoveryTemplate(inboundText);
+  const hasPortfolioIntent = hasPortfolioDiscoveryIntent(inboundText);
   const weakCommercialSignal = detectWeakCommercialSignal(inboundText);
   const inferredDiscoveryIntent = inferWeakSignalReplyIntent(inboundText, weakCommercialSignal);
   const transferPaymentIntent = parseTransferPaymentIntent(inboundText);
@@ -9578,8 +9793,15 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const activePlanContext = getActiveCommercialPlanContext(safeContext);
   const currentBusinessContext = detectBusinessRecommendationContext(inboundText);
   const activeSalesContext = getActiveCommercialSalesContext(safeContext);
-  const detectedSalesContext = detectCommercialSalesContext(inboundText);
+  const detectedSalesContext = mergeCommercialSalesContext(
+    detectCommercialSalesContext(inboundText),
+    buildPortfolioTemplateSalesContext(portfolioTemplate)
+  );
   const effectiveSalesContext = mergeCommercialSalesContext(activeSalesContext, detectedSalesContext);
+  const portfolioMissingFields = getPortfolioDiscoveryMissingFields({
+    template: portfolioTemplate,
+    salesContext: effectiveSalesContext
+  });
   const storedBusinessContext = getActiveBusinessRecommendationContext(safeContext);
   const effectiveBusinessContext =
     deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) ||
@@ -9630,9 +9852,77 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     managementIntent: detectTurnManagementIntent(inboundText)
   });
   const isCommercialAppointmentBusinessQuestion = kbMatch && kbMatch.category === 'appointment_business';
+  const explicitPricingRequest = isExplicitPlanCatalogOrPricingRequest(inboundText);
+
+  if (
+    !explicitPricingRequest &&
+    !transferPaymentIntent &&
+    !isLoyaltyIntent(inboundText) &&
+    !isAgendaLike
+  ) {
+    if (portfolioTemplate && portfolioMissingFields.length && hasPortfolioIntent) {
+      return {
+        type: 'recommendation',
+        replyText: buildPortfolioDiscoveryReply(portfolioMissingFields),
+        contextPatch: mergeContextPatches(
+          detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null,
+          buildPortfolioDiscoveryPendingPatch(portfolioMissingFields)
+        )
+      };
+    }
+
+    if (
+      hasPortfolioIntent &&
+      !portfolioTemplate &&
+      !activeCommercialDiscoveryPending &&
+      !hasMinimumSalesContextForRecommendation(effectiveSalesContext)
+    ) {
+      const genericMissingFields = getPortfolioDiscoveryMissingFields({
+        template: null,
+        salesContext: effectiveSalesContext
+      });
+      return {
+        type: 'recommendation',
+        replyText: buildPortfolioDiscoveryReply(genericMissingFields),
+        contextPatch: mergeContextPatches(
+          detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null,
+          buildPortfolioDiscoveryPendingPatch(genericMissingFields)
+        )
+      };
+    }
+
+    if (
+      portfolioTemplate &&
+      !portfolioMissingFields.length &&
+      hasPortfolioIntent
+    ) {
+      const portfolioDiscoveryResponse = buildCommercialDiscoveryResponse({
+        salesContext: effectiveSalesContext,
+        businessContext: deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) || storedBusinessContext,
+        sourceIntent: 'portfolio_discovery',
+        allowSoftRecommendation: false
+      });
+      return {
+        type: 'recommendation',
+        replyText: portfolioDiscoveryResponse.replyText,
+        contextPatch: mergeContextPatches(
+          buildCommercialSalesContextPatch(effectiveSalesContext),
+          portfolioDiscoveryResponse.contextPatch
+        )
+      };
+    }
+  }
 
   if (
     nextStepIntent === 'advance' &&
+    !(
+      activeShortMemory &&
+      activeShortMemory.pendingCommercialExplanation === true &&
+      (
+        isCommercialExplanationContinuationIntent(inboundText) ||
+        isCommercialSoftFollowUpIntent(inboundText)
+      )
+    ) &&
     !transferPaymentIntent &&
     !isLoyaltyIntent(inboundText) &&
     !isAgendaLike
@@ -9857,6 +10147,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
 
   if (
     kbMatch &&
+    !(activeCommercialDiscoveryPending && detectedSalesContext) &&
     !transferPaymentIntent &&
     !isLoyaltyIntent(inboundText) &&
     (!isAgendaLike || isCommercialAppointmentBusinessQuestion) &&
@@ -10219,6 +10510,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
     !isLoyaltyIntent(inboundText) &&
+    !(activeShortMemory && activeShortMemory.pendingCommercialExplanation === true) &&
     effectiveBusinessContext &&
     (hasEnoughCommercialSignalsForSoftRecommendation(effectiveSalesContext) || hasOperationalDiscoveryAnswer)
   ) {
@@ -10299,6 +10591,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
 
   if (
     pendingPlanComparison &&
+    !(activeShortMemory && activeShortMemory.pendingCommercialExplanation === true) &&
     !isCatalogItemDetailIntent(inboundText) &&
     !isCommerceEntry &&
     !looksLikeAgendaIntent({ inboundText, intent: detectIntent(inboundText), managementIntent: detectTurnManagementIntent(inboundText) }) &&
@@ -10377,7 +10670,10 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     !parseTransferPaymentIntent(inboundText) &&
     normalizeCommandText(inboundText) !== 'cancelar' &&
     !isLoyaltyIntent(inboundText) &&
-    isCommercialExplanationContinuationIntent(inboundText)
+    (
+      isCommercialExplanationContinuationIntent(inboundText) ||
+      isCommercialSoftFollowUpIntent(inboundText)
+    )
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
@@ -10453,6 +10749,45 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       : null;
 
     if (discussedPlan) {
+      if (activeShortMemory && activeShortMemory.pendingCommercialExplanation === true) {
+        const explanationSalesContext = {
+          ...effectiveSalesContext,
+          ...(activeShortMemory.explanationReasonBasis && typeof activeShortMemory.explanationReasonBasis === 'object'
+            ? {
+              estimatedDailyConversations: activeShortMemory.explanationReasonBasis.estimatedDailyConversations || effectiveSalesContext.estimatedDailyConversations || null,
+              teamSizeValue: activeShortMemory.explanationReasonBasis.operatorCount || effectiveSalesContext.teamSizeValue || null,
+              currentTools: Array.isArray(activeShortMemory.explanationReasonBasis.currentTools) && activeShortMemory.explanationReasonBasis.currentTools.length
+                ? activeShortMemory.explanationReasonBasis.currentTools
+                : effectiveSalesContext.currentTools,
+              handlesAppointments: activeShortMemory.explanationReasonBasis.handlesAppointments === true || effectiveSalesContext.handlesAppointments === true
+                ? true
+                : null
+            }
+            : null)
+        };
+
+        return {
+          type: 'recommendation',
+          replyText: buildCommercialRecommendationExplanationReply(discussedPlan, explanationSalesContext, orderedPlans),
+          contextPatch: {
+            ...buildCommercialShortMemoryPatch({
+              topic: 'plans',
+              lastSuggestedProductId: discussedPlan && (discussedPlan.id || discussedPlan.productId),
+              recommendationType: normalizeProductRecommendationType(discussedPlan, orderedPlans),
+              pendingCommercialExplanation: false,
+              explanationReasonBasis: null,
+              lastReplyKey: 'commercial_explanation_followup'
+            }),
+            ...buildCommercialPlanContextPatch({
+              topic: 'plan_recommendation',
+              lastDiscussedPlanId: discussedPlan && (discussedPlan.id || discussedPlan.productId),
+              lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
+              recommendationType: normalizeProductRecommendationType(discussedPlan, orderedPlans)
+            })
+          }
+        };
+      }
+
       return {
         type: 'recommendation',
         replyText: [
