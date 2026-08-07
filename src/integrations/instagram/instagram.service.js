@@ -100,7 +100,7 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
 async function fetchInstagramBusinessAssets({ accessToken, userId = null, providerOverride = null, requestId = null }) {
   if (getInstagramOauthProvider(providerOverride) === 'instagram_login') {
     const url = new URL(`https://graph.instagram.com/${DEFAULT_GRAPH_VERSION}/me`);
-    url.searchParams.set('fields', 'user_id,username');
+    url.searchParams.set('fields', 'id,username');
     url.searchParams.set('access_token', accessToken);
     const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
     const json = await response.json().catch(() => null);

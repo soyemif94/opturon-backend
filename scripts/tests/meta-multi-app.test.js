@@ -6,7 +6,10 @@ const {
   getMetaAppSecrets,
   isSignatureValid
 } = require('../../src/middlewares/verify-meta-signature.middleware');
-const { exchangeOAuthCodeForAccessToken } = require('../../src/integrations/instagram/instagram.service');
+const {
+  exchangeOAuthCodeForAccessToken,
+  fetchInstagramBusinessAssets
+} = require('../../src/integrations/instagram/instagram.service');
 
 async function testWebhookMultiSecret() {
   const previous = {
@@ -177,12 +180,45 @@ async function testInstagramExchangeRejectsUnknownProviderOverride() {
   }
 }
 
+async function testInstagramLoginDiscoveryRequestsIdField() {
+  const previousEnv = {
+    instagramOauthProvider: env.instagramOauthProvider
+  };
+  const previousFetch = global.fetch;
+  let requestUrl = null;
+  env.instagramOauthProvider = 'instagram_login';
+  global.fetch = async (url) => {
+    requestUrl = new URL(url);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'ig-user-id', username: 'opturon.agency' })
+    };
+  };
+
+  try {
+    const assets = await fetchInstagramBusinessAssets({
+      accessToken: 'safe-token',
+      providerOverride: 'instagram_login'
+    });
+    assert.equal(requestUrl.origin, 'https://graph.instagram.com');
+    assert.equal(requestUrl.searchParams.get('fields'), 'id,username');
+    assert.equal(assets.length, 1);
+    assert.equal(assets[0].instagramBusinessAccountId, 'ig-user-id');
+    assert.equal(assets[0].instagramUsername, 'opturon.agency');
+  } finally {
+    global.fetch = previousFetch;
+    Object.assign(env, previousEnv);
+  }
+}
+
 async function run() {
   await testWebhookMultiSecret();
   await testInstagramExchangeCredentials();
   await testInstagramExchangeProviderOverride();
   await testInstagramLoginExchangeCredentials();
   await testInstagramExchangeRejectsUnknownProviderOverride();
+  await testInstagramLoginDiscoveryRequestsIdField();
   console.log('meta-multi-app.test.js: ok');
 }
 
