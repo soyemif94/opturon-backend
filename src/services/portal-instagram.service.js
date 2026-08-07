@@ -86,10 +86,19 @@ function summarizeInstagramChannel(channel) {
   };
 }
 
-async function connectSelectedInstagramAsset({ context, selectedAsset, tokenType = null, expiresIn = null, availableAssets = [], requestId = null }) {
+async function connectSelectedInstagramAsset({
+  context,
+  selectedAsset,
+  tokenType = null,
+  expiresIn = null,
+  availableAssets = [],
+  providerOverride = null,
+  requestId = null
+}) {
   await subscribePageToWebhook({
     pageId: selectedAsset.pageId,
     accessToken: selectedAsset.pageAccessToken,
+    providerOverride,
     requestId
   });
 
@@ -162,6 +171,7 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
 
   const code = String(input.code || '').trim();
   const redirectUri = String(input.redirectUri || '').trim();
+  const oauthProvider = String(input.oauthProvider || '').trim().toLowerCase() || null;
   const selectionToken = String(input.selectionToken || '').trim();
   const selectedPageId = String(input.selectedPageId || '').trim();
   const selectedInstagramUserId = String(input.selectedInstagramUserId || '').trim();
@@ -210,20 +220,32 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     };
   }
 
+  if (oauthProvider && oauthProvider !== 'instagram_login' && oauthProvider !== 'facebook_login') {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      reason: 'invalid_instagram_oauth_provider'
+    };
+  }
+
   logInfo('portal_instagram_connect_started', {
     tenantId: context.tenantId,
     clinicId: context.clinic.id,
+    oauthProvider,
     requestId: input.requestId || null
   });
 
   const token = await exchangeOAuthCodeForAccessToken({
     code,
     redirectUri,
+    providerOverride: oauthProvider,
     requestId: input.requestId || null
   });
   const assets = await fetchInstagramBusinessAssets({
     accessToken: token.accessToken,
     userId: token.userId,
+    providerOverride: oauthProvider,
     requestId: input.requestId || null
   });
 
@@ -265,6 +287,7 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     tokenType: token.tokenType || null,
     expiresIn: token.expiresIn || null,
     availableAssets: assets,
+    providerOverride: oauthProvider,
     requestId: input.requestId || null
   });
 }

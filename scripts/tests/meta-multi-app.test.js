@@ -75,6 +75,46 @@ async function testInstagramExchangeCredentials() {
   }
 }
 
+async function testInstagramExchangeProviderOverride() {
+  const previousEnv = {
+    instagramOauthProvider: env.instagramOauthProvider,
+    instagramBusinessAppId: env.instagramBusinessAppId,
+    instagramBusinessAppSecret: env.instagramBusinessAppSecret,
+    instagramOauthAppId: env.instagramOauthAppId,
+    instagramAppSecret: env.instagramAppSecret
+  };
+  const previousFetch = global.fetch;
+  let request = null;
+  env.instagramOauthProvider = 'facebook_login';
+  env.instagramBusinessAppId = 'instagram-business-app-id';
+  env.instagramBusinessAppSecret = 'instagram-business-app-secret';
+  env.instagramOauthAppId = 'legacy-facebook-app-id';
+  env.instagramAppSecret = 'legacy-instagram-app-secret';
+  global.fetch = async (url, options) => {
+    request = { url: new URL(url), options };
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ access_token: 'safe-token', user_id: 'ig-user-id' })
+    };
+  };
+
+  try {
+    const token = await exchangeOAuthCodeForAccessToken({
+      code: 'oauth-code',
+      redirectUri: 'https://example.com/callback',
+      providerOverride: 'instagram_login'
+    });
+    const body = new URLSearchParams(request.options.body);
+    assert.equal(request.url.origin, 'https://api.instagram.com');
+    assert.equal(body.get('client_id'), 'instagram-business-app-id');
+    assert.equal(token.provider, 'instagram_login');
+  } finally {
+    global.fetch = previousFetch;
+    Object.assign(env, previousEnv);
+  }
+}
+
 async function testInstagramLoginExchangeCredentials() {
   const previousEnv = {
     instagramOauthProvider: env.instagramOauthProvider,
@@ -117,10 +157,32 @@ async function testInstagramLoginExchangeCredentials() {
   }
 }
 
+async function testInstagramExchangeRejectsUnknownProviderOverride() {
+  const previousEnv = {
+    instagramOauthProvider: env.instagramOauthProvider
+  };
+
+  try {
+    env.instagramOauthProvider = 'facebook_login';
+    await assert.rejects(
+      () => exchangeOAuthCodeForAccessToken({
+        code: 'oauth-code',
+        redirectUri: 'https://example.com/callback',
+        providerOverride: 'evil_provider'
+      }),
+      (error) => error && error.reason === 'invalid_instagram_oauth_provider'
+    );
+  } finally {
+    Object.assign(env, previousEnv);
+  }
+}
+
 async function run() {
   await testWebhookMultiSecret();
   await testInstagramExchangeCredentials();
+  await testInstagramExchangeProviderOverride();
   await testInstagramLoginExchangeCredentials();
+  await testInstagramExchangeRejectsUnknownProviderOverride();
   console.log('meta-multi-app.test.js: ok');
 }
 

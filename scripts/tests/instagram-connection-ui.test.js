@@ -84,14 +84,15 @@ mockModule('src/repositories/tenant.repository.js', {
 });
 
 mockModule('src/integrations/instagram/instagram.service.js', {
-  exchangeOAuthCodeForAccessToken: async () => ({
+  exchangeOAuthCodeForAccessToken: async ({ providerOverride }) => ({
+    providerOverride,
     accessToken: 'USER_TOKEN_SECRET',
     tokenType: 'bearer',
     expiresIn: 3600
   }),
   fetchInstagramBusinessAssets: async () => clone(state.assets),
-  subscribePageToWebhook: async ({ pageId, accessToken }) => {
-    state.subscribed.push({ pageId, accessToken });
+  subscribePageToWebhook: async ({ pageId, accessToken, providerOverride }) => {
+    state.subscribed.push({ pageId, accessToken, providerOverride });
     return { ok: true };
   }
 });
@@ -166,11 +167,42 @@ async function testSelectedAssetConnectsExpectedChannel() {
   assert.equal(state.subscribed.length, 1);
   assert.deepEqual(state.subscribed[0], {
     pageId: 'page-2',
-    accessToken: 'SECOND_PAGE_TOKEN_SECRET'
+    accessToken: 'SECOND_PAGE_TOKEN_SECRET',
+    providerOverride: null
   });
   assert.equal(state.upserted.length, 1);
   assert.equal(state.upserted[0].externalId, 'ig-2');
   assert.equal(state.upserted[0].externalPageId, 'page-2');
+}
+
+async function testOauthProviderOverridePropagatesAcrossExchangeAndSubscription() {
+  resetState();
+  state.assets = [buildAsset()];
+
+  const connected = await connectPortalInstagramChannel(state.tenantId, {
+    code: 'oauth-code',
+    redirectUri: 'https://www.opturon.com/api/app/integrations/instagram/callback',
+    oauthProvider: 'instagram_login'
+  });
+
+  assert.equal(connected.ok, true);
+  assert.equal(state.subscribed.length, 1);
+  assert.equal(state.subscribed[0].providerOverride, 'instagram_login');
+}
+
+async function testUnknownOauthProviderRejected() {
+  resetState();
+  state.assets = [buildAsset()];
+
+  const result = await connectPortalInstagramChannel(state.tenantId, {
+    code: 'oauth-code',
+    redirectUri: 'https://www.opturon.com/api/app/integrations/instagram/callback',
+    oauthProvider: 'evil_provider'
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'invalid_instagram_oauth_provider');
+  assert.equal(state.subscribed.length, 0);
 }
 
 async function testSelectionTokenCannotBeReused() {
@@ -197,6 +229,8 @@ async function testSelectionTokenCannotBeReused() {
 async function run() {
   await testMultipleAssetsReturnsSafeCandidatesWithoutTokens();
   await testSelectedAssetConnectsExpectedChannel();
+  await testOauthProviderOverridePropagatesAcrossExchangeAndSubscription();
+  await testUnknownOauthProviderRejected();
   await testSelectionTokenCannotBeReused();
   console.log('instagram-connection-ui.test.js: ok');
 }

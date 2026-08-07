@@ -4,8 +4,26 @@ const { logInfo, logWarn } = require('../../utils/logger');
 
 const DEFAULT_GRAPH_VERSION = String(env.getWhatsAppGraphVersion()).trim();
 
-function getInstagramOauthProvider() {
-  return env.instagramOauthProvider === 'instagram_login' ? 'instagram_login' : 'facebook_login';
+function normalizeInstagramOauthProvider(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'instagram_login' || normalized === 'facebook_login') {
+    return normalized;
+  }
+  return null;
+}
+
+function getInstagramOauthProvider(providerOverride = null) {
+  if (providerOverride !== null && providerOverride !== undefined && String(providerOverride).trim() !== '') {
+    const normalizedOverride = normalizeInstagramOauthProvider(providerOverride);
+    if (!normalizedOverride) {
+      const error = new Error('invalid_instagram_oauth_provider');
+      error.reason = 'invalid_instagram_oauth_provider';
+      throw error;
+    }
+    return normalizedOverride;
+  }
+
+  return normalizeInstagramOauthProvider(env.instagramOauthProvider) || 'facebook_login';
 }
 
 function buildOAuthError(result, fallbackReason) {
@@ -18,8 +36,8 @@ function buildOAuthError(result, fallbackReason) {
   return error;
 }
 
-async function exchangeOAuthCodeForAccessToken({ code, redirectUri, requestId = null }) {
-  const provider = getInstagramOauthProvider();
+async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOverride = null, requestId = null }) {
+  const provider = getInstagramOauthProvider(providerOverride);
   const appId = String(provider === 'instagram_login'
     ? env.instagramBusinessAppId
     : env.instagramOauthAppId || env.instagramAppId || env.metaAppId || env.whatsappAppId || '').trim();
@@ -79,8 +97,8 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, requestId = 
   };
 }
 
-async function fetchInstagramBusinessAssets({ accessToken, userId = null, requestId = null }) {
-  if (getInstagramOauthProvider() === 'instagram_login') {
+async function fetchInstagramBusinessAssets({ accessToken, userId = null, providerOverride = null, requestId = null }) {
+  if (getInstagramOauthProvider(providerOverride) === 'instagram_login') {
     const url = new URL(`https://graph.instagram.com/${DEFAULT_GRAPH_VERSION}/me`);
     url.searchParams.set('fields', 'user_id,username');
     url.searchParams.set('access_token', accessToken);
@@ -150,8 +168,8 @@ async function fetchInstagramBusinessAssets({ accessToken, userId = null, reques
   return normalizedPages;
 }
 
-async function subscribePageToWebhook({ pageId, accessToken, requestId = null }) {
-  if (getInstagramOauthProvider() === 'instagram_login') {
+async function subscribePageToWebhook({ pageId, accessToken, providerOverride = null, requestId = null }) {
+  if (getInstagramOauthProvider(providerOverride) === 'instagram_login') {
     const url = new URL(`https://graph.instagram.com/${DEFAULT_GRAPH_VERSION}/${pageId}/subscribed_apps`);
     url.searchParams.set('subscribed_fields', 'messages,messaging_postbacks');
     url.searchParams.set('access_token', accessToken);
