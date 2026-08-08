@@ -9,7 +9,8 @@ const {
 const {
   getClinicBusinessProfileById,
   getClinicBotSettingsById,
-  updateClinicBotRuntimeConfigById
+  updateClinicBotRuntimeConfigById,
+  BOT_RUNTIME_CONFIG_MUTATION_SOURCES
 } = require('../repositories/tenant.repository');
 const {
   listAutomationTemplates,
@@ -440,6 +441,8 @@ async function updatePortalAutomationTemplate(tenantId, templateKey, payload) {
         ...runtimeConfig,
         enabled: payload.enabled === true,
         templateKey: GENERATED_SALES_BOT_TEMPLATE_KEY
+      }, null, {
+        source: BOT_RUNTIME_CONFIG_MUTATION_SOURCES.AUTHORIZED_ADMIN_CONFIGURATION
       });
     }
   }

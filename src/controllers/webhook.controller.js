@@ -19,7 +19,6 @@ const {
 const { processInboundMessages } = require('../conversations/conversation.service');
 const { pushInboxItem } = require('../debug/inbox-store');
 const { pushWebhookEvent } = require('../debug/webhook-store');
-const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 
 function withRequestMeta(req, meta = {}) {
   return {
@@ -157,36 +156,6 @@ function toDigits(value) {
   return String(value || '').replace(/\D+/g, '');
 }
 
-function normalizeTextForRule(text) {
-  return String(text || '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-}
-
-function detectAutoReplyRule(text) {
-  const normalized = normalizeTextForRule(text);
-  if (!normalized) return 'default';
-  if (normalized.includes('hola') || normalized.includes('buenas')) return 'greeting';
-  if (normalized.includes('precio')) return 'pricing';
-  if (normalized.includes('gracias')) return 'thanks';
-  return 'default';
-}
-
-function buildAutoReplyText(rule) {
-  if (rule === 'greeting') {
-    return 'Hola 👋 Soy el asistente de Opturon. ¿En qué puedo ayudarte?';
-  }
-  if (rule === 'pricing') {
-    return 'Contame qué producto/servicio buscás y te paso opciones 😊';
-  }
-  if (rule === 'thanks') {
-    return '¡De nada! 💛';
-  }
-  return 'Te leo 👀. Contame un poco más así te ayudo.';
-}
-
 function extractInboxObservedEvents(payload) {
   const nowIso = new Date().toISOString();
   const items = [];
@@ -296,129 +265,23 @@ function extractInboxObservedEvents(payload) {
 }
 
 async function runAutoReplyIfEnabled(req, textEvents) {
-  if (!env.autoReplyEnabled || !env.legacyWebhookAutoReplyEnabled) {
-    logInfo(
-      'legacy_auto_reply_skipped',
-      withRequestMeta(req, {
-        sourcePath: 'webhook.observeAndAutoReply',
-        autoReplyEnabled: env.autoReplyEnabled === true,
-        legacyWebhookAutoReplyEnabled: env.legacyWebhookAutoReplyEnabled === true,
-        textEventsCount: Array.isArray(textEvents) ? textEvents.length : 0
-      })
-    );
-    return;
-  }
-
-  for (const event of textEvents) {
-    if (!event || event.messageType !== 'text' || !event.text || !event.from) {
-      continue;
-    }
-    if (event.isEcho || event.fromBusiness) {
-      continue;
-    }
-
-    if (!event.phoneNumberId) {
-      logWarn(
-        'webhook_auto_reply_skipped_missing_phone_number_id',
-        withRequestMeta(req, {
-          to: event.from,
-          messageId: event.messageId || null
-        })
-      );
-      continue;
-    }
-
-    const rule = detectAutoReplyRule(event.text);
-    const replyText = buildAutoReplyText(rule);
-
-    try {
-      logInfo(
-        'legacy_auto_reply_entered',
-        withRequestMeta(req, {
-          sourcePath: 'webhook.observeAndAutoReply',
-          to: event.from,
-          messageId: event.messageId || null,
-          phoneNumberId: event.phoneNumberId || null,
-          rule,
-          inboundText: event.text || null
-        })
-      );
-
-      const channel = await findChannelByPhoneNumberId(event.phoneNumberId);
-      if (!channel) {
-        logWarn(
-          'webhook_auto_reply_skipped_unrouted_channel',
-          withRequestMeta(req, {
-            to: event.from,
-            messageId: event.messageId || null,
-            phoneNumberId: event.phoneNumberId
-          })
-        );
-        continue;
-      }
-
-      if (!String(channel.accessToken || '').trim() || !String(channel.phoneNumberId || '').trim()) {
-        logWarn(
-          'webhook_auto_reply_skipped_incomplete_channel',
-          withRequestMeta(req, {
-            clinicId: channel.clinicId || null,
-            channelId: channel.id || null,
-            to: event.from,
-            messageId: event.messageId || null,
-            phoneNumberId: event.phoneNumberId,
-            hasAccessToken: !!String(channel.accessToken || '').trim(),
-            hasChannelPhoneNumberId: !!String(channel.phoneNumberId || '').trim()
-          })
-        );
-        continue;
-      }
-
-      const sendResult = await sendChannelScopedMessage(
-        { to: event.from, text: replyText },
-        {
-          requestId: req && req.requestId ? req.requestId : null,
-          credentials: {
-            clinicId: channel.clinicId || null,
-            channelId: channel.id,
-            accessToken: channel.accessToken,
-            phoneNumberId: channel.phoneNumberId,
-            provider: channel.provider || null,
-            status: channel.status || null,
-            wabaId: channel.wabaId || null
-          }
-        }
-      );
-      logInfo(
-        'legacy_auto_reply_sent',
-        withRequestMeta(req, {
-          sourcePath: 'webhook.observeAndAutoReply',
-          clinicId: channel.clinicId || null,
-          channelId: channel.id || null,
-          to: event.from,
-          messageId: event.messageId || null,
-          rule,
-          outboundMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null
-        })
-      );
-    } catch (error) {
-      logWarn(
-        'legacy_auto_reply_failed',
-        withRequestMeta(req, {
-          sourcePath: 'webhook.observeAndAutoReply',
-          to: event.from,
-          messageId: event.messageId || null,
-          rule,
-          error: error.message
-        })
-      );
-    }
-  }
+  logInfo(
+    'legacy_auto_reply_skipped',
+    withRequestMeta(req, {
+      sourcePath: 'webhook.observeAndAutoReply',
+      reason: 'authoritative_worker_only',
+      automaticFinalReplyOwner: 'conversation_reply_worker',
+      autoReplyEnabled: env.autoReplyEnabled === true,
+      legacyWebhookAutoReplyEnabled: env.legacyWebhookAutoReplyEnabled === true,
+      textEventsCount: Array.isArray(textEvents) ? textEvents.length : 0
+    })
+  );
 }
 
 async function observeAndAutoReply(req, payload) {
   const observed = extractInboxObservedEvents(payload);
   logInfo(
-    'legacy_auto_reply_observer_entered',
+    'webhook_inbox_observer_entered',
     withRequestMeta(req, {
       sourcePath: 'webhook.observeAndAutoReply',
       observedItems: observed.items.length,

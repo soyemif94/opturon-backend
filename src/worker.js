@@ -6,8 +6,11 @@ const { execSync } = require('child_process');
 const env = require('./config/env');
 const { withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
-const { findChannelById, findPreferredWhatsAppChannelByClinicId } = require('./repositories/tenant.repository');
-const { updateClinicBotRuntimeConfigById } = require('./repositories/tenant.repository');
+const {
+  findChannelById,
+  findPreferredWhatsAppChannelByClinicId,
+  BOT_RUNTIME_CONFIG_MUTATION_SOURCES
+} = require('./repositories/tenant.repository');
 const { findContactById, findContactByIdAndClinicId, updateContact } = require('./repositories/contact.repository');
 const {
   findConversationById,
@@ -22,8 +25,6 @@ const { decideReply } = require('./conversations/conversation.engine');
 const { parseAppointmentText } = require('./conversations/appointment.parser');
 const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
 const { createOrderForClinic, patchOrderStatusForClinic } = require('./services/portal-orders.service');
-const { generateReply } = require('./ai/openai.client');
-const { buildAiMessages } = require('./ai/context.builder');
 const { findCommercialKnowledgeMatch } = require('./ai/commercial-knowledge-base');
 const {
   upsertLeadForConversation,
@@ -103,6 +104,15 @@ const APPOINTMENT_REMINDER_LEAD_MINUTES = Number(env.appointmentReminderLeadMinu
 const APPOINTMENT_REMINDER_SWEEP_MS = Number(env.appointmentReminderSweepMs || 60000);
 const APPOINTMENT_REMINDER_CLAIM_TTL_MINUTES = Number(env.appointmentReminderClaimTtlMinutes || 10);
 const GENERATED_SALES_BOT_TEMPLATE_KEY = 'generated_sales_bot';
+const AUTOMATABLE_CONVERSATION_STATUSES = new Set(['open']);
+const BOT_REPLY_AUTHORITY_REASONS = Object.freeze({
+  ALLOWED: 'BOT_ALLOWED',
+  BOT_DISABLED: 'BOT_DISABLED',
+  CHANNEL_NOT_AUTOMATABLE: 'CHANNEL_NOT_AUTOMATABLE',
+  CONTACT_OPTED_OUT: 'CONTACT_OPTED_OUT',
+  CONVERSATION_NOT_AUTOMATABLE: 'CONVERSATION_NOT_AUTOMATABLE',
+  HUMAN_HANDOFF_ACTIVE: 'HUMAN_HANDOFF_ACTIVE'
+});
 const WORKER_RUNTIME_VERSION = 'industry-discovery-guard-2026-06-09';
 let workerRuntimeCommitShaCache = undefined;
 
@@ -170,6 +180,38 @@ function mergeContextPatches(basePatch, extraPatch) {
     );
   }
   return merged;
+}
+
+function resolveBotReplyAuthority({ conversation, contact, channel, openHandoff }) {
+  const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
+    ? conversation.context
+    : {};
+
+  if (contact && contact.optedOut === true) {
+    return { allowed: false, reason: BOT_REPLY_AUTHORITY_REASONS.CONTACT_OPTED_OUT };
+  }
+
+  if (safeContext.portalBotEnabled === false) {
+    return { allowed: false, reason: BOT_REPLY_AUTHORITY_REASONS.BOT_DISABLED };
+  }
+
+  if (openHandoff) {
+    return { allowed: false, reason: BOT_REPLY_AUTHORITY_REASONS.HUMAN_HANDOFF_ACTIVE };
+  }
+
+  const conversationStatus = String(conversation && conversation.status ? conversation.status : '')
+    .trim()
+    .toLowerCase();
+  if (!AUTOMATABLE_CONVERSATION_STATUSES.has(conversationStatus)) {
+    return { allowed: false, reason: BOT_REPLY_AUTHORITY_REASONS.CONVERSATION_NOT_AUTOMATABLE };
+  }
+
+  const channelStatus = String(channel && channel.status ? channel.status : '').trim().toLowerCase();
+  if (channelStatus !== 'active') {
+    return { allowed: false, reason: BOT_REPLY_AUTHORITY_REASONS.CHANNEL_NOT_AUTOMATABLE };
+  }
+
+  return { allowed: true, reason: BOT_REPLY_AUTHORITY_REASONS.ALLOWED };
 }
 
 function normalizeText(input) {
@@ -9754,6 +9796,19 @@ function buildActiveBotEditReply(updatedConfig, editIntent) {
   ].join('\n');
 }
 
+function buildRuntimeConfigAdminRequiredReply({ clinicId, conversationId, action }) {
+  logWarn('bot_runtime_config_mutation_blocked', {
+    clinicId: clinicId || null,
+    conversationId: conversationId || null,
+    source: BOT_RUNTIME_CONFIG_MUTATION_SOURCES.CUSTOMER_CONVERSATION,
+    requiredSource: BOT_RUNTIME_CONFIG_MUTATION_SOURCES.AUTHORIZED_ADMIN_CONFIGURATION,
+    reason: 'authorized_admin_configuration_required',
+    action: action || null
+  });
+
+  return 'Por seguridad, la activacion y los cambios del bot se realizan desde el portal de Opturon. Esta conversacion no modifico la configuracion.';
+}
+
 function getActiveGeneratedBotConfig(clinic) {
   const settings = parseClinicSettingsObject(clinic);
   const config = settings && settings.bot && settings.bot.runtimeConfig && typeof settings.bot.runtimeConfig === 'object'
@@ -12598,19 +12653,18 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const activeRuntimeConfig = getActiveGeneratedBotConfig(clinic);
   const runtimeEditIntent = parseActiveBotRuntimeEditIntent(inboundText);
   if (activeRuntimeConfig && runtimeEditIntent && ['READY', 'NEW', 'IDLE'].includes(currentState)) {
-    const updatedRuntimeConfig = buildEditedActiveBotConfig(activeRuntimeConfig, getOnboardingData(safeContext), runtimeEditIntent);
-    if (updatedRuntimeConfig) {
-      await updateClinicBotRuntimeConfigById(conversation.clinicId, updatedRuntimeConfig);
-      return {
-        replyText: buildActiveBotEditReply(updatedRuntimeConfig, runtimeEditIntent),
-        newState: 'READY',
-        newStage: 'offering',
-        contextPatch: {
-          activeBotDomain: 'commerce',
-          botRuntimeConfig: updatedRuntimeConfig
-        }
-      };
-    }
+    return {
+      replyText: buildRuntimeConfigAdminRequiredReply({
+        clinicId: conversation.clinicId,
+        conversationId: conversation.id,
+        action: `edit:${runtimeEditIntent}`
+      }),
+      newState: 'READY',
+      newStage: 'offering',
+      contextPatch: {
+        activeBotDomain: 'commerce'
+      }
+    };
   }
 
   const transferConfig = getClinicTransferConfig(clinic);
@@ -13167,16 +13221,15 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
 
       if (existingPreview && editIntent) {
         const preview = buildEditedBotPreview(existingPreview, onboarding, editIntent);
-        const persistedRuntimeConfig = activeRuntimeConfig
-          ? buildEditedActiveBotConfig(activeRuntimeConfig, onboarding, editIntent)
+        const adminRequiredReply = activeRuntimeConfig
+          ? buildRuntimeConfigAdminRequiredReply({
+              clinicId: conversation.clinicId,
+              conversationId: conversation.id,
+              action: `preview_edit:${editIntent}`
+            })
           : null;
-        if (persistedRuntimeConfig) {
-          await updateClinicBotRuntimeConfigById(conversation.clinicId, persistedRuntimeConfig);
-        }
         return {
-          replyText: persistedRuntimeConfig
-            ? `${preview.text}\n\n---\n\nYa guardé este cambio en tu bot activo.`
-            : preview.text,
+          replyText: adminRequiredReply ? `${preview.text}\n\n---\n\n${adminRequiredReply}` : preview.text,
           newState: 'ONBOARDING',
           newStage: getOnboardingStageKey(5),
           contextPatch: {
@@ -13188,7 +13241,6 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
               lastEditMode: preview.lastEditMode,
               previewText: preview.text
             },
-            botRuntimeConfig: persistedRuntimeConfig || null,
             commerceLastOrderId: safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : null,
             commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null,
             commerceActivationOfferState: 'onboarding_completed',
@@ -13221,21 +13273,16 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       }
 
       if (existingPreview && isGeneratedBotActivationIntent(inboundText)) {
-        const runtimeConfig = buildExecutableBotConfigFromPreview(onboarding, existingPreview);
-        await updateClinicBotRuntimeConfigById(conversation.clinicId, runtimeConfig);
         return {
-          replyText: [
-            'Perfecto 🙌',
-            '',
-            'Ya dejé esta versión como base de tu bot.',
-            '',
-            'A partir de ahora, podemos seguir ajustándolo o usarlo como punto de partida para tu configuración real.'
-          ].join('\n'),
+          replyText: buildRuntimeConfigAdminRequiredReply({
+            clinicId: conversation.clinicId,
+            conversationId: conversation.id,
+            action: 'activate_preview'
+          }),
           newState: 'ONBOARDING',
           newStage: getOnboardingStageKey(5),
           contextPatch: {
             onboarding,
-            botRuntimeConfig: runtimeConfig,
             generatedBotPreview: {
               ...existingPreview
             }
@@ -15731,23 +15778,40 @@ async function processInboundJob(job) {
     messageId
   };
 
-  if (contact.optedOut) {
-    const leadOpt = await upsertLeadForConversation({
-      clinicId,
-      channelId,
-      conversationId: conversation.id,
-      contactId: contact.id,
-      primaryIntent: null
-    });
-    await updateLeadStatus(leadOpt.id, 'lost', 'contact_opted_out');
-    await addEvent({
-      clinicId,
-      conversationId: conversation.id,
-      type: 'CONTACT_OPTED_OUT',
-      data: { contactId: contact.id }
-    });
+  const openHandoff = await getOpenHandoff(clinicId, conversation.id);
+  const botReplyAuthority = resolveBotReplyAuthority({
+    conversation,
+    contact,
+    channel,
+    openHandoff
+  });
+  if (!botReplyAuthority.allowed) {
+    if (botReplyAuthority.reason === BOT_REPLY_AUTHORITY_REASONS.CONTACT_OPTED_OUT) {
+      const leadOpt = await upsertLeadForConversation({
+        clinicId,
+        channelId,
+        conversationId: conversation.id,
+        contactId: contact.id,
+        primaryIntent: null
+      });
+      await updateLeadStatus(leadOpt.id, 'lost', 'contact_opted_out');
+      await addEvent({
+        clinicId,
+        conversationId: conversation.id,
+        type: 'CONTACT_OPTED_OUT',
+        data: { contactId: contact.id }
+      });
+    }
 
-    logInfo('worker_job_skipped_opted_out', meta);
+    logInfo('process_inbound_authority_blocked', {
+      ...meta,
+      reason: botReplyAuthority.reason,
+      conversationStatus: conversation.status || null,
+      channelStatus: channel.status || null,
+      portalBotEnabled: conversation.context && conversation.context.portalBotEnabled === false ? false : true,
+      openHandoff: Boolean(openHandoff),
+      contactOptedOut: contact.optedOut === true
+    });
     return;
   }
 
@@ -15767,15 +15831,6 @@ async function processInboundJob(job) {
     type: 'LEAD_CREATED',
     data: { leadId: lead.id, intent }
   });
-
-  const openHandoff = await getOpenHandoff(clinicId, conversation.id);
-  if (openHandoff) {
-    logInfo('worker_bot_paused_handoff_open', {
-      ...meta,
-      handoffId: openHandoff.id
-    });
-    return;
-  }
 
   if (isCancellation(inboundText)) {
     const booked = await findBookedAppointmentByConversation(clinicId, conversation.id);
@@ -16114,6 +16169,31 @@ async function processConversationReplyJob(job) {
   const clinic = await getClinic(conversation.clinicId);
   if (!clinic) {
     throw new Error('Clinic not found for conversation_reply job');
+  }
+
+  const openHandoff = await getOpenHandoff(conversation.clinicId, conversation.id);
+  const botReplyAuthority = resolveBotReplyAuthority({
+    conversation,
+    contact,
+    channel,
+    openHandoff
+  });
+  if (!botReplyAuthority.allowed) {
+    logInfo('conversation_reply_authority_blocked', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      channelId,
+      conversationId: conversation.id,
+      inboundMessageId,
+      reason: botReplyAuthority.reason,
+      conversationStatus: conversation.status || null,
+      channelStatus: channel.status || null,
+      portalBotEnabled: conversation.context && conversation.context.portalBotEnabled === false ? false : true,
+      openHandoff: Boolean(openHandoff),
+      contactOptedOut: contact.optedOut === true
+    });
+    return;
   }
 
   const inboundText = String(inboundMessage.text || '').trim();
@@ -17512,13 +17592,13 @@ async function processConversationReplyJob(job) {
     inboundText: normalizedInboundText
   });
 
-  let replyText = deterministicReplyText;
-  let aiUsed = false;
-  let aiFallbackUsed = false;
-  let aiModel = null;
-  let aiUsage = null;
-  let aiAttempted = false;
-  let aiSkipReason = null;
+  const replyText = deterministicReplyText;
+  const aiUsed = false;
+  const aiFallbackUsed = false;
+  const aiModel = null;
+  const aiUsage = null;
+  const aiAttempted = false;
+  const aiSkipReason = 'deterministic_reply_authoritative';
   const outboundMedia = Array.isArray(decision && decision.outboundMedia)
     ? decision.outboundMedia.filter((item) => item && item.type === 'image' && item.image && item.image.link)
     : [];
@@ -17541,91 +17621,7 @@ async function processConversationReplyJob(job) {
 
   const aiEnabled = env.aiEnabled === true;
   const hasAiKey = !!String(env.openaiApiKey || '').trim();
-  const aiEligibility = evaluateAiEligibility({
-    jobType: job.type,
-    state: conversation.state
-  });
-  const aiScope = isAiAllowedForScope({
-    clinicId: conversation.clinicId || job.clinicId || null,
-    channelId: conversation.channelId || channelId || null
-  });
-
-  if (!shouldSendTextWithMedia) {
-    aiSkipReason = 'media_caption_only';
-  } else if (decisionSource === 'automation') {
-    aiSkipReason = 'automation_matched';
-  } else if (aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok) {
-    const budget = reserveAiBudget(conversation.id);
-    if (!budget.allowed) {
-      aiSkipReason = budget.reason || 'rate_limited';
-      if (aiSkipReason === 'rate_limited') {
-        logWarn('ai_rate_limited', {
-          requestId,
-          jobId: job.id,
-          conversationId: conversation.id,
-          usedCount: budget.usedCount,
-          max: AI_MAX_CALLS_PER_WINDOW,
-          windowMs: AI_WINDOW_MS
-        });
-      }
-    }
-  } else if (!aiEligibility.allowed) {
-    aiSkipReason = aiEligibility.reason;
-  } else if (!aiScope.ok) {
-    aiSkipReason = aiScope.reason;
-  }
-
-  if (decisionSource !== 'automation' && aiEnabled && hasAiKey && aiEligibility.allowed && aiScope.ok && !aiSkipReason) {
-    aiAttempted = true;
-    logInfo('ai_request_start', {
-      requestId,
-      jobId: job.id,
-      conversationId: conversation.id,
-      model: env.openaiModel
-    });
-
-    try {
-      const historyMessages = await conversationRepo.getLastMessagesForAi(conversation.id, 10);
-      const aiContext = buildAiMessages({
-        conversation,
-        historyMessages,
-        inboundText
-      });
-      const aiResult = await generateReply({
-        systemPrompt: aiContext.systemPrompt,
-        messages: aiContext.messages,
-        model: env.openaiModel,
-        timeoutMs: env.openaiTimeoutMs
-      });
-
-      replyText = String(aiResult.replyText || '').trim() || deterministicReplyText;
-      aiUsed = !!String(aiResult.replyText || '').trim();
-      aiModel = aiResult.model || env.openaiModel;
-      aiUsage = sanitizeAiUsage(aiResult.usage || null);
-
-      logInfo('ai_request_success', {
-        requestId,
-        jobId: job.id,
-        conversationId: conversation.id,
-        model: aiModel,
-        used: aiUsed
-      });
-    } catch (error) {
-      aiFallbackUsed = true;
-      replyText = deterministicReplyText;
-      logWarn('ai_request_error', {
-        requestId,
-        jobId: job.id,
-        conversationId: conversation.id,
-        error: error.message
-      });
-      logWarn('ai_fallback_used', {
-        requestId,
-        jobId: job.id,
-        conversationId: conversation.id
-      });
-    }
-  } else if (aiEnabled && hasAiKey && aiSkipReason) {
+  if (aiEnabled && hasAiKey) {
     logInfo('ai_skipped', {
       requestId,
       jobId: job.id,
@@ -18271,7 +18267,11 @@ module.exports = {
     buildConfirmedContextPatch,
     formatSlotForHuman,
     processDueAppointmentReminders,
-    buildAutomationDisabledReply
+    buildAutomationDisabledReply,
+    resolveBotReplyAuthority,
+    processConversationReplyJob,
+    processJob,
+    BOT_REPLY_AUTHORITY_REASONS
   }
 };
 

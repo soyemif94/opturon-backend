@@ -2,6 +2,11 @@
 
 const { maybeDecryptSecret, maybeEncryptSecret } = require('../utils/secret-crypto');
 
+const BOT_RUNTIME_CONFIG_MUTATION_SOURCES = Object.freeze({
+  CUSTOMER_CONVERSATION: 'CUSTOMER_CONVERSATION',
+  AUTHORIZED_ADMIN_CONFIGURATION: 'AUTHORIZED_ADMIN_CONFIGURATION'
+});
+
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') {
     return client.query(text, params);
@@ -682,7 +687,15 @@ async function updateClinicBotModeById(clinicId, botMode, client = null) {
   return result.rows[0] || null;
 }
 
-async function updateClinicBotRuntimeConfigById(clinicId, runtimeConfig, client = null) {
+async function updateClinicBotRuntimeConfigById(clinicId, runtimeConfig, client = null, mutationContext = {}) {
+  const mutationSource = normalizeString(mutationContext && mutationContext.source);
+  if (mutationSource !== BOT_RUNTIME_CONFIG_MUTATION_SOURCES.AUTHORIZED_ADMIN_CONFIGURATION) {
+    const error = new Error('bot_runtime_config_mutation_unauthorized');
+    error.code = 'BOT_RUNTIME_CONFIG_MUTATION_UNAUTHORIZED';
+    error.mutationSource = mutationSource || null;
+    throw error;
+  }
+
   const result = await dbQuery(
     client,
     `UPDATE clinics
@@ -823,6 +836,7 @@ async function updateClinicBotConfigById(clinicId, botConfig, client = null) {
 }
 
 module.exports = {
+  BOT_RUNTIME_CONFIG_MUTATION_SOURCES,
   findChannelByPhoneNumberId,
   findChannelById,
   findChannelByIdAndClinicId,
