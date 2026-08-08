@@ -725,7 +725,8 @@ async function run() {
     },
     inboundText: 'Tengo 2 personas en atencion al publico'
   });
-  assert.match(sellerDiscoveryReply.replyText, /relativamente chica/i);
+  assert.match(sellerDiscoveryReply.replyText, /2 personas/i);
+  assert.doesNotMatch(sellerDiscoveryReply.replyText, /operaci.n relativamente chica/i);
   assert.match(sellerDiscoveryReply.replyText, /por d[ií]a/i);
   assert.strictEqual(sellerDiscoveryReply.contextPatch.commercialSalesContext.teamSizeSignal, 'team');
   assert.strictEqual(sellerDiscoveryReply.contextPatch.commercialSalesContext.teamSizeValue, 2);
@@ -914,10 +915,12 @@ async function run() {
     },
     inboundText: 'Uso WhatsApp Business'
   });
-  assert.match(portabilityDiscoveryReply.replyText, /relativamente chica|en crecimiento|varias personas/i);
+  assert.match(portabilityDiscoveryReply.replyText, /s.lo por WhatsApp|otros canales/i);
+  assert.doesNotMatch(portabilityDiscoveryReply.replyText, /operaci.n relativamente chica|operaci.n en crecimiento/i);
   assert.strictEqual(portabilityDiscoveryReply.contextPatch.commercialSalesContext.whatsappAccountTypeSignal, 'business');
   assert.strictEqual(portabilityDiscoveryReply.contextPatch.commercialSalesContext.channelMixSignal, 'whatsapp_only');
-  assert.strictEqual(getActiveCommercialDiscoveryPending(portabilityDiscoveryReply.contextPatch).field, 'team_size');
+  assert.strictEqual(portabilityDiscoveryReply.contextPatch.commercialSalesContext.signalProvenance.channelMixSignal, 'INFERRED_WEAK');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(portabilityDiscoveryReply.contextPatch).field, 'channel_mix');
 
   const offerTypeDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
@@ -934,7 +937,8 @@ async function run() {
     },
     inboundText: 'Productos'
   });
-  assert.match(offerTypeDiscoveryReply.replyText, /relativamente chica|en crecimiento/i);
+  assert.match(offerTypeDiscoveryReply.replyText, /productos/i);
+  assert.doesNotMatch(offerTypeDiscoveryReply.replyText, /operaci.n relativamente chica|operaci.n en crecimiento/i);
   assert.strictEqual(offerTypeDiscoveryReply.contextPatch.commercialSalesContext.offerTypeSignal, 'products');
   assert.strictEqual(getActiveCommercialDiscoveryPending(offerTypeDiscoveryReply.contextPatch).field, 'team_size');
 
@@ -949,7 +953,8 @@ async function run() {
     businessContext: deriveBusinessRecommendationContextFromSalesContext(mediumOrientationContext),
     sourceIntent: 'seller_replacement'
   });
-  assert.match(mediumOrientation.replyText, /relativamente chica/i);
+  assert.match(mediumOrientation.replyText, /2 personas/i);
+  assert.doesNotMatch(mediumOrientation.replyText, /operaci.n relativamente chica/i);
   assert.strictEqual(mediumOrientation.pendingField, 'whatsapp_volume');
 
   const complexOrientationContext = {
@@ -961,7 +966,7 @@ async function run() {
     businessContext: deriveBusinessRecommendationContextFromSalesContext(complexOrientationContext),
     sourceIntent: 'seller_replacement'
   });
-  assert.match(complexOrientation.replyText, /varias personas o m[aá]s de un frente/i);
+  assert.match(complexOrientation.replyText, /8 personas/i);
   assert.strictEqual(complexOrientation.pendingField, 'channel_mix');
 
   const starterRecommendationContext = {
