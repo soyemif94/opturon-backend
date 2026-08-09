@@ -82,6 +82,7 @@ const state = {
   requeuedJobs: [],
   authorityLogs: [],
   legacyAuthorityLogs: [],
+  handoffOpenCalls: [],
   aiAssistCalls: 0,
   finalLlmCalls: 0,
   finalContextBuilds: 0,
@@ -137,6 +138,7 @@ function resetScenario(overrides = {}) {
   state.requeuedJobs = [];
   state.authorityLogs = [];
   state.legacyAuthorityLogs = [];
+  state.handoffOpenCalls = [];
   state.aiAssistCalls = 0;
   state.finalLlmCalls = 0;
   state.finalContextBuilds = 0;
@@ -206,8 +208,14 @@ stubModule('src/repositories/contact.repository.js', {
 
 stubModule('src/repositories/conversation.repository.js', {
   findConversationById: async () => state.conversation,
-  updateConversationStatus: async () => state.conversation,
-  updateConversationStage: async () => state.conversation
+  updateConversationStatus: async (conversationId, status) => {
+    state.conversation.status = status;
+    return state.conversation;
+  },
+  updateConversationStage: async (conversationId, stage) => {
+    state.conversation.stage = stage;
+    return state.conversation;
+  }
 });
 
 stubModule('src/repositories/message.repository.js', {
@@ -222,6 +230,11 @@ stubModule('src/conversations/conversation.repo.js', {
   findAutomationOutboundByInboundMessageId: async () => null,
   updateConversationState: async (input) => {
     state.stateUpdates.push(input);
+    state.conversation.state = input.state || state.conversation.state;
+    state.conversation.context = {
+      ...(state.conversation.context || {}),
+      ...((input && input.contextPatch) || {})
+    };
     return input;
   },
   insertOutboundMessage: async (input) => {
@@ -266,7 +279,16 @@ stubModule('src/repositories/staff.repository.js', {
 });
 
 stubModule('src/repositories/handoff.repository.js', {
-  openHandoff: async () => ({ id: 'handoff-created' }),
+  openHandoff: async (input) => {
+    state.handoffOpenCalls.push(input);
+    if (state.openHandoff) return state.openHandoff;
+    state.openHandoff = {
+      id: 'handoff-created',
+      status: 'open',
+      reason: input.reason
+    };
+    return state.openHandoff;
+  },
   assignHandoff: async () => null,
   getOpenHandoff: async () => state.openHandoff
 });
@@ -481,6 +503,7 @@ async function run() {
   await executeJob();
   assert.strictEqual(state.sends.length, 1);
   assert.strictEqual(state.sends[0].text, expectedPricing.replyText);
+  assert.strictEqual(state.handoffOpenCalls.length, 0);
   assert.strictEqual(state.finalLlmCalls, 0);
   assert.strictEqual(state.finalContextBuilds, 0);
 
@@ -584,6 +607,79 @@ async function run() {
   assert.strictEqual(state.finalLlmCalls, 0);
   assert.strictEqual(state.sends.length, 1);
   assert.doesNotMatch(String(state.sends[0].text || ''), /HALLUCINATED/);
+
+  const discoveryNow = new Date().toISOString();
+  resetScenario({
+    conversation: {
+      context: {
+        portalBotEnabled: true,
+        activeBotDomain: 'commerce',
+        commercialSalesContext: {
+          groundedFacts: {
+            businessType: { value: 'local de insumos para trabajos con resina', source: 'STRUCTURED' },
+            objective: { value: 'alinear stock tienda online y local fisico', source: 'STRUCTURED' },
+            ecommercePlatform: { value: 'empretienda', source: 'EXPLICIT' },
+            physicalStoreSystem: { value: 'cianbox', source: 'EXPLICIT' },
+            stockSourceOfTruth: { value: 'cianbox', source: 'EXPLICIT' },
+            stockUpdateMode: { value: 'manual', source: 'EXPLICIT' },
+            systems: [
+              { value: 'empretienda', source: 'EXPLICIT' },
+              { value: 'cianbox', source: 'EXPLICIT' }
+            ]
+          },
+          updatedAt: discoveryNow
+        },
+        commercialDiscoveryPending: {
+          id: 'commercial_discovery:shared_sku_catalog:test',
+          field: 'shared_sku_catalog',
+          expectedField: 'shared_sku_catalog',
+          evidenceGap: 'shared_sku_catalog',
+          askedAt: discoveryNow,
+          status: 'pending',
+          provenance: 'BOT_ASKED',
+          sourceIntent: 'portfolio_discovery',
+          meta: {
+            questionKind: 'binary',
+            affirmativeValue: 'yes',
+            negativeValue: 'no'
+          }
+        }
+      }
+    },
+    inboundText: 'si'
+  });
+  await executeJob();
+  assert.strictEqual(state.handoffOpenCalls.length, 1);
+  assert.strictEqual(state.handoffOpenCalls[0].reason, 'capability_verification_required');
+  assert.strictEqual(state.openHandoff.reason, 'capability_verification_required');
+  assert.strictEqual(state.conversation.status, 'needs_human');
+  assert.strictEqual(state.conversation.stage, 'handoff');
+  assert.strictEqual(state.sends.length, 1);
+  assert.match(state.sends[0].text, /asesor/i);
+  assert.doesNotMatch(state.sends[0].text, /Opturon (?:ya )?(?:integra|sincroniza)/i);
+  const sufficientStateUpdate = state.stateUpdates.find(
+    (item) => item.contextPatch && item.contextPatch.commercialDiscoveryState &&
+      item.contextPatch.commercialDiscoveryState.status === 'DISCOVERY_SUFFICIENT'
+  );
+  assert.ok(sufficientStateUpdate);
+  assert.strictEqual(
+    sufficientStateUpdate.contextPatch.commercialDiscoveryState.handoffReason,
+    'capability_verification_required'
+  );
+
+  state.sends = [];
+  state.outboundWrites = [];
+  state.stateUpdates = [];
+  state.doneJobs = [];
+  state.requeuedJobs = [];
+  state.authorityLogs = [];
+  state.aiAssistCalls = 0;
+  state.finalLlmCalls = 0;
+  state.finalContextBuilds = 0;
+  state.automationCalls = 0;
+  await executeJob();
+  assertBlocked(BOT_REPLY_AUTHORITY_REASONS.HUMAN_HANDOFF_ACTIVE);
+  assert.strictEqual(state.handoffOpenCalls.length, 1);
 
   console.log('BOT.P0.1.SAFETY validation passed');
 }

@@ -1691,6 +1691,15 @@ const COMMERCIAL_DISCOVERY_QUESTION_PROVENANCE = Object.freeze({
   BOT_ASKED: 'BOT_ASKED',
   EXPLICIT_ANSWER: 'EXPLICIT'
 });
+const COMMERCIAL_DISCOVERY_STATES = Object.freeze({
+  IN_PROGRESS: 'DISCOVERY_IN_PROGRESS',
+  SUFFICIENT: 'DISCOVERY_SUFFICIENT'
+});
+const COMMERCIAL_CAPABILITY_STATUSES = Object.freeze({
+  UNKNOWN: 'CAPABILITY_UNKNOWN',
+  NEEDS_VERIFICATION: 'NEEDS_VERIFICATION'
+});
+const CAPABILITY_VERIFICATION_HANDOFF_REASON = 'capability_verification_required';
 const COMMERCIAL_GROUNDED_SCALAR_FACT_FIELDS = Object.freeze([
   'businessType',
   'inquiryTypes',
@@ -2339,6 +2348,40 @@ function getInventorySyncDiscoveryGap(salesContext) {
   if (!getGroundedCommercialFact(salesContext, 'stockUpdateMode')) return 'stock_update_method';
   if (!getGroundedCommercialFact(salesContext, 'sharedSkuCatalog')) return 'shared_sku_catalog';
   return null;
+}
+
+function getInventorySyncDiscoveryOutcome(salesContext) {
+  if (!isInventorySyncCommercialObjective(salesContext)) return null;
+  const evidenceGap = getInventorySyncDiscoveryGap(salesContext);
+  return {
+    status: evidenceGap
+      ? COMMERCIAL_DISCOVERY_STATES.IN_PROGRESS
+      : COMMERCIAL_DISCOVERY_STATES.SUFFICIENT,
+    evidenceGap,
+    capabilityStatus: evidenceGap
+      ? COMMERCIAL_CAPABILITY_STATUSES.UNKNOWN
+      : COMMERCIAL_CAPABILITY_STATUSES.NEEDS_VERIFICATION
+  };
+}
+
+function buildInventorySyncDiscoveryStatePatch({ salesContext, lastResolvedField = null } = {}) {
+  const outcome = getInventorySyncDiscoveryOutcome(salesContext);
+  if (!outcome) return null;
+  const updatedAt = new Date().toISOString();
+  const isSufficient = outcome.status === COMMERCIAL_DISCOVERY_STATES.SUFFICIENT;
+  return {
+    commercialDiscoveryState: {
+      status: outcome.status,
+      objectiveType: 'inventory_sync',
+      currentEvidenceGap: outcome.evidenceGap,
+      lastResolvedField: String(lastResolvedField || '').trim().toLowerCase() || null,
+      capabilityStatus: outcome.capabilityStatus,
+      nextAction: isSufficient ? 'human_review' : 'continue_discovery',
+      handoffReason: isSufficient ? CAPABILITY_VERIFICATION_HANDOFF_REASON : null,
+      updatedAt,
+      completedAt: isSufficient ? updatedAt : null
+    }
+  };
 }
 
 function isExternalCommerceIntegrationQuestion(rawText) {
@@ -3845,6 +3888,86 @@ function buildCommercialDiscoveryQuestion(field, salesContext = {}) {
   return null;
 }
 
+function buildInventorySyncDiscoveryAcknowledgement({
+  fields = [],
+  salesContext = {},
+  isCorrection = false
+} = {}) {
+  const acknowledged = new Set(
+    (Array.isArray(fields) ? fields : [])
+      .map((field) => String(field || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if (!acknowledged.size) return null;
+
+  const ecommercePlatform = getSpecificCommercePlatform(salesContext);
+  const physicalStoreSystem = getPhysicalStoreSystem(salesContext);
+  if (
+    acknowledged.has('commerce_platform') &&
+    acknowledged.has('physical_store_system') &&
+    ecommercePlatform &&
+    physicalStoreSystem
+  ) {
+    return isCorrection
+      ? `Entiendo, corrijo el dato: usás ${ecommercePlatform.value} para la venta online y ${physicalStoreSystem.value} en el local.`
+      : `Entiendo, usás ${ecommercePlatform.value} para la venta online y ${physicalStoreSystem.value} en el local.`;
+  }
+
+  if (acknowledged.has('commerce_platform') && ecommercePlatform) {
+    return isCorrection
+      ? `Entiendo, corrijo la plataforma online: usás ${ecommercePlatform.value}.`
+      : `Entiendo, usás ${ecommercePlatform.value} para la venta online.`;
+  }
+
+  if (acknowledged.has('physical_store_system') && physicalStoreSystem) {
+    return isCorrection
+      ? `Entiendo, corrijo el sistema del local: usás ${physicalStoreSystem.value}.`
+      : `Entiendo, usás ${physicalStoreSystem.value} para gestionar el local.`;
+  }
+
+  if (acknowledged.has('stock_source_of_truth')) {
+    const stockSource = getGroundedCommercialFact(salesContext, 'stockSourceOfTruth');
+    if (stockSource) {
+      return normalizeCommandText(stockSource.value) === 'both'
+        ? 'Entiendo, hoy tomás ambos sistemas como referencia del stock.'
+        : `Entiendo, hoy tomás ${stockSource.value} como referencia principal del stock.`;
+    }
+  }
+
+  if (acknowledged.has('stock_update_method')) {
+    const updateMode = getGroundedCommercialFact(salesContext, 'stockUpdateMode');
+    const normalizedMode = normalizeCommandText(updateMode && updateMode.value);
+    if (normalizedMode === 'manual') return 'Entiendo, hoy actualizás el stock manualmente en ambos sistemas.';
+    if (normalizedMode === 'mixed') return 'Entiendo, hoy la actualización del stock combina pasos manuales y automáticos.';
+    if (normalizedMode === 'automatic') return 'Entiendo, hoy la actualización del stock no es manual.';
+    if (normalizedMode === 'not_manual') return 'Entiendo, hoy no actualizás manualmente el stock en ambos sistemas.';
+  }
+
+  if (acknowledged.has('shared_sku_catalog')) {
+    const sharedSku = getGroundedCommercialFact(salesContext, 'sharedSkuCatalog');
+    const normalizedSku = normalizeCommandText(sharedSku && sharedSku.value);
+    if (normalizedSku === 'yes') return 'Entiendo, ambos sistemas usan los mismos códigos o SKU.';
+    if (normalizedSku === 'partial') return 'Entiendo, sólo parte del catálogo comparte los mismos códigos o SKU.';
+    if (normalizedSku === 'no') return 'Entiendo, los sistemas no usan los mismos códigos o SKU.';
+  }
+
+  return 'Entiendo.';
+}
+
+function buildInventorySyncDiscoveryTerminalReply({ acknowledgedFields, salesContext, isCorrection = false } = {}) {
+  const acknowledgement = buildInventorySyncDiscoveryAcknowledgement({
+    fields: acknowledgedFields,
+    salesContext,
+    isCorrection
+  });
+  return [
+    acknowledgement,
+    'Con esto ya tengo claro cómo manejás hoy el stock entre la tienda online y el local físico.',
+    'La posibilidad de automatizarlo depende de verificar la compatibilidad de las plataformas, así que prefiero no confirmarte una integración sin esa revisión.',
+    'Dejo el caso preparado para que un asesor lo revise y continúe con vos.'
+  ].filter(Boolean).join('\n\n');
+}
+
 function buildCommercialOrientationLead(salesContext = {}) {
   const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
   const shape = classifyCommercialOperationShape(safeContext);
@@ -4168,7 +4291,9 @@ function buildCommercialOrientationReply({
   salesContext,
   businessContext,
   sourceIntent = null,
-  allowSoftRecommendation = true
+  allowSoftRecommendation = true,
+  acknowledgedFields = [],
+  isCorrection = false
 }) {
   const safeSalesContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
   const safeBusinessContext = businessContext && typeof businessContext === 'object' ? businessContext : null;
@@ -4194,13 +4319,22 @@ function buildCommercialOrientationReply({
 
   const nextField = chooseNextCommercialDiscoveryField(safeSalesContext, sourceIntent);
   const nextQuestion = buildCommercialDiscoveryQuestion(nextField, safeSalesContext);
+  const acknowledgement = isInventorySyncCommercialObjective(safeSalesContext)
+    ? buildInventorySyncDiscoveryAcknowledgement({
+      fields: acknowledgedFields,
+      salesContext: safeSalesContext,
+      isCorrection
+    })
+    : null;
   return {
-    replyText: [
-      'Perfecto 😊',
-      '',
-      buildCommercialOrientationLead(safeSalesContext),
-      ...(nextQuestion ? ['', nextQuestion] : [])
-    ].join('\n'),
+    replyText: acknowledgement
+      ? [acknowledgement, ...(nextQuestion ? ['', nextQuestion] : [])].join('\n')
+      : [
+        'Perfecto 😊',
+        '',
+        buildCommercialOrientationLead(safeSalesContext),
+        ...(nextQuestion ? ['', nextQuestion] : [])
+      ].join('\n'),
     pendingField: nextField || null
   };
 }
@@ -4241,24 +4375,60 @@ function buildCommercialDiscoveryResponse({
   salesContext,
   businessContext,
   sourceIntent = null,
-  allowSoftRecommendation = true
+  allowSoftRecommendation = true,
+  acknowledgedFields = [],
+  isCorrection = false,
+  resolvedField = null
 }) {
+  const inventoryOutcome = getInventorySyncDiscoveryOutcome(salesContext);
+  const lastResolvedField = String(resolvedField || '').trim().toLowerCase() || null;
+  if (inventoryOutcome && inventoryOutcome.status === COMMERCIAL_DISCOVERY_STATES.SUFFICIENT) {
+    return {
+      replyText: buildInventorySyncDiscoveryTerminalReply({
+        acknowledgedFields,
+        salesContext,
+        isCorrection
+      }),
+      contextPatch: mergeContextPatches(
+        clearCommercialDiscoveryPendingPatch(),
+        buildInventorySyncDiscoveryStatePatch({ salesContext, lastResolvedField })
+      ),
+      triggerHandoff: true,
+      handoffReason: CAPABILITY_VERIFICATION_HANDOFF_REASON
+    };
+  }
+
   const orientation = buildCommercialOrientationReply({
     salesContext,
     businessContext,
     sourceIntent,
-    allowSoftRecommendation
+    allowSoftRecommendation,
+    acknowledgedFields,
+    isCorrection
   });
+
+  const pendingPatch = orientation.pendingField
+    ? buildCommercialDiscoveryPendingPatch({
+      field: orientation.pendingField,
+      sourceIntent: sourceIntent || null,
+      meta: buildCommercialDiscoveryQuestionMeta(orientation.pendingField, salesContext)
+    })
+    : clearCommercialDiscoveryPendingPatch();
 
   return {
     replyText: orientation.replyText,
-    contextPatch: orientation.pendingField
-      ? buildCommercialDiscoveryPendingPatch({
-        field: orientation.pendingField,
-        sourceIntent: sourceIntent || null,
-        meta: buildCommercialDiscoveryQuestionMeta(orientation.pendingField, salesContext)
-      })
-      : clearCommercialDiscoveryPendingPatch()
+    contextPatch: mergeContextPatches(
+      pendingPatch,
+      buildInventorySyncDiscoveryStatePatch({ salesContext, lastResolvedField })
+    )
+  };
+}
+
+function buildCommercialDiscoveryHandoffDirective(response) {
+  if (!response || response.triggerHandoff !== true) return {};
+  return {
+    triggerHandoff: true,
+    handoffReason: String(response.handoffReason || CAPABILITY_VERIFICATION_HANDOFF_REASON).trim()
   };
 }
 
@@ -4350,12 +4520,17 @@ function extractInventorySyncPendingAnswer({ pending, inboundText, currentSalesC
   const inboundSalesContext = detectCommercialSalesContext(inboundText) || {};
   const inboundFacts = normalizeGroundedCommercialFacts(inboundSalesContext.groundedFacts);
   const incomingFacts = { ...inboundFacts };
+  const acknowledgedFields = [];
   let resolvedExpectedField = false;
 
   if (field === 'commerce_platform') {
     resolvedExpectedField = Boolean(inboundFacts.ecommercePlatform);
+    if (inboundFacts.ecommercePlatform) acknowledgedFields.push('commerce_platform');
+    if (inboundFacts.physicalStoreSystem) acknowledgedFields.push('physical_store_system');
   } else if (field === 'physical_store_system') {
     resolvedExpectedField = Boolean(inboundFacts.physicalStoreSystem);
+    if (inboundFacts.ecommercePlatform) acknowledgedFields.push('commerce_platform');
+    if (inboundFacts.physicalStoreSystem) acknowledgedFields.push('physical_store_system');
   } else if (field === 'stock_source_of_truth') {
     const stockSourceOfTruth = parseInventoryStockSourceOfTruthAnswer(inboundText, currentSalesContext, pending);
     if (stockSourceOfTruth) {
@@ -4364,6 +4539,7 @@ function extractInventorySyncPendingAnswer({ pending, inboundText, currentSalesC
         source: COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT
       };
       resolvedExpectedField = true;
+      acknowledgedFields.push('stock_source_of_truth');
     }
   } else if (field === 'stock_update_method') {
     const text = normalizeCommandText(inboundText);
@@ -4380,6 +4556,7 @@ function extractInventorySyncPendingAnswer({ pending, inboundText, currentSalesC
         source: COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT
       };
       resolvedExpectedField = true;
+      acknowledgedFields.push('stock_update_method');
     }
   } else if (field === 'shared_sku_catalog') {
     const text = normalizeCommandText(inboundText);
@@ -4392,14 +4569,24 @@ function extractInventorySyncPendingAnswer({ pending, inboundText, currentSalesC
         source: COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT
       };
       resolvedExpectedField = true;
+      acknowledgedFields.push('shared_sku_catalog');
     }
   }
 
   const hasRoleCorrection = Boolean(inboundFacts.ecommercePlatform || inboundFacts.physicalStoreSystem);
+  const isCorrection = /\b(?:no\s+en\s+realidad|en\s+realidad|correccion|quise\s+decir)\b/.test(
+    normalizeCommandText(inboundText)
+  );
+  if (!resolvedExpectedField && hasRoleCorrection) {
+    if (inboundFacts.ecommercePlatform) acknowledgedFields.push('commerce_platform');
+    if (inboundFacts.physicalStoreSystem) acknowledgedFields.push('physical_store_system');
+  }
   if (!resolvedExpectedField && !hasRoleCorrection) return null;
 
   return {
     resolvedExpectedField,
+    acknowledgedFields: [...new Set(acknowledgedFields)],
+    isCorrection,
     incomingSalesContext: {
       ...inboundSalesContext,
       groundedFacts: normalizeGroundedCommercialFacts(incomingFacts)
@@ -4446,12 +4633,14 @@ function resolveCommercialDiscoveryPendingReply({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: 'portfolio_discovery',
-      allowSoftRecommendation: false
+      allowSoftRecommendation: false,
+      resolvedField: pending.field
     });
 
     return {
       type: 'recommendation',
       replyText: response.replyText,
+      ...buildCommercialDiscoveryHandoffDirective(response),
       contextPatch: buildCommercialDiscoveryResolutionContextPatch({
         pending,
         salesContext: nextSalesContext,
@@ -4482,11 +4671,15 @@ function resolveCommercialDiscoveryPendingReply({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: pending.sourceIntent || 'portfolio_discovery',
-      allowSoftRecommendation: false
+      allowSoftRecommendation: false,
+      acknowledgedFields: inventoryAnswer.acknowledgedFields,
+      isCorrection: inventoryAnswer.isCorrection,
+      resolvedField: inventoryAnswer.resolvedExpectedField ? pending.field : null
     });
     return {
       type: 'recommendation',
       replyText: response.replyText,
+      ...buildCommercialDiscoveryHandoffDirective(response),
       contextPatch: inventoryAnswer.resolvedExpectedField
         ? buildCommercialDiscoveryResolutionContextPatch({
           pending,
@@ -11290,6 +11483,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       return {
         type: 'recommendation',
         replyText: portfolioDiscoveryResponse.replyText,
+        ...buildCommercialDiscoveryHandoffDirective(portfolioDiscoveryResponse),
         contextPatch: mergeContextPatches(
           buildCommercialSalesContextPatch(effectiveSalesContext),
           portfolioDiscoveryResponse.contextPatch
@@ -11358,6 +11552,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     return {
       type: 'recommendation',
       replyText: correctionResponse.replyText,
+      ...buildCommercialDiscoveryHandoffDirective(correctionResponse),
       contextPatch: mergeContextPatches(
         buildCommercialSalesContextPatch(effectiveSalesContext),
         correctionResponse.contextPatch
@@ -12024,6 +12219,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     return {
       type: 'recommendation',
       replyText: discoveryResponse.replyText,
+      ...buildCommercialDiscoveryHandoffDirective(discoveryResponse),
       contextPatch: mergeContextPatches(
         buildCommercialSalesContextPatch(effectiveSalesContext),
         discoveryResponse.contextPatch,
@@ -12652,6 +12848,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         return {
           type: commercialIntent.type,
           replyText: discoveryResponse.replyText,
+          ...buildCommercialDiscoveryHandoffDirective(discoveryResponse),
           contextPatch: mergeContextPatches(
             detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null,
             discoveryResponse.contextPatch,
@@ -12724,6 +12921,7 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       return {
         type: 'recommendation',
         replyText: discoveryResponse.replyText,
+        ...buildCommercialDiscoveryHandoffDirective(discoveryResponse),
         contextPatch: mergeContextPatches(
           detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null,
           discoveryResponse.contextPatch,
@@ -16730,7 +16928,9 @@ async function openHandoffFlow({
   requestId,
   messageId,
   customMessage = null,
-  automation = null
+  automation = null,
+  contextPatch = null,
+  conversationState = null
 }) {
   await withTransaction(async (client) => {
     const handoff = await openHandoff(
@@ -16746,6 +16946,16 @@ async function openHandoffFlow({
 
     await updateConversationStatus(conversationId, 'needs_human', client);
     await updateConversationStage(conversationId, 'handoff', client);
+    if (contextPatch) {
+      await conversationRepo.updateConversationState(
+        {
+          conversationId,
+          state: conversationState || null,
+          contextPatch
+        },
+        client
+      );
+    }
 
     if (lead) {
       await updateLeadStatus(lead.id, 'handoff', `handoff:${reason}`, client);
@@ -17418,7 +17628,7 @@ async function processInboundJob(job) {
         conversationId: conversation.id,
         contact,
         lead,
-        reason: 'manual',
+        reason: safeCommercialReply.handoffReason || 'manual',
         clinicSettings: clinic.settings,
         channel,
         requestId,
@@ -17426,7 +17636,9 @@ async function processInboundJob(job) {
         customMessage: safeCommercialReply.replyText,
         automation: inboundAutomationMeta
           ? { ...inboundAutomationMeta, source: 'safe_commercial_handoff' }
-          : null
+          : null,
+        contextPatch: safeCommercialReply.contextPatch || null,
+        conversationState: conversation.state || 'READY'
       });
       return;
     }
@@ -17931,17 +18143,19 @@ async function processConversationReplyJob(job) {
           conversationId: conversation.id,
           contact,
           lead: routedLead,
-          reason: 'manual',
+          reason: safeCommercialReply.handoffReason || 'manual',
           clinicSettings: clinic.settings,
-        channel,
-        requestId,
-        messageId: waMessageId || inboundMessage.id,
-        customMessage: safeCommercialReply.replyText,
-        automation: {
-          ...replyAutomationMeta,
-          source: 'safe_commercial_handoff'
-        }
-      });
+          channel,
+          requestId,
+          messageId: waMessageId || inboundMessage.id,
+          customMessage: safeCommercialReply.replyText,
+          automation: {
+            ...replyAutomationMeta,
+            source: 'safe_commercial_handoff'
+          },
+          contextPatch: safeCommercialReply.contextPatch || null,
+          conversationState: conversation.state || 'READY'
+        });
         return;
       }
 
