@@ -144,7 +144,9 @@ async function run() {
   });
   const platformContext = platformReply.contextPatch.commercialSalesContext;
   assert.ok(platformContext.groundedFacts.systems.some((fact) => fact.value === 'tienda nube' && fact.source === 'EXPLICIT'));
-  assert.strictEqual(getActiveCommercialDiscoveryPending(platformReply.contextPatch).field, 'team_size');
+  assert.strictEqual(platformContext.groundedFacts.ecommercePlatform.value, 'tienda nube');
+  assert.strictEqual(platformContext.groundedFacts.ecommercePlatform.source, 'EXPLICIT');
+  assert.strictEqual(getActiveCommercialDiscoveryPending(platformReply.contextPatch).field, 'physical_store_system');
   assert.doesNotMatch(normalizeForAssertion(platformReply.replyText), /ya (?:se )?integra|opturon sincroniza/);
 
   const contextAfterPlatform = applyContextPatch(inventoryContextAfterFirstReply, platformReply.contextPatch);

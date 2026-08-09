@@ -1687,6 +1687,30 @@ const COMMERCIAL_EVIDENCE_RANK = Object.freeze({
   [COMMERCIAL_EVIDENCE_SOURCES.STRUCTURED]: 4,
   [COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT]: 5
 });
+const COMMERCIAL_DISCOVERY_QUESTION_PROVENANCE = Object.freeze({
+  BOT_ASKED: 'BOT_ASKED',
+  EXPLICIT_ANSWER: 'EXPLICIT'
+});
+const COMMERCIAL_GROUNDED_SCALAR_FACT_FIELDS = Object.freeze([
+  'businessType',
+  'inquiryTypes',
+  'objective',
+  'problem',
+  'operationSize',
+  'ecommercePlatform',
+  'physicalStoreSystem',
+  'stockSourceOfTruth',
+  'stockUpdateMode',
+  'sharedSkuCatalog'
+]);
+const COMMERCIAL_SYSTEM_ROLE_HINTS = Object.freeze({
+  'tienda nube': 'ecommerce',
+  empretienda: 'ecommerce',
+  shopify: 'ecommerce',
+  woocommerce: 'ecommerce',
+  'mercado libre': 'ecommerce',
+  cianbox: 'physical_store'
+});
 const PLAN_PENDING_ACTION_COMPARE_RECOMMENDED = 'compare_recommended_plan';
 const PLAN_PENDING_ACTION_COMPARE_CURRENT = 'compare_current_plan_with_plan';
 
@@ -1947,7 +1971,7 @@ function normalizeGroundedCommercialFacts(value) {
   const safeFacts = value && typeof value === 'object' ? value : {};
   const normalized = {};
 
-  for (const field of ['businessType', 'inquiryTypes', 'objective', 'problem', 'operationSize']) {
+  for (const field of COMMERCIAL_GROUNDED_SCALAR_FACT_FIELDS) {
     const fact = normalizeGroundedCommercialFact(safeFacts[field]);
     if (!fact) continue;
     if (field === 'operationSize' && !['small', 'not_small', 'large'].includes(normalizeCommandText(fact.value))) {
@@ -1992,7 +2016,7 @@ function mergeGroundedCommercialFacts(baseFacts, incomingFacts) {
   const incoming = normalizeGroundedCommercialFacts(incomingFacts);
   const merged = {};
 
-  for (const field of ['businessType', 'inquiryTypes', 'objective', 'problem', 'operationSize', 'branchCount']) {
+  for (const field of [...COMMERCIAL_GROUNDED_SCALAR_FACT_FIELDS, 'branchCount']) {
     const baseFact = base[field] || null;
     const incomingFact = incoming[field] || null;
     if (!baseFact) {
@@ -2008,8 +2032,31 @@ function mergeGroundedCommercialFacts(baseFacts, incomingFacts) {
       : baseFact;
   }
 
+  let retainedBaseSystems = [...(base.systems || [])];
+  for (const field of ['ecommercePlatform', 'physicalStoreSystem']) {
+    const baseFact = base[field] || null;
+    const incomingFact = incoming[field] || null;
+    const role = field === 'ecommercePlatform' ? 'ecommerce' : 'physical_store';
+    if (
+      incomingFact &&
+      (!baseFact || getCommercialEvidenceRank(incomingFact.source) >= getCommercialEvidenceRank(baseFact.source))
+    ) {
+      retainedBaseSystems = retainedBaseSystems.filter(
+        (fact) => (
+          normalizeCommandText(fact.value) === normalizeCommandText(incomingFact.value) ||
+          (
+            (!baseFact || normalizeCommandText(fact.value) !== normalizeCommandText(baseFact.value)) &&
+            getCommerceSystemRoleHint(fact.value) !== role
+          )
+        )
+      );
+    }
+  }
+  const roleFacts = ['ecommercePlatform', 'physicalStoreSystem']
+    .map((field) => merged[field])
+    .filter(Boolean);
   merged.systems = normalizeGroundedCommercialFacts({
-    systems: [...(base.systems || []), ...(incoming.systems || [])]
+    systems: [...retainedBaseSystems, ...(incoming.systems || []), ...roleFacts]
   }).systems;
   return merged;
 }
@@ -2125,12 +2172,58 @@ function extractMentionedCommerceSystems(rawText, source = COMMERCIAL_EVIDENCE_S
     ['shopify', /\bshopify\b/],
     ['woocommerce', /\bwoocommerce\b/],
     ['mercado libre', /\bmercado\s+libre\b/],
+    ['cianbox', /\bcianbox\b/],
     ['tienda online', /\btienda\s+(?:online|en linea)\b/],
     ['ecommerce', /\b(?:ecommerce|e-commerce)\b/]
   ];
   return candidates
     .filter(([, pattern]) => pattern.test(text))
     .map(([value]) => ({ value, source }));
+}
+
+function getCommerceSystemRoleHint(value) {
+  return COMMERCIAL_SYSTEM_ROLE_HINTS[normalizeCommandText(value)] || null;
+}
+
+function extractCommerceSystemRoleFacts(rawText, source = COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT) {
+  const text = normalizeCommandText(rawText);
+  const systems = extractMentionedCommerceSystems(rawText, source).filter(
+    (fact) => !['tienda online', 'ecommerce'].includes(normalizeCommandText(fact.value))
+  );
+  if (!text || !systems.length) return {};
+
+  const clauses = text.split(/\s+(?:y|pero)\s+|[,;]/).map((clause) => clause.trim()).filter(Boolean);
+  let ecommercePlatform = null;
+  let physicalStoreSystem = null;
+  const explicitlyAssigned = new Set();
+
+  for (const clause of clauses) {
+    const clauseSystems = systems.filter((fact) => clause.includes(normalizeCommandText(fact.value)));
+    if (!clauseSystems.length) continue;
+    const hasEcommerceMarker = /\b(?:venta|tienda|canal)\s+(?:online|en linea)|\becommerce\b|\be-commerce\b/.test(clause);
+    const hasPhysicalMarker = /\b(?:tienda\s+fisica|local\s+fisico|en\s+el\s+local|del\s+local|mostrador|sucursal)\b/.test(clause);
+    if (hasEcommerceMarker) {
+      ecommercePlatform = clauseSystems[0];
+      explicitlyAssigned.add(normalizeCommandText(clauseSystems[0].value));
+    }
+    if (hasPhysicalMarker) {
+      physicalStoreSystem = clauseSystems[0];
+      explicitlyAssigned.add(normalizeCommandText(clauseSystems[0].value));
+    }
+  }
+
+  for (const system of systems) {
+    const key = normalizeCommandText(system.value);
+    if (explicitlyAssigned.has(key)) continue;
+    const roleHint = getCommerceSystemRoleHint(system.value);
+    if (roleHint === 'ecommerce' && !ecommercePlatform) ecommercePlatform = system;
+    if (roleHint === 'physical_store' && !physicalStoreSystem) physicalStoreSystem = system;
+  }
+
+  return {
+    ...(ecommercePlatform ? { ecommercePlatform } : {}),
+    ...(physicalStoreSystem ? { physicalStoreSystem } : {})
+  };
 }
 
 function parseCommercialBranchCount(rawText) {
@@ -2147,7 +2240,10 @@ function parseCommercialBranchCount(rawText) {
 function extractGroundedCommercialFacts(rawText, source = COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT) {
   const text = normalizeCommandText(rawText);
   if (!text) return normalizeGroundedCommercialFacts(null);
-  const facts = { systems: extractMentionedCommerceSystems(rawText, source) };
+  const facts = {
+    systems: extractMentionedCommerceSystems(rawText, source),
+    ...extractCommerceSystemRoleFacts(rawText, source)
+  };
   const businessTypeRaw = extractOpenBusinessTypeRaw(rawText);
   if (businessTypeRaw) facts.businessType = { value: businessTypeRaw, source };
 
@@ -2216,10 +2312,33 @@ function getSpecificCommercePlatform(salesContext) {
   const facts = normalizeGroundedCommercialFacts(
     salesContext && typeof salesContext === 'object' ? salesContext.groundedFacts : null
   );
+  if (
+    facts.ecommercePlatform &&
+    isCommunicableCommercialEvidence(facts.ecommercePlatform.source) &&
+    !['tienda online', 'ecommerce'].includes(normalizeCommandText(facts.ecommercePlatform.value))
+  ) {
+    return facts.ecommercePlatform;
+  }
   return (facts.systems || []).find((fact) => (
     isCommunicableCommercialEvidence(fact.source) &&
-    !['tienda online', 'ecommerce'].includes(normalizeCommandText(fact.value))
+    !['tienda online', 'ecommerce'].includes(normalizeCommandText(fact.value)) &&
+    getCommerceSystemRoleHint(fact.value) !== 'physical_store'
   )) || null;
+}
+
+function getPhysicalStoreSystem(salesContext) {
+  const fact = getGroundedCommercialFact(salesContext, 'physicalStoreSystem');
+  return fact && isCommunicableCommercialEvidence(fact.source) ? fact : null;
+}
+
+function getInventorySyncDiscoveryGap(salesContext) {
+  if (!isInventorySyncCommercialObjective(salesContext)) return null;
+  if (!getSpecificCommercePlatform(salesContext)) return 'commerce_platform';
+  if (!getPhysicalStoreSystem(salesContext)) return 'physical_store_system';
+  if (!getGroundedCommercialFact(salesContext, 'stockSourceOfTruth')) return 'stock_source_of_truth';
+  if (!getGroundedCommercialFact(salesContext, 'stockUpdateMode')) return 'stock_update_method';
+  if (!getGroundedCommercialFact(salesContext, 'sharedSkuCatalog')) return 'shared_sku_catalog';
+  return null;
 }
 
 function isExternalCommerceIntegrationQuestion(rawText) {
@@ -3185,13 +3304,24 @@ function buildCommercialDiscoveryPendingPatch({
 } = {}) {
   const normalizedField = String(field || '').trim().toLowerCase();
   if (!normalizedField) return null;
+  const askedAt = new Date().toISOString();
+  const defaultMeta = normalizedField === 'stock_update_method'
+    ? { questionKind: 'binary', affirmativeValue: 'manual', negativeValue: 'not_manual' }
+    : normalizedField === 'shared_sku_catalog'
+      ? { questionKind: 'binary', affirmativeValue: 'yes', negativeValue: 'no' }
+      : null;
 
   return {
     commercialDiscoveryPending: {
+      id: `commercial_discovery:${normalizedField}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
       field: normalizedField,
-      askedAt: new Date().toISOString(),
+      expectedField: normalizedField,
+      evidenceGap: normalizedField,
+      askedAt,
+      status: 'pending',
+      provenance: COMMERCIAL_DISCOVERY_QUESTION_PROVENANCE.BOT_ASKED,
       sourceIntent: sourceIntent ? String(sourceIntent).trim().toLowerCase() : null,
-      meta: meta && typeof meta === 'object' ? meta : null
+      meta: meta && typeof meta === 'object' ? meta : defaultMeta
     }
   };
 }
@@ -3199,13 +3329,50 @@ function buildCommercialDiscoveryPendingPatch({
 function clearCommercialDiscoveryPendingPatch() {
   return {
     commercialDiscoveryPending: {
+      id: null,
       field: null,
+      expectedField: null,
+      evidenceGap: null,
       askedAt: null,
+      status: 'cleared',
+      provenance: null,
       sourceIntent: null,
       meta: null,
       completedAt: new Date().toISOString()
     }
   };
+}
+
+function buildCommercialDiscoveryResolvedPatch(pending) {
+  const field = String(pending && (pending.expectedField || pending.field) || '').trim().toLowerCase();
+  if (!field) return clearCommercialDiscoveryPendingPatch();
+  const resolvedAt = new Date().toISOString();
+  const resolvedQuestion = {
+    id: String(pending.id || `commercial_discovery:${field}:${Date.parse(pending.askedAt) || Date.now()}`).trim(),
+    field,
+    expectedField: field,
+    evidenceGap: String(pending.evidenceGap || field).trim().toLowerCase(),
+    askedAt: String(pending.askedAt || '').trim() || null,
+    status: 'resolved',
+    provenance: COMMERCIAL_DISCOVERY_QUESTION_PROVENANCE.EXPLICIT_ANSWER,
+    sourceIntent: String(pending.sourceIntent || '').trim().toLowerCase() || null,
+    meta: pending.meta && typeof pending.meta === 'object' ? pending.meta : null,
+    resolvedAt
+  };
+  return {
+    commercialDiscoveryPending: resolvedQuestion,
+    commercialDiscoveryLastResolved: resolvedQuestion
+  };
+}
+
+function buildCommercialDiscoveryResolutionContextPatch({ pending, salesContext, nextQuestionPatch = null }) {
+  return mergeContextPatches(
+    mergeContextPatches(
+      buildCommercialSalesContextPatch(salesContext),
+      buildCommercialDiscoveryResolvedPatch(pending)
+    ),
+    nextQuestionPatch
+  );
 }
 
 function getActiveCommercialDiscoveryPending(safeContext) {
@@ -3214,16 +3381,28 @@ function getActiveCommercialDiscoveryPending(safeContext) {
     : null;
   if (!pending) return null;
 
-  const field = String(pending.field || '').trim().toLowerCase();
+  const field = String(pending.expectedField || pending.field || '').trim().toLowerCase();
+  const status = String(pending.status || 'pending').trim().toLowerCase();
   const askedAt = String(pending.askedAt || '').trim();
   const askedAtMs = Date.parse(askedAt);
-  if (!field || !askedAt || !Number.isFinite(askedAtMs) || Date.now() - askedAtMs > COMMERCIAL_SHORT_MEMORY_TTL_MS) {
+  if (
+    status !== 'pending' ||
+    !field ||
+    !askedAt ||
+    !Number.isFinite(askedAtMs) ||
+    Date.now() - askedAtMs > COMMERCIAL_SHORT_MEMORY_TTL_MS
+  ) {
     return null;
   }
 
   return {
+    id: String(pending.id || `commercial_discovery:${field}:${askedAtMs}`).trim(),
     field,
+    expectedField: field,
+    evidenceGap: String(pending.evidenceGap || field).trim().toLowerCase(),
     askedAt: new Date(askedAtMs).toISOString(),
+    status,
+    provenance: String(pending.provenance || COMMERCIAL_DISCOVERY_QUESTION_PROVENANCE.BOT_ASKED).trim().toUpperCase(),
     sourceIntent: String(pending.sourceIntent || '').trim().toLowerCase() || null,
     meta: pending.meta && typeof pending.meta === 'object' ? pending.meta : null
   };
@@ -3599,8 +3778,8 @@ function chooseNextCommercialDiscoveryField(salesContext = {}, sourceIntent = nu
   const shape = classifyCommercialOperationShape(safeContext);
   const safeSourceIntent = String(sourceIntent || '').trim().toLowerCase();
 
-  if (isInventorySyncCommercialObjective(safeContext) && !getSpecificCommercePlatform(safeContext)) {
-    return 'commerce_platform';
+  if (isInventorySyncCommercialObjective(safeContext)) {
+    return getInventorySyncDiscoveryGap(safeContext);
   }
 
   if (safeSourceIntent === 'channel_compatibility' && !hasKnownOffer) return 'offer_type';
@@ -3646,6 +3825,23 @@ function buildCommercialDiscoveryQuestion(field, salesContext = {}) {
   if (field === 'commerce_platform') {
     return '¿Qué plataforma o sistema usás hoy para la tienda online?';
   }
+  if (field === 'physical_store_system') {
+    return '¿Qué sistema usás hoy para gestionar las ventas o el stock del local físico?';
+  }
+  if (field === 'stock_source_of_truth') {
+    const ecommercePlatform = getSpecificCommercePlatform(safeContext);
+    const physicalStoreSystem = getPhysicalStoreSystem(safeContext);
+    if (ecommercePlatform && physicalStoreSystem) {
+      return `¿Cuál usás hoy como fuente principal del stock: ${ecommercePlatform.value} o ${physicalStoreSystem.value}?`;
+    }
+    return '¿Cuál de los dos sistemas tomás hoy como fuente principal del stock?';
+  }
+  if (field === 'stock_update_method') {
+    return '¿Hoy actualizás manualmente el stock en ambos sistemas cuando hay una venta?';
+  }
+  if (field === 'shared_sku_catalog') {
+    return '¿Ambos sistemas usan los mismos códigos o SKU para cada producto?';
+  }
   return null;
 }
 
@@ -3659,6 +3855,24 @@ function buildCommercialOrientationLead(salesContext = {}) {
   const teamSizeValue = Number.parseInt(String(safeContext.teamSizeValue || ''), 10);
 
   if (isInventorySyncCommercialObjective(safeContext)) {
+    const ecommercePlatform = getSpecificCommercePlatform(safeContext);
+    const physicalStoreSystem = getPhysicalStoreSystem(safeContext);
+    const stockSourceOfTruth = getGroundedCommercialFact(safeContext, 'stockSourceOfTruth');
+    const businessLead = businessFact && isCommunicableCommercialEvidence(businessFact.source)
+      ? `en ${businessFact.value}, `
+      : '';
+    if (stockSourceOfTruth && isCommunicableCommercialEvidence(stockSourceOfTruth.source)) {
+      const sourceLabel = normalizeCommandText(stockSourceOfTruth.value) === 'both'
+        ? 'ambos sistemas'
+        : stockSourceOfTruth.value;
+      return `Entiendo: ${businessLead}${sourceLabel} es hoy la referencia principal del stock. Esto todavía no confirma una integración; estamos relevando el flujo para verificar su viabilidad.`;
+    }
+    if (ecommercePlatform && physicalStoreSystem) {
+      return `Entiendo: ${businessLead}usás ${ecommercePlatform.value} para la venta online y ${physicalStoreSystem.value} en el local físico. Esto todavía no confirma una integración; estamos relevando el flujo para verificar su viabilidad.`;
+    }
+    if (ecommercePlatform) {
+      return `Entiendo: ${businessLead}usás ${ecommercePlatform.value} para la venta online. Para verificar la viabilidad del flujo también necesito ubicar cómo gestionás hoy el stock del local físico.`;
+    }
     return businessFact && isCommunicableCommercialEvidence(businessFact.source)
       ? `Entiendo: en ${businessFact.value}, querés mantener alineado el stock de la tienda online y el local físico. Para verificar la viabilidad de ese flujo primero necesitamos conocer la plataforma actual.`
       : 'Entiendo: querés mantener alineado el stock de la tienda online y el local físico. Para verificar la viabilidad de ese flujo primero necesitamos conocer la plataforma actual.';
@@ -4041,7 +4255,8 @@ function buildCommercialDiscoveryResponse({
     contextPatch: orientation.pendingField
       ? buildCommercialDiscoveryPendingPatch({
         field: orientation.pendingField,
-        sourceIntent: sourceIntent || null
+        sourceIntent: sourceIntent || null,
+        meta: buildCommercialDiscoveryQuestionMeta(orientation.pendingField, salesContext)
       })
       : clearCommercialDiscoveryPendingPatch()
   };
@@ -4059,6 +4274,137 @@ function buildWhatsAppAccountTypeDiscoveryFollowUpLegacy(accountTypeSignal) {
     '',
     '¿Hoy reciben consultas solo por WhatsApp o también por Instagram u otros canales?'
   ].join('\n');
+}
+
+function parseInventoryStockSourceOfTruthAnswer(rawText, salesContext = {}, pending = null) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+  if (/\b(?:ambos|los dos|las dos)\b/.test(text)) return 'both';
+  const pendingMeta = pending && pending.meta && typeof pending.meta === 'object'
+    ? pending.meta
+    : {};
+  const pendingOptions = pendingMeta.questionKind === 'entity_selection' && Array.isArray(pendingMeta.options)
+    ? pendingMeta.options.map((option) => String(option || '').trim()).filter(Boolean)
+    : [];
+  if (pendingOptions.length === 2) {
+    const numericSelection = parseCommerceSelection(rawText, pendingOptions.length);
+    if (numericSelection) return pendingOptions[numericSelection - 1];
+    if (/\b(?:primero|primera)\b/.test(text)) return pendingOptions[0];
+    if (/\b(?:segundo|segunda|ese|esa)\b/.test(text)) return pendingOptions[1];
+  }
+  const isPlatformCorrection = /\b(?:no\s+en\s+realidad|en\s+realidad\s+usamos|correccion)\b/.test(text);
+  const hasStockSourceCue = /\b(?:stock|principal|fuente|referencia|manejo|desde)\b/.test(text);
+  if (isPlatformCorrection && !hasStockSourceCue) return null;
+
+  const mentionedSystems = extractMentionedCommerceSystems(rawText).filter(
+    (fact) => !['tienda online', 'ecommerce'].includes(normalizeCommandText(fact.value))
+  );
+  if (mentionedSystems.length) return mentionedSystems[mentionedSystems.length - 1].value;
+
+  const ecommercePlatform = getSpecificCommercePlatform(salesContext);
+  const physicalStoreSystem = getPhysicalStoreSystem(salesContext);
+  if (/\b(?:online|tienda online|ecommerce|e-commerce)\b/.test(text) && ecommercePlatform) {
+    return ecommercePlatform.value;
+  }
+  if (/\b(?:local|tienda fisica|sucursal|mostrador)\b/.test(text) && physicalStoreSystem) {
+    return physicalStoreSystem.value;
+  }
+  return null;
+}
+
+function buildCommercialDiscoveryQuestionMeta(field, salesContext = {}) {
+  if (field !== 'stock_source_of_truth') return null;
+
+  const ecommercePlatform = getSpecificCommercePlatform(salesContext);
+  const physicalStoreSystem = getPhysicalStoreSystem(salesContext);
+  const options = [ecommercePlatform, physicalStoreSystem]
+    .filter(Boolean)
+    .map((fact) => fact.value);
+  if (options.length !== 2) return null;
+
+  return {
+    questionKind: 'entity_selection',
+    options
+  };
+}
+
+function parseCommercialPendingBinaryAnswer(pending, rawText) {
+  const meta = pending && pending.meta && typeof pending.meta === 'object' ? pending.meta : {};
+  if (meta.questionKind !== 'binary') return null;
+  if (isAffirmativeIntent(rawText)) return String(meta.affirmativeValue || 'yes').trim().toLowerCase();
+  if (isNegativeIntent(rawText)) return String(meta.negativeValue || 'no').trim().toLowerCase();
+  return null;
+}
+
+function extractInventorySyncPendingAnswer({ pending, inboundText, currentSalesContext }) {
+  const field = String(pending && (pending.expectedField || pending.field) || '').trim().toLowerCase();
+  const inventoryFields = new Set([
+    'commerce_platform',
+    'physical_store_system',
+    'stock_source_of_truth',
+    'stock_update_method',
+    'shared_sku_catalog'
+  ]);
+  if (!inventoryFields.has(field)) return null;
+
+  const inboundSalesContext = detectCommercialSalesContext(inboundText) || {};
+  const inboundFacts = normalizeGroundedCommercialFacts(inboundSalesContext.groundedFacts);
+  const incomingFacts = { ...inboundFacts };
+  let resolvedExpectedField = false;
+
+  if (field === 'commerce_platform') {
+    resolvedExpectedField = Boolean(inboundFacts.ecommercePlatform);
+  } else if (field === 'physical_store_system') {
+    resolvedExpectedField = Boolean(inboundFacts.physicalStoreSystem);
+  } else if (field === 'stock_source_of_truth') {
+    const stockSourceOfTruth = parseInventoryStockSourceOfTruthAnswer(inboundText, currentSalesContext, pending);
+    if (stockSourceOfTruth) {
+      incomingFacts.stockSourceOfTruth = {
+        value: stockSourceOfTruth,
+        source: COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT
+      };
+      resolvedExpectedField = true;
+    }
+  } else if (field === 'stock_update_method') {
+    const text = normalizeCommandText(inboundText);
+    const stockUpdateMode = /\bmanual(?:mente)?\b/.test(text)
+      ? 'manual'
+      : /\b(?:automatico|automatica|automaticamente|integrado|integrada)\b/.test(text)
+        ? 'automatic'
+        : /\b(?:mixto|mixta|parte manual|a veces manual)\b/.test(text)
+          ? 'mixed'
+          : parseCommercialPendingBinaryAnswer(pending, inboundText);
+    if (stockUpdateMode) {
+      incomingFacts.stockUpdateMode = {
+        value: stockUpdateMode,
+        source: COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT
+      };
+      resolvedExpectedField = true;
+    }
+  } else if (field === 'shared_sku_catalog') {
+    const text = normalizeCommandText(inboundText);
+    const sharedSkuCatalog = /\b(?:parcial|algunos|no todos)\b/.test(text)
+      ? 'partial'
+      : parseCommercialPendingBinaryAnswer(pending, inboundText);
+    if (sharedSkuCatalog) {
+      incomingFacts.sharedSkuCatalog = {
+        value: sharedSkuCatalog,
+        source: COMMERCIAL_EVIDENCE_SOURCES.EXPLICIT
+      };
+      resolvedExpectedField = true;
+    }
+  }
+
+  const hasRoleCorrection = Boolean(inboundFacts.ecommercePlatform || inboundFacts.physicalStoreSystem);
+  if (!resolvedExpectedField && !hasRoleCorrection) return null;
+
+  return {
+    resolvedExpectedField,
+    incomingSalesContext: {
+      ...inboundSalesContext,
+      groundedFacts: normalizeGroundedCommercialFacts(incomingFacts)
+    }
+  };
 }
 
 function resolveCommercialDiscoveryPendingReply({
@@ -4106,21 +4452,31 @@ function resolveCommercialDiscoveryPendingReply({
     return {
       type: 'recommendation',
       replyText: response.replyText,
-      contextPatch: mergeContextPatches(
-        buildCommercialSalesContextPatch(nextSalesContext),
-        response.contextPatch
-      )
+      contextPatch: buildCommercialDiscoveryResolutionContextPatch({
+        pending,
+        salesContext: nextSalesContext,
+        nextQuestionPatch: response.contextPatch
+      })
     };
   }
 
-  if (pending.field === 'commerce_platform') {
-    const platform = getSpecificCommercePlatform(currentSalesContext);
-    if (!platform) return null;
-    const nextSalesContext = mergeCommercialSalesContext(currentSalesContext, {
-      groundedFacts: {
-        systems: [platform]
-      }
+  if ([
+    'commerce_platform',
+    'physical_store_system',
+    'stock_source_of_truth',
+    'stock_update_method',
+    'shared_sku_catalog'
+  ].includes(pending.field)) {
+    const inventoryAnswer = extractInventorySyncPendingAnswer({
+      pending,
+      inboundText,
+      currentSalesContext
     });
+    if (!inventoryAnswer) return null;
+    const nextSalesContext = mergeCommercialSalesContext(
+      currentSalesContext,
+      inventoryAnswer.incomingSalesContext
+    );
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
     const response = buildCommercialDiscoveryResponse({
       salesContext: nextSalesContext,
@@ -4131,10 +4487,16 @@ function resolveCommercialDiscoveryPendingReply({
     return {
       type: 'recommendation',
       replyText: response.replyText,
-      contextPatch: mergeContextPatches(
-        buildCommercialSalesContextPatch(nextSalesContext),
-        response.contextPatch
-      )
+      contextPatch: inventoryAnswer.resolvedExpectedField
+        ? buildCommercialDiscoveryResolutionContextPatch({
+          pending,
+          salesContext: nextSalesContext,
+          nextQuestionPatch: response.contextPatch
+        })
+        : mergeContextPatches(
+          buildCommercialSalesContextPatch(nextSalesContext),
+          response.contextPatch
+        )
     };
   }
 
@@ -4180,12 +4542,11 @@ function resolveCommercialDiscoveryPendingReply({
     return {
       type: 'recommendation',
       replyText: response.replyText,
-      contextPatch: mergeContextPatches(
-        buildCommercialSalesContextPatch({
-          ...nextSalesContext
-        }),
-        response.contextPatch
-      )
+      contextPatch: buildCommercialDiscoveryResolutionContextPatch({
+        pending,
+        salesContext: nextSalesContext,
+        nextQuestionPatch: response.contextPatch
+      })
     };
   }
 
@@ -4208,12 +4569,11 @@ function resolveCommercialDiscoveryPendingReply({
     return {
       type: 'recommendation',
       replyText: response.replyText,
-      contextPatch: mergeContextPatches(
-        buildCommercialSalesContextPatch({
-          ...nextSalesContext
-        }),
-        response.contextPatch
-      )
+      contextPatch: buildCommercialDiscoveryResolutionContextPatch({
+        pending,
+        salesContext: nextSalesContext,
+        nextQuestionPatch: response.contextPatch
+      })
     };
   }
 
@@ -4245,12 +4605,11 @@ function resolveCommercialDiscoveryPendingReply({
     return {
       type: 'recommendation',
       replyText: response.replyText,
-      contextPatch: mergeContextPatches(
-        buildCommercialSalesContextPatch({
-          ...nextSalesContext
-        }),
-        response.contextPatch
-      )
+      contextPatch: buildCommercialDiscoveryResolutionContextPatch({
+        pending,
+        salesContext: nextSalesContext,
+        nextQuestionPatch: response.contextPatch
+      })
     };
   }
 
@@ -4273,12 +4632,11 @@ function resolveCommercialDiscoveryPendingReply({
     return {
       type: 'recommendation',
       replyText: response.replyText,
-      contextPatch: mergeContextPatches(
-        buildCommercialSalesContextPatch({
-          ...nextSalesContext
-        }),
-        response.contextPatch
-      )
+      contextPatch: buildCommercialDiscoveryResolutionContextPatch({
+        pending,
+        salesContext: nextSalesContext,
+        nextQuestionPatch: response.contextPatch
+      })
     };
   }
 
@@ -4301,16 +4659,40 @@ function resolveCommercialDiscoveryPendingReply({
     return {
       type: 'recommendation',
       replyText: response.replyText,
-      contextPatch: mergeContextPatches(
-        buildCommercialSalesContextPatch({
-          ...nextSalesContext
-        }),
-        response.contextPatch
-      )
+      contextPatch: buildCommercialDiscoveryResolutionContextPatch({
+        pending,
+        salesContext: nextSalesContext,
+        nextQuestionPatch: response.contextPatch
+      })
     };
   }
 
   return null;
+}
+
+async function resolveEnrichedCommercialDiscoveryPendingReply({
+  clinicId,
+  pending,
+  inboundText,
+  effectiveSalesContext,
+  effectiveBusinessContext
+}) {
+  const discoveryReply = resolveCommercialDiscoveryPendingReply({
+    pending,
+    inboundText,
+    effectiveSalesContext
+  });
+  if (!discoveryReply) return null;
+  const discoveryReplySalesContext = getActiveCommercialSalesContext(discoveryReply.contextPatch) || effectiveSalesContext;
+  const discoveryReplyBusinessContext =
+    deriveBusinessRecommendationContextFromSalesContext(discoveryReplySalesContext) ||
+    effectiveBusinessContext;
+  return enrichCommercialRecommendationWithExplanationMemory({
+    clinicId,
+    reply: discoveryReply,
+    salesContext: discoveryReplySalesContext,
+    businessContext: discoveryReplyBusinessContext
+  });
 }
 
 function deriveBusinessRecommendationContextFromSalesContext(salesContext) {
@@ -10916,6 +11298,31 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     }
   }
 
+  if (
+    activeCommercialDiscoveryPending &&
+    [
+      'commerce_platform',
+      'physical_store_system',
+      'stock_source_of_truth',
+      'stock_update_method',
+      'shared_sku_catalog'
+    ].includes(activeCommercialDiscoveryPending.field) &&
+    !explicitPricingRequest &&
+    !transferPaymentIntent &&
+    !isLoyaltyIntent(inboundText) &&
+    !isAgendaLike &&
+    normalizedText !== 'cancelar'
+  ) {
+    const contextualDiscoveryReply = await resolveEnrichedCommercialDiscoveryPendingReply({
+      clinicId: conversation.clinicId,
+      pending: activeCommercialDiscoveryPending,
+      inboundText,
+      effectiveSalesContext,
+      effectiveBusinessContext
+    });
+    if (contextualDiscoveryReply) return contextualDiscoveryReply;
+  }
+
   const detectedRejectedInferences = normalizeCommercialRejectedInferences(
     detectedSalesContext && detectedSalesContext.rejectedInferences
   );
@@ -11131,23 +11538,14 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
     (!isAgendaLike || hasOperationalDiscoveryAnswer) &&
     normalizeCommandText(inboundText) !== 'cancelar'
   ) {
-    const discoveryReply = resolveCommercialDiscoveryPendingReply({
+    const discoveryReply = await resolveEnrichedCommercialDiscoveryPendingReply({
+      clinicId: conversation.clinicId,
       pending: activeCommercialDiscoveryPending,
       inboundText,
-      effectiveSalesContext
+      effectiveSalesContext,
+      effectiveBusinessContext
     });
-    if (discoveryReply) {
-      const discoveryReplySalesContext = getActiveCommercialSalesContext(discoveryReply.contextPatch) || effectiveSalesContext;
-      const discoveryReplyBusinessContext =
-        deriveBusinessRecommendationContextFromSalesContext(discoveryReplySalesContext) ||
-        effectiveBusinessContext;
-      return enrichCommercialRecommendationWithExplanationMemory({
-        clinicId: conversation.clinicId,
-        reply: discoveryReply,
-        salesContext: discoveryReplySalesContext,
-        businessContext: discoveryReplyBusinessContext
-      });
-    }
+    if (discoveryReply) return discoveryReply;
   }
 
   if (
