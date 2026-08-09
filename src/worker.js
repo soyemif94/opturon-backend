@@ -3954,6 +3954,15 @@ function buildInventorySyncDiscoveryAcknowledgement({
   return 'Entiendo.';
 }
 
+function shouldVerbalizeInventorySyncAcknowledgement({ fields = [], isCorrection = false } = {}) {
+  const uniqueFields = new Set(
+    (Array.isArray(fields) ? fields : [])
+      .map((field) => String(field || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  return isCorrection || uniqueFields.size > 1;
+}
+
 function buildInventorySyncDiscoveryTerminalReply({ acknowledgedFields, salesContext, isCorrection = false } = {}) {
   const acknowledgement = buildInventorySyncDiscoveryAcknowledgement({
     fields: acknowledgedFields,
@@ -4319,16 +4328,23 @@ function buildCommercialOrientationReply({
 
   const nextField = chooseNextCommercialDiscoveryField(safeSalesContext, sourceIntent);
   const nextQuestion = buildCommercialDiscoveryQuestion(nextField, safeSalesContext);
-  const acknowledgement = isInventorySyncCommercialObjective(safeSalesContext)
+  const isInventorySyncObjective = isInventorySyncCommercialObjective(safeSalesContext);
+  const hasInventoryAnswer = isInventorySyncObjective && (Array.isArray(acknowledgedFields) ? acknowledgedFields : [])
+    .some((field) => String(field || '').trim());
+  const acknowledgement = isInventorySyncObjective && shouldVerbalizeInventorySyncAcknowledgement({
+    fields: acknowledgedFields,
+    isCorrection
+  })
     ? buildInventorySyncDiscoveryAcknowledgement({
       fields: acknowledgedFields,
       salesContext: safeSalesContext,
       isCorrection
     })
     : null;
+  const progressiveReply = [acknowledgement, nextQuestion].filter(Boolean).join('\n\n');
   return {
-    replyText: acknowledgement
-      ? [acknowledgement, ...(nextQuestion ? ['', nextQuestion] : [])].join('\n')
+    replyText: hasInventoryAnswer && progressiveReply
+      ? progressiveReply
       : [
         'Perfecto 😊',
         '',

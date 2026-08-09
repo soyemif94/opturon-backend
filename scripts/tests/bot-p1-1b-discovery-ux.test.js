@@ -101,6 +101,12 @@ function assertCompressedIntermediateReply(replyText) {
   assertOneQuestion(replyText);
 }
 
+function assertQuestionOnly(replyText, expectedQuestion) {
+  assert.strictEqual(replyText, expectedQuestion);
+  assert.doesNotMatch(normalizeForAssertion(replyText), /^(?:entiendo|perfecto|claro)\b/);
+  assertOneQuestion(replyText);
+}
+
 async function startInventoryDiscovery() {
   return sendTurn({ activeBotDomain: 'commerce' }, portfolioInput);
 }
@@ -123,17 +129,17 @@ async function run() {
   assert.strictEqual(platforms.context.commercialDiscoveryState.lastResolvedField, 'commerce_platform');
 
   const stockSource = await sendTurn(platforms.context, 'Cianbox');
-  const stockSourceText = normalizeForAssertion(stockSource.reply.replyText);
-  assertCompressedIntermediateReply(stockSource.reply.replyText);
-  assert.match(stockSourceText, /cianbox.*referencia principal del stock/);
-  assert.doesNotMatch(stockSourceText, /empretienda.*venta online/);
+  assertQuestionOnly(
+    stockSource.reply.replyText,
+    '¿Hoy actualizás manualmente el stock en ambos sistemas cuando hay una venta?'
+  );
   assert.strictEqual(getActiveCommercialDiscoveryPending(stockSource.context).field, 'stock_update_method');
 
-  const updateMode = await sendTurn(stockSource.context, 'Lo actualizo manualmente en los dos');
-  const updateModeText = normalizeForAssertion(updateMode.reply.replyText);
-  assertCompressedIntermediateReply(updateMode.reply.replyText);
-  assert.match(updateModeText, /actualizas el stock manualmente/);
-  assert.doesNotMatch(updateModeText, /cianbox.*referencia principal/);
+  const updateMode = await sendTurn(stockSource.context, 'si');
+  assertQuestionOnly(
+    updateMode.reply.replyText,
+    '¿Ambos sistemas usan los mismos códigos o SKU para cada producto?'
+  );
   assert.strictEqual(getActiveCommercialDiscoveryPending(updateMode.context).field, 'shared_sku_catalog');
 
   const completed = await sendTurn(updateMode.context, 'si');
