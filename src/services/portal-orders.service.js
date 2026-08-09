@@ -41,6 +41,9 @@ const { findConversationById } = require('../repositories/conversation.repositor
 const { updateConversationStage } = require('../repositories/conversation.repository');
 const conversationStateRepo = require('../conversations/conversation.repo');
 const { sendPortalMessage } = require('./portal-inbox.service');
+const {
+  prepareOrderCustomerNotification
+} = require('./order-customer-notifications.service');
 const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 const { resolveLotStatusAfterRestore } = require('../utils/inventory-lot-state');
@@ -1222,9 +1225,19 @@ async function createOrderForContext(context, payload) {
         }
       }
 
+      let finalizedOrder = order;
+      if (orderStatus === 'confirmed') {
+        const finalizationResult = await prepareOrderCustomerNotification({
+          order,
+          directConfirmedCreation: true,
+          client
+        });
+        finalizedOrder = finalizationResult.order;
+      }
+
       return {
         ok: true,
-        order: (await attachLotAllocationsToOrders(context.clinic.id, [order], client))[0] || order
+        order: (await attachLotAllocationsToOrders(context.clinic.id, [finalizedOrder], client))[0] || finalizedOrder
       };
     });
   } catch (error) {
@@ -1307,7 +1320,7 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
 
   const requestedOrderStatus = normalizeOrderStatus(requestedRawStatus);
   const requestedPaymentDestinationId = normalizeString(payload && payload.paymentDestinationId) || null;
-  const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client);
+  const currentOrder = await findOrderById(safeOrderId, context.clinic.id, client, { forUpdate: true });
   if (!currentOrder) {
     return buildError(context.tenantId, 'order_not_found');
   }
@@ -1423,9 +1436,15 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
     }
   }
 
+  const finalizationResult = await prepareOrderCustomerNotification({
+    previousOrder: currentOrder,
+    order: orderWithDestination,
+    client
+  });
+
   return {
     ok: true,
-    order: orderWithDestination
+    order: finalizationResult.order
   };
 }
 

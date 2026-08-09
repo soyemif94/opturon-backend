@@ -98,6 +98,8 @@ function normalizeOrder(row) {
     status,
     orderStatus: row.orderStatus || legacyOrderStatusFromBillingStatus(status),
     paymentStatus: row.paymentStatus || null,
+    finalizedAt: row.finalizedAt || null,
+    finalizationVersion: Number(row.finalizationVersion || 0),
     portalHiddenAt: row.portalHiddenAt || null,
     portalHiddenByUserId: row.portalHiddenByUserId || null,
     portalHiddenByName: row.portalHiddenByName || null,
@@ -165,6 +167,8 @@ async function listOrdersByClinicId(clinicId, client = null) {
        o."totalAmount",
        o.currency,
        o."paymentStatus",
+       o."finalizedAt",
+       o."finalizationVersion",
        o."portalHiddenAt",
        o."portalHiddenByUserId",
        o."portalHiddenByName",
@@ -217,7 +221,8 @@ async function listOrdersByClinicId(clinicId, client = null) {
   return result.rows.map(normalizeOrder);
 }
 
-async function findOrderById(orderId, clinicId, client = null) {
+async function findOrderById(orderId, clinicId, client = null, options = {}) {
+  const lockClause = options.forUpdate ? '\n     FOR UPDATE OF o' : '';
   const result = await dbQuery(
     client,
     `SELECT
@@ -242,6 +247,8 @@ async function findOrderById(orderId, clinicId, client = null) {
        o."totalAmount",
        o.currency,
        o."paymentStatus",
+       o."finalizedAt",
+       o."finalizationVersion",
        o."portalHiddenAt",
        o."portalHiddenByUserId",
        o."portalHiddenByName",
@@ -288,7 +295,7 @@ async function findOrderById(orderId, clinicId, client = null) {
      ) items ON TRUE
      WHERE o.id = $1::uuid
        AND o."clinicId" = $2::uuid
-     LIMIT 1`,
+     LIMIT 1${lockClause}`,
     [orderId, clinicId]
   );
 
@@ -320,6 +327,8 @@ async function findLatestOrderByConversationId(conversationId, clinicId, client 
        o."totalAmount",
        o.currency,
        o."paymentStatus",
+       o."finalizedAt",
+       o."finalizationVersion",
        o."orderStatus",
        o."conversationId",
        o."createdAt",
@@ -516,6 +525,32 @@ async function updateOrderStatus(orderId, clinicId, payload, client = null) {
   return findOrderById(orderId, clinicId, client);
 }
 
+async function markOrderFinalized(orderId, clinicId, payload, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE orders
+     SET
+       "finalizedAt" = $3::timestamptz,
+       "finalizationVersion" = $4,
+       "updatedAt" = NOW()
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+       AND status = 'confirmed'
+       AND "finalizationVersion" = $5
+     RETURNING id`,
+    [
+      orderId,
+      clinicId,
+      payload.finalizedAt,
+      payload.finalizationVersion,
+      payload.previousFinalizationVersion
+    ]
+  );
+
+  if (!result.rows[0]) return null;
+  return findOrderById(orderId, clinicId, client);
+}
+
 async function updateOrder(orderId, clinicId, payload = {}, client = null) {
   const shouldUpdatePaymentDestination = Object.prototype.hasOwnProperty.call(payload, 'paymentDestinationId');
   const shouldUpdateSeller = Object.prototype.hasOwnProperty.call(payload, 'sellerUserId');
@@ -613,6 +648,8 @@ async function listCashCountableOrdersByDestinationAndRange(clinicId, paymentDes
        o."totalAmount",
        o.currency,
        o."paymentStatus",
+       o."finalizedAt",
+       o."finalizationVersion",
        o."orderStatus",
        o."conversationId",
        o."createdAt",
@@ -650,6 +687,7 @@ module.exports = {
   findLatestOrderByConversationId,
   createOrder,
   updateOrderStatus,
+  markOrderFinalized,
   updateOrder,
   updateOrderPortalVisibility,
   listCashCountableOrdersByDestinationAndRange
