@@ -74,6 +74,14 @@ const {
 } = require('./utils/transfer-config');
 const { DEFAULT_BOT_CONFIG, normalizeBotConfig } = require('./utils/bot-config');
 const { maybeRunArchivedContactCleanup } = require('./services/contact-archive-cleanup.service');
+const {
+  CAPABILITY_STATUSES,
+  buildTenantCapabilitySnapshot,
+  resolveCapability,
+  sanitizeCapabilityDecision,
+  buildSafeCapabilityReply
+} = require('./services/capability-resolver.service');
+const { buildHandoffSummary } = require('./services/handoff-summary.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -1695,10 +1703,6 @@ const COMMERCIAL_DISCOVERY_STATES = Object.freeze({
   IN_PROGRESS: 'DISCOVERY_IN_PROGRESS',
   SUFFICIENT: 'DISCOVERY_SUFFICIENT'
 });
-const COMMERCIAL_CAPABILITY_STATUSES = Object.freeze({
-  UNKNOWN: 'CAPABILITY_UNKNOWN',
-  NEEDS_VERIFICATION: 'NEEDS_VERIFICATION'
-});
 const CAPABILITY_VERIFICATION_HANDOFF_REASON = 'capability_verification_required';
 const COMMERCIAL_GROUNDED_SCALAR_FACT_FIELDS = Object.freeze([
   'businessType',
@@ -2350,22 +2354,27 @@ function getInventorySyncDiscoveryGap(salesContext) {
   return null;
 }
 
-function getInventorySyncDiscoveryOutcome(salesContext) {
+function getInventorySyncDiscoveryOutcome(salesContext, capabilityDecision = null) {
   if (!isInventorySyncCommercialObjective(salesContext)) return null;
   const evidenceGap = getInventorySyncDiscoveryGap(salesContext);
+  const resolvedCapability = sanitizeCapabilityDecision(capabilityDecision);
   return {
     status: evidenceGap
       ? COMMERCIAL_DISCOVERY_STATES.IN_PROGRESS
       : COMMERCIAL_DISCOVERY_STATES.SUFFICIENT,
     evidenceGap,
     capabilityStatus: evidenceGap
-      ? COMMERCIAL_CAPABILITY_STATUSES.UNKNOWN
-      : COMMERCIAL_CAPABILITY_STATUSES.NEEDS_VERIFICATION
+      ? CAPABILITY_STATUSES.UNKNOWN
+      : resolvedCapability.status
   };
 }
 
-function buildInventorySyncDiscoveryStatePatch({ salesContext, lastResolvedField = null } = {}) {
-  const outcome = getInventorySyncDiscoveryOutcome(salesContext);
+function buildInventorySyncDiscoveryStatePatch({
+  salesContext,
+  lastResolvedField = null,
+  capabilityDecision = null
+} = {}) {
+  const outcome = getInventorySyncDiscoveryOutcome(salesContext, capabilityDecision);
   if (!outcome) return null;
   const updatedAt = new Date().toISOString();
   const isSufficient = outcome.status === COMMERCIAL_DISCOVERY_STATES.SUFFICIENT;
@@ -2393,13 +2402,18 @@ function isExternalCommerceIntegrationQuestion(rawText) {
   return mentionsCommerceSystem && /\b(integra|integracion|integración|conecta|compatible|sincroniza)\b/.test(text);
 }
 
-function buildExternalCommerceIntegrationGroundingReply(salesContext) {
+function buildExternalCommerceIntegrationGroundingReply(salesContext, capabilityDecision = null) {
   const platform = getSpecificCommercePlatform(salesContext);
-  const platformLabel = platform ? platform.value : 'esa plataforma';
+  const physicalStoreSystem = getPhysicalStoreSystem(salesContext);
+  const platformLabel = [platform && platform.value, physicalStoreSystem && physicalStoreSystem.value]
+    .filter(Boolean)
+    .join(' y ') || 'esos sistemas';
   return [
-    `No puedo confirmar desde esta conversación que Opturon ya tenga una integración activa con ${platformLabel}.`,
+    buildSafeCapabilityReply(capabilityDecision, {
+      subject: `La sincronizacion solicitada entre ${platformLabel}`
+    }),
     '',
-    'Para verificar la viabilidad hay que revisar cómo gestiona catálogo y stock esa plataforma, qué acceso o API ofrece y cuál es el flujo que necesitás sincronizar.'
+    'Para verificar la viabilidad hay que revisar cómo gestionan catálogo y stock esas plataformas, qué acceso o API ofrecen y cuál es el flujo que necesitás sincronizar.'
   ].join('\n');
 }
 
@@ -3963,16 +3977,24 @@ function shouldVerbalizeInventorySyncAcknowledgement({ fields = [], isCorrection
   return isCorrection || uniqueFields.size > 1;
 }
 
-function buildInventorySyncDiscoveryTerminalReply({ acknowledgedFields, salesContext, isCorrection = false } = {}) {
+function buildInventorySyncDiscoveryTerminalReply({
+  acknowledgedFields,
+  salesContext,
+  isCorrection = false,
+  capabilityDecision = null
+} = {}) {
   const acknowledgement = buildInventorySyncDiscoveryAcknowledgement({
     fields: acknowledgedFields,
     salesContext,
     isCorrection
   });
+  const capabilityGuidance = buildSafeCapabilityReply(capabilityDecision, {
+    subject: 'La sincronizacion de stock entre esos sistemas'
+  });
   return [
     acknowledgement,
     'Con esto ya tengo claro cómo manejás hoy el stock entre la tienda online y el local físico.',
-    'La posibilidad de automatizarlo depende de verificar la compatibilidad de las plataformas, así que prefiero no confirmarte una integración sin esa revisión.',
+    `${capabilityGuidance} Por eso prefiero no confirmarte una integración sin esa revisión.`,
     'Dejo el caso preparado para que un asesor lo revise y continúe con vos.'
   ].filter(Boolean).join('\n\n');
 }
@@ -4394,23 +4416,47 @@ function buildCommercialDiscoveryResponse({
   allowSoftRecommendation = true,
   acknowledgedFields = [],
   isCorrection = false,
-  resolvedField = null
+  resolvedField = null,
+  capabilityDecision = null,
+  handoffSummaryContext = null
 }) {
-  const inventoryOutcome = getInventorySyncDiscoveryOutcome(salesContext);
+  const inventoryOutcome = getInventorySyncDiscoveryOutcome(salesContext, capabilityDecision);
   const lastResolvedField = String(resolvedField || '').trim().toLowerCase() || null;
   if (inventoryOutcome && inventoryOutcome.status === COMMERCIAL_DISCOVERY_STATES.SUFFICIENT) {
+    const safeCapabilityDecision = sanitizeCapabilityDecision(capabilityDecision);
+    const summaryContext = handoffSummaryContext && typeof handoffSummaryContext === 'object'
+      ? handoffSummaryContext
+      : {};
+    const handoffSummary = buildHandoffSummary({
+      ...summaryContext,
+      salesContext,
+      capabilityDecision: safeCapabilityDecision,
+      escalationReason: CAPABILITY_VERIFICATION_HANDOFF_REASON
+    });
     return {
       replyText: buildInventorySyncDiscoveryTerminalReply({
         acknowledgedFields,
         salesContext,
-        isCorrection
+        isCorrection,
+        capabilityDecision: safeCapabilityDecision
       }),
       contextPatch: mergeContextPatches(
-        clearCommercialDiscoveryPendingPatch(),
-        buildInventorySyncDiscoveryStatePatch({ salesContext, lastResolvedField })
+        mergeContextPatches(
+          clearCommercialDiscoveryPendingPatch(),
+          buildInventorySyncDiscoveryStatePatch({
+            salesContext,
+            lastResolvedField,
+            capabilityDecision: safeCapabilityDecision
+          })
+        ),
+        {
+          commercialCapabilityDecision: safeCapabilityDecision,
+          handoffSummary
+        }
       ),
       triggerHandoff: true,
-      handoffReason: CAPABILITY_VERIFICATION_HANDOFF_REASON
+      handoffReason: CAPABILITY_VERIFICATION_HANDOFF_REASON,
+      capabilityDecision: safeCapabilityDecision
     };
   }
 
@@ -4435,7 +4481,7 @@ function buildCommercialDiscoveryResponse({
     replyText: orientation.replyText,
     contextPatch: mergeContextPatches(
       pendingPatch,
-      buildInventorySyncDiscoveryStatePatch({ salesContext, lastResolvedField })
+      buildInventorySyncDiscoveryStatePatch({ salesContext, lastResolvedField, capabilityDecision })
     )
   };
 }
@@ -4613,10 +4659,17 @@ function extractInventorySyncPendingAnswer({ pending, inboundText, currentSalesC
 function resolveCommercialDiscoveryPendingReply({
   pending,
   inboundText,
-  effectiveSalesContext
+  effectiveSalesContext,
+  capabilityDecision = null,
+  handoffSummaryContext = null
 }) {
   const currentSalesContext = effectiveSalesContext && typeof effectiveSalesContext === 'object' ? effectiveSalesContext : {};
   if (!pending || !pending.field) return null;
+  const buildDiscoveryResponse = (input) => buildCommercialDiscoveryResponse({
+    ...input,
+    capabilityDecision,
+    handoffSummaryContext
+  });
 
   if (pending.field === 'portfolio_context') {
     const portfolioTemplate = parsePortfolioDiscoveryTemplate(inboundText);
@@ -4645,7 +4698,7 @@ function resolveCommercialDiscoveryPendingReply({
     }
 
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
-    const response = buildCommercialDiscoveryResponse({
+    const response = buildDiscoveryResponse({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: 'portfolio_discovery',
@@ -4683,7 +4736,7 @@ function resolveCommercialDiscoveryPendingReply({
       inventoryAnswer.incomingSalesContext
     );
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
-    const response = buildCommercialDiscoveryResponse({
+    const response = buildDiscoveryResponse({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: pending.sourceIntent || 'portfolio_discovery',
@@ -4742,7 +4795,7 @@ function resolveCommercialDiscoveryPendingReply({
     };
     const nextSalesContext = mergeCommercialSalesContext(currentSalesContext, incomingSalesContext);
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
-    const response = buildCommercialDiscoveryResponse({
+    const response = buildDiscoveryResponse({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: pending.sourceIntent || 'seller_replacement'
@@ -4769,7 +4822,7 @@ function resolveCommercialDiscoveryPendingReply({
       }
     });
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
-    const response = buildCommercialDiscoveryResponse({
+    const response = buildDiscoveryResponse({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: pending.sourceIntent || 'whatsapp_number_portability'
@@ -4805,7 +4858,7 @@ function resolveCommercialDiscoveryPendingReply({
       }
     });
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
-    const response = buildCommercialDiscoveryResponse({
+    const response = buildDiscoveryResponse({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: pending.sourceIntent || 'channel_compatibility'
@@ -4832,7 +4885,7 @@ function resolveCommercialDiscoveryPendingReply({
       }
     });
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
-    const response = buildCommercialDiscoveryResponse({
+    const response = buildDiscoveryResponse({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: pending.sourceIntent || null
@@ -4859,7 +4912,7 @@ function resolveCommercialDiscoveryPendingReply({
       }
     });
     const businessContext = deriveBusinessRecommendationContextFromSalesContext(nextSalesContext);
-    const response = buildCommercialDiscoveryResponse({
+    const response = buildDiscoveryResponse({
       salesContext: nextSalesContext,
       businessContext,
       sourceIntent: pending.sourceIntent || null
@@ -4884,12 +4937,16 @@ async function resolveEnrichedCommercialDiscoveryPendingReply({
   pending,
   inboundText,
   effectiveSalesContext,
-  effectiveBusinessContext
+  effectiveBusinessContext,
+  capabilityDecision = null,
+  handoffSummaryContext = null
 }) {
   const discoveryReply = resolveCommercialDiscoveryPendingReply({
     pending,
     inboundText,
-    effectiveSalesContext
+    effectiveSalesContext,
+    capabilityDecision,
+    handoffSummaryContext
   });
   if (!discoveryReply) return null;
   const discoveryReplySalesContext = getActiveCommercialSalesContext(discoveryReply.contextPatch) || effectiveSalesContext;
@@ -11337,7 +11394,13 @@ function getClinicTransferConfig(clinic) {
   return normalizeTransferConfig(config, true);
 }
 
-async function buildSafeCommercialIntentReply({ clinic, conversation, inboundText }) {
+async function buildSafeCommercialIntentReply({
+  clinic,
+  conversation,
+  contact = null,
+  channel = null,
+  inboundText
+}) {
   const commercialIntent = detectCommercialIntent(inboundText);
   const normalizedText = normalizeCommandText(inboundText);
   const kbMatch = findCommercialKnowledgeMatch(inboundText);
@@ -11426,6 +11489,57 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
   const paymentMethods = normalizeBusinessProfileText(businessProfile.paymentMethods);
   const transferConfig = getClinicTransferConfig(clinic);
+  const capabilityTenant = buildTenantCapabilitySnapshot({
+    clinic: {
+      id: conversation && conversation.clinicId ? conversation.clinicId : clinic && clinic.id,
+      settings: clinic && clinic.settings
+    },
+    channels: channel
+      ? [{
+        clinicId: channel.clinicId,
+        type: channel.type,
+        provider: channel.provider,
+        status: channel.status,
+        phoneNumberId: channel.phoneNumberId,
+        instagramUserId: channel.instagramUserId,
+        externalId: channel.externalId,
+        credentialsConfigured: Boolean(String(channel.accessToken || '').trim())
+      }]
+      : [],
+    configuration: {
+      transferDataConfigured: hasConfiguredTransferData(transferConfig),
+      aiProviderConfigured: Boolean(String(env.aiAssistApiKey || '').trim()),
+      aiEnabled: safeContext.portalBotEnabled !== false
+    }
+  });
+  const requestedInventorySystems = [
+    getSpecificCommercePlatform(effectiveSalesContext),
+    getPhysicalStoreSystem(effectiveSalesContext)
+  ].filter(Boolean).map((fact) => fact.value);
+  const inventorySyncCapabilityDecision = isInventorySyncCommercialObjective(effectiveSalesContext)
+    ? resolveCapability({
+      tenant: capabilityTenant,
+      capability: 'external_inventory_sync',
+      context: { requestedSystems: requestedInventorySystems }
+    })
+    : null;
+  const externalInventoryCapabilityDecision = inventorySyncCapabilityDecision || resolveCapability({
+    tenant: capabilityTenant,
+    capability: 'external_inventory_sync',
+    context: { requestedSystems: requestedInventorySystems }
+  });
+  const inventoryCapabilityContext = {
+    capabilityDecision: inventorySyncCapabilityDecision,
+    handoffSummaryContext: {
+      existingSummary: safeContext.handoffSummary || null,
+      tenantId: conversation && conversation.clinicId,
+      conversationId: conversation && conversation.id,
+      contact,
+      channel,
+      latestQuestion: activeCommercialDiscoveryPending,
+      latestAnswer: inboundText
+    }
+  };
   const pendingBeforeLog = summarizePendingOfferedActionForLog(safeContext.pendingOfferedAction);
   const isAgendaLike = looksLikeAgendaIntent({
     inboundText,
@@ -11443,8 +11557,16 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
   ) {
     return {
       type: 'integration_compatibility',
-      replyText: buildExternalCommerceIntegrationGroundingReply(effectiveSalesContext),
-      contextPatch: detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null
+      replyText: buildExternalCommerceIntegrationGroundingReply(
+        effectiveSalesContext,
+        externalInventoryCapabilityDecision
+      ),
+      contextPatch: mergeContextPatches(
+        detectedSalesContext ? buildCommercialSalesContextPatch(effectiveSalesContext) : null,
+        {
+          commercialCapabilityDecision: externalInventoryCapabilityDecision
+        }
+      )
     };
   }
 
@@ -11494,7 +11616,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         salesContext: effectiveSalesContext,
         businessContext: deriveBusinessRecommendationContextFromSalesContext(effectiveSalesContext) || storedBusinessContext,
         sourceIntent: 'portfolio_discovery',
-        allowSoftRecommendation: false
+        allowSoftRecommendation: false,
+        ...inventoryCapabilityContext
       });
       return {
         type: 'recommendation',
@@ -11528,7 +11651,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       pending: activeCommercialDiscoveryPending,
       inboundText,
       effectiveSalesContext,
-      effectiveBusinessContext
+      effectiveBusinessContext,
+      ...inventoryCapabilityContext
     });
     if (contextualDiscoveryReply) return contextualDiscoveryReply;
   }
@@ -11563,7 +11687,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       sourceIntent: activeCommercialDiscoveryPending && activeCommercialDiscoveryPending.sourceIntent
         ? activeCommercialDiscoveryPending.sourceIntent
         : 'explicit_correction',
-      allowSoftRecommendation: false
+      allowSoftRecommendation: false,
+      ...inventoryCapabilityContext
     });
     return {
       type: 'recommendation',
@@ -11754,7 +11879,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       pending: activeCommercialDiscoveryPending,
       inboundText,
       effectiveSalesContext,
-      effectiveBusinessContext
+      effectiveBusinessContext,
+      ...inventoryCapabilityContext
     });
     if (discoveryReply) return discoveryReply;
   }
@@ -12230,7 +12356,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
       businessContext: effectiveBusinessContext,
       sourceIntent: activeCommercialDiscoveryPending && activeCommercialDiscoveryPending.sourceIntent
         ? activeCommercialDiscoveryPending.sourceIntent
-        : inferredDiscoveryIntent
+        : inferredDiscoveryIntent,
+      ...inventoryCapabilityContext
     });
     return {
       type: 'recommendation',
@@ -12859,7 +12986,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         const discoveryResponse = buildCommercialDiscoveryResponse({
           salesContext: effectiveSalesContext,
           businessContext: effectiveBusinessContext,
-          sourceIntent: inferredDiscoveryIntent
+          sourceIntent: inferredDiscoveryIntent,
+          ...inventoryCapabilityContext
         });
         return {
           type: commercialIntent.type,
@@ -12932,7 +13060,8 @@ async function buildSafeCommercialIntentReply({ clinic, conversation, inboundTex
         businessContext: effectiveBusinessContext,
         sourceIntent: activeCommercialDiscoveryPending && activeCommercialDiscoveryPending.sourceIntent
           ? activeCommercialDiscoveryPending.sourceIntent
-          : inferredDiscoveryIntent
+          : inferredDiscoveryIntent,
+        ...inventoryCapabilityContext
       });
       return {
         type: 'recommendation',
@@ -16948,6 +17077,29 @@ async function openHandoffFlow({
   contextPatch = null,
   conversationState = null
 }) {
+  const safeContextPatch = contextPatch && typeof contextPatch === 'object'
+    ? { ...contextPatch }
+    : null;
+  if (safeContextPatch && safeContextPatch.commercialCapabilityDecision) {
+    safeContextPatch.commercialCapabilityDecision = sanitizeCapabilityDecision(
+      safeContextPatch.commercialCapabilityDecision
+    );
+  }
+  if (safeContextPatch && safeContextPatch.handoffSummary) {
+    safeContextPatch.handoffSummary = buildHandoffSummary({
+      existingSummary: safeContextPatch.handoffSummary,
+      tenantId: clinicId,
+      conversationId,
+      contact,
+      channel,
+      salesContext: safeContextPatch.commercialSalesContext || null,
+      capabilityDecision: safeContextPatch.commercialCapabilityDecision || null,
+      escalationReason: reason
+    });
+  }
+
+  let handoffResult = null;
+  let handoffCreated = false;
   await withTransaction(async (client) => {
     const handoff = await openHandoff(
       {
@@ -16959,38 +17111,57 @@ async function openHandoffFlow({
       },
       client
     );
+    if (!handoff) {
+      throw new Error('handoff_open_failed');
+    }
+    handoffResult = handoff;
+    handoffCreated = handoff.created !== false;
 
     await updateConversationStatus(conversationId, 'needs_human', client);
     await updateConversationStage(conversationId, 'handoff', client);
-    if (contextPatch) {
-      await conversationRepo.updateConversationState(
-        {
-          conversationId,
-          state: conversationState || null,
-          contextPatch
-        },
-        client
-      );
+    if (safeContextPatch) {
+      const stateUpdate = {
+        conversationId,
+        clinicId,
+        state: conversationState || null,
+        contextPatch: safeContextPatch
+      };
+      if (typeof conversationRepo.updateConversationStateForClinic === 'function') {
+        await conversationRepo.updateConversationStateForClinic(stateUpdate, client);
+      } else {
+        await conversationRepo.updateConversationState(stateUpdate, client);
+      }
     }
 
     if (lead) {
       await updateLeadStatus(lead.id, 'handoff', `handoff:${reason}`, client);
     }
 
-    await addEvent(
-      {
-        clinicId,
-        conversationId,
-        type: 'HANDOFF_OPENED',
-        data: {
-          handoffId: handoff.id,
-          reason
-        }
-      },
-      client
-    );
+    if (handoffCreated) {
+      await addEvent(
+        {
+          clinicId,
+          conversationId,
+          type: 'HANDOFF_OPENED',
+          data: {
+            handoffId: handoff.id,
+            reason,
+            summaryVersion: safeContextPatch && safeContextPatch.handoffSummary
+              ? safeContextPatch.handoffSummary.version || null
+              : null,
+            capability: safeContextPatch && safeContextPatch.commercialCapabilityDecision
+              ? safeContextPatch.commercialCapabilityDecision.capability || null
+              : null,
+            capabilityStatus: safeContextPatch && safeContextPatch.commercialCapabilityDecision
+              ? safeContextPatch.commercialCapabilityDecision.status || null
+              : null
+          }
+        },
+        client
+      );
+    }
 
-    const defaultAssignee = await getDefaultAssignee(clinicId, client);
+    const defaultAssignee = handoffCreated ? await getDefaultAssignee(clinicId, client) : null;
     if (defaultAssignee) {
       await assignHandoff(handoff.id, defaultAssignee.id, client);
       if (lead) {
@@ -17021,6 +17192,14 @@ async function openHandoffFlow({
     }
   });
 
+  if (!handoffCreated) {
+    return {
+      handoff: handoffResult,
+      created: false,
+      messageSent: false
+    };
+  }
+
   const handoffMessage =
     String(customMessage || '').trim() ||
     getClinicBotConfig({ settings: clinicSettings }).handoffMessage ||
@@ -17037,6 +17216,12 @@ async function openHandoffFlow({
     requestId,
     correlationMessageId: messageId
   });
+
+  return {
+    handoff: handoffResult,
+    created: true,
+    messageSent: true
+  };
 }
 
 async function tryAppointmentSelection({
@@ -17604,6 +17789,8 @@ async function processInboundJob(job) {
   const safeCommercialReply = await buildSafeCommercialIntentReply({
     clinic,
     conversation,
+    contact,
+    channel,
     inboundText
   });
   const shortMemoryReply = safeCommercialReply
@@ -18137,6 +18324,8 @@ async function processConversationReplyJob(job) {
     const safeCommercialReply = await buildSafeCommercialIntentReply({
       clinic,
       conversation,
+      contact,
+      channel,
       inboundText
     });
 

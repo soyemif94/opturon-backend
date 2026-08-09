@@ -8,6 +8,22 @@ function dbQuery(client, text, params) {
 }
 
 async function openHandoff({ clinicId, conversationId, contactId, leadId, reason }, client = null) {
+  const result = await dbQuery(
+    client,
+    `INSERT INTO handoff_requests (
+      "clinicId", "conversationId", "contactId", "leadId", status, reason, "updatedAt"
+    ) VALUES ($1, $2, $3, $4, 'open', $5, NOW())
+    ON CONFLICT ("clinicId", "conversationId")
+      WHERE status IN ('open', 'assigned')
+      DO NOTHING
+    RETURNING id, "clinicId", "conversationId", "contactId", "leadId", status, "assignedTo", reason`,
+    [clinicId, conversationId, contactId, leadId || null, reason]
+  );
+
+  if (result.rows[0]) {
+    return { ...result.rows[0], created: true };
+  }
+
   const existing = await dbQuery(
     client,
     `SELECT id, "clinicId", "conversationId", "contactId", "leadId", status, "assignedTo", reason
@@ -18,20 +34,7 @@ async function openHandoff({ clinicId, conversationId, contactId, leadId, reason
     [clinicId, conversationId]
   );
 
-  if (existing.rows[0]) {
-    return existing.rows[0];
-  }
-
-  const result = await dbQuery(
-    client,
-    `INSERT INTO handoff_requests (
-      "clinicId", "conversationId", "contactId", "leadId", status, reason, "updatedAt"
-    ) VALUES ($1, $2, $3, $4, 'open', $5, NOW())
-    RETURNING id, "clinicId", "conversationId", "contactId", "leadId", status, "assignedTo", reason`,
-    [clinicId, conversationId, contactId, leadId || null, reason]
-  );
-
-  return result.rows[0];
+  return existing.rows[0] ? { ...existing.rows[0], created: false } : null;
 }
 
 async function assignHandoff(handoffId, staffUserId, client = null) {

@@ -17,6 +17,7 @@ const { resolvePortalTenantContext } = require('./portal-context.service');
 const env = require('../config/env');
 const { logInfo, logWarn } = require('../utils/logger');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
+const { getOwnedHandoffSummary } = require('./handoff-summary.service');
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -761,6 +762,12 @@ async function getPortalConversationDetail(tenantId, conversationId) {
   ]);
 
   const contextData = parseContext(conversation.context);
+  const handoffSummary = getOwnedHandoffSummary(contextData.handoffSummary, {
+    tenantId: context.clinic.id,
+    conversationId: conversation.id,
+    contactId: conversation.contactId,
+    channelId: conversation.channelId
+  });
   const assignedSeller = buildAssignedSeller(conversation, contextData);
   const transferPayment = getTransferPaymentContext(contextData);
   const transferOrderId = transferPayment && String(transferPayment.orderId || '').trim()
@@ -840,6 +847,7 @@ async function getPortalConversationDetail(tenantId, conversationId) {
         text: event.type,
         createdAt: event.createdAt
       })),
+      handoffSummary,
       channelBinding,
       relatedOrder: buildRelatedOrderSummary(relatedOrder)
     }

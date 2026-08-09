@@ -155,7 +155,7 @@ async function run() {
   assert.strictEqual(completed.context.commercialDiscoveryState.status, 'DISCOVERY_SUFFICIENT');
   assert.strictEqual(completed.context.commercialDiscoveryState.currentEvidenceGap, null);
   assert.strictEqual(completed.context.commercialDiscoveryState.lastResolvedField, 'shared_sku_catalog');
-  assert.strictEqual(completed.context.commercialDiscoveryState.capabilityStatus, 'NEEDS_VERIFICATION');
+  assert.strictEqual(completed.context.commercialDiscoveryState.capabilityStatus, 'AVAILABLE_WITH_INTEGRATION');
   assert.strictEqual(completed.context.commercialDiscoveryState.nextAction, 'human_review');
   assert.strictEqual(completed.context.commercialDiscoveryState.handoffReason, 'capability_verification_required');
   assert.strictEqual(completed.reply.triggerHandoff, true);
