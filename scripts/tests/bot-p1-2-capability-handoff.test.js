@@ -261,13 +261,36 @@ async function runCapabilityModelAssertions() {
     'fiscal_receipt_issuance',
     'cash_management_bot',
     'supplier_management_bot',
-    'instagram_automatic_replies',
-    'order_customer_notification'
+    'instagram_automatic_replies'
   ]) {
     const decision = resolveCapability({ tenant, capability });
     assert.strictEqual(decision.status, CAPABILITY_STATUSES.NOT_SUPPORTED, capability);
     assert.match(normalizeForAssertion(buildSafeCapabilityReply(decision)), /no esta soportado/);
   }
+
+  const disabledOrderNotification = resolveCapability({
+    tenant,
+    capability: 'order_customer_notification'
+  });
+  assert.strictEqual(disabledOrderNotification.status, CAPABILITY_STATUSES.AVAILABLE_WITH_CONFIGURATION);
+  assert.deepStrictEqual(disabledOrderNotification.configurationMissing, ['order_customer_notification_enablement']);
+
+  const orderNotificationClinic = buildClinic('tenant-order-notification');
+  orderNotificationClinic.settings.orderCustomerNotificationEnabled = true;
+  const orderNotificationTenant = buildTenantCapabilitySnapshot({
+    clinic: orderNotificationClinic,
+    channels: [{
+      ...buildChannel('tenant-order-notification'),
+      credentialsConfigured: true
+    }]
+  });
+  assert.strictEqual(
+    resolveCapability({
+      tenant: orderNotificationTenant,
+      capability: 'order_customer_notification'
+    }).status,
+    CAPABILITY_STATUSES.AVAILABLE_NOW
+  );
 
   const unknownDecision = resolveCapability({ tenant, capability: 'unregistered_future_action' });
   assert.strictEqual(unknownDecision.status, CAPABILITY_STATUSES.UNKNOWN);

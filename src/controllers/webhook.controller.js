@@ -19,6 +19,9 @@ const {
 const { processInboundMessages } = require('../conversations/conversation.service');
 const { pushInboxItem } = require('../debug/inbox-store');
 const { pushWebhookEvent } = require('../debug/webhook-store');
+const {
+  reconcileOrderCustomerNotificationStatuses
+} = require('../services/order-customer-notification-status.service');
 
 function withRequestMeta(req, meta = {}) {
   return {
@@ -565,6 +568,17 @@ async function handleWebhook(req, res) {
           await observeAndAutoReply(req, payload);
         } catch (error) {
           logWarn('webhook_observer_failed', withRequestMeta(req, { error: error.message }));
+        }
+
+        try {
+          const reconciliation = await reconcileOrderCustomerNotificationStatuses(payload);
+          if (reconciliation.observed > 0) {
+            logInfo('order_customer_notification_status_reconciled', withRequestMeta(req, reconciliation));
+          }
+        } catch (error) {
+          logWarn('order_customer_notification_status_reconcile_failed', withRequestMeta(req, {
+            error: truncateText(error.message, 500)
+          }));
         }
       }
 

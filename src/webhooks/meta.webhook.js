@@ -194,6 +194,36 @@ function extractWhatsAppInboundEvents(payload) {
   return events;
 }
 
+function extractWhatsAppStatusEvents(payload) {
+  const events = [];
+  const entry = Array.isArray(payload && payload.entry) ? payload.entry : [];
+
+  for (const entryItem of entry) {
+    const changes = Array.isArray(entryItem && entryItem.changes) ? entryItem.changes : [];
+    for (const change of changes) {
+      const value = change && change.value ? change.value : {};
+      const metadata = value && value.metadata ? value.metadata : {};
+      const phoneNumberId = sanitizeString(metadata.phone_number_id || metadata.phoneNumberId);
+      const statuses = Array.isArray(value.statuses) ? value.statuses : [];
+
+      for (const status of statuses) {
+        const providerMessageId = sanitizeString(status && status.id);
+        const deliveryStatus = sanitizeString(status && status.status);
+        if (!providerMessageId || !deliveryStatus) continue;
+        events.push({
+          phoneNumberId,
+          providerMessageId,
+          status: deliveryStatus.toLowerCase(),
+          timestamp: status && status.timestamp ? status.timestamp : null,
+          errors: Array.isArray(status && status.errors) ? status.errors : []
+        });
+      }
+    }
+  }
+
+  return events;
+}
+
 function extractInstagramInboundEvents(payload) {
   const events = [];
   const entry = Array.isArray(payload && payload.entry) ? payload.entry : [];
@@ -251,6 +281,7 @@ module.exports = {
   deriveMetaEventType,
   extractMetaWebhookIdentifiers,
   extractMetaInboundMessages,
+  extractWhatsAppStatusEvents,
   hasInstagramMessagingEntries,
   hasWhatsAppChangeEntries
 };

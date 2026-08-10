@@ -20,6 +20,18 @@ function normalizeVersion(value) {
   return Number.isInteger(version) && version >= 0 ? version : 0;
 }
 
+function resolveSnapshotPaymentMethod(order) {
+  const explicitMethod = normalizeStatus(order && order.paymentMethod);
+  if (['cash', 'bank_transfer', 'card', 'mercado_pago', 'other'].includes(explicitMethod)) {
+    return explicitMethod;
+  }
+
+  const destinationType = normalizeStatus(order && order.paymentDestinationTypeSnapshot);
+  if (destinationType === 'bank' || destinationType === 'wallet') return 'bank_transfer';
+  if (destinationType === 'cash_box') return 'cash';
+  return null;
+}
+
 function detectNewOrderFinalization({ previousOrder = null, order, directConfirmedCreation = false }) {
   if (!order || normalizeStatus(order.status) !== 'confirmed') {
     return { isNewFinalization: false, reason: 'order_not_confirmed' };
@@ -100,6 +112,7 @@ function buildOrderCustomerNotificationSnapshot(order) {
     total: quantizeDecimal(order.totalAmount ?? order.total ?? 0, 2, 0),
     payment: {
       status: normalizeText(order.paymentStatus),
+      method: resolveSnapshotPaymentMethod(order),
       destination: paymentDestination
     },
     notes: normalizeText(order.notes),

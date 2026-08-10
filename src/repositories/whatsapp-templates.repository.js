@@ -37,6 +37,32 @@ async function findWhatsAppTemplateByClinicAndKey(clinicId, templateKey, languag
   return result.rows[0] || null;
 }
 
+async function findApprovedUtilityOrderSummaryTemplate({
+  clinicId,
+  channelId,
+  wabaId,
+  language
+}, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", "externalTenantId", "channelId", "wabaId", "templateKey", "metaTemplateId", "metaTemplateName",
+            language, category, status, "rejectionReason", definition, "lastSyncedAt", metadata, "createdAt", "updatedAt"
+     FROM whatsapp_templates
+     WHERE "clinicId" = $1::uuid
+       AND "channelId" = $2::uuid
+       AND "wabaId" = $3
+       AND "templateKey" = 'order_summary'
+       AND language = $4
+       AND UPPER(category) = 'UTILITY'
+       AND LOWER(status) = 'approved'
+     ORDER BY "updatedAt" DESC, "createdAt" DESC
+     LIMIT 1`,
+    [clinicId, channelId, wabaId, language]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function findWhatsAppTemplateByClinicAndMetaName(clinicId, metaTemplateName, client = null) {
   const result = await dbQuery(
     client,
@@ -117,6 +143,7 @@ async function withWhatsAppTemplatesTransaction(fn) {
 module.exports = {
   listWhatsAppTemplatesByClinicId,
   findWhatsAppTemplateByClinicAndKey,
+  findApprovedUtilityOrderSummaryTemplate,
   findWhatsAppTemplateByClinicAndMetaName,
   upsertWhatsAppTemplate,
   withWhatsAppTemplatesTransaction

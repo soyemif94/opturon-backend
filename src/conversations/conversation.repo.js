@@ -196,14 +196,25 @@ async function insertInboundMessage(record, client = null) {
 
 async function insertOutboundMessage(record, client = null) {
   const waMessageId = record && record.waMessageId ? String(record.waMessageId).trim() : null;
+  const hasExplicitScope = Boolean(record && record.clinicId && record.channelId);
 
   try {
     const result = await dbQuery(
       client,
-      `INSERT INTO conversation_messages (
-        "conversationId", direction, "waMessageId", "from", "to", type, text, raw
-      ) VALUES ($1, 'outbound', $2, $3, $4, $5, $6, $7::jsonb)
-      RETURNING id, "conversationId", "waMessageId", "createdAt"`,
+      hasExplicitScope
+        ? `INSERT INTO conversation_messages (
+             "conversationId", direction, "waMessageId", "from", "to", type, text, raw
+           )
+           SELECT c.id, 'outbound', $2, $3, $4, $5, $6, $7::jsonb
+           FROM conversations c
+           WHERE c.id = $1::uuid
+             AND c."clinicId" = $8::uuid
+             AND c."channelId" = $9::uuid
+           RETURNING id, "conversationId", "waMessageId", "createdAt"`
+        : `INSERT INTO conversation_messages (
+             "conversationId", direction, "waMessageId", "from", "to", type, text, raw
+           ) VALUES ($1, 'outbound', $2, $3, $4, $5, $6, $7::jsonb)
+           RETURNING id, "conversationId", "waMessageId", "createdAt"`,
       [
         record.conversationId,
         waMessageId,
@@ -211,16 +222,25 @@ async function insertOutboundMessage(record, client = null) {
         record.to || null,
         record.type || 'text',
         record.text || null,
-        JSON.stringify(record.raw || {})
+        JSON.stringify(record.raw || {}),
+        ...(hasExplicitScope ? [record.clinicId, record.channelId] : [])
       ]
     );
+
+    if (hasExplicitScope && !result.rows[0]) {
+      const scopeError = new Error('conversation_outbound_scope_mismatch');
+      scopeError.code = 'CONVERSATION_OUTBOUND_SCOPE_MISMATCH';
+      throw scopeError;
+    }
 
     await dbQuery(
       client,
       `UPDATE conversations
        SET "lastOutboundAt" = NOW(), "updatedAt" = NOW()
-       WHERE id = $1`,
-      [record.conversationId]
+       WHERE id = $1
+         AND ($2::uuid IS NULL OR "clinicId" = $2::uuid)
+         AND ($3::uuid IS NULL OR "channelId" = $3::uuid)`,
+      [record.conversationId, hasExplicitScope ? record.clinicId : null, hasExplicitScope ? record.channelId : null]
     );
 
     return { inserted: true, row: result.rows[0] || null };
@@ -265,6 +285,53 @@ async function getConversationByIdAndClinicId(id, clinicId, client = null) {
     [id, clinicId]
   );
   return result.rows[0] || null;
+}
+
+async function listConversationsByContactIdAndClinicId(contactId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "nextActionAt", "nextActionNote", "waFrom", "waTo", status, stage, state, context,
+            "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
+     FROM conversations
+     WHERE "contactId" = $1::uuid
+       AND "clinicId" = $2::uuid
+     ORDER BY "lastInboundAt" DESC NULLS LAST, "updatedAt" DESC, id ASC`,
+    [contactId, clinicId]
+  );
+
+  return result.rows;
+}
+
+async function findLastInboundAtForConversationScope({
+  conversationId,
+  clinicId,
+  channelId,
+  contactId
+}, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT MAX(
+              CASE
+                WHEN COALESCE(cm.raw -> 'message' ->> 'timestamp', '') ~ '^[0-9]{10}$'
+                  THEN to_timestamp((cm.raw -> 'message' ->> 'timestamp')::double precision)
+                WHEN COALESCE(cm.raw -> 'message' ->> 'timestamp', '') ~ '^[0-9]{13}$'
+                  THEN to_timestamp((cm.raw -> 'message' ->> 'timestamp')::double precision / 1000.0)
+                ELSE cm."createdAt"
+              END
+            ) AS "lastInboundAt"
+     FROM conversation_messages cm
+     INNER JOIN conversations c ON c.id = cm."conversationId"
+     WHERE cm."conversationId" = $1::uuid
+       AND cm.direction = 'inbound'
+       AND c."clinicId" = $2::uuid
+       AND c."channelId" = $3::uuid
+       AND c."contactId" = $4::uuid`,
+    [conversationId, clinicId, channelId, contactId]
+  );
+
+  return result.rows[0] && result.rows[0].lastInboundAt
+    ? result.rows[0].lastInboundAt
+    : null;
 }
 
 async function listConversationsByIds(conversationIds = [], client = null) {
@@ -1484,6 +1551,8 @@ module.exports = {
   insertOutboundMessage,
   getConversationById,
   getConversationByIdAndClinicId,
+  listConversationsByContactIdAndClinicId,
+  findLastInboundAtForConversationScope,
   listConversationsByIds,
   getMessageById,
   hasNewerInboundMessage,

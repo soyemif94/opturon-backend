@@ -111,7 +111,14 @@ const CAPABILITY_DEFINITIONS = Object.freeze({
     unsupportedReason: 'instagram_bot_outbound_not_implemented'
   },
   order_customer_notification: {
-    unsupportedReason: 'order_customer_notification_not_implemented'
+    requiredTenantModules: ['orders', 'inbox'],
+    requiredTenantCapabilities: ['orders', 'inbox'],
+    requiredConfiguration: [
+      { key: 'orderCustomerNotificationEnabled', label: 'order_customer_notification_enablement' }
+    ],
+    requiredIntegration: 'whatsapp_cloud',
+    missingIntegration: 'active_whatsapp_channel',
+    productSurface: 'transactional_worker'
   }
 });
 
@@ -120,7 +127,9 @@ const CONFIGURATION_LABELS = Object.freeze({
   active_instagram_channel: 'un canal de Instagram activo',
   transfer_data: 'los datos de transferencia',
   ai_provider: 'el proveedor de IA',
-  tenant_ai_enablement: 'la habilitacion de IA para este tenant'
+  tenant_ai_enablement: 'la habilitacion de IA para este tenant',
+  order_customer_notification_enablement: 'la habilitacion de notificaciones de pedido',
+  order_summary_utility_template: 'un template Utility aprobado para resumen de pedido'
 });
 
 function normalizeString(value) {
@@ -221,7 +230,9 @@ function buildTenantCapabilitySnapshot({
     configuration: {
       transferDataConfigured: safeConfiguration.transferDataConfigured === true,
       aiProviderConfigured: safeConfiguration.aiProviderConfigured === true,
-      aiEnabled: safeConfiguration.aiEnabled === true
+      aiEnabled: safeConfiguration.aiEnabled === true,
+      orderCustomerNotificationEnabled: settings.orderCustomerNotificationEnabled === true,
+      orderSummaryTemplateConfigured: safeConfiguration.orderSummaryTemplateConfigured === true
     },
     botActions: Array.isArray(botActions)
       ? botActions.map(normalizeCapability).filter(Boolean)
@@ -358,6 +369,21 @@ function resolveCapability({ tenant, capability, context = {} } = {}) {
       configurationMissing: [`capability_${definition.tenantCapability}`]
     });
   }
+  const requiredTenantCapabilities = Array.isArray(definition.requiredTenantCapabilities)
+    ? definition.requiredTenantCapabilities.map(normalizeCapability).filter(Boolean)
+    : [];
+  const missingTenantCapabilities = Number(policy && policy.policyVersion) >= 1
+    ? requiredTenantCapabilities.filter((item) => !policyCapabilities.includes(item))
+    : [];
+  if (missingTenantCapabilities.length) {
+    return sanitizeCapabilityDecision({
+      capability: safeCapability,
+      status: CAPABILITY_STATUSES.AVAILABLE_WITH_CONFIGURATION,
+      reason: 'tenant_capability_disabled',
+      source: CAPABILITY_SOURCES.TENANT_POLICY,
+      configurationMissing: missingTenantCapabilities.map((item) => `capability_${item}`)
+    });
+  }
   if (definition.tenantModule && !isTenantModuleEnabled(policy, definition.tenantModule)) {
     return sanitizeCapabilityDecision({
       capability: safeCapability,
@@ -365,6 +391,19 @@ function resolveCapability({ tenant, capability, context = {} } = {}) {
       reason: 'tenant_module_disabled',
       source: CAPABILITY_SOURCES.TENANT_POLICY,
       configurationMissing: [`module_${definition.tenantModule}`]
+    });
+  }
+  const requiredTenantModules = Array.isArray(definition.requiredTenantModules)
+    ? definition.requiredTenantModules.map(normalizeCapability).filter(Boolean)
+    : [];
+  const missingTenantModules = requiredTenantModules.filter((item) => !isTenantModuleEnabled(policy, item));
+  if (missingTenantModules.length) {
+    return sanitizeCapabilityDecision({
+      capability: safeCapability,
+      status: CAPABILITY_STATUSES.AVAILABLE_WITH_CONFIGURATION,
+      reason: 'tenant_module_disabled',
+      source: CAPABILITY_SOURCES.TENANT_POLICY,
+      configurationMissing: missingTenantModules.map((item) => `module_${item}`)
     });
   }
 
@@ -401,6 +440,21 @@ function resolveCapability({ tenant, capability, context = {} } = {}) {
       reason: 'tenant_bot_action_disabled',
       source: CAPABILITY_SOURCES.TENANT_CONFIGURATION,
       configurationMissing: [`bot_action_${definition.botAction}`]
+    });
+  }
+
+  if (
+    safeCapability === 'order_customer_notification' &&
+    context && context.customerServiceWindowOpen === false &&
+    configuration.orderSummaryTemplateConfigured !== true &&
+    context.orderSummaryTemplateConfigured !== true
+  ) {
+    return sanitizeCapabilityDecision({
+      capability: safeCapability,
+      status: CAPABILITY_STATUSES.AVAILABLE_WITH_CONFIGURATION,
+      reason: 'tenant_configuration_missing',
+      source: CAPABILITY_SOURCES.TENANT_CONFIGURATION,
+      configurationMissing: ['order_summary_utility_template']
     });
   }
 

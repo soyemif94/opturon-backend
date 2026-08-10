@@ -82,6 +82,9 @@ const {
   buildSafeCapabilityReply
 } = require('./services/capability-resolver.service');
 const { buildHandoffSummary } = require('./services/handoff-summary.service');
+const {
+  processAvailableOrderCustomerNotifications
+} = require('./services/order-customer-notification-processor.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -19833,6 +19836,17 @@ async function pollOnce() {
 
     await releaseExpiredHolds();
     await maybeRunArchivedContactCleanup({ workerId: WORKER_ID });
+    try {
+      await processAvailableOrderCustomerNotifications({
+        workerId: WORKER_ID,
+        limit: BATCH_SIZE
+      });
+    } catch (error) {
+      logWarn('order_customer_notification_sweep_failed', {
+        workerId: WORKER_ID,
+        error: String(error && error.message || 'unknown_error').slice(0, 500)
+      });
+    }
     const jobs = await claimJobs({ workerId: WORKER_ID, limit: BATCH_SIZE });
 
     logInfo('worker_poll_result', {
