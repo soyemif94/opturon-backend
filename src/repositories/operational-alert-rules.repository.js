@@ -203,6 +203,102 @@ async function listOperationalAlertRules(clinicId, options = {}, client = null) 
   return result.rows.map(normalizeRuleRow);
 }
 
+async function listOperationalAlertRulesForEvent(event, client = null) {
+  const targetRuleId = normalizeNullableString(event && event.targetRuleId);
+  const params = [event.clinicId, event.eventType, Number(event.eventVersion)];
+  const targetClause = targetRuleId
+    ? 'AND id = $4::uuid'
+    : "AND \"triggerMode\" = 'event_driven'";
+  if (targetRuleId) params.push(targetRuleId);
+  const result = await dbQuery(
+    client,
+    `SELECT ${RULE_COLUMNS}
+     FROM operational_alert_rules
+     WHERE "clinicId" = $1::uuid
+       AND "eventType" = $2
+       AND "eventVersion" = $3
+       AND enabled = TRUE
+       AND "archivedAt" IS NULL
+       ${targetClause}
+     ORDER BY "createdAt" ASC, id ASC`,
+    params
+  );
+  return result.rows.map(normalizeRuleRow);
+}
+
+async function claimScheduledOperationalAlertRules({
+  workerId,
+  limit = 5,
+  leaseSeconds = 120
+} = {}) {
+  const safeWorkerId = normalizeString(workerId);
+  const safeLimit = Math.max(1, Math.min(50, Number.parseInt(String(limit || 5), 10) || 5));
+  const safeLeaseSeconds = Math.max(30, Math.min(900, Number.parseInt(String(leaseSeconds || 120), 10) || 120));
+  if (!safeWorkerId) throw contractError('operational_alert_scheduler_worker_id_required');
+
+  return withTransaction(async (client) => {
+    await client.query(
+      `UPDATE operational_alert_rules
+       SET "schedulerLockedAt" = NULL,
+           "schedulerLockedBy" = NULL,
+           "schedulerLeaseExpiresAt" = NULL,
+           "updatedAt" = NOW()
+       WHERE "schedulerLeaseExpiresAt" IS NOT NULL
+         AND "schedulerLeaseExpiresAt" <= NOW()`
+    );
+    const result = await client.query(
+      `WITH picked AS (
+         SELECT id AS "pickedId"
+         FROM operational_alert_rules
+         WHERE "triggerMode" = 'scheduled'
+           AND enabled = TRUE
+           AND "archivedAt" IS NULL
+           AND "nextEvaluationAt" IS NOT NULL
+           AND "nextEvaluationAt" <= NOW()
+           AND "schedulerLockedAt" IS NULL
+         ORDER BY "nextEvaluationAt" ASC, id ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT $1::int
+       )
+       UPDATE operational_alert_rules r
+       SET "schedulerLockedAt" = NOW(),
+           "schedulerLockedBy" = $2,
+           "schedulerLeaseExpiresAt" = NOW() + ($3::int * INTERVAL '1 second'),
+           "updatedAt" = NOW()
+       FROM picked
+       WHERE r.id = picked."pickedId"
+       RETURNING ${RULE_COLUMNS}`,
+      [safeLimit, safeWorkerId, safeLeaseSeconds]
+    );
+    return result.rows.map(normalizeRuleRow);
+  });
+}
+
+async function finishScheduledOperationalAlertRule(ruleId, clinicId, {
+  workerId,
+  nextEvaluationAt = null,
+  triggered = false
+} = {}, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE operational_alert_rules
+     SET "lastEvaluatedAt" = NOW(),
+         "lastTriggeredAt" = CASE WHEN $5::boolean THEN NOW() ELSE "lastTriggeredAt" END,
+         "nextEvaluationAt" = $4::timestamptz,
+         "schedulerLockedAt" = NULL,
+         "schedulerLockedBy" = NULL,
+         "schedulerLeaseExpiresAt" = NULL,
+         "updatedAt" = NOW()
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+       AND "schedulerLockedBy" = $3
+       AND "schedulerLeaseExpiresAt" > NOW()
+     RETURNING ${RULE_COLUMNS}`,
+    [ruleId, clinicId, normalizeString(workerId), nextEvaluationAt, triggered === true]
+  );
+  return normalizeRuleRow(result.rows[0]);
+}
+
 async function updateOperationalAlertRuleConfig(ruleId, clinicId, input, client = null) {
   return runInTransaction(client, async (tx) => {
     const current = await findOperationalAlertRuleById(ruleId, clinicId, tx, { forUpdate: true });
@@ -345,6 +441,9 @@ module.exports = {
   createOperationalAlertRule,
   findOperationalAlertRuleById,
   listOperationalAlertRules,
+  listOperationalAlertRulesForEvent,
+  claimScheduledOperationalAlertRules,
+  finishScheduledOperationalAlertRule,
   updateOperationalAlertRuleConfig,
   disableOperationalAlertRule,
   listOperationalAlertRuleRecipients,

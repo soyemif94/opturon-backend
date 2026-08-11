@@ -249,6 +249,7 @@ async function sendTemplateMessageViaGraphInternal({
   const normalizedTo = normalizeToDigits(to);
   const normalizedTemplateName = String(templateName || '').trim();
   const normalizedLanguageCode = String(languageCode || 'es').trim() || 'es';
+  const suppressRoutingDiagnostics = credentials && credentials.suppressRoutingDiagnostics === true;
   const toLast4 = normalizedTo ? normalizedTo.slice(-4) : null;
   const toLen = normalizedTo ? normalizedTo.length : 0;
 
@@ -274,18 +275,19 @@ async function sendTemplateMessageViaGraphInternal({
   }
 
   const url = buildMessagesEndpointUrl(normalizedPhoneNumberId, GRAPH_API_VERSION);
-  console.log('WA_GRAPH_TEMPLATE_SEND', {
-    phoneNumberId: normalizedPhoneNumberId,
-    url,
-    to: normalizedTo
-  });
+  console.log(
+    'WA_GRAPH_TEMPLATE_SEND',
+    suppressRoutingDiagnostics
+      ? { channelId: String(credentials && credentials.channelId || '').slice(0, 8) || null, recipient: '[redacted]' }
+      : { phoneNumberId: normalizedPhoneNumberId, url, to: normalizedTo }
+  );
   logInfo('graph_request_prepare', {
     requestId,
     method: 'POST',
-    phoneNumberId: normalizedPhoneNumberId,
+    phoneNumberId: suppressRoutingDiagnostics ? '[redacted]' : normalizedPhoneNumberId,
     authSource,
-    toLast4,
-    toLen,
+    toLast4: suppressRoutingDiagnostics ? null : toLast4,
+    toLen: suppressRoutingDiagnostics ? null : toLen,
     graphVersion: GRAPH_API_VERSION
   });
   const response = await fetch(url, {

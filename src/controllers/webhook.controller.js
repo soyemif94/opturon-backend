@@ -573,10 +573,10 @@ async function handleWebhook(req, res) {
         try {
           const reconciliation = await reconcileOrderCustomerNotificationStatuses(payload);
           if (reconciliation.observed > 0) {
-            logInfo('order_customer_notification_status_reconciled', withRequestMeta(req, reconciliation));
+            logInfo('transactional_whatsapp_status_reconciled', withRequestMeta(req, reconciliation));
           }
         } catch (error) {
-          logWarn('order_customer_notification_status_reconcile_failed', withRequestMeta(req, {
+          logWarn('transactional_whatsapp_status_reconcile_failed', withRequestMeta(req, {
             error: truncateText(error.message, 500)
           }));
         }

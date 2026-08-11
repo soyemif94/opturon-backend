@@ -5,7 +5,14 @@ const {
 const {
   reconcileOrderCustomerNotificationDeliveryStatus
 } = require('../repositories/order-customer-notifications.repository');
+const {
+  reconcileOperationalAlertDeliveryStatus
+} = require('../repositories/operational-alert-deliveries.repository');
+const {
+  aggregateOperationalAlertInstanceStatus
+} = require('../repositories/operational-alert-instances.repository');
 const { extractWhatsAppStatusEvents } = require('../webhooks/meta.webhook');
+const { logInfo } = require('../utils/logger');
 
 function sanitizeText(value, maxLength = 500) {
   const safe = String(value || '').replace(/\s+/g, ' ').trim();
@@ -53,10 +60,18 @@ async function reconcileOrderCustomerNotificationStatuses(payload, options = {})
     findChannelByPhoneNumberId:
       findWhatsAppChannelByPhoneNumberIdIncludingInactive || findChannelByPhoneNumberId,
     reconcileStatus: reconcileOrderCustomerNotificationDeliveryStatus,
+    reconcileOperationalStatus: reconcileOperationalAlertDeliveryStatus,
+    aggregateOperationalInstance: aggregateOperationalAlertInstanceStatus,
     ...(options.dependencies || {})
   };
   const events = extractWhatsAppStatusEvents(payload);
-  const stats = { observed: events.length, matched: 0, ignored: 0 };
+  const stats = {
+    observed: events.length,
+    matched: 0,
+    orderSummaryMatched: 0,
+    operationalAlertMatched: 0,
+    ignored: 0
+  };
 
   for (const event of events) {
     if (!['sent', 'delivered', 'read', 'failed'].includes(event.status)) {
@@ -71,16 +86,37 @@ async function reconcileOrderCustomerNotificationStatuses(payload, options = {})
       continue;
     }
 
-    const notification = await dependencies.reconcileStatus({
+    const statusInput = {
       clinicId: channel.clinicId,
       channelId: channel.id,
       providerMessageId: event.providerMessageId,
       status: event.status,
       occurredAt: normalizeOccurredAt(event.timestamp),
       failureMetadata: event.status === 'failed' ? sanitizeFailedStatusMetadata(event) : null
-    });
-    if (notification) stats.matched += 1;
-    else stats.ignored += 1;
+    };
+
+    // Order Summary retains explicit precedence; operational alerts are only a scoped fallback.
+    const notification = await dependencies.reconcileStatus(statusInput);
+    if (notification) {
+      stats.matched += 1;
+      stats.orderSummaryMatched += 1;
+      continue;
+    }
+
+    const delivery = await dependencies.reconcileOperationalStatus(statusInput);
+    if (delivery) {
+      stats.matched += 1;
+      stats.operationalAlertMatched += 1;
+      await dependencies.aggregateOperationalInstance(delivery.instanceId, delivery.clinicId);
+      logInfo('operational_alert_status_reconciled', {
+        deliveryId: String(delivery.id || '').slice(0, 8) || null,
+        instanceId: String(delivery.instanceId || '').slice(0, 8) || null,
+        status: delivery.status,
+        resultCode: delivery.resultCode || null
+      });
+    } else {
+      stats.ignored += 1;
+    }
   }
 
   return stats;

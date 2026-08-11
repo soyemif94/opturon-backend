@@ -186,7 +186,15 @@ function resolveLegacyCredentials(credentials = {}) {
   };
 }
 
-async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel, mode = 'legacy_global' }) {
+async function sendGraphMessage({
+  requestId,
+  credentials,
+  toRaw,
+  body,
+  logLabel,
+  mode = 'legacy_global',
+  suppressRoutingDiagnostics = false
+}) {
   const channelValidation =
     mode === 'channel_scoped' ? normalizeChannelScopedSendValidation(credentials || {}) : null;
   const resolvedCredentials =
@@ -218,26 +226,28 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
 
   if (channelValidation) {
     logWarn('WA_CHANNEL_VALIDATION', {
-      tenantId: channelValidation.tenantId,
-      clinicId: channelValidation.clinicId,
-      conversationId: channelValidation.conversationId,
-      channelId: channelValidation.channelId,
+      tenantId: suppressRoutingDiagnostics ? '[redacted]' : channelValidation.tenantId,
+      clinicId: suppressRoutingDiagnostics
+        ? String(channelValidation.clinicId || '').slice(0, 8) || null
+        : channelValidation.clinicId,
+      conversationId: suppressRoutingDiagnostics ? null : channelValidation.conversationId,
+      channelId: suppressRoutingDiagnostics
+        ? String(channelValidation.channelId || '').slice(0, 8) || null
+        : channelValidation.channelId,
       provider: channelValidation.provider || 'whatsapp_cloud',
       status: channelValidation.status || 'active',
-      phoneNumberId: channelValidation.phoneNumberId,
-      wabaId: channelValidation.wabaId,
+      phoneNumberId: suppressRoutingDiagnostics ? '[redacted]' : channelValidation.phoneNumberId,
+      wabaId: suppressRoutingDiagnostics ? '[redacted]' : channelValidation.wabaId,
       graphVersion
     });
   }
 
-  console.log(logLabel || 'WhatsApp send', {
-    url,
-    phoneNumberId,
-    channelId,
-    authSource,
-    toLast4,
-    toLen
-  });
+  console.log(
+    logLabel || 'WhatsApp send',
+    suppressRoutingDiagnostics
+      ? { channelId: String(channelId || '').slice(0, 8) || null, authSource, recipient: '[redacted]' }
+      : { url, phoneNumberId, channelId, authSource, toLast4, toLen }
+  );
 
   let graphResponse;
   if (body && body.type === 'template') {
@@ -257,7 +267,8 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
               ...(credentials || {}),
               channelId,
               accessToken,
-              phoneNumberId
+              phoneNumberId,
+              suppressRoutingDiagnostics
             }
           })
         : await graphClient.sendTemplateMessageViaGraphLegacy({
@@ -274,7 +285,8 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
               ...(credentials || {}),
               channelId,
               accessToken,
-              phoneNumberId
+              phoneNumberId,
+              suppressRoutingDiagnostics
             }
           });
   } else if (body && body.type === 'image') {
@@ -290,7 +302,8 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
               ...(credentials || {}),
               channelId,
               accessToken,
-              phoneNumberId
+              phoneNumberId,
+              suppressRoutingDiagnostics
             }
           })
         : await graphClient.sendImageMessageViaGraphLegacy({
@@ -303,7 +316,8 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
               ...(credentials || {}),
               channelId,
               accessToken,
-              phoneNumberId
+              phoneNumberId,
+              suppressRoutingDiagnostics
             }
           });
   } else {
@@ -318,7 +332,8 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
               ...(credentials || {}),
               channelId,
               accessToken,
-              phoneNumberId
+              phoneNumberId,
+              suppressRoutingDiagnostics
             }
           })
         : await graphClient.sendTextMessageViaGraphLegacy({
@@ -330,7 +345,8 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
               ...(credentials || {}),
               channelId,
               accessToken,
-              phoneNumberId
+              phoneNumberId,
+              suppressRoutingDiagnostics
             }
           });
   }
@@ -347,26 +363,39 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
   if (!graphResponse.ok) {
     const ge = extractGraphError(parsed);
     const rawGraphErrorBody = parsed || rawText || null;
+    const safeFailureRouting = suppressRoutingDiagnostics
+      ? {
+          url: '[redacted]',
+          graphPath: '[redacted]',
+          toLast4: null,
+          toLen: null,
+          rawGraphErrorBody: null,
+          phoneNumberId: '[redacted]',
+          channelId: String(channelId || '').slice(0, 8) || null
+        }
+      : {
+          url,
+          graphPath: `/${phoneNumberId}/messages`,
+          toLast4,
+          toLen,
+          rawGraphErrorBody,
+          phoneNumberId,
+          channelId
+        };
 
     if (Number(ge.code) === 100 && Number(ge.subcode) === 33) {
       logError('whatsapp_send_failed', {
         event: 'whatsapp_send_failed',
         requestId,
         method: 'POST',
-        url,
-        graphPath: `/${phoneNumberId}/messages`,
-        toLast4,
-        toLen,
+        ...safeFailureRouting,
         status: responseStatus,
         durationMs: null,
-        fbtrace_id: ge.fbtrace_id,
+        fbtrace_id: suppressRoutingDiagnostics ? null : ge.fbtrace_id,
         graphErrorCode: ge.code,
         graphErrorSubcode: ge.subcode,
-        graphErrorMessage: ge.message,
-        rawGraphErrorBody,
+        graphErrorMessage: suppressRoutingDiagnostics ? null : ge.message,
         error_subcode: ge.subcode,
-        phoneNumberId,
-        channelId,
         authSource,
         diagnosis: [
           'ID no es Phone Number ID',
@@ -380,20 +409,14 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
         event: 'whatsapp_send_failed',
         requestId,
         method: 'POST',
-        url,
-        graphPath: `/${phoneNumberId}/messages`,
-        toLast4,
-        toLen,
+        ...safeFailureRouting,
         status: responseStatus,
         durationMs: null,
-        fbtrace_id: ge.fbtrace_id,
+        fbtrace_id: suppressRoutingDiagnostics ? null : ge.fbtrace_id,
         graphErrorCode: ge.code,
         graphErrorSubcode: ge.subcode,
-        graphErrorMessage: ge.message,
-        rawGraphErrorBody,
+        graphErrorMessage: suppressRoutingDiagnostics ? null : ge.message,
         error_subcode: ge.subcode,
-        phoneNumberId,
-        channelId,
         authSource,
         diagnosis: 'channel_access_token_expired'
       });
@@ -402,20 +425,14 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
         event: 'whatsapp_send_failed',
         requestId,
         method: 'POST',
-        url,
-        graphPath: `/${phoneNumberId}/messages`,
-        toLast4,
-        toLen,
+        ...safeFailureRouting,
         status: responseStatus,
         durationMs: null,
-        fbtrace_id: ge.fbtrace_id,
+        fbtrace_id: suppressRoutingDiagnostics ? null : ge.fbtrace_id,
         graphErrorCode: ge.code,
         graphErrorSubcode: ge.subcode,
-        graphErrorMessage: ge.message,
-        rawGraphErrorBody,
+        graphErrorMessage: suppressRoutingDiagnostics ? null : ge.message,
         error_subcode: ge.subcode,
-        phoneNumberId,
-        channelId,
         authSource
       });
     }
@@ -453,6 +470,7 @@ async function sendGraphMessage({ requestId, credentials, toRaw, body, logLabel,
 async function sendChannelScopedMessage(message, context = {}) {
   const requestId = context && context.requestId ? context.requestId : null;
   const credentials = context && context.credentials ? context.credentials : {};
+  const suppressRoutingDiagnostics = context && context.suppressRoutingDiagnostics === true;
   const payload = message && typeof message === 'object' ? message : {};
   const toRaw = payload.to;
 
@@ -476,7 +494,8 @@ async function sendChannelScopedMessage(message, context = {}) {
         }
       },
       logLabel: 'WhatsApp channel-scoped send',
-      mode: 'channel_scoped'
+      mode: 'channel_scoped',
+      suppressRoutingDiagnostics
     });
   }
 
@@ -502,7 +521,8 @@ async function sendChannelScopedMessage(message, context = {}) {
         }
       },
       logLabel: 'WhatsApp channel-scoped send',
-      mode: 'channel_scoped'
+      mode: 'channel_scoped',
+      suppressRoutingDiagnostics
     });
   }
 
@@ -520,7 +540,8 @@ async function sendChannelScopedMessage(message, context = {}) {
       text: { body: text }
     },
     logLabel: 'WhatsApp channel-scoped send',
-    mode: 'channel_scoped'
+    mode: 'channel_scoped',
+    suppressRoutingDiagnostics
   });
 }
 

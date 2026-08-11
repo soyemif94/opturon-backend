@@ -1,5 +1,5 @@
 const { isDeepStrictEqual } = require('util');
-const { query } = require('../db/client');
+const { query, withTransaction } = require('../db/client');
 const { assertOperationalAlertEvent } = require('../operational-alerts/operational-alert-contracts');
 const { assertRegisteredOperationalAlertEvent } = require('../operational-alerts/operational-alert-registry');
 const {
@@ -185,6 +185,127 @@ async function findOperationalAlertEventById(eventId, clinicId, client = null) {
   return normalizeEventRow(result.rows[0]);
 }
 
+async function claimOperationalAlertEvents({
+  workerId,
+  limit = 10,
+  leaseSeconds = 120,
+  maxAttempts = 5
+} = {}) {
+  const safeWorkerId = normalizeString(workerId);
+  const safeLimit = Math.max(1, Math.min(100, Number.parseInt(String(limit || 10), 10) || 10));
+  const safeLeaseSeconds = Math.max(30, Math.min(900, Number.parseInt(String(leaseSeconds || 120), 10) || 120));
+  const safeMaxAttempts = Math.max(1, Math.min(20, Number.parseInt(String(maxAttempts || 5), 10) || 5));
+  if (!safeWorkerId) throw contractError('operational_alert_event_worker_id_required');
+
+  return withTransaction(async (client) => {
+    await client.query(
+      `UPDATE operational_alert_events
+       SET status = 'failed_retryable',
+           "availableAt" = NOW(),
+           "lockedAt" = NULL,
+           "lockedBy" = NULL,
+           "leaseExpiresAt" = NULL,
+           "lastError" = 'event_processing_lease_expired',
+           "errorMetadata" = jsonb_build_object('reason', 'event_processing_lease_expired', 'retriable', true),
+           "updatedAt" = NOW()
+       WHERE status = 'processing'
+         AND "leaseExpiresAt" IS NOT NULL
+         AND "leaseExpiresAt" <= NOW()`
+    );
+    await client.query(
+      `UPDATE operational_alert_events
+       SET status = 'failed_permanent',
+           "lockedAt" = NULL,
+           "lockedBy" = NULL,
+           "leaseExpiresAt" = NULL,
+           "lastError" = 'event_attempts_exhausted',
+           "errorMetadata" = jsonb_build_object('reason', 'event_attempts_exhausted', 'retriable', false),
+           "updatedAt" = NOW()
+       WHERE status = 'failed_retryable'
+         AND "availableAt" <= NOW()
+         AND "attemptCount" >= $1::int`,
+      [safeMaxAttempts]
+    );
+    const result = await client.query(
+      `WITH picked AS (
+         SELECT id AS "pickedId"
+         FROM operational_alert_events
+         WHERE status IN ('pending', 'failed_retryable')
+           AND "availableAt" <= NOW()
+           AND "attemptCount" < $4::int
+         ORDER BY "availableAt" ASC, "createdAt" ASC, id ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT $1::int
+       )
+       UPDATE operational_alert_events e
+       SET status = 'processing',
+           "attemptCount" = e."attemptCount" + 1,
+           "lockedAt" = NOW(),
+           "lockedBy" = $2,
+           "leaseExpiresAt" = NOW() + ($3::int * INTERVAL '1 second'),
+           "lastError" = NULL,
+           "updatedAt" = NOW()
+       FROM picked
+       WHERE e.id = picked."pickedId"
+       RETURNING ${EVENT_COLUMNS}`,
+      [safeLimit, safeWorkerId, safeLeaseSeconds, safeMaxAttempts]
+    );
+    return result.rows.map(normalizeEventRow);
+  });
+}
+
+async function findClaimedOperationalAlertEvent(eventId, clinicId, workerId, client) {
+  const result = await dbQuery(
+    client,
+    `SELECT ${EVENT_COLUMNS}
+     FROM operational_alert_events
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+       AND status = 'processing'
+       AND "lockedBy" = $3
+       AND "leaseExpiresAt" > NOW()
+     LIMIT 1
+     FOR UPDATE`,
+    [eventId, clinicId, normalizeString(workerId)]
+  );
+  return normalizeEventRow(result.rows[0]);
+}
+
+async function updateOperationalAlertEventStatus(eventId, clinicId, patch, client = null) {
+  const status = normalizeString(patch && patch.status);
+  if (!['processed', 'failed_retryable', 'failed_permanent'].includes(status)) {
+    throw contractError('operational_alert_event_status_invalid');
+  }
+  const result = await dbQuery(
+    client,
+    `UPDATE operational_alert_events
+     SET status = $3,
+         "availableAt" = CASE WHEN $4::timestamptz IS NULL THEN "availableAt" ELSE $4::timestamptz END,
+         "lastError" = $5,
+         "errorMetadata" = $6::jsonb,
+         "processedAt" = CASE WHEN $3 = 'processed' THEN COALESCE("processedAt", NOW()) ELSE "processedAt" END,
+         "lockedAt" = NULL,
+         "lockedBy" = NULL,
+         "leaseExpiresAt" = NULL,
+         "updatedAt" = NOW()
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+       AND status = 'processing'
+       AND ($7::text IS NULL OR "lockedBy" = $7)
+     RETURNING ${EVENT_COLUMNS}`,
+    [
+      eventId,
+      clinicId,
+      status,
+      patch.availableAt || null,
+      normalizeNullableString(patch.lastError),
+      JSON.stringify(patch.errorMetadata || {}),
+      normalizeNullableString(patch.expectedLockedBy)
+    ]
+  );
+  return normalizeEventRow(result.rows[0]);
+}
+
 async function listOperationalAlertEvents(clinicId, options = {}, client = null) {
   const limit = Math.max(1, Math.min(500, Number(options.limit || 100)));
   const params = [clinicId];
@@ -216,5 +337,8 @@ async function listOperationalAlertEvents(clinicId, options = {}, client = null)
 module.exports = {
   insertOperationalAlertEvent,
   findOperationalAlertEventById,
-  listOperationalAlertEvents
+  listOperationalAlertEvents,
+  claimOperationalAlertEvents,
+  findClaimedOperationalAlertEvent,
+  updateOperationalAlertEventStatus
 };

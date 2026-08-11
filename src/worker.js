@@ -85,6 +85,16 @@ const { buildHandoffSummary } = require('./services/handoff-summary.service');
 const {
   processAvailableOrderCustomerNotifications
 } = require('./services/order-customer-notification-processor.service');
+const {
+  runOperationalAlertScheduledSweep
+} = require('./services/operational-alert-scheduled-evaluator.service');
+const {
+  processAvailableOperationalAlertEvents
+} = require('./services/operational-alert-event-processor.service');
+const {
+  recoverOperationalAlertDeliveries,
+  processAvailableOperationalAlertDeliveries
+} = require('./services/operational-alert-delivery-processor.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -19845,6 +19855,38 @@ async function pollOnce() {
       logWarn('order_customer_notification_sweep_failed', {
         workerId: WORKER_ID,
         error: String(error && error.message || 'unknown_error').slice(0, 500)
+      });
+    }
+    try {
+      await runOperationalAlertScheduledSweep({ workerId: WORKER_ID, limit: Math.min(BATCH_SIZE, 5) });
+    } catch (error) {
+      logWarn('operational_alert_scheduled_scan_failed', {
+        workerId: WORKER_ID,
+        resultCode: String(error && error.code || 'scheduled_sweep_failed').slice(0, 100)
+      });
+    }
+    try {
+      await processAvailableOperationalAlertEvents({ workerId: WORKER_ID, limit: BATCH_SIZE });
+    } catch (error) {
+      logWarn('operational_alert_event_sweep_failed', {
+        workerId: WORKER_ID,
+        resultCode: String(error && error.code || 'event_sweep_failed').slice(0, 100)
+      });
+    }
+    try {
+      await recoverOperationalAlertDeliveries();
+    } catch (error) {
+      logWarn('operational_alert_delivery_recovery_failed', {
+        workerId: WORKER_ID,
+        resultCode: String(error && error.code || 'delivery_recovery_failed').slice(0, 100)
+      });
+    }
+    try {
+      await processAvailableOperationalAlertDeliveries({ workerId: WORKER_ID, limit: BATCH_SIZE });
+    } catch (error) {
+      logWarn('operational_alert_delivery_sweep_failed', {
+        workerId: WORKER_ID,
+        resultCode: String(error && error.code || 'delivery_sweep_failed').slice(0, 100)
       });
     }
     const jobs = await claimJobs({ workerId: WORKER_ID, limit: BATCH_SIZE });

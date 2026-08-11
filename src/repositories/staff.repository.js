@@ -38,6 +38,19 @@ async function getDefaultAssignee(clinicId, client = null) {
   return result.rows[0] || null;
 }
 
+async function findStaffUserByIdAndClinicId(staffUserId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", name, email, role, "accountType", active
+     FROM staff_users
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+     LIMIT 1`,
+    [staffUserId, clinicId]
+  );
+  return result.rows[0] || null;
+}
+
 async function upsertDemoStaff(clinicId, name, client = null) {
   const safeName = String(name || 'Recepcion').trim();
   const existing = await dbQuery(
@@ -69,6 +82,7 @@ async function upsertDemoStaff(clinicId, name, client = null) {
 module.exports = {
   listActiveStaff,
   getDefaultAssignee,
+  findStaffUserByIdAndClinicId,
   upsertDemoStaff
 };
 

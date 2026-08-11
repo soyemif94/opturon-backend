@@ -214,8 +214,63 @@ async function listOperationalAlertInstances(clinicId, options = {}, client = nu
   return result.rows.map(normalizeInstanceRow);
 }
 
+async function updateOperationalAlertInstanceStatus(instanceId, clinicId, status, client = null) {
+  const safeStatus = normalizeString(status);
+  if (!['pending', 'completed', 'completed_with_errors', 'failed', 'skipped'].includes(safeStatus)) {
+    throw contractError('operational_alert_instance_status_invalid');
+  }
+  const result = await dbQuery(
+    client,
+    `UPDATE operational_alert_instances
+     SET status = $3,
+         "completedAt" = CASE
+           WHEN $3 = 'pending' THEN NULL
+           ELSE COALESCE("completedAt", NOW())
+         END,
+         "updatedAt" = NOW()
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+     RETURNING ${INSTANCE_COLUMNS}`,
+    [instanceId, clinicId, safeStatus]
+  );
+  return normalizeInstanceRow(result.rows[0]);
+}
+
+function deriveOperationalAlertInstanceStatus(deliveryStatuses) {
+  const statuses = Array.isArray(deliveryStatuses) ? deliveryStatuses : [];
+  if (statuses.length === 0) return 'skipped';
+  if (statuses.some((status) => ['pending', 'sending', 'failed_retryable'].includes(status))) return 'pending';
+
+  const successCount = statuses.filter((status) => ['sent', 'delivered', 'read'].includes(status)).length;
+  const skippedCount = statuses.filter((status) => status === 'skipped').length;
+  const failureCount = statuses.filter((status) => ['failed_permanent', 'unknown_delivery'].includes(status)).length;
+  if (skippedCount === statuses.length) return 'skipped';
+  if (successCount === statuses.length) return 'completed';
+  if (successCount > 0 && successCount + skippedCount + failureCount === statuses.length) {
+    return 'completed_with_errors';
+  }
+  return 'failed';
+}
+
+async function aggregateOperationalAlertInstanceStatus(instanceId, clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT status
+     FROM operational_alert_deliveries
+     WHERE "instanceId" = $1::uuid
+       AND "clinicId" = $2::uuid
+     ORDER BY id ASC`,
+    [instanceId, clinicId]
+  );
+  const status = deriveOperationalAlertInstanceStatus(result.rows.map((row) => row.status));
+  return updateOperationalAlertInstanceStatus(instanceId, clinicId, status, client);
+}
+
 module.exports = {
   insertOperationalAlertInstance,
   findOperationalAlertInstanceById,
-  listOperationalAlertInstances
+  listOperationalAlertInstances,
+  updateOperationalAlertInstanceStatus,
+  deriveOperationalAlertInstanceStatus,
+  aggregateOperationalAlertInstanceStatus
 };

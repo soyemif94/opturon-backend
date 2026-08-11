@@ -10,6 +10,11 @@ const {
 } = require('./operational-alert-validation');
 
 const TRIGGER_MODES = Object.freeze(['event_driven', 'scheduled']);
+const EVALUATION_OUTCOMES = Object.freeze({
+  MATCH: 'MATCH',
+  NO_MATCH: 'NO_MATCH',
+  INVALID_CONFIGURATION: 'INVALID_CONFIGURATION'
+});
 const DELIVERY_POLICY_KEYS = Object.freeze([
   'maxAgeSeconds',
   'maxAttempts',
@@ -91,6 +96,96 @@ function validateNoSchedule(value) {
   return ok({});
 }
 
+function normalizeFiniteNonNegativeNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function normalizeFixtureText(value, maxLength = 300) {
+  const safe = normalizeString(value);
+  return safe && safe.length <= maxLength ? safe : null;
+}
+
+function evaluateInventoryLotExpiring(config, event) {
+  const payload = cloneJsonObject(event && event.payload);
+  const lotId = normalizeFixtureText(payload && payload.lotId);
+  const productName = normalizeFixtureText(payload && payload.productName);
+  const expiresAt = payload && typeof payload.expiresAt === 'string'
+    && Number.isFinite(new Date(payload.expiresAt).getTime())
+    ? new Date(payload.expiresAt).toISOString()
+    : null;
+  const daysRemaining = normalizeFiniteNonNegativeNumber(payload && payload.daysRemaining);
+  const availableQuantity = normalizeFiniteNonNegativeNumber(payload && payload.availableQuantity);
+  const quantityBasis = normalizeString(payload && payload.quantityBasis);
+
+  if (
+    !lotId || !productName || !expiresAt || daysRemaining === null ||
+    availableQuantity === null || !['physical', 'commercial'].includes(quantityBasis)
+  ) {
+    return {
+      outcome: EVALUATION_OUTCOMES.INVALID_CONFIGURATION,
+      reason: 'inventory_lot_expiring_event_payload_invalid'
+    };
+  }
+  if (quantityBasis !== config.conditions.quantityBasis) {
+    return {
+      outcome: EVALUATION_OUTCOMES.INVALID_CONFIGURATION,
+      reason: 'inventory_lot_expiring_quantity_basis_mismatch'
+    };
+  }
+
+  const matches = daysRemaining <= config.conditions.daysBefore
+    && availableQuantity >= config.conditions.minimumAvailableQuantity;
+  return {
+    outcome: matches ? EVALUATION_OUTCOMES.MATCH : EVALUATION_OUTCOMES.NO_MATCH,
+    reason: matches ? 'inventory_lot_expiring_threshold_matched' : 'inventory_lot_expiring_threshold_not_matched',
+    evaluationWindowKey: normalizeFixtureText(payload.evaluationWindowKey, 300),
+    material: {
+      lotId,
+      productName,
+      expiresAt,
+      daysRemaining,
+      availableQuantity,
+      quantityBasis
+    }
+  };
+}
+
+function evaluateCashSessionClosed(config, event) {
+  const payload = cloneJsonObject(event && event.payload);
+  const sessionId = normalizeFixtureText(payload && payload.sessionId);
+  const closedAt = payload && typeof payload.closedAt === 'string'
+    && Number.isFinite(new Date(payload.closedAt).getTime())
+    ? new Date(payload.closedAt).toISOString()
+    : null;
+  const currency = normalizeFixtureText(payload && payload.currency, 20);
+  const differenceAmount = typeof (payload && payload.differenceAmount) === 'number'
+    && Number.isFinite(payload.differenceAmount)
+    ? payload.differenceAmount
+    : null;
+
+  if (!sessionId || !closedAt || !currency || differenceAmount === null) {
+    return {
+      outcome: EVALUATION_OUTCOMES.INVALID_CONFIGURATION,
+      reason: 'cash_session_closed_event_payload_invalid'
+    };
+  }
+
+  const absoluteDifference = Math.abs(differenceAmount);
+  const matches = absoluteDifference >= config.conditions.minimumAbsoluteDifference
+    && (!config.conditions.onlyWithDifference || absoluteDifference > 0);
+  return {
+    outcome: matches ? EVALUATION_OUTCOMES.MATCH : EVALUATION_OUTCOMES.NO_MATCH,
+    reason: matches ? 'cash_session_closed_threshold_matched' : 'cash_session_closed_threshold_not_matched',
+    evaluationWindowKey: normalizeFixtureText(payload.evaluationWindowKey, 300),
+    material: {
+      sessionId,
+      closedAt,
+      currency,
+      differenceAmount
+    }
+  };
+}
+
 const DEFINITIONS = Object.freeze([
   Object.freeze({
     eventType: 'inventory.lot_expiring',
@@ -98,6 +193,7 @@ const DEFINITIONS = Object.freeze([
     triggerModesAllowed: Object.freeze(['scheduled']),
     validateConditions: validateInventoryConditions,
     validateSchedule: validateInventorySchedule,
+    evaluate: evaluateInventoryLotExpiring,
     formatterKey: 'inventory_lot_expiring',
     formatterVersion: 1
   }),
@@ -107,6 +203,7 @@ const DEFINITIONS = Object.freeze([
     triggerModesAllowed: Object.freeze(['event_driven']),
     validateConditions: validateCashConditions,
     validateSchedule: validateNoSchedule,
+    evaluate: evaluateCashSessionClosed,
     formatterKey: 'cash_session_closed',
     formatterVersion: 1
   })
@@ -216,6 +313,30 @@ function assertRegisteredOperationalAlertEvent(eventType, eventVersion) {
   return definition;
 }
 
+function evaluateOperationalAlertCondition(rule, event) {
+  const configResult = validateOperationalAlertRuleConfig(rule);
+  if (!configResult.ok) {
+    return {
+      outcome: EVALUATION_OUTCOMES.INVALID_CONFIGURATION,
+      reason: configResult.reason
+    };
+  }
+
+  const definition = getOperationalAlertDefinition(configResult.value.eventType, configResult.value.eventVersion);
+  if (
+    !definition ||
+    !event ||
+    event.eventType !== definition.eventType ||
+    Number(event.eventVersion) !== definition.eventVersion
+  ) {
+    return {
+      outcome: EVALUATION_OUTCOMES.INVALID_CONFIGURATION,
+      reason: 'operational_alert_event_rule_contract_mismatch'
+    };
+  }
+  return definition.evaluate(configResult.value, event);
+}
+
 function listOperationalAlertDefinitions() {
   return DEFINITIONS.map((item) => ({
     eventType: item.eventType,
@@ -228,9 +349,11 @@ function listOperationalAlertDefinitions() {
 
 module.exports = {
   TRIGGER_MODES,
+  EVALUATION_OUTCOMES,
   getOperationalAlertDefinition,
   listOperationalAlertDefinitions,
   validateOperationalAlertRuleConfig,
   assertOperationalAlertRuleConfig,
-  assertRegisteredOperationalAlertEvent
+  assertRegisteredOperationalAlertEvent,
+  evaluateOperationalAlertCondition
 };

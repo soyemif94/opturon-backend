@@ -272,7 +272,11 @@ async function main() {
   assert.doesNotMatch(migration, /settings|whatsapp|graph\s*api/i);
 
   const workerSource = read('src/worker.js');
-  assert.doesNotMatch(workerSource, /operational_alert|operational-alert/i);
+  assert.match(workerSource, /runOperationalAlertScheduledSweep/);
+  assert.match(workerSource, /processAvailableOperationalAlertEvents/);
+  assert.match(workerSource, /recoverOperationalAlertDeliveries/);
+  assert.match(workerSource, /processAvailableOperationalAlertDeliveries/);
+  assert.doesNotMatch(workerSource, /inventory_lots|cash_sessions/i);
 
   const {
     validateOperationalAlertEvent
