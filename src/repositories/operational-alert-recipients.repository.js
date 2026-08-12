@@ -3,7 +3,11 @@ const {
   assertOperationalAlertRecipient,
   hasRecipientMaterialChange
 } = require('../operational-alerts/operational-alert-recipient-contract');
-const { normalizeDateTime, contractError } = require('../operational-alerts/operational-alert-validation');
+const {
+  normalizeDateTime,
+  isPositiveInteger,
+  contractError
+} = require('../operational-alerts/operational-alert-validation');
 
 const RECIPIENT_COLUMNS = `
   id,
@@ -52,6 +56,19 @@ function normalizeRecipientRow(row) {
 async function runInTransaction(client, work) {
   if (client && typeof client.query === 'function') return work(client);
   return withTransaction(work);
+}
+
+function assertExpectedRecipientVersion(current, options = {}) {
+  if (options.expectedVersion === undefined || options.expectedVersion === null) return;
+  if (!isPositiveInteger(options.expectedVersion)) {
+    throw contractError('operational_alert_recipient_expected_version_invalid');
+  }
+  if (Number(current.version) !== Number(options.expectedVersion)) {
+    throw contractError('operational_alert_recipient_version_conflict', {
+      expectedVersion: Number(options.expectedVersion),
+      currentVersion: Number(current.version)
+    });
+  }
 }
 
 async function createOperationalAlertRecipient(input, client = null) {
@@ -171,13 +188,16 @@ function mergeRecipientPatch(current, patch) {
   return next;
 }
 
-async function updateOperationalAlertRecipient(recipientId, clinicId, patch, client = null) {
+async function updateOperationalAlertRecipient(recipientId, clinicId, patch, client = null, options = {}) {
   return runInTransaction(client, async (tx) => {
     const current = await findOperationalAlertRecipientById(recipientId, clinicId, tx, { forUpdate: true });
     if (!current) return null;
+    assertExpectedRecipientVersion(current, options);
 
     const candidate = assertOperationalAlertRecipient(mergeRecipientPatch(current, patch));
-    const nextVersion = current.version + (hasRecipientMaterialChange(current, candidate) ? 1 : 0);
+    const nextVersion = current.version + (
+      hasRecipientMaterialChange(current, candidate) || options.forceVersionIncrement === true ? 1 : 0
+    );
     const result = await tx.query(
       `UPDATE operational_alert_recipients
        SET "staffUserId" = $3::uuid,
@@ -220,7 +240,13 @@ async function updateOperationalAlertRecipient(recipientId, clinicId, patch, cli
 async function disableOperationalAlertRecipient(recipientId, clinicId, options = {}, client = null) {
   const disabledAt = normalizeDateTime(options.disabledAt || new Date());
   if (!disabledAt) throw contractError('operational_alert_recipient_disabled_at_invalid');
-  return updateOperationalAlertRecipient(recipientId, clinicId, { active: false, disabledAt }, client);
+  return updateOperationalAlertRecipient(
+    recipientId,
+    clinicId,
+    { active: false, disabledAt },
+    client,
+    options
+  );
 }
 
 module.exports = {

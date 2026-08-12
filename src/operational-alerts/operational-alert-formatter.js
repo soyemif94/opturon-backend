@@ -40,9 +40,27 @@ function formatCashSessionClosed(snapshot) {
 }
 
 const FORMATTERS = Object.freeze({
-  'inventory_lot_expiring@1': formatInventoryLotExpiring,
-  'cash_session_closed@1': formatCashSessionClosed
+  'inventory_lot_expiring@1': Object.freeze({
+    format: formatInventoryLotExpiring,
+    bodyParameterCount: 5
+  }),
+  'cash_session_closed@1': Object.freeze({
+    format: formatCashSessionClosed,
+    bodyParameterCount: 4
+  })
 });
+
+function getOperationalAlertFormatterDescriptor(formatterKey, formatterVersion) {
+  const key = normalizeString(formatterKey);
+  const version = Number(formatterVersion);
+  const descriptor = FORMATTERS[`${key}@${version}`];
+  if (!descriptor) return null;
+  return {
+    formatterKey: key,
+    formatterVersion: version,
+    bodyParameterCount: descriptor.bodyParameterCount
+  };
+}
 
 function formatOperationalAlertMessage(instanceSnapshot) {
   if (!isPlainObject(instanceSnapshot) || !isPlainObject(instanceSnapshot.rule)) {
@@ -65,7 +83,7 @@ function formatOperationalAlertMessage(instanceSnapshot) {
   if (!templateKey || !language) {
     return { ok: false, reason: 'template_not_configured' };
   }
-  const rendered = formatter(instanceSnapshot);
+  const rendered = formatter.format(instanceSnapshot);
   if (!rendered) return { ok: false, reason: 'operational_alert_formatter_material_invalid' };
 
   return {
@@ -157,6 +175,7 @@ function buildOperationalAlertTemplateSend(messageSnapshot, recipientDigits) {
 
 module.exports = {
   OPERATIONAL_ALERT_TEMPLATE_CONTRACT,
+  getOperationalAlertFormatterDescriptor,
   formatOperationalAlertMessage,
   validateOperationalAlertTemplateContract,
   buildOperationalAlertMessageSnapshot,

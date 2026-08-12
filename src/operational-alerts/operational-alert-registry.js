@@ -10,6 +10,9 @@ const {
 } = require('./operational-alert-validation');
 
 const TRIGGER_MODES = Object.freeze(['event_driven', 'scheduled']);
+const PRODUCER_STATUSES = Object.freeze({
+  CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE: 'CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE'
+});
 const EVALUATION_OUTCOMES = Object.freeze({
   MATCH: 'MATCH',
   NO_MATCH: 'NO_MATCH',
@@ -190,7 +193,35 @@ const DEFINITIONS = Object.freeze([
   Object.freeze({
     eventType: 'inventory.lot_expiring',
     eventVersion: 1,
+    displayName: 'Inventory lots nearing expiration',
+    displayKey: 'operationalAlerts.eventTypes.inventoryLotExpiring',
     triggerModesAllowed: Object.freeze(['scheduled']),
+    conditionsContract: Object.freeze({
+      type: 'object',
+      additionalProperties: false,
+      required: Object.freeze(['daysBefore']),
+      properties: Object.freeze({
+        daysBefore: Object.freeze({ type: 'integer', minimum: 1, maximum: 365 }),
+        minimumAvailableQuantity: Object.freeze({ type: 'number', minimum: 0, default: 1 }),
+        quantityBasis: Object.freeze({ type: 'string', enum: Object.freeze(['physical', 'commercial']), default: 'physical' }),
+        repeatPolicy: Object.freeze({ type: 'string', enum: Object.freeze(['once_per_threshold', 'daily']), default: 'once_per_threshold' })
+      })
+    }),
+    scheduleContract: Object.freeze({
+      type: 'object',
+      additionalProperties: false,
+      required: Object.freeze(['frequency', 'sendAt']),
+      properties: Object.freeze({
+        frequency: Object.freeze({ type: 'string', enum: Object.freeze(['daily']) }),
+        sendAt: Object.freeze({ type: 'string', pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$' }),
+        timezone: Object.freeze({ type: 'string', enum: Object.freeze(['tenant']), default: 'tenant' })
+      })
+    }),
+    eventPayloadContract: Object.freeze({
+      required: Object.freeze(['lotId', 'productName', 'expiresAt', 'daysRemaining', 'availableQuantity', 'quantityBasis'])
+    }),
+    producerStatus: PRODUCER_STATUSES.CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE,
+    producerAvailable: false,
     validateConditions: validateInventoryConditions,
     validateSchedule: validateInventorySchedule,
     evaluate: evaluateInventoryLotExpiring,
@@ -200,7 +231,29 @@ const DEFINITIONS = Object.freeze([
   Object.freeze({
     eventType: 'cash.session_closed',
     eventVersion: 1,
+    displayName: 'Cash session closed',
+    displayKey: 'operationalAlerts.eventTypes.cashSessionClosed',
     triggerModesAllowed: Object.freeze(['event_driven']),
+    conditionsContract: Object.freeze({
+      type: 'object',
+      additionalProperties: false,
+      required: Object.freeze([]),
+      properties: Object.freeze({
+        minimumAbsoluteDifference: Object.freeze({ type: 'number', minimum: 0, default: 0 }),
+        onlyWithDifference: Object.freeze({ type: 'boolean', default: false })
+      })
+    }),
+    scheduleContract: Object.freeze({
+      type: 'object',
+      additionalProperties: false,
+      required: Object.freeze([]),
+      properties: Object.freeze({})
+    }),
+    eventPayloadContract: Object.freeze({
+      required: Object.freeze(['sessionId', 'closedAt', 'currency', 'differenceAmount'])
+    }),
+    producerStatus: PRODUCER_STATUSES.CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE,
+    producerAvailable: false,
     validateConditions: validateCashConditions,
     validateSchedule: validateNoSchedule,
     evaluate: evaluateCashSessionClosed,
@@ -341,14 +394,29 @@ function listOperationalAlertDefinitions() {
   return DEFINITIONS.map((item) => ({
     eventType: item.eventType,
     eventVersion: item.eventVersion,
+    displayName: item.displayName,
+    displayKey: item.displayKey,
     triggerModesAllowed: [...item.triggerModesAllowed],
+    conditionsContract: JSON.parse(JSON.stringify(item.conditionsContract)),
+    scheduleContract: JSON.parse(JSON.stringify(item.scheduleContract)),
+    eventPayloadContract: JSON.parse(JSON.stringify(item.eventPayloadContract)),
     formatterKey: item.formatterKey,
-    formatterVersion: item.formatterVersion
+    formatterVersion: item.formatterVersion,
+    availability: {
+      status: item.producerStatus,
+      configurable: true,
+      readyForProduction: item.producerAvailable === true
+    },
+    producer: {
+      status: item.producerStatus,
+      active: item.producerAvailable === true
+    }
   }));
 }
 
 module.exports = {
   TRIGGER_MODES,
+  PRODUCER_STATUSES,
   EVALUATION_OUTCOMES,
   getOperationalAlertDefinition,
   listOperationalAlertDefinitions,

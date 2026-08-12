@@ -5,6 +5,7 @@ const {
   normalizeNullableString,
   normalizeDateTime,
   isUuid,
+  isPositiveInteger,
   contractError
 } = require('../operational-alerts/operational-alert-validation');
 
@@ -96,6 +97,19 @@ function normalizeRuleIdentity(input) {
 async function runInTransaction(client, work) {
   if (client && typeof client.query === 'function') return work(client);
   return withTransaction(work);
+}
+
+function assertExpectedRuleVersion(current, options = {}) {
+  if (options.expectedConfigVersion === undefined || options.expectedConfigVersion === null) return;
+  if (!isPositiveInteger(options.expectedConfigVersion)) {
+    throw contractError('operational_alert_rule_expected_config_version_invalid');
+  }
+  if (Number(current.configVersion) !== Number(options.expectedConfigVersion)) {
+    throw contractError('operational_alert_rule_version_conflict', {
+      expectedConfigVersion: Number(options.expectedConfigVersion),
+      currentConfigVersion: Number(current.configVersion)
+    });
+  }
 }
 
 async function createOperationalAlertRule(input, client = null) {
@@ -299,10 +313,11 @@ async function finishScheduledOperationalAlertRule(ruleId, clinicId, {
   return normalizeRuleRow(result.rows[0]);
 }
 
-async function updateOperationalAlertRuleConfig(ruleId, clinicId, input, client = null) {
+async function updateOperationalAlertRuleConfig(ruleId, clinicId, input, client = null, options = {}) {
   return runInTransaction(client, async (tx) => {
     const current = await findOperationalAlertRuleById(ruleId, clinicId, tx, { forUpdate: true });
     if (!current) return null;
+    assertExpectedRuleVersion(current, options);
     const identity = normalizeRuleIdentity({ ...current, ...input, clinicId });
     const config = assertOperationalAlertRuleConfig({ ...current, ...input });
     const result = await tx.query(
@@ -321,7 +336,8 @@ async function updateOperationalAlertRuleConfig(ruleId, clinicId, input, client 
            "formatterVersion" = $14,
            "nextEvaluationAt" = $15::timestamptz,
            "configVersion" = "configVersion" + CASE WHEN
-             "eventType" IS DISTINCT FROM $4
+             $16::boolean
+             OR "eventType" IS DISTINCT FROM $4
              OR "eventVersion" IS DISTINCT FROM $5
              OR "triggerMode" IS DISTINCT FROM $6
              OR conditions IS DISTINCT FROM $7::jsonb
@@ -352,28 +368,53 @@ async function updateOperationalAlertRuleConfig(ruleId, clinicId, input, client 
         identity.templateLanguage,
         config.formatterKey,
         config.formatterVersion,
-        identity.nextEvaluationAt
+        identity.nextEvaluationAt,
+        options.forceVersionIncrement === true
       ]
     );
     return normalizeRuleRow(result.rows[0]);
   });
 }
 
-async function disableOperationalAlertRule(ruleId, clinicId, client = null) {
-  const result = await dbQuery(
-    client,
-    `UPDATE operational_alert_rules
-     SET enabled = FALSE,
-         "schedulerLockedAt" = NULL,
-         "schedulerLockedBy" = NULL,
-         "schedulerLeaseExpiresAt" = NULL,
-         "updatedAt" = NOW()
-     WHERE id = $1::uuid
-       AND "clinicId" = $2::uuid
-     RETURNING ${RULE_COLUMNS}`,
-    [ruleId, clinicId]
-  );
-  return normalizeRuleRow(result.rows[0]);
+async function disableOperationalAlertRule(ruleId, clinicId, client = null, options = {}) {
+  return runInTransaction(client, async (tx) => {
+    const current = await findOperationalAlertRuleById(ruleId, clinicId, tx, { forUpdate: true });
+    if (!current) return null;
+    assertExpectedRuleVersion(current, options);
+    const result = await tx.query(
+      `UPDATE operational_alert_rules
+       SET enabled = FALSE,
+           "schedulerLockedAt" = NULL,
+           "schedulerLockedBy" = NULL,
+           "schedulerLeaseExpiresAt" = NULL,
+           "updatedAt" = NOW()
+       WHERE id = $1::uuid
+         AND "clinicId" = $2::uuid
+       RETURNING ${RULE_COLUMNS}`,
+      [ruleId, clinicId]
+    );
+    return normalizeRuleRow(result.rows[0]);
+  });
+}
+
+async function enableOperationalAlertRule(ruleId, clinicId, client = null, options = {}) {
+  return runInTransaction(client, async (tx) => {
+    const current = await findOperationalAlertRuleById(ruleId, clinicId, tx, { forUpdate: true });
+    if (!current) return null;
+    assertExpectedRuleVersion(current, options);
+    const result = await tx.query(
+      `UPDATE operational_alert_rules
+       SET enabled = TRUE,
+           "enabledAt" = COALESCE("enabledAt", NOW()),
+           "updatedAt" = NOW()
+       WHERE id = $1::uuid
+         AND "clinicId" = $2::uuid
+         AND "archivedAt" IS NULL
+       RETURNING ${RULE_COLUMNS}`,
+      [ruleId, clinicId]
+    );
+    return normalizeRuleRow(result.rows[0]);
+  });
 }
 
 async function listOperationalAlertRuleRecipients(ruleId, clinicId, client = null) {
@@ -389,7 +430,7 @@ async function listOperationalAlertRuleRecipients(ruleId, clinicId, client = nul
   return result.rows;
 }
 
-async function replaceOperationalAlertRuleRecipients(ruleId, clinicId, recipientIds, client = null) {
+async function replaceOperationalAlertRuleRecipients(ruleId, clinicId, recipientIds, client = null, options = {}) {
   if (!Array.isArray(recipientIds)) throw contractError('operational_alert_rule_recipient_ids_invalid');
   const normalizedIds = [];
   const seen = new Set();
@@ -405,6 +446,19 @@ async function replaceOperationalAlertRuleRecipients(ruleId, clinicId, recipient
   return runInTransaction(client, async (tx) => {
     const rule = await findOperationalAlertRuleById(ruleId, clinicId, tx, { forUpdate: true });
     if (!rule) return null;
+    assertExpectedRuleVersion(rule, options);
+    if (options.validateRecipientScope === true && normalizedIds.length > 0) {
+      const validRecipients = await tx.query(
+        `SELECT id
+         FROM operational_alert_recipients
+         WHERE "clinicId" = $1::uuid
+           AND id = ANY($2::uuid[])`,
+        [clinicId, normalizedIds]
+      );
+      if (validRecipients.rows.length !== normalizedIds.length) {
+        throw contractError('operational_alert_rule_recipient_scope_invalid');
+      }
+    }
     const current = await listOperationalAlertRuleRecipients(ruleId, clinicId, tx);
     const currentIds = current.map((item) => String(item.recipientId));
     const changed = currentIds.length !== normalizedIds.length || currentIds.some((id, index) => id !== normalizedIds[index]);
@@ -445,6 +499,7 @@ module.exports = {
   claimScheduledOperationalAlertRules,
   finishScheduledOperationalAlertRule,
   updateOperationalAlertRuleConfig,
+  enableOperationalAlertRule,
   disableOperationalAlertRule,
   listOperationalAlertRuleRecipients,
   replaceOperationalAlertRuleRecipients

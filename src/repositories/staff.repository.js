@@ -51,6 +51,18 @@ async function findStaffUserByIdAndClinicId(staffUserId, clinicId, client = null
   return result.rows[0] || null;
 }
 
+async function listStaffUsersByClinicId(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", name, email, role, "accountType", active
+     FROM staff_users
+     WHERE "clinicId" = $1::uuid
+     ORDER BY active DESC, name ASC, id ASC`,
+    [clinicId]
+  );
+  return result.rows;
+}
+
 async function upsertDemoStaff(clinicId, name, client = null) {
   const safeName = String(name || 'Recepcion').trim();
   const existing = await dbQuery(
@@ -83,6 +95,7 @@ module.exports = {
   listActiveStaff,
   getDefaultAssignee,
   findStaffUserByIdAndClinicId,
+  listStaffUsersByClinicId,
   upsertDemoStaff
 };
 

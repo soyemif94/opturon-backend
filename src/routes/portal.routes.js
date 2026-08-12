@@ -172,10 +172,35 @@ const {
   deletePortalAgenda,
   patchPortalTenantPolicy
 } = require('../controllers/portal.controller');
+const {
+  getOperationalAlertEventTypes,
+  getOperationalAlertSettings,
+  getOperationalAlertRecipients,
+  getOperationalAlertRecipient,
+  postOperationalAlertRecipient,
+  patchOperationalAlertRecipient,
+  postOperationalAlertRecipientDisable,
+  postOperationalAlertRecipientConsent,
+  getOperationalAlertRules,
+  getOperationalAlertRule,
+  postOperationalAlertRule,
+  patchOperationalAlertRule,
+  putOperationalAlertRuleRecipients,
+  getOperationalAlertRuleReadiness,
+  postOperationalAlertRuleEnable,
+  postOperationalAlertRuleDisable,
+  postOperationalAlertRulePreview,
+  getOperationalAlertHistory,
+  getOperationalAlertHistoryDetail
+} = require('../controllers/portal-operational-alerts.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
 const { requireSensitiveInventoryRole, requireInventoryReceiptRole } = require('../middlewares/portal-inventory-authorization.middleware');
+const {
+  requireOperationalAlertsReadPermission,
+  requireOperationalAlertsWritePermission
+} = require('../middlewares/portal-operational-alerts-authorization.middleware');
 
 const router = express.Router();
 
@@ -193,6 +218,13 @@ const cashCapability = requirePortalCapability('cash_management');
 const inventoryCapability = requirePortalCapability('inventory');
 const sensitiveInventoryRole = requireSensitiveInventoryRole();
 const inventoryReceiptRole = requireInventoryReceiptRole();
+const operationalAlertsReadPermission = requireOperationalAlertsReadPermission();
+const operationalAlertsWritePermission = requireOperationalAlertsWritePermission();
+function operationalAlertsNoStore(_req, res, next) {
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Pragma', 'no-cache');
+  next();
+}
 const catalogImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -329,6 +361,7 @@ function handleLoyaltyRewardImageUpload(req, res, next) {
   });
 }
 
+router.use('/tenants/:tenantId/operational-alerts', operationalAlertsNoStore);
 router.use('/tenants/:tenantId', applyPortalActiveTenant);
 
 router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
@@ -477,6 +510,25 @@ router.get('/tenants/:tenantId/bot-settings', requirePortalInternalAuth, getPort
 router.patch('/tenants/:tenantId/bot-settings', requirePortalInternalAuth, patchPortalBotSettingsController);
 router.get('/tenants/:tenantId/bot/transfer-config', requirePortalInternalAuth, getPortalBotTransferConfigController);
 router.post('/tenants/:tenantId/bot/transfer-config', requirePortalInternalAuth, postPortalBotTransferConfigController);
+router.get('/tenants/:tenantId/operational-alerts/event-types', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertEventTypes);
+router.get('/tenants/:tenantId/operational-alerts/settings', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertSettings);
+router.get('/tenants/:tenantId/operational-alerts/recipients', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertRecipients);
+router.post('/tenants/:tenantId/operational-alerts/recipients', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRecipient);
+router.get('/tenants/:tenantId/operational-alerts/recipients/:recipientId', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertRecipient);
+router.patch('/tenants/:tenantId/operational-alerts/recipients/:recipientId', requirePortalInternalAuth, operationalAlertsWritePermission, patchOperationalAlertRecipient);
+router.post('/tenants/:tenantId/operational-alerts/recipients/:recipientId/disable', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRecipientDisable);
+router.post('/tenants/:tenantId/operational-alerts/recipients/:recipientId/consent', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRecipientConsent);
+router.get('/tenants/:tenantId/operational-alerts/rules', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertRules);
+router.post('/tenants/:tenantId/operational-alerts/rules', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRule);
+router.get('/tenants/:tenantId/operational-alerts/rules/:ruleId', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertRule);
+router.patch('/tenants/:tenantId/operational-alerts/rules/:ruleId', requirePortalInternalAuth, operationalAlertsWritePermission, patchOperationalAlertRule);
+router.put('/tenants/:tenantId/operational-alerts/rules/:ruleId/recipients', requirePortalInternalAuth, operationalAlertsWritePermission, putOperationalAlertRuleRecipients);
+router.get('/tenants/:tenantId/operational-alerts/rules/:ruleId/readiness', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertRuleReadiness);
+router.post('/tenants/:tenantId/operational-alerts/rules/:ruleId/enable', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRuleEnable);
+router.post('/tenants/:tenantId/operational-alerts/rules/:ruleId/disable', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRuleDisable);
+router.post('/tenants/:tenantId/operational-alerts/rules/:ruleId/preview', requirePortalInternalAuth, operationalAlertsReadPermission, postOperationalAlertRulePreview);
+router.get('/tenants/:tenantId/operational-alerts/history', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertHistory);
+router.get('/tenants/:tenantId/operational-alerts/history/:instanceId', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertHistoryDetail);
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/refresh', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupRefresh);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/cancel', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupCancel);
