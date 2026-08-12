@@ -1,4 +1,4 @@
-const BLUEPRINTS = [
+const CREATEABLE_BLUEPRINTS = [
   {
     key: 'bienvenida',
     title: 'Bienvenida',
@@ -86,16 +86,63 @@ const BLUEPRINTS = [
   }
 ];
 
+const SYNC_ONLY_BLUEPRINTS = [
+  {
+    key: 'inventory_lot_expiring_v1',
+    metaTemplateName: 'inventory_lot_expiring_v1',
+    title: 'Inventory lot expiring',
+    description: 'Operational inventory expiry digest synchronized from Meta.',
+    category: 'UTILITY',
+    defaultLanguage: 'es_AR',
+    version: 1,
+    syncOnly: true,
+    formatter: {
+      key: 'inventory_lot_expiring',
+      version: 1
+    },
+    operationalAlertContract: 'operational_alert_body_parameters_v1',
+    bodyParameterCount: 5,
+    variables: ['title', 'summary', 'items', 'overflow', 'footer'],
+    components: [
+      {
+        type: 'BODY',
+        text: '{{1}}\n{{2}}\n{{3}}\n{{4}}\n{{5}}'
+      }
+    ]
+  }
+];
+
+function cloneBlueprint(item) {
+  return JSON.parse(JSON.stringify(item));
+}
+
 function listTemplateBlueprints() {
-  return BLUEPRINTS.map((item) => ({ ...item }));
+  return CREATEABLE_BLUEPRINTS.map(cloneBlueprint);
 }
 
 function findTemplateBlueprintByKey(templateKey) {
   const safeKey = String(templateKey || '').trim().toLowerCase();
-  return BLUEPRINTS.find((item) => item.key === safeKey) || null;
+  const blueprint = CREATEABLE_BLUEPRINTS.find((item) => item.key === safeKey);
+  return blueprint ? cloneBlueprint(blueprint) : null;
+}
+
+function listSyncTemplateBlueprints() {
+  return [...CREATEABLE_BLUEPRINTS, ...SYNC_ONLY_BLUEPRINTS].map(cloneBlueprint);
+}
+
+function findSyncTemplateBlueprintByProviderIdentity(metaTemplateName, language) {
+  const exactName = String(metaTemplateName || '').trim();
+  const exactLanguage = String(language || '').trim();
+  const blueprint = SYNC_ONLY_BLUEPRINTS.find((item) => (
+    item.metaTemplateName === exactName
+    && item.defaultLanguage === exactLanguage
+  ));
+  return blueprint ? cloneBlueprint(blueprint) : null;
 }
 
 module.exports = {
   listTemplateBlueprints,
-  findTemplateBlueprintByKey
+  findTemplateBlueprintByKey,
+  listSyncTemplateBlueprints,
+  findSyncTemplateBlueprintByProviderIdentity
 };

@@ -7,7 +7,7 @@ const {
   getClinicBusinessProfileById,
   findChannelByIdAndClinicId
 } = require('../repositories/tenant.repository');
-const { findWhatsAppTemplateByClinicAndKey } = require('../repositories/whatsapp-templates.repository');
+const { findWhatsAppTemplateByScope } = require('../repositories/whatsapp-templates.repository');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('../whatsapp/normalize-phone');
 const {
@@ -38,7 +38,7 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   findStaff: findStaffUserByIdAndClinicId,
   getClinicById: getClinicBusinessProfileById,
   findChannel: findChannelByIdAndClinicId,
-  findTemplate: findWhatsAppTemplateByClinicAndKey,
+  findTemplate: findWhatsAppTemplateByScope,
   sendChannelScopedMessage
 });
 
@@ -130,12 +130,14 @@ async function processOperationalAlertDelivery(claimedDelivery, options = {}) {
     const channel = ruleSnapshot.channelId
       ? await dependencies.findChannel(ruleSnapshot.channelId, delivery.clinicId)
       : null;
-    const template = ruleSnapshot.templateKey && ruleSnapshot.templateLanguage
-      ? await dependencies.findTemplate(
-          delivery.clinicId,
-          ruleSnapshot.templateKey,
-          ruleSnapshot.templateLanguage
-        )
+    const template = ruleSnapshot.templateKey && ruleSnapshot.templateLanguage && channel && channel.wabaId
+      ? await dependencies.findTemplate({
+          clinicId: delivery.clinicId,
+          channelId: ruleSnapshot.channelId,
+          wabaId: channel.wabaId,
+          templateKey: ruleSnapshot.templateKey,
+          language: ruleSnapshot.templateLanguage
+        })
       : null;
     const authority = evaluateInternalOperationalAlertAuthority({
       clinic,

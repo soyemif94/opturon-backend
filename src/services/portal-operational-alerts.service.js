@@ -10,7 +10,11 @@ const {
   findStaffUserByIdAndClinicId,
   listStaffUsersByClinicId
 } = require('../repositories/staff.repository');
-const { findWhatsAppTemplateByClinicAndKey } = require('../repositories/whatsapp-templates.repository');
+const { findWhatsAppTemplateByScope } = require('../repositories/whatsapp-templates.repository');
+const {
+  normalizeWhatsAppTemplateCategory,
+  isWhatsAppTemplateStatusUsable
+} = require('../whatsapp/whatsapp-template-domain');
 const { createPortalUserAuditEvent } = require('../repositories/portal-user-audit.repository');
 const {
   EVALUATION_OUTCOMES,
@@ -284,10 +288,10 @@ function buildRuleReadiness(context) {
       && normalizeString(template.language) === normalizeString(rule.templateLanguage);
     if (!templateScopeMatches) {
       addBlocker(blockers, 'TEMPLATE_CONTRACT_MISMATCH', 'template channel or WABA scope does not match', rule.id);
-    } else if (normalizeString(template.status).toLowerCase() !== 'approved') {
+    } else if (!isWhatsAppTemplateStatusUsable(template.status)) {
       addBlocker(blockers, 'TEMPLATE_NOT_APPROVED', 'template status is not approved', rule.id);
     } else if (
-      normalizeString(template.category).toUpperCase() !== 'UTILITY' ||
+      normalizeWhatsAppTemplateCategory(template.category) !== 'UTILITY' ||
       !normalizeString(template.metaTemplateName) ||
       !isPlainObject(template.metadata) ||
       template.metadata.operationalAlertContract !== OPERATIONAL_ALERT_TEMPLATE_CONTRACT ||
@@ -323,7 +327,7 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   findChannel: findChannelById,
   findStaff: findStaffUserByIdAndClinicId,
   listStaff: listStaffUsersByClinicId,
-  findTemplate: findWhatsAppTemplateByClinicAndKey,
+  findTemplate: findWhatsAppTemplateByScope,
   createAudit: createPortalUserAuditEvent,
   createRecipient: recipientRepository.createOperationalAlertRecipient,
   findRecipient: recipientRepository.findOperationalAlertRecipientById,
@@ -399,8 +403,14 @@ function createPortalOperationalAlertsService(overrides = {}) {
     }
     const staff = await dependencies.listStaff(clinic.id, client);
     const channel = rule.channelId ? await dependencies.findChannel(rule.channelId, client) : null;
-    const template = rule.templateKey && rule.templateLanguage
-      ? await dependencies.findTemplate(clinic.id, rule.templateKey, rule.templateLanguage, client)
+    const template = rule.templateKey && rule.templateLanguage && channel && channel.wabaId
+      ? await dependencies.findTemplate({
+          clinicId: clinic.id,
+          channelId: rule.channelId,
+          wabaId: channel.wabaId,
+          templateKey: rule.templateKey,
+          language: rule.templateLanguage
+        }, client)
       : null;
     return {
       clinic,

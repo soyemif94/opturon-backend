@@ -3,12 +3,17 @@ const { resolvePortalTenantContext } = require('./portal-context.service');
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const {
   listWhatsAppTemplatesByClinicId,
-  findWhatsAppTemplateByClinicAndKey,
-  findWhatsAppTemplateByClinicAndMetaName,
+  findWhatsAppTemplateByScope,
+  findWhatsAppTemplateByProviderIdentity,
   upsertWhatsAppTemplate,
   withWhatsAppTemplatesTransaction
 } = require('../repositories/whatsapp-templates.repository');
 const { listTemplateBlueprints, findTemplateBlueprintByKey } = require('../whatsapp/template-blueprints');
+const {
+  normalizeWhatsAppTemplateCategory,
+  normalizeWhatsAppTemplateStatus,
+  normalizeWhatsAppTemplateLanguage
+} = require('../whatsapp/whatsapp-template-domain');
 const graphClient = require('../whatsapp/whatsapp-graph.client');
 const { logInfo, logWarn } = require('../utils/logger');
 
@@ -24,9 +29,10 @@ function normalizeLanguage(value, fallback = DEFAULT_TEMPLATE_LANGUAGE) {
 }
 
 function normalizeMetaTemplateStatus(value, fallback = 'pending') {
-  const safe = normalizeString(value).toLowerCase();
-  if (!safe) return fallback;
-  return safe;
+  if (!normalizeString(value)) {
+    return normalizeWhatsAppTemplateStatus(fallback);
+  }
+  return normalizeWhatsAppTemplateStatus(value);
 }
 
 function summarizeTemplate(record) {
@@ -100,9 +106,9 @@ function normalizeMetaTemplateRecord(item) {
   return {
     id: item.id ? String(item.id) : null,
     name: item.name ? String(item.name) : null,
-    category: item.category ? String(item.category).toUpperCase() : null,
-    language: item.language || (item.languages && item.languages[0]) || null,
-    status: normalizeMetaTemplateStatus(item.status, 'pending'),
+    category: normalizeWhatsAppTemplateCategory(item.category),
+    language: normalizeWhatsAppTemplateLanguage(item.language || (item.languages && item.languages[0])),
+    status: normalizeMetaTemplateStatus(item.status, 'unknown'),
     rejectionReason:
       item.rejected_reason ||
       item.rejection_reason ||
@@ -275,7 +281,13 @@ async function createPortalWhatsAppTemplateFromBlueprint(tenantId, payload) {
     return { ok: false, tenantId: context.tenantId, reason: 'invalid_template_category' };
   }
 
-  const existing = await findWhatsAppTemplateByClinicAndKey(context.clinic.id, templateKey, language);
+  const existing = await findWhatsAppTemplateByScope({
+    clinicId: context.clinic.id,
+    channelId: context.channel.id,
+    wabaId: context.channel.wabaId,
+    templateKey,
+    language
+  });
   if (existing && ['approved', 'pending', 'in_appeal', 'paused'].includes(normalizeMetaTemplateStatus(existing.status, 'draft'))) {
     return {
       ok: true,
@@ -416,8 +428,18 @@ async function syncPortalWhatsAppTemplates(tenantId) {
   const persisted = [];
   await withWhatsAppTemplatesTransaction(async (client) => {
     for (const item of synced.items) {
+      const language = normalizeWhatsAppTemplateLanguage(item.language);
+      if (!item.name || !language) {
+        continue;
+      }
       const existing =
-        (item.name ? await findWhatsAppTemplateByClinicAndMetaName(context.clinic.id, item.name, client) : null) || null;
+        await findWhatsAppTemplateByProviderIdentity({
+          clinicId: context.clinic.id,
+          channelId: context.channel.id,
+          wabaId: context.channel.wabaId,
+          metaTemplateName: item.name,
+          language
+        }, client);
       const blueprint = item.name ? blueprintByName.get(item.name) || null : null;
       const templateKey = existing?.templateKey || blueprint?.key || null;
       if (!templateKey || !item.name) {
@@ -433,9 +455,9 @@ async function syncPortalWhatsAppTemplates(tenantId) {
           templateKey,
           metaTemplateId: item.id || existing?.metaTemplateId || null,
           metaTemplateName: item.name,
-          language: normalizeLanguage(item.language, blueprint?.defaultLanguage || existing?.language || DEFAULT_TEMPLATE_LANGUAGE),
-          category: String(item.category || blueprint?.category || existing?.category || 'UTILITY').toUpperCase(),
-          status: normalizeMetaTemplateStatus(item.status, existing?.status || 'pending'),
+          language,
+          category: normalizeWhatsAppTemplateCategory(item.category),
+          status: normalizeMetaTemplateStatus(item.status, 'unknown'),
           rejectionReason: item.rejectionReason || null,
           definition: existing?.definition || (blueprint ? { blueprint: summarizeBlueprint(blueprint), source: 'opturon_blueprint' } : { source: 'meta_sync' }),
           lastSyncedAt: new Date(),

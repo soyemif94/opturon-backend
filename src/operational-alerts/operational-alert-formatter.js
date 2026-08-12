@@ -174,6 +174,9 @@ function formatOperationalAlertMessage(instanceSnapshot) {
 
 function extractTemplateComponents(definition) {
   if (!isPlainObject(definition)) return [];
+  if (isPlainObject(definition.provider) && Array.isArray(definition.provider.components)) {
+    return definition.provider.components;
+  }
   if (Array.isArray(definition.components)) return definition.components;
   if (isPlainObject(definition.blueprint) && Array.isArray(definition.blueprint.components)) {
     return definition.blueprint.components;
