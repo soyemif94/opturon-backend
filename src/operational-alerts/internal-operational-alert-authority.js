@@ -1,5 +1,6 @@
 const { normalizeString, isPlainObject } = require('./operational-alert-validation');
 const { OPERATIONAL_ALERT_TEMPLATE_CONTRACT } = require('./operational-alert-formatter');
+const { evaluateWhatsAppTemplateSyncFreshness } = require('../whatsapp/whatsapp-template-domain');
 
 function parseSettings(value) {
   if (isPlainObject(value)) return value;
@@ -134,6 +135,9 @@ function evaluateInternalOperationalAlertAuthority(input) {
     template.metadata.operationalAlertContract !== OPERATIONAL_ALERT_TEMPLATE_CONTRACT
   ) {
     return denied('template_contract_invalid', 'template_contract_metadata_invalid', 'failed_permanent');
+  }
+  if (!evaluateWhatsAppTemplateSyncFreshness(template.lastSyncedAt, { now }).fresh) {
+    return denied('template_sync_stale', 'template_metadata_must_be_synchronized_again');
   }
 
   return {

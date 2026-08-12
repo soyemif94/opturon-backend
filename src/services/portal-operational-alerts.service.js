@@ -13,7 +13,8 @@ const {
 const { findWhatsAppTemplateByScope } = require('../repositories/whatsapp-templates.repository');
 const {
   normalizeWhatsAppTemplateCategory,
-  isWhatsAppTemplateStatusUsable
+  isWhatsAppTemplateStatusUsable,
+  evaluateWhatsAppTemplateSyncFreshness
 } = require('../whatsapp/whatsapp-template-domain');
 const { createPortalUserAuditEvent } = require('../repositories/portal-user-audit.repository');
 const {
@@ -299,6 +300,8 @@ function buildRuleReadiness(context) {
       !validateOperationalAlertTemplateContract(template, { metadata: formatter }).ok
     ) {
       addBlocker(blockers, 'TEMPLATE_CONTRACT_MISMATCH', 'template does not satisfy formatter contract', rule.id);
+    } else if (!evaluateWhatsAppTemplateSyncFreshness(template.lastSyncedAt, { now: context.now }).fresh) {
+      addBlocker(blockers, 'TEMPLATE_SYNC_STALE', 'template metadata must be synchronized again', rule.id);
     }
   }
 
@@ -814,7 +817,7 @@ function createPortalOperationalAlertsService(overrides = {}) {
       return {
         ruleId: safeRuleId,
         configVersion: ruleContext.rule.configVersion,
-        ...buildRuleReadiness(ruleContext)
+        ...buildRuleReadiness({ ...ruleContext, now: dependencies.now() })
       };
     });
   }
@@ -837,7 +840,7 @@ function createPortalOperationalAlertsService(overrides = {}) {
             currentConfigVersion: Number(ruleContext.rule.configVersion)
           });
         }
-        const readiness = buildRuleReadiness(ruleContext);
+        const readiness = buildRuleReadiness({ ...ruleContext, now: dependencies.now() });
         if (!readiness.ready) {
           fail('operational_alert_rule_not_ready', 409, readiness);
         }
@@ -919,7 +922,7 @@ function createPortalOperationalAlertsService(overrides = {}) {
       const context = await requireClinic(tenantId);
       const safeRuleId = assertUuid(ruleId, 'operational_alert_rule_id_invalid');
       const ruleContext = await loadRuleContext(context.clinic, safeRuleId);
-      const readiness = buildRuleReadiness(ruleContext);
+      const readiness = buildRuleReadiness({ ...ruleContext, now: dependencies.now() });
       const evaluation = evaluateOperationalAlertCondition(ruleContext.rule, {
         eventType: ruleContext.rule.eventType,
         eventVersion: ruleContext.rule.eventVersion,

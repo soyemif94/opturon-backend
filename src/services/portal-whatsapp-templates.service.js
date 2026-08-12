@@ -4,17 +4,15 @@ const { findChannelByIdAndClinicId } = require('../repositories/tenant.repositor
 const {
   listWhatsAppTemplatesByClinicId,
   findWhatsAppTemplateByScope,
-  findWhatsAppTemplateByProviderIdentity,
   upsertWhatsAppTemplate,
   withWhatsAppTemplatesTransaction
 } = require('../repositories/whatsapp-templates.repository');
 const { listTemplateBlueprints, findTemplateBlueprintByKey } = require('../whatsapp/template-blueprints');
 const {
-  normalizeWhatsAppTemplateCategory,
-  normalizeWhatsAppTemplateStatus,
-  normalizeWhatsAppTemplateLanguage
+  normalizeWhatsAppTemplateStatus
 } = require('../whatsapp/whatsapp-template-domain');
 const graphClient = require('../whatsapp/whatsapp-graph.client');
+const { syncWhatsAppTemplatesForChannel } = require('./whatsapp-template-sync.service');
 const { logInfo, logWarn } = require('../utils/logger');
 
 const DEFAULT_TEMPLATE_LANGUAGE = 'es_AR';
@@ -99,22 +97,6 @@ function buildBlueprintMetaComponents(blueprint) {
     }
     return next;
   });
-}
-
-function normalizeMetaTemplateRecord(item) {
-  if (!item || typeof item !== 'object') return null;
-  return {
-    id: item.id ? String(item.id) : null,
-    name: item.name ? String(item.name) : null,
-    category: normalizeWhatsAppTemplateCategory(item.category),
-    language: normalizeWhatsAppTemplateLanguage(item.language || (item.languages && item.languages[0])),
-    status: normalizeMetaTemplateStatus(item.status, 'unknown'),
-    rejectionReason:
-      item.rejected_reason ||
-      item.rejection_reason ||
-      item.reason ||
-      null
-  };
 }
 
 async function resolvePortalWhatsAppTemplateContext(tenantId) {
@@ -226,38 +208,6 @@ async function createTemplateInMeta({ channel, metaTemplateName, blueprint, lang
     metaTemplateName,
     status: normalizeMetaTemplateStatus(response.data && response.data.status, 'pending'),
     data: response.data || null
-  };
-}
-
-async function fetchMetaTemplates({ channel, requestId }) {
-  const response = await graphClient.request('GET', `/${channel.wabaId}/message_templates`, {
-    requestId,
-    credentials: {
-      accessToken: channel.accessToken,
-      phoneNumberId: channel.phoneNumberId
-    },
-    query: {
-      limit: 200,
-      fields: 'id,name,status,category,language,rejected_reason'
-    }
-  });
-
-  if (!response.ok) {
-    return {
-      ok: false,
-      reason: 'meta_templates_sync_failed',
-      detail:
-        response.data && response.data.error && response.data.error.message
-          ? String(response.data.error.message)
-          : `Meta request failed (${response.status || 'unknown'})`,
-      status: response.status || null,
-      data: response.data || null
-    };
-  }
-
-  return {
-    ok: true,
-    items: Array.isArray(response.data && response.data.data) ? response.data.data.map(normalizeMetaTemplateRecord).filter(Boolean) : []
   };
 }
 
@@ -394,97 +344,20 @@ async function syncPortalWhatsAppTemplates(tenantId) {
   if (!context.ok) {
     return context;
   }
-
-  const requestId = `wa_tpl_sync_${crypto.randomUUID()}`;
-  const synced = await fetchMetaTemplates({ channel: context.channel, requestId });
-  if (!synced.ok) {
-    logWarn('portal_whatsapp_templates_sync_failed', {
-      tenantId: context.tenantId,
-      clinicId: context.clinic.id,
-      requestId,
-      reason: synced.reason,
-      detail: synced.detail,
-      status: synced.status
-    });
-    return {
-      ok: false,
-      tenantId: context.tenantId,
-      reason: synced.reason,
-      detail: synced.detail
-    };
-  }
-
-  const blueprintByName = new Map(
-    listTemplateBlueprints().map((blueprint) => [
-      buildMetaTemplateName({
-        templateKey: blueprint.key,
-        language: blueprint.defaultLanguage || DEFAULT_TEMPLATE_LANGUAGE,
-        clinicId: context.clinic.id
-      }),
-      blueprint
-    ])
-  );
-
-  const persisted = [];
-  await withWhatsAppTemplatesTransaction(async (client) => {
-    for (const item of synced.items) {
-      const language = normalizeWhatsAppTemplateLanguage(item.language);
-      if (!item.name || !language) {
-        continue;
-      }
-      const existing =
-        await findWhatsAppTemplateByProviderIdentity({
-          clinicId: context.clinic.id,
-          channelId: context.channel.id,
-          wabaId: context.channel.wabaId,
-          metaTemplateName: item.name,
-          language
-        }, client);
-      const blueprint = item.name ? blueprintByName.get(item.name) || null : null;
-      const templateKey = existing?.templateKey || blueprint?.key || null;
-      if (!templateKey || !item.name) {
-        continue;
-      }
-
-      const saved = await upsertWhatsAppTemplate(
-        {
-          clinicId: context.clinic.id,
-          externalTenantId: context.tenantId,
-          channelId: context.channel.id,
-          wabaId: context.channel.wabaId,
-          templateKey,
-          metaTemplateId: item.id || existing?.metaTemplateId || null,
-          metaTemplateName: item.name,
-          language,
-          category: normalizeWhatsAppTemplateCategory(item.category),
-          status: normalizeMetaTemplateStatus(item.status, 'unknown'),
-          rejectionReason: item.rejectionReason || null,
-          definition: existing?.definition || (blueprint ? { blueprint: summarizeBlueprint(blueprint), source: 'opturon_blueprint' } : { source: 'meta_sync' }),
-          lastSyncedAt: new Date(),
-          metadata: {
-            requestId,
-            source: 'meta_sync'
-          }
-        },
-        client
-      );
-      persisted.push(saved);
-    }
-  });
-
-  logInfo('portal_whatsapp_templates_synced', {
-    tenantId: context.tenantId,
+  const synced = await syncWhatsAppTemplatesForChannel({
     clinicId: context.clinic.id,
-    requestId,
-    syncedCount: persisted.length
+    channelId: context.channel.id
   });
+  if (!synced.ok) return { ...synced, tenantId: context.tenantId };
 
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
-    templates: persisted.map(summarizeTemplate),
-    syncedCount: persisted.length
+    channelId: context.channel.id,
+    templates: synced.templates.map(summarizeTemplate),
+    summary: synced.summary,
+    syncedCount: synced.summary.recognized
   };
 }
 

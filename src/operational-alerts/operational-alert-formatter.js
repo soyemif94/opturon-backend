@@ -8,6 +8,7 @@ const {
   INVENTORY_EXPIRY_FORMATTER_ITEM_LIMIT,
   INVENTORY_EXPIRY_TEMPLATE_CONTRACT
 } = require('./inventory-lot-expiry-alert');
+const { validateWhatsAppTemplateBodyContract } = require('../whatsapp/whatsapp-template-domain');
 
 const OPERATIONAL_ALERT_TEMPLATE_CONTRACT = 'operational_alert_body_parameters_v1';
 
@@ -190,12 +191,12 @@ function validateOperationalAlertTemplateContract(template, formatted) {
   if (metadata.operationalAlertContract !== OPERATIONAL_ALERT_TEMPLATE_CONTRACT) {
     return { ok: false, reason: 'template_contract_invalid' };
   }
-  const body = extractTemplateComponents(template.definition)
-    .find((component) => normalizeString(component && component.type).toUpperCase() === 'BODY');
-  const placeholders = String(body && body.text || '').match(/\{\{\d+\}\}/g) || [];
   const expected = Number(formatted.metadata && formatted.metadata.bodyParameterCount);
-  const sequential = placeholders.every((placeholder, index) => placeholder === `{{${index + 1}}}`);
-  if (!Number.isInteger(expected) || expected < 1 || placeholders.length !== expected || !sequential) {
+  const bodyValidation = validateWhatsAppTemplateBodyContract(
+    extractTemplateComponents(template.definition),
+    expected
+  );
+  if (!bodyValidation.ok) {
     return { ok: false, reason: 'template_contract_invalid' };
   }
   const specification = formatted.metadata && formatted.metadata.templateSpecification;

@@ -192,12 +192,12 @@ async function seedBaseData(db) {
     operationalAlertContract: 'operational_alert_body_parameters_v1'
   });
   await db.query(
-    `INSERT INTO whatsapp_templates (
+      `INSERT INTO whatsapp_templates (
        "clinicId", "externalTenantId", "channelId", "wabaId", "templateKey",
-       "metaTemplateName", language, category, status, definition, metadata
-     ) VALUES
-      ($1::uuid, 'tenant-b', $2::uuid, 'waba-b', 'cash_alert', 'cash_alert_meta', 'es_AR', 'UTILITY', 'approved', $3::jsonb, $4::jsonb),
-      ($1::uuid, 'tenant-b', $2::uuid, 'waba-b', 'cash_alert_pending', 'cash_alert_pending_meta', 'es_AR', 'UTILITY', 'pending', $3::jsonb, $4::jsonb)`,
+       "metaTemplateName", language, category, status, definition, metadata, "lastSyncedAt"
+      ) VALUES
+       ($1::uuid, 'tenant-b', $2::uuid, 'waba-b', 'cash_alert', 'cash_alert_meta', 'es_AR', 'UTILITY', 'approved', $3::jsonb, $4::jsonb, NOW()),
+       ($1::uuid, 'tenant-b', $2::uuid, 'waba-b', 'cash_alert_pending', 'cash_alert_pending_meta', 'es_AR', 'UTILITY', 'pending', $3::jsonb, $4::jsonb, NOW())`,
     [ids.clinicB, ids.channelB, validDefinition, validMetadata]
   );
 }

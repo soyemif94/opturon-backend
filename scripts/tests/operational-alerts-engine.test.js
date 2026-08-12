@@ -271,10 +271,10 @@ async function insertTemplate(db, {
 }) {
   const body = Array.from({ length: placeholders }, (_, index) => `{{${index + 1}}}`).join(' ');
   await db.query(
-    `INSERT INTO whatsapp_templates (
+      `INSERT INTO whatsapp_templates (
        "clinicId", "externalTenantId", "channelId", "wabaId", "templateKey",
-       "metaTemplateName", language, category, status, definition, metadata
-     ) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, 'es_AR', 'UTILITY', $7, $8::jsonb, $9::jsonb)`,
+       "metaTemplateName", language, category, status, definition, metadata, "lastSyncedAt"
+      ) VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, 'es_AR', 'UTILITY', $7, $8::jsonb, $9::jsonb, $10::timestamptz)`,
     [
       clinicId,
       clinicId === ids.clinicA ? 'tenant-a' : 'tenant-b',
@@ -284,7 +284,8 @@ async function insertTemplate(db, {
       name,
       status,
       JSON.stringify({ components: [{ type: 'BODY', text: body }] }),
-      JSON.stringify({ operationalAlertContract: contract })
+      JSON.stringify({ operationalAlertContract: contract }),
+      NOW
     ]
   );
 }
@@ -472,6 +473,7 @@ function validAuthorityFixture() {
       status: 'approved',
       category: 'UTILITY',
       metaTemplateName: 'cash_alert_fixture',
+      lastSyncedAt: NOW,
       metadata: { operationalAlertContract: 'operational_alert_body_parameters_v1' }
     },
     workerId: 'worker-a',

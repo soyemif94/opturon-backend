@@ -664,6 +664,7 @@ async function testRegistryAndReadiness(runtime) {
     language: 'es_AR',
     category: 'UTILITY',
     status: 'approved',
+    lastSyncedAt: NOW,
     definition: {
       components: [{ type: 'BODY', text: '{{1}} {{2}} {{3}} {{4}} {{5}}' }]
     },

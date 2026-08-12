@@ -201,6 +201,9 @@ const {
   requireOperationalAlertsReadPermission,
   requireOperationalAlertsWritePermission
 } = require('../middlewares/portal-operational-alerts-authorization.middleware');
+const {
+  requireWhatsAppTemplateSyncAdmin
+} = require('../middlewares/portal-whatsapp-template-sync-authorization.middleware');
 
 const router = express.Router();
 
@@ -221,6 +224,11 @@ const inventoryReceiptRole = requireInventoryReceiptRole();
 const operationalAlertsReadPermission = requireOperationalAlertsReadPermission();
 const operationalAlertsWritePermission = requireOperationalAlertsWritePermission();
 function operationalAlertsNoStore(_req, res, next) {
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Pragma', 'no-cache');
+  next();
+}
+function whatsappTemplateSyncNoStore(_req, res, next) {
   res.setHeader('Cache-Control', 'private, no-store');
   res.setHeader('Pragma', 'no-cache');
   next();
@@ -362,6 +370,7 @@ function handleLoyaltyRewardImageUpload(req, res, next) {
 }
 
 router.use('/tenants/:tenantId/operational-alerts', operationalAlertsNoStore);
+router.use('/tenants/:tenantId/whatsapp/templates/sync', whatsappTemplateSyncNoStore);
 router.use('/tenants/:tenantId', applyPortalActiveTenant);
 
 router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
@@ -544,7 +553,12 @@ router.patch('/tenants/:tenantId/whatsapp/default-channel', requirePortalInterna
 router.get('/tenants/:tenantId/whatsapp/templates/blueprints', requirePortalInternalAuth, getPortalWhatsAppTemplateBlueprints);
 router.get('/tenants/:tenantId/whatsapp/templates', requirePortalInternalAuth, getPortalWhatsAppTemplates);
 router.post('/tenants/:tenantId/whatsapp/templates/create-from-blueprint', requirePortalInternalAuth, postPortalWhatsAppTemplateFromBlueprint);
-router.post('/tenants/:tenantId/whatsapp/templates/sync', requirePortalInternalAuth, postPortalWhatsAppTemplatesSync);
+router.post(
+  '/tenants/:tenantId/whatsapp/templates/sync',
+  requirePortalInternalAuth,
+  requireWhatsAppTemplateSyncAdmin,
+  postPortalWhatsAppTemplatesSync
+);
 router.get('/tenants/:tenantId/users', requirePortalInternalAuth, getPortalUsers);
 router.post('/tenants/:tenantId/users', requirePortalInternalAuth, postPortalUser);
 router.patch('/tenants/:tenantId/users/primary', requirePortalInternalAuth, patchPortalPrimaryUser);

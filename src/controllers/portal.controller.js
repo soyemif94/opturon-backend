@@ -5579,19 +5579,26 @@ async function postPortalWhatsAppTemplatesSync(req, res) {
   try {
     const result = await syncPortalWhatsAppTemplates(tenantId);
     if (!result.ok) {
-      const status =
-        result.reason === 'missing_tenant_id'
-          ? 400
-          : result.reason === 'mapped_clinic_without_whatsapp_channel' ||
-              result.reason === 'whatsapp_channel_not_ready' ||
-              result.reason === 'meta_templates_sync_failed'
-            ? 409
-            : 404;
+      const status = result.reason === 'missing_tenant_id' ||
+        result.reason === 'whatsapp_template_sync_scope_required'
+        ? 400
+        : result.reason === 'meta_templates_sync_failed' ||
+            result.reason === 'meta_templates_response_invalid' ||
+            result.reason === 'meta_templates_pagination_invalid' ||
+            result.reason === 'meta_templates_pagination_limit_exceeded'
+          ? 502
+          : result.reason === 'whatsapp_templates_persist_failed'
+            ? 500
+            : result.reason === 'mapped_clinic_without_whatsapp_channel' ||
+                result.reason === 'whatsapp_channel_not_ready' ||
+                result.reason === 'whatsapp_channel_provider_invalid' ||
+                result.reason === 'whatsapp_template_sync_tenant_mapping_missing'
+              ? 409
+              : 404;
 
       return res.status(status).json({
         success: false,
         error: result.reason,
-        detail: result.detail || null,
         tenantId: result.tenantId || tenantId
       });
     }
@@ -5600,15 +5607,16 @@ async function postPortalWhatsAppTemplatesSync(req, res) {
       success: true,
       data: {
         tenantId: result.tenantId,
+        channelId: result.channelId,
         templates: result.templates,
+        summary: result.summary,
         syncedCount: result.syncedCount
       }
     });
-  } catch (error) {
+  } catch {
     return res.status(500).json({
       success: false,
-      error: 'portal_whatsapp_templates_sync_failed',
-      details: error.message
+      error: 'portal_whatsapp_templates_sync_failed'
     });
   }
 }

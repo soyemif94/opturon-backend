@@ -380,6 +380,31 @@ async function testMigrationAndRepository() {
     /whatsapp_template_provider_components_required/
   );
 
+  const concurrentInput = {
+    ...syncBase,
+    channelId: ids.channelA,
+    templateKey: 'concurrent_sync_identity',
+    metaTemplateName: 'concurrent_sync_identity',
+    status: 'APPROVED',
+    providerDefinition: { components: [{ type: 'BODY', text: '{{1}} {{2}} {{3}} {{4}} {{5}}' }] }
+  };
+  const concurrentRows = await Promise.all([
+    repository.upsertSyncedWhatsAppTemplate(concurrentInput, db),
+    repository.upsertSyncedWhatsAppTemplate(concurrentInput, db)
+  ]);
+  assert.equal(concurrentRows[0].id, concurrentRows[1].id);
+  const concurrentCount = await db.query(
+    `SELECT COUNT(*)::int AS count
+     FROM whatsapp_templates
+     WHERE "clinicId" = $1
+       AND "channelId" = $2
+       AND "wabaId" = 'waba-a'
+       AND "templateKey" = 'concurrent_sync_identity'
+       AND language = 'es_AR'`,
+    [ids.clinicA, ids.channelA]
+  );
+  assert.equal(concurrentCount.rows[0].count, 1);
+
   await db.close();
 }
 
