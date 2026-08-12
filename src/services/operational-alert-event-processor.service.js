@@ -161,7 +161,9 @@ async function processClaimedOperationalAlertEvent(claimedEvent, options = {}) {
       });
 
       const occurrenceKey = buildOperationalAlertOccurrenceKey({
-        eventDeduplicationKey: event.deduplicationKey
+        eventDeduplicationKey: event.deduplicationKey,
+        thresholdIdentity: evaluation.thresholdIdentity || null,
+        evaluationWindowKey: evaluation.evaluationWindowKey || null
       });
       const insertedInstance = await dependencies.insertInstance({
         clinicId: event.clinicId,

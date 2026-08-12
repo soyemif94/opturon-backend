@@ -288,6 +288,24 @@ async function claimScheduledOperationalAlertRules({
   });
 }
 
+async function findClaimedScheduledOperationalAlertRule(ruleId, clinicId, workerId, client) {
+  const result = await dbQuery(
+    client,
+    `SELECT ${RULE_COLUMNS}
+     FROM operational_alert_rules
+     WHERE id = $1::uuid
+       AND "clinicId" = $2::uuid
+       AND enabled = TRUE
+       AND "archivedAt" IS NULL
+       AND "schedulerLockedBy" = $3
+       AND "schedulerLeaseExpiresAt" > NOW()
+     LIMIT 1
+     FOR UPDATE`,
+    [ruleId, clinicId, normalizeString(workerId)]
+  );
+  return normalizeRuleRow(result.rows[0]);
+}
+
 async function finishScheduledOperationalAlertRule(ruleId, clinicId, {
   workerId,
   nextEvaluationAt = null,
@@ -402,16 +420,21 @@ async function enableOperationalAlertRule(ruleId, clinicId, client = null, optio
     const current = await findOperationalAlertRuleById(ruleId, clinicId, tx, { forUpdate: true });
     if (!current) return null;
     assertExpectedRuleVersion(current, options);
+    const nextEvaluationAt = normalizeDateTime(options.nextEvaluationAt);
+    if (current.triggerMode === 'scheduled' && !nextEvaluationAt) {
+      throw contractError('operational_alert_rule_next_evaluation_at_required');
+    }
     const result = await tx.query(
       `UPDATE operational_alert_rules
        SET enabled = TRUE,
            "enabledAt" = COALESCE("enabledAt", NOW()),
+           "nextEvaluationAt" = $3::timestamptz,
            "updatedAt" = NOW()
        WHERE id = $1::uuid
          AND "clinicId" = $2::uuid
          AND "archivedAt" IS NULL
        RETURNING ${RULE_COLUMNS}`,
-      [ruleId, clinicId]
+      [ruleId, clinicId, current.triggerMode === 'scheduled' ? nextEvaluationAt : null]
     );
     return normalizeRuleRow(result.rows[0]);
   });
@@ -497,6 +520,7 @@ module.exports = {
   listOperationalAlertRules,
   listOperationalAlertRulesForEvent,
   claimScheduledOperationalAlertRules,
+  findClaimedScheduledOperationalAlertRule,
   finishScheduledOperationalAlertRule,
   updateOperationalAlertRuleConfig,
   enableOperationalAlertRule,

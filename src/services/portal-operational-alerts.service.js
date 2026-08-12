@@ -26,6 +26,7 @@ const {
   validateOperationalAlertTemplateContract
 } = require('../operational-alerts/operational-alert-formatter');
 const { isOperationalAlertsEnabled } = require('../operational-alerts/internal-operational-alert-authority');
+const { calculateNextDailyScheduleAt } = require('../operational-alerts/inventory-lot-expiry-alert');
 const {
   normalizeString,
   normalizeNullableString,
@@ -338,7 +339,8 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   listRuleRecipients: ruleRepository.listOperationalAlertRuleRecipients,
   replaceRuleRecipients: ruleRepository.replaceOperationalAlertRuleRecipients,
   listHistory: historyRepository.listOperationalAlertHistory,
-  findHistoryDetail: historyRepository.findOperationalAlertHistoryDetail
+  findHistoryDetail: historyRepository.findOperationalAlertHistoryDetail,
+  now: () => new Date().toISOString()
 });
 
 function createPortalOperationalAlertsService(overrides = {}) {
@@ -829,11 +831,18 @@ function createPortalOperationalAlertsService(overrides = {}) {
         if (!readiness.ready) {
           fail('operational_alert_rule_not_ready', 409, readiness);
         }
+        const nextEvaluationAt = ruleContext.rule.triggerMode === 'scheduled'
+          ? calculateNextDailyScheduleAt({
+            now: dependencies.now(),
+            timezone: context.clinic.timezone,
+            sendAt: ruleContext.rule.schedule.sendAt
+          })
+          : null;
         const rule = await dependencies.enableRule(
           safeRuleId,
           context.clinic.id,
           client,
-          { expectedConfigVersion }
+          { expectedConfigVersion, nextEvaluationAt }
         );
         await writeAudit({
           tenantId: context.tenantId,

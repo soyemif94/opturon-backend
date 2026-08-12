@@ -335,7 +335,11 @@ async function testAdminService(db, service) {
 
   const catalog = await service.getEventTypes('tenant-b');
   assert.equal(catalog.items.length, 2);
-  assert.ok(catalog.items.every((item) => item.producer.status === 'CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE'));
+  const inventoryDefinition = catalog.items.find((item) => item.eventType === 'inventory.lot_expiring');
+  const cashDefinition = catalog.items.find((item) => item.eventType === 'cash.session_closed');
+  assert.equal(inventoryDefinition.producer.status, 'PRODUCER_AVAILABLE');
+  assert.equal(inventoryDefinition.templateContract.templateKey, 'inventory_lot_expiring_v1');
+  assert.equal(cashDefinition.producer.status, 'CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE');
   assert.ok(catalog.items.every((item) => item.conditionsContract && item.scheduleContract));
 
   const settingsA = await service.getSettings('tenant-a');

@@ -152,6 +152,46 @@ async function createBaseSchema(db) {
     );
     CREATE UNIQUE INDEX uq_channels_id_clinic_id ON channels(id, "clinicId");
 
+    CREATE TABLE products (
+      id UUID PRIMARY KEY,
+      "clinicId" UUID NOT NULL REFERENCES clinics(id),
+      name TEXT NOT NULL,
+      sku TEXT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      "deletedAt" TIMESTAMPTZ NULL,
+      UNIQUE (id, "clinicId")
+    );
+
+    CREATE TABLE inventory_locations (
+      id UUID PRIMARY KEY,
+      "tenantId" UUID NOT NULL REFERENCES clinics(id),
+      name TEXT NOT NULL,
+      UNIQUE (id, "tenantId")
+    );
+
+    CREATE TABLE inventory_lots (
+      id UUID PRIMARY KEY,
+      "tenantId" UUID NOT NULL REFERENCES clinics(id),
+      "productId" UUID NOT NULL,
+      "locationId" UUID NULL,
+      "lotNumber" TEXT NULL,
+      "supplierName" TEXT NULL,
+      "expiresAt" DATE NULL,
+      "availableQuantity" NUMERIC(14,3) NOT NULL DEFAULT 0,
+      "warehouseName" TEXT NULL,
+      "locationName" TEXT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      "operationalStatus" TEXT NULL
+    );
+
+    CREATE TABLE inventory_lot_allocations (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      "tenantId" UUID NOT NULL,
+      "lotId" UUID NOT NULL,
+      quantity NUMERIC(14,3) NOT NULL,
+      status TEXT NOT NULL
+    );
+
     CREATE TABLE whatsapp_templates (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       "clinicId" UUID NOT NULL REFERENCES clinics(id),
@@ -213,8 +253,8 @@ async function seedBase(db) {
     clinicId: ids.clinicA,
     channelId: ids.channelA,
     wabaId: 'waba-a',
-    key: 'inventory_alert',
-    name: 'inventory_alert_fixture',
+    key: 'inventory_lot_expiring_v1',
+    name: 'inventory_lot_expiring_v1_fixture',
     placeholders: 5
   });
 }
@@ -290,7 +330,7 @@ function inventoryRuleInput(overrides = {}) {
     schedule: { frequency: 'daily', sendAt: '08:00', timezone: 'tenant' },
     deliveryPolicy: { maxAttempts: 5 },
     channelId: ids.channelA,
-    templateKey: 'inventory_alert',
+    templateKey: 'inventory_lot_expiring_v1',
     templateLanguage: 'es_AR',
     formatterKey: 'inventory_lot_expiring',
     formatterVersion: 1,
@@ -600,12 +640,30 @@ async function main() {
         eventType: 'inventory.lot_expiring',
         eventVersion: 1,
         payload: {
-          lotId: 'lot-1',
-          productName: 'Resina',
-          expiresAt: '2026-09-01T00:00:00.000Z',
-          daysRemaining: 21,
-          availableQuantity: 4,
-          quantityBasis: 'physical'
+          evaluatedAt: '2026-08-11T12:00:00.000Z',
+          localDate: '2026-08-11',
+          daysBefore: 30,
+          quantityBasis: 'physical',
+          minimumAvailableQuantity: 1,
+          repeatPolicy: 'once_per_threshold',
+          configVersion: 1,
+          thresholdIdentity: 'days-30-once_per_threshold',
+          evaluationWindowKey: '2026-08-11',
+          totalLots: 1,
+          totalProducts: 1,
+          items: [{
+            lotId: '60000000-0000-4000-8000-000000000001',
+            productId: '70000000-0000-4000-8000-000000000001',
+            productName: 'Resina',
+            sku: 'RES-1',
+            lotCode: 'L-1',
+            expiresAt: '2026-09-10',
+            daysRemaining: 30,
+            relevantQuantity: 4,
+            supplierName: null,
+            locationName: null
+          }],
+          truncation: { itemLimit: 250, omittedLots: 0 }
         }
       }
     );
@@ -616,7 +674,7 @@ async function main() {
         eventVersion: 1,
         formatterKey: 'inventory_lot_expiring',
         formatterVersion: 1,
-        templateKey: 'inventory_alert',
+        templateKey: 'inventory_lot_expiring_v1',
         templateLanguage: 'es_AR'
       },
       event: { material: inventoryEvaluation.material }
@@ -1137,15 +1195,16 @@ async function main() {
       limit: 5,
       now: NOW
     });
-    assert.strictEqual(scheduledStats.missingEvaluator, 1);
+    assert.strictEqual(scheduledStats.missingEvaluator, 0);
+    assert.strictEqual(scheduledStats.evaluated, 1);
     assert.strictEqual(Number(await scalar(
       db,
       `SELECT COUNT(*)::int FROM operational_alert_events WHERE "targetRuleId" = $1::uuid`,
       [scheduledRule.id]
     )), 0);
     assert.strictEqual(
-      (await runtime.rules.findOperationalAlertRuleById(scheduledRule.id, ids.clinicA)).nextEvaluationAt,
-      null
+      Boolean((await runtime.rules.findOperationalAlertRuleById(scheduledRule.id, ids.clinicA)).nextEvaluationAt),
+      true
     );
     mark('AB');
 

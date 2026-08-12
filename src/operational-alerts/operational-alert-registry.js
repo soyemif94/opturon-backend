@@ -8,10 +8,15 @@ const {
   invalid,
   contractError
 } = require('./operational-alert-validation');
+const {
+  INVENTORY_EXPIRY_TEMPLATE_CONTRACT,
+  normalizeInventoryExpiryDigestPayload
+} = require('./inventory-lot-expiry-alert');
 
 const TRIGGER_MODES = Object.freeze(['event_driven', 'scheduled']);
 const PRODUCER_STATUSES = Object.freeze({
-  CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE: 'CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE'
+  CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE: 'CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE',
+  PRODUCER_AVAILABLE: 'PRODUCER_AVAILABLE'
 });
 const EVALUATION_OUTCOMES = Object.freeze({
   MATCH: 'MATCH',
@@ -99,57 +104,25 @@ function validateNoSchedule(value) {
   return ok({});
 }
 
-function normalizeFiniteNonNegativeNumber(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
 function normalizeFixtureText(value, maxLength = 300) {
   const safe = normalizeString(value);
   return safe && safe.length <= maxLength ? safe : null;
 }
 
 function evaluateInventoryLotExpiring(config, event) {
-  const payload = cloneJsonObject(event && event.payload);
-  const lotId = normalizeFixtureText(payload && payload.lotId);
-  const productName = normalizeFixtureText(payload && payload.productName);
-  const expiresAt = payload && typeof payload.expiresAt === 'string'
-    && Number.isFinite(new Date(payload.expiresAt).getTime())
-    ? new Date(payload.expiresAt).toISOString()
-    : null;
-  const daysRemaining = normalizeFiniteNonNegativeNumber(payload && payload.daysRemaining);
-  const availableQuantity = normalizeFiniteNonNegativeNumber(payload && payload.availableQuantity);
-  const quantityBasis = normalizeString(payload && payload.quantityBasis);
-
-  if (
-    !lotId || !productName || !expiresAt || daysRemaining === null ||
-    availableQuantity === null || !['physical', 'commercial'].includes(quantityBasis)
-  ) {
+  const payload = normalizeInventoryExpiryDigestPayload(event && event.payload, config.conditions);
+  if (!payload) {
     return {
       outcome: EVALUATION_OUTCOMES.INVALID_CONFIGURATION,
       reason: 'inventory_lot_expiring_event_payload_invalid'
     };
   }
-  if (quantityBasis !== config.conditions.quantityBasis) {
-    return {
-      outcome: EVALUATION_OUTCOMES.INVALID_CONFIGURATION,
-      reason: 'inventory_lot_expiring_quantity_basis_mismatch'
-    };
-  }
-
-  const matches = daysRemaining <= config.conditions.daysBefore
-    && availableQuantity >= config.conditions.minimumAvailableQuantity;
   return {
-    outcome: matches ? EVALUATION_OUTCOMES.MATCH : EVALUATION_OUTCOMES.NO_MATCH,
-    reason: matches ? 'inventory_lot_expiring_threshold_matched' : 'inventory_lot_expiring_threshold_not_matched',
-    evaluationWindowKey: normalizeFixtureText(payload.evaluationWindowKey, 300),
-    material: {
-      lotId,
-      productName,
-      expiresAt,
-      daysRemaining,
-      availableQuantity,
-      quantityBasis
-    }
+    outcome: EVALUATION_OUTCOMES.MATCH,
+    reason: 'inventory_lot_expiring_digest_matched',
+    thresholdIdentity: payload.thresholdIdentity,
+    evaluationWindowKey: payload.evaluationWindowKey,
+    material: payload
   };
 }
 
@@ -218,10 +191,25 @@ const DEFINITIONS = Object.freeze([
       })
     }),
     eventPayloadContract: Object.freeze({
-      required: Object.freeze(['lotId', 'productName', 'expiresAt', 'daysRemaining', 'availableQuantity', 'quantityBasis'])
+      required: Object.freeze([
+        'evaluatedAt',
+        'localDate',
+        'daysBefore',
+        'quantityBasis',
+        'minimumAvailableQuantity',
+        'repeatPolicy',
+        'configVersion',
+        'thresholdIdentity',
+        'evaluationWindowKey',
+        'totalLots',
+        'totalProducts',
+        'items',
+        'truncation'
+      ])
     }),
-    producerStatus: PRODUCER_STATUSES.CONFIGURABLE_BUT_PRODUCER_NOT_ACTIVE,
-    producerAvailable: false,
+    templateContract: INVENTORY_EXPIRY_TEMPLATE_CONTRACT,
+    producerStatus: PRODUCER_STATUSES.PRODUCER_AVAILABLE,
+    producerAvailable: true,
     validateConditions: validateInventoryConditions,
     validateSchedule: validateInventorySchedule,
     evaluate: evaluateInventoryLotExpiring,
@@ -400,6 +388,7 @@ function listOperationalAlertDefinitions() {
     conditionsContract: JSON.parse(JSON.stringify(item.conditionsContract)),
     scheduleContract: JSON.parse(JSON.stringify(item.scheduleContract)),
     eventPayloadContract: JSON.parse(JSON.stringify(item.eventPayloadContract)),
+    templateContract: item.templateContract ? JSON.parse(JSON.stringify(item.templateContract)) : null,
     formatterKey: item.formatterKey,
     formatterVersion: item.formatterVersion,
     availability: {
