@@ -26,14 +26,12 @@ function isOpturonAdmin(actor) {
 // cross-tenant Admin APIs.
 function isAuthorizedAdminTenantSelection(req, actor, targetTenantId) {
   const context = req.activeTenantContext || {};
-  const requestedTenantId = normalizeString(context.requestedTenantId || req.params?.tenantId);
   const actorId = normalizeString(req.get('x-portal-actor-id'));
 
   return context.source === 'active_tenant' &&
     normalizeString(context.actorUserId) === normalizeString(actor.id) &&
     actorId === normalizeString(actor.id) &&
     normalizeString(context.activeTenantId) === targetTenantId &&
-    requestedTenantId === normalizeString(actor.tenantId) &&
     targetTenantId !== normalizeString(actor.tenantId);
 }
 

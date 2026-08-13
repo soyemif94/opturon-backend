@@ -43,7 +43,7 @@ function loadAuthorization(overrides = {}) {
     hasPortalInternalAuth: () => true,
     findPortalActorContext: async () => ({
       id: '11111111-1111-4111-8111-111111111111',
-      tenantId: 'opturon-admin-workspace',
+      tenantId: 'actor-own-tenant',
       isAdmin: true,
       accountScope: 'opturon_admin',
       ...overrides.actor
@@ -58,11 +58,14 @@ async function testAuthorization() {
   const { middleware, touched } = loadAuthorization();
   try {
     const request = {
-      params: { tenantId: 'opturon-admin-workspace' },
+      // The Admin workspace used to route the request need not be the
+      // backend-resolved tenant of the portal actor. The selected client must
+      // still be established by the active-tenant middleware.
+      params: { tenantId: 'admin-workspace' },
       activeTenantId: 'tenant-controlled',
       activeTenantContext: {
         source: 'active_tenant',
-        requestedTenantId: 'opturon-admin-workspace',
+        requestedTenantId: 'admin-workspace',
         activeTenantId: 'tenant-controlled',
         actorUserId: '11111111-1111-4111-8111-111111111111'
       },
@@ -70,7 +73,19 @@ async function testAuthorization() {
     };
     let nextCalled = false;
     await middleware.requireAdminQaInventoryPermission(request, response(), () => { nextCalled = true; });
-    assert.equal(nextCalled, true, 'Opturon Admin with server-resolved active tenant may proceed');
+    assert.equal(nextCalled, true, 'Opturon Admin may use an active client tenant distinct from the actor tenant');
+
+    const ownTenant = response();
+    await middleware.requireAdminQaInventoryPermission(
+      {
+        ...request,
+        activeTenantId: 'actor-own-tenant',
+        activeTenantContext: { ...request.activeTenantContext, activeTenantId: 'actor-own-tenant' }
+      },
+      ownTenant,
+      () => {}
+    );
+    assert.equal(ownTenant.statusCode, 403, 'the QA surface cannot target the actor tenant itself');
 
     const spoofed = response();
     await middleware.requireAdminQaInventoryPermission(
@@ -83,11 +98,22 @@ async function testAuthorization() {
     );
     assert.equal(spoofed.statusCode, 403, 'actor forwarding must match the resolved active context');
 
+    const spoofedHeader = response();
+    await middleware.requireAdminQaInventoryPermission(
+      {
+        ...request,
+        get: (header) => header === 'x-portal-actor-id' ? '22222222-2222-4222-8222-222222222222' : ''
+      },
+      spoofedHeader,
+      () => {}
+    );
+    assert.equal(spoofedHeader.statusCode, 403, 'forwarded actor header must match the backend-resolved actor');
+
     const direct = response();
     await middleware.requireAdminQaInventoryPermission(
       {
         ...request,
-        activeTenantId: 'opturon-admin-workspace',
+        activeTenantId: 'admin-workspace',
         activeTenantContext: { ...request.activeTenantContext, source: 'requested_tenant', activeTenantId: null }
       },
       direct,
@@ -104,11 +130,11 @@ async function testAuthorization() {
     const denied = response();
     await nonAdminMiddleware.requireAdminQaInventoryPermission(
       {
-        params: { tenantId: 'opturon-admin-workspace' },
+        params: { tenantId: 'admin-workspace' },
         activeTenantId: 'tenant-controlled',
         activeTenantContext: {
           source: 'active_tenant',
-          requestedTenantId: 'opturon-admin-workspace',
+          requestedTenantId: 'admin-workspace',
           activeTenantId: 'tenant-controlled',
           actorUserId: '11111111-1111-4111-8111-111111111111'
         },
@@ -121,6 +147,41 @@ async function testAuthorization() {
   } finally {
     clearModule('src/middlewares/portal-admin-qa-inventory-authorization.middleware.js');
     for (const resolved of nonAdminTouched) delete require.cache[resolved];
+  }
+}
+
+async function testInvalidActiveTenantIsRejectedBeforeQaAuthorization() {
+  const touched = [];
+  let received = null;
+  touched.push(mockModule('src/services/portal-active-tenant.service.js', {
+    resolveActiveTenantForRequest: async (req, requestedTenantId) => {
+      received = { req, requestedTenantId };
+      return {
+        ok: false,
+        status: 404,
+        reason: 'active_tenant_not_found',
+        tenantId: requestedTenantId,
+        activeTenantId: 'missing-tenant'
+      };
+    }
+  }));
+  clearModule('src/middlewares/portal-active-tenant.middleware.js');
+
+  try {
+    const { applyPortalActiveTenant } = require(modulePath('src/middlewares/portal-active-tenant.middleware.js'));
+    const request = { params: { tenantId: 'admin-workspace' } };
+    const invalidTarget = response();
+    let nextCalled = false;
+    await applyPortalActiveTenant(request, invalidTarget, () => { nextCalled = true; });
+
+    assert.equal(received.requestedTenantId, 'admin-workspace');
+    assert.equal(invalidTarget.statusCode, 404, 'an invalid selected tenant stops before QA authorization');
+    assert.equal(invalidTarget.body.error, 'active_tenant_not_found');
+    assert.equal(nextCalled, false);
+    assert.equal(request.activeTenantId, undefined);
+  } finally {
+    clearModule('src/middlewares/portal-active-tenant.middleware.js');
+    for (const resolved of touched) delete require.cache[resolved];
   }
 }
 
@@ -363,6 +424,7 @@ async function testControllerContracts() {
 
 async function main() {
   await testAuthorization();
+  await testInvalidActiveTenantIsRejectedBeforeQaAuthorization();
   await testCanonicalServiceContracts();
   await testControllerContracts();
 
