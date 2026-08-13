@@ -20,19 +20,30 @@ function isOpturonAdmin(actor) {
     normalizeString(actor.accountScope).toLowerCase() === 'opturon_admin';
 }
 
-// This endpoint family deliberately requires the active-tenant handoff. Keeping
-// the Admin workspace in the URL and the controlled client only in the internal
-// header prevents a caller from treating the generic inventory routes as
-// cross-tenant Admin APIs.
+// This middleware is mounted only on the canonical QA inventory fixture routes.
+// It accepts either a server-resolved active client tenant, or the Admin's own
+// tenant in direct requested-tenant mode. Generic inventory routes never use
+// this middleware.
 function isAuthorizedAdminTenantSelection(req, actor, targetTenantId) {
   const context = req.activeTenantContext || {};
   const actorId = normalizeString(req.get('x-portal-actor-id'));
+  const actorTenantId = normalizeString(actor.tenantId);
+  const requestedTenantId = normalizeString(context.requestedTenantId);
+  const pathTenantId = normalizeString(req.params?.tenantId);
 
-  return context.source === 'active_tenant' &&
+  const hasMatchingPortalActor = actorId === normalizeString(actor.id);
+  const isSelfTenantQaSelection = context.source === 'requested_tenant' &&
+    requestedTenantId === actorTenantId &&
+    pathTenantId === actorTenantId &&
+    targetTenantId === actorTenantId &&
+    !normalizeString(context.activeTenantId) &&
+    !normalizeString(context.actorUserId);
+  const isCrossTenantSelection = context.source === 'active_tenant' &&
     normalizeString(context.actorUserId) === normalizeString(actor.id) &&
-    actorId === normalizeString(actor.id) &&
     normalizeString(context.activeTenantId) === targetTenantId &&
-    targetTenantId !== normalizeString(actor.tenantId);
+    targetTenantId !== actorTenantId;
+
+  return hasMatchingPortalActor && (isSelfTenantQaSelection || isCrossTenantSelection);
 }
 
 function createAdminQaInventoryAuthorization(overrides = {}) {

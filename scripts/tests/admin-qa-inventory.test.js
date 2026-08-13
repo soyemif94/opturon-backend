@@ -57,6 +57,23 @@ function loadAuthorization(overrides = {}) {
 async function testAuthorization() {
   const { middleware, touched } = loadAuthorization();
   try {
+    const selfTenantRequest = {
+      // A direct request to the Opturon Admin tenant is allowed only on the
+      // canonical QA fixture surface guarded by this middleware.
+      params: { tenantId: 'actor-own-tenant' },
+      activeTenantId: 'actor-own-tenant',
+      activeTenantContext: {
+        source: 'requested_tenant',
+        requestedTenantId: 'actor-own-tenant',
+        activeTenantId: null,
+        actorUserId: null
+      },
+      get: (header) => header === 'x-portal-actor-id' ? '11111111-1111-4111-8111-111111111111' : ''
+    };
+    let selfTenantNextCalled = false;
+    await middleware.requireAdminQaInventoryPermission(selfTenantRequest, response(), () => { selfTenantNextCalled = true; });
+    assert.equal(selfTenantNextCalled, true, 'Opturon Admin may use the canonical QA surface on its own tenant');
+
     const request = {
       // The Admin workspace used to route the request need not be the
       // backend-resolved tenant of the portal actor. The selected client must
@@ -75,17 +92,40 @@ async function testAuthorization() {
     await middleware.requireAdminQaInventoryPermission(request, response(), () => { nextCalled = true; });
     assert.equal(nextCalled, true, 'Opturon Admin may use an active client tenant distinct from the actor tenant');
 
-    const ownTenant = response();
+    const ownTenantWithActiveHandoff = response();
     await middleware.requireAdminQaInventoryPermission(
       {
-        ...request,
+        ...selfTenantRequest,
         activeTenantId: 'actor-own-tenant',
-        activeTenantContext: { ...request.activeTenantContext, activeTenantId: 'actor-own-tenant' }
+        activeTenantContext: {
+          ...selfTenantRequest.activeTenantContext,
+          source: 'active_tenant',
+          activeTenantId: 'actor-own-tenant',
+          actorUserId: '11111111-1111-4111-8111-111111111111'
+        }
       },
-      ownTenant,
+      ownTenantWithActiveHandoff,
       () => {}
     );
-    assert.equal(ownTenant.statusCode, 403, 'the QA surface cannot target the actor tenant itself');
+    assert.equal(ownTenantWithActiveHandoff.statusCode, 403, 'the active-tenant branch cannot target the actor tenant itself');
+
+    const directDifferentTenant = response();
+    await middleware.requireAdminQaInventoryPermission(
+      {
+        ...selfTenantRequest,
+        params: { tenantId: 'tenant-controlled' },
+        activeTenantId: 'tenant-controlled',
+        activeTenantContext: {
+          source: 'requested_tenant',
+          requestedTenantId: 'tenant-controlled',
+          activeTenantId: null,
+          actorUserId: null
+        }
+      },
+      directDifferentTenant,
+      () => {}
+    );
+    assert.equal(directDifferentTenant.statusCode, 403, 'requested_tenant mode cannot target a different tenant');
 
     const spoofed = response();
     await middleware.requireAdminQaInventoryPermission(
@@ -119,7 +159,7 @@ async function testAuthorization() {
       direct,
       () => {}
     );
-    assert.equal(direct.statusCode, 403, 'Admin workspace cannot use this surface without an active client selection');
+    assert.equal(direct.statusCode, 403, 'requested_tenant mode must resolve to the actor tenant exactly');
   } finally {
     clearModule('src/middlewares/portal-admin-qa-inventory-authorization.middleware.js');
     for (const resolved of touched) delete require.cache[resolved];
@@ -431,14 +471,16 @@ async function main() {
   const routes = require('node:fs').readFileSync(modulePath('src/routes/portal.routes.js'), 'utf8');
   const qaServiceSource = require('node:fs').readFileSync(modulePath('src/services/admin-qa-inventory.service.js'), 'utf8');
   assert.match(routes, /admin-qa-inventory\/products'[\s\S]*requirePortalInternalAuth[\s\S]*requireAdminQaInventoryPermission[\s\S]*catalogModule[\s\S]*inventoryCapability/);
+  assert.match(routes, /admin-qa-inventory\/locations'[\s\S]*requirePortalInternalAuth[\s\S]*requireAdminQaInventoryPermission/);
+  assert.match(routes, /admin-qa-inventory\/lots'[\s\S]*requirePortalInternalAuth[\s\S]*requireAdminQaInventoryPermission/);
   assert.match(routes, /admin-qa-inventory\/lots\/:lotId\/rollback'[\s\S]*requirePortalInternalAuth[\s\S]*requireAdminQaInventoryPermission/);
-  const genericInventoryRouteLines = routes
+  const genericInventoryAndProductRouteLines = routes
     .split(/\r?\n/)
-    .filter((line) => line.includes("'/tenants/:tenantId/inventory/"));
-  assert.ok(genericInventoryRouteLines.length > 0);
+    .filter((line) => line.includes("'/tenants/:tenantId/inventory/") || line.includes("'/tenants/:tenantId/products"));
+  assert.ok(genericInventoryAndProductRouteLines.length > 0);
   assert.ok(
-    genericInventoryRouteLines.every((line) => !line.includes('requireAdminQaInventoryPermission')),
-    'generic inventory routes remain unchanged'
+    genericInventoryAndProductRouteLines.every((line) => !line.includes('requireAdminQaInventoryPermission')),
+    'generic inventory and product routes remain outside the QA self-tenant exception'
   );
   assert.doesNotMatch(qaServiceSource, /require\(['"]\.\/(?:portal-operational-alerts|operational-alert|portal-whatsapp|whatsapp)/i);
   assert.doesNotMatch(qaServiceSource, /\b(?:INSERT|UPDATE|DELETE)\b[\s\S]*\b(?:operational_alert|whatsapp)/i);
