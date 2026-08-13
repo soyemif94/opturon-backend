@@ -42,6 +42,12 @@ const DELIVERY_COLUMNS = `
   "createdAt",
   "updatedAt"`;
 
+const DELIVERY_RETURNING_COLUMNS = DELIVERY_COLUMNS.split(',')
+  .map((column) => column.trim())
+  .filter(Boolean)
+  .map((column) => `operational_alert_deliveries.${column}`)
+  .join(',\n  ');
+
 const DELIVERY_STATUSES = new Set([
   'pending',
   'sending',
@@ -53,6 +59,18 @@ const DELIVERY_STATUSES = new Set([
   'unknown_delivery',
   'skipped'
 ]);
+
+function deliverySnapshotMaxAttemptsSql(instanceAlias, fallbackParameter) {
+  const value = `${instanceAlias}.snapshot #>> '{rule,deliveryPolicy,maxAttempts}'`;
+  return `COALESCE(
+    CASE
+      WHEN ${value} ~ '^[1-9][0-9]*$'
+        THEN LEAST(10, GREATEST(1, (${value})::int))
+      ELSE NULL
+    END,
+    ${fallbackParameter}::int
+  )`;
+}
 
 function dbQuery(client, text, params) {
   return client && typeof client.query === 'function' ? client.query(text, params) : query(text, params);
@@ -292,6 +310,7 @@ function sanitizeResultCode(value) {
 
 async function recoverOperationalAlertDeliveryLeases({ maxAttempts = 5 } = {}) {
   const safeMaxAttempts = Math.max(1, Math.min(20, Number.parseInt(String(maxAttempts || 5), 10) || 5));
+  const snapshotMaxAttempts = deliverySnapshotMaxAttemptsSql('i', '$1');
   return withTransaction(async (client) => {
     const providerKnown = await client.query(
       `UPDATE operational_alert_deliveries
@@ -361,17 +380,20 @@ async function recoverOperationalAlertDeliveryLeases({ maxAttempts = 5 } = {}) {
            "lastError" = COALESCE("lastError", 'retry_attempts_exhausted'),
            "errorMetadata" = COALESCE("errorMetadata", '{}'::jsonb) || jsonb_build_object(
              'reason', 'retry_attempts_exhausted',
-             'maxAttempts', $1::int,
+             'maxAttempts', ${snapshotMaxAttempts},
              'retriable', false
            ),
            "lockedAt" = NULL,
            "lockedBy" = NULL,
            "leaseExpiresAt" = NULL,
            "updatedAt" = NOW()
-       WHERE status = 'failed_retryable'
-         AND "availableAt" <= NOW()
-         AND "attemptCount" >= $1::int
-       RETURNING ${DELIVERY_COLUMNS}`,
+       FROM operational_alert_instances i
+       WHERE operational_alert_deliveries."instanceId" = i.id
+         AND operational_alert_deliveries."clinicId" = i."clinicId"
+         AND operational_alert_deliveries.status = 'failed_retryable'
+         AND operational_alert_deliveries."availableAt" <= NOW()
+         AND operational_alert_deliveries."attemptCount" >= ${snapshotMaxAttempts}
+       RETURNING ${DELIVERY_RETURNING_COLUMNS}`,
       [safeMaxAttempts]
     );
     return {
@@ -393,16 +415,22 @@ async function claimOperationalAlertDeliveries({
   const safeLimit = Math.max(1, Math.min(100, Number.parseInt(String(limit || 10), 10) || 10));
   const safeLeaseSeconds = Math.max(30, Math.min(900, Number.parseInt(String(leaseSeconds || 120), 10) || 120));
   const safeMaxAttempts = Math.max(1, Math.min(20, Number.parseInt(String(maxAttempts || 5), 10) || 5));
+  const snapshotMaxAttempts = deliverySnapshotMaxAttemptsSql('i', '$4');
   if (!safeWorkerId) throw contractError('operational_alert_delivery_worker_id_required');
 
   return withTransaction(async (client) => {
     const result = await client.query(
       `WITH picked AS (
          SELECT id AS "pickedId"
-         FROM operational_alert_deliveries
-         WHERE status IN ('pending', 'failed_retryable')
-           AND "availableAt" <= NOW()
-           AND "attemptCount" < $4::int
+         FROM operational_alert_deliveries d
+         WHERE d.status IN ('pending', 'failed_retryable')
+           AND d."availableAt" <= NOW()
+           AND d."attemptCount" < COALESCE((
+             SELECT ${snapshotMaxAttempts}
+             FROM operational_alert_instances i
+             WHERE i.id = d."instanceId"
+               AND i."clinicId" = d."clinicId"
+           ), $4::int)
          ORDER BY "availableAt" ASC, "createdAt" ASC, id ASC
          FOR UPDATE SKIP LOCKED
          LIMIT $1::int

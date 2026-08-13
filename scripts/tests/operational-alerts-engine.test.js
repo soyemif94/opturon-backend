@@ -939,6 +939,54 @@ async function main() {
     assert.deepStrictEqual(retryDelivery.messageSnapshot, retrySnapshot);
     mark('Y');
 
+    const oneAttemptRule = await createRule(
+      runtime,
+      db,
+      cashRuleInput(ids.clinicA, ids.channelA, { deliveryPolicy: { maxAttempts: 1 } }),
+      [recipientA.id]
+    );
+    const oneAttemptMaterialized = await materialize(
+      runtime,
+      cashEventInput(ids.clinicA, 'graph-503-one-attempt', oneAttemptRule.id)
+    );
+    let oneAttemptGraphCalls = 0;
+    await runtime.deliveryProcessor.processAvailableOperationalAlertDeliveries({
+      workerId: 'delivery-worker-503-one-attempt',
+      limit: 10,
+      now: NOW,
+      dependencies: {
+        sendChannelScopedMessage: async () => {
+          oneAttemptGraphCalls += 1;
+          throw graph503;
+        }
+      }
+    });
+    let oneAttemptDelivery = await runtime.deliveries.findOperationalAlertDeliveryById(
+      oneAttemptMaterialized.deliveries[0].id,
+      ids.clinicA
+    );
+    assert.strictEqual(oneAttemptGraphCalls, 1);
+    assert.strictEqual(oneAttemptDelivery.status, 'failed_permanent');
+    assert.strictEqual(oneAttemptDelivery.resultCode, 'retry_attempts_exhausted');
+    await runtime.deliveryProcessor.processAvailableOperationalAlertDeliveries({
+      workerId: 'delivery-worker-503-one-attempt-repeat',
+      limit: 10,
+      now: NOW,
+      dependencies: {
+        sendChannelScopedMessage: async () => {
+          oneAttemptGraphCalls += 1;
+          throw graph503;
+        }
+      }
+    });
+    oneAttemptDelivery = await runtime.deliveries.findOperationalAlertDeliveryById(
+      oneAttemptDelivery.id,
+      ids.clinicA
+    );
+    assert.strictEqual(oneAttemptGraphCalls, 1);
+    assert.strictEqual(oneAttemptDelivery.status, 'failed_permanent');
+    mark('AI');
+
     const permanentRule = await createRule(
       runtime,
       db,
@@ -1214,10 +1262,10 @@ async function main() {
 
     const expectedLabels = [
       ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''),
-      'AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AH'
+      'AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AH', 'AI'
     ];
     assert.deepStrictEqual(Array.from(covered).sort(), expectedLabels.sort());
-    console.log('operational-alerts-engine.test.js passed (A-AH)');
+    console.log('operational-alerts-engine.test.js passed (A-AI)');
   } finally {
     await db.close();
   }

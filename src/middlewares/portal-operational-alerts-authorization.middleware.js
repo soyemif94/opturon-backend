@@ -30,7 +30,14 @@ function isAuthorizedAdminTenantSelection(req, actor, targetTenantId) {
     && normalizeString(context.activeTenantId) === targetTenantId;
 }
 
-function buildOperationalAlertsAuthorization(allowedRoles) {
+function isOperationalAlertsAdmin(actor) {
+  return actor &&
+    actor.isAdmin === true &&
+    normalizeString(actor.accountScope).toLowerCase() === 'opturon_admin';
+}
+
+function buildOperationalAlertsAuthorization(allowedRoles, options = {}) {
+  const adminOnly = options.adminOnly === true;
   return async function operationalAlertsAuthorization(req, res, next) {
     try {
       if (!hasPortalInternalAuth(req)) return forbidden(res);
@@ -40,7 +47,11 @@ function buildOperationalAlertsAuthorization(allowedRoles) {
 
       const actor = await findPortalActorContext(actorId);
       if (!actor) return forbidden(res);
-      if (actor.isAdmin) {
+      if (adminOnly) {
+        if (!isOperationalAlertsAdmin(actor) || !isAuthorizedAdminTenantSelection(req, actor, targetTenantId)) {
+          return forbidden(res);
+        }
+      } else if (actor.isAdmin) {
         if (!isAuthorizedAdminTenantSelection(req, actor, targetTenantId)) return forbidden(res);
       } else if (
         normalizeString(actor.tenantId) !== targetTenantId ||
@@ -68,9 +79,14 @@ function requireOperationalAlertsWritePermission() {
   return buildOperationalAlertsAuthorization(OPERATIONAL_ALERTS_WRITE_ROLES);
 }
 
+function requireOperationalAlertsAdminPermission() {
+  return buildOperationalAlertsAuthorization(new Set(), { adminOnly: true });
+}
+
 module.exports = {
   OPERATIONAL_ALERTS_READ_ROLES,
   OPERATIONAL_ALERTS_WRITE_ROLES,
   requireOperationalAlertsReadPermission,
-  requireOperationalAlertsWritePermission
+  requireOperationalAlertsWritePermission,
+  requireOperationalAlertsAdminPermission
 };

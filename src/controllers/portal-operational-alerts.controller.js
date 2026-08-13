@@ -1,4 +1,6 @@
 const operationalAlerts = require('../services/portal-operational-alerts.service');
+const candidatePreview = require('../services/operational-alert-candidate-preview.service');
+const canaryPreflight = require('../services/operational-alert-canary-preflight.service');
 const { logError } = require('../utils/logger');
 
 function tenantId(req) {
@@ -52,6 +54,14 @@ function getOperationalAlertEventTypes(req, res) {
 
 function getOperationalAlertSettings(req, res) {
   return respond(req, res, () => operationalAlerts.getSettings(tenantId(req)));
+}
+
+function patchOperationalAlertSettings(req, res) {
+  return respond(req, res, () => operationalAlerts.updateOperationalAlertsEnabled(
+    tenantId(req),
+    req.body,
+    req.operationalAlertsActor
+  ));
 }
 
 function getOperationalAlertRecipients(req, res) {
@@ -154,6 +164,24 @@ function getOperationalAlertRuleReadiness(req, res) {
   ));
 }
 
+function getOperationalAlertRuleCandidatePreview(req, res) {
+  return respond(req, res, () => candidatePreview.previewRuleCandidates(
+    tenantId(req),
+    req.params.ruleId
+  ));
+}
+
+function getOperationalAlertObservability(req, res) {
+  return respond(req, res, () => canaryPreflight.getTenantObservability(tenantId(req)));
+}
+
+function getOperationalAlertRuleCanaryPreflight(req, res) {
+  return respond(req, res, () => canaryPreflight.getCanaryPreflight(
+    tenantId(req),
+    req.params.ruleId
+  ));
+}
+
 function postOperationalAlertRuleEnable(req, res) {
   return respond(req, res, () => operationalAlerts.enableRule(
     tenantId(req),
@@ -194,6 +222,7 @@ function getOperationalAlertHistoryDetail(req, res) {
 module.exports = {
   getOperationalAlertEventTypes,
   getOperationalAlertSettings,
+  patchOperationalAlertSettings,
   getOperationalAlertRecipients,
   getOperationalAlertRecipient,
   postOperationalAlertRecipient,
@@ -206,6 +235,9 @@ module.exports = {
   patchOperationalAlertRule,
   putOperationalAlertRuleRecipients,
   getOperationalAlertRuleReadiness,
+  getOperationalAlertRuleCandidatePreview,
+  getOperationalAlertObservability,
+  getOperationalAlertRuleCanaryPreflight,
   postOperationalAlertRuleEnable,
   postOperationalAlertRuleDisable,
   postOperationalAlertRulePreview,

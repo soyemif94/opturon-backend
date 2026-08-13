@@ -264,7 +264,8 @@ async function testAuthorization() {
   clearModule('src/middlewares/portal-operational-alerts-authorization.middleware.js');
   const {
     requireOperationalAlertsReadPermission,
-    requireOperationalAlertsWritePermission
+    requireOperationalAlertsWritePermission,
+    requireOperationalAlertsAdminPermission
   } = require(path.join(root, 'src/middlewares/portal-operational-alerts-authorization.middleware.js'));
 
   function request(targetTenant = 'tenant-a', activeContext = null) {
@@ -323,6 +324,30 @@ async function testAuthorization() {
   );
   assert.equal(nextCalled, true);
 
+  actor = { id: ids.ownerA, tenantId: 'tenant-a', role: 'owner', isAdmin: false };
+  const nonAdminMutationRes = response();
+  await requireOperationalAlertsAdminPermission()(request(), nonAdminMutationRes, () => {});
+  assert.equal(nonAdminMutationRes.statusCode, 403);
+
+  actor = {
+    id: ids.ownerA,
+    tenantId: 'admin-tenant',
+    role: 'owner',
+    isAdmin: true,
+    accountScope: 'opturon_admin'
+  };
+  nextCalled = false;
+  await requireOperationalAlertsAdminPermission()(
+    request('tenant-b', {
+      source: 'active_tenant',
+      actorUserId: actor.id,
+      activeTenantId: 'tenant-b'
+    }),
+    response(),
+    () => { nextCalled = true; }
+  );
+  assert.equal(nextCalled, true);
+
   internalAuth = false;
   const noInternalAuthRes = response();
   await requireOperationalAlertsReadPermission()(request('tenant-b'), noInternalAuthRes, () => {});
@@ -346,6 +371,52 @@ async function testAdminService(db, service) {
   assert.equal(settingsA.operationalAlertsEnabled, false);
   assert.equal(settingsA.mutable, false);
   mark('AG');
+
+  const tenantSwitchAdmin = {
+    id: ids.ownerA,
+    role: 'owner',
+    tenantId: 'admin-tenant',
+    isAdmin: true,
+    accountScope: 'opturon_admin'
+  };
+  await expectError(
+    () => service.updateOperationalAlertsEnabled('tenant-a', {
+      operationalAlertsEnabled: true
+    }, actorA),
+    'portal_operational_alerts_admin_required',
+    403
+  );
+  const switchOn = await service.updateOperationalAlertsEnabled('tenant-a', {
+    operationalAlertsEnabled: true
+  }, tenantSwitchAdmin);
+  assert.deepEqual(switchOn, { operationalAlertsEnabled: true, changed: true });
+  assert.equal((await service.getSettings('tenant-a')).operationalAlertsEnabled, true);
+  const switchOnAgain = await service.updateOperationalAlertsEnabled('tenant-a', {
+    operationalAlertsEnabled: true
+  }, tenantSwitchAdmin);
+  assert.deepEqual(switchOnAgain, { operationalAlertsEnabled: true, changed: false });
+  const switchOff = await service.updateOperationalAlertsEnabled('tenant-a', {
+    operationalAlertsEnabled: false
+  }, tenantSwitchAdmin);
+  assert.deepEqual(switchOff, { operationalAlertsEnabled: false, changed: true });
+  await expectError(
+    () => service.updateOperationalAlertsEnabled('tenant-a', {
+      operationalAlertsEnabled: 'true'
+    }, tenantSwitchAdmin),
+    'operational_alert_settings_operational_alerts_enabled_invalid'
+  );
+  const switchAudit = await db.query(
+    `SELECT action, payload
+     FROM portal_user_audit_log
+     WHERE action = 'operational_alerts_enabled_updated'
+     ORDER BY "createdAt" ASC, id ASC`
+  );
+  assert.equal(switchAudit.rows.length, 2);
+  assert.deepEqual(switchAudit.rows.map((row) => row.payload), [
+    { objectType: 'operational_alert_settings', previousValue: false, newValue: true },
+    { objectType: 'operational_alert_settings', previousValue: true, newValue: false }
+  ]);
+  mark('AI');
 
   const recipientA = await service.createRecipient('tenant-a', {
     name: 'Responsible A',
@@ -802,11 +873,18 @@ function testStaticContracts() {
   assert.match(routes, /operational-alerts\/recipients\/:recipientId\/consent/);
   assert.match(routes, /operational-alerts\/rules\/:ruleId\/readiness/);
   assert.match(routes, /operational-alerts\/rules\/:ruleId\/preview/);
+  assert.match(routes, /operational-alerts\/observability/);
+  assert.match(routes, /operationalAlertsAdminPermission, getOperationalAlertObservability/);
+  assert.match(routes, /operational-alerts\/rules\/:ruleId\/canary-preflight/);
+  assert.match(routes, /operationalAlertsAdminPermission, getOperationalAlertRuleCanaryPreflight/);
   assert.match(routes, /operational-alerts\/history\/:instanceId/);
-  assert.doesNotMatch(routes, /patch\('\/tenants\/:tenantId\/operational-alerts\/settings/);
+  assert.match(routes, /patch\('\/tenants\/:tenantId\/operational-alerts\/settings/);
+  assert.match(routes, /operationalAlertsAdminPermission, patchOperationalAlertSettings/);
   assert.doesNotMatch(routes, /operational-alerts\/test-send/);
   assert.match(routes, /router\.use\('\/tenants\/:tenantId\/operational-alerts', operationalAlertsNoStore\)/);
   assert.match(controller, /private, no-store/);
+  assert.match(controller, /getTenantObservability/);
+  assert.match(controller, /getCanaryPreflight/);
   assert.match(service, /operational_alert_rule_enabled/);
   assert.match(service, /operational_alert_rule_disabled/);
   assert.match(service, /PRODUCER_NOT_AVAILABLE/);
@@ -825,10 +903,10 @@ async function run() {
     for (const label of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').slice(0, 26)) {
       assert.ok(covered.has(label), `Missing matrix coverage ${label}`);
     }
-    for (const label of ['AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AH']) {
+    for (const label of ['AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AH', 'AI']) {
       assert.ok(covered.has(label), `Missing matrix coverage ${label}`);
     }
-    console.log('operational-alerts-admin-api.test.js passed (A-AH)');
+    console.log('operational-alerts-admin-api.test.js passed (A-AI)');
   } finally {
     await db.close();
   }

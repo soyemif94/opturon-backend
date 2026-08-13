@@ -95,6 +95,9 @@ const {
   recoverOperationalAlertDeliveries,
   processAvailableOperationalAlertDeliveries
 } = require('./services/operational-alert-delivery-processor.service');
+const {
+  createOperationalAlertWorkerHeartbeatReporter
+} = require('./services/operational-alert-worker-heartbeat.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -136,6 +139,20 @@ const BOT_REPLY_AUTHORITY_REASONS = Object.freeze({
 });
 const WORKER_RUNTIME_VERSION = 'industry-discovery-guard-2026-06-09';
 let workerRuntimeCommitShaCache = undefined;
+const operationalAlertHeartbeat = createOperationalAlertWorkerHeartbeatReporter({
+  workerId: WORKER_ID
+});
+
+function reportOperationalAlertHeartbeat(report) {
+  try {
+    report();
+  } catch (error) {
+    logWarn('operational_alert_worker_heartbeat_report_failed', {
+      workerId: WORKER_ID,
+      error: String(error && error.message || 'heartbeat_report_failed').slice(0, 240)
+    });
+  }
+}
 
 function resolveWorkerRuntimeCommitShaFromGit() {
   if (workerRuntimeCommitShaCache !== undefined) return workerRuntimeCommitShaCache;
@@ -19830,6 +19847,7 @@ async function pollOnce() {
   }
 
   polling = true;
+  reportOperationalAlertHeartbeat(() => operationalAlertHeartbeat.markPollStarted());
   try {
     logInfo('worker_poll_tick', {
       workerId: WORKER_ID,
@@ -19914,7 +19932,9 @@ async function pollOnce() {
 
       await processJob(job);
     }
+    reportOperationalAlertHeartbeat(() => operationalAlertHeartbeat.markPollSucceeded());
   } catch (error) {
+    reportOperationalAlertHeartbeat(() => operationalAlertHeartbeat.markPollFailed(error));
     logWarn('worker_poll_failed', {
       workerId: WORKER_ID,
       error: error.message
@@ -20015,6 +20035,7 @@ function startWorker() {
       marker: 'INDUSTRY_DISCOVERY_GUARD_RUNTIME_AUDIT'
     })
   });
+  reportOperationalAlertHeartbeat(() => operationalAlertHeartbeat.markWorkerStarted());
 
   pollOnce()
     .catch((error) => {

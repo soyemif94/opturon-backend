@@ -4,7 +4,8 @@ const ruleRepository = require('../repositories/operational-alert-rules.reposito
 const historyRepository = require('../repositories/operational-alert-admin.repository');
 const {
   findClinicByExternalTenantId,
-  findChannelById
+  findChannelById,
+  updateClinicOperationalAlertsEnabledById
 } = require('../repositories/tenant.repository');
 const {
   findStaffUserByIdAndClinicId,
@@ -82,6 +83,7 @@ const RULE_WRITE_KEYS = Object.freeze([
   'formatterVersion'
 ]);
 const RULE_PATCH_KEYS = Object.freeze([...RULE_WRITE_KEYS, 'expectedConfigVersion']);
+const SETTINGS_UPDATE_KEYS = Object.freeze(['operationalAlertsEnabled']);
 const HISTORY_FILTER_KEYS = Object.freeze([
   'eventType',
   'ruleId',
@@ -133,6 +135,11 @@ function assertExpectedVersion(value, code) {
   return Number(value);
 }
 
+function assertBoolean(value, code) {
+  if (typeof value !== 'boolean') fail(code);
+  return value;
+}
+
 function translateRepositoryError(error) {
   if (error instanceof OperationalAlertsAdminError) throw error;
   if (error && error.code === '23505') {
@@ -161,6 +168,17 @@ async function execute(work) {
 function requireActor(actor) {
   if (!actor || !isUuid(actor.id)) fail('portal_operational_alerts_actor_required', 403);
   return actor;
+}
+
+function requireOperationalAlertsAdminActor(actor) {
+  const safeActor = requireActor(actor);
+  if (
+    safeActor.isAdmin !== true ||
+    normalizeString(safeActor.accountScope).toLowerCase() !== 'opturon_admin'
+  ) {
+    fail('portal_operational_alerts_admin_required', 403);
+  }
+  return safeActor;
 }
 
 function buildStaffMap(staff) {
@@ -327,6 +345,7 @@ function buildRuleReadiness(context) {
 const DEFAULT_DEPENDENCIES = Object.freeze({
   withTransaction,
   findClinic: findClinicByExternalTenantId,
+  updateOperationalAlertsEnabled: updateClinicOperationalAlertsEnabledById,
   findChannel: findChannelById,
   findStaff: findStaffUserByIdAndClinicId,
   listStaff: listStaffUsersByClinicId,
@@ -353,10 +372,12 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
 function createPortalOperationalAlertsService(overrides = {}) {
   const dependencies = { ...DEFAULT_DEPENDENCIES, ...overrides };
 
-  async function requireClinic(tenantId, client = null) {
+  async function requireClinic(tenantId, client = null, options = {}) {
     const safeTenantId = normalizeString(tenantId);
     if (!safeTenantId) fail('missing_tenant_id');
-    const clinic = await dependencies.findClinic(safeTenantId, client);
+    const clinic = await dependencies.findClinic(safeTenantId, client, {
+      forUpdate: options.forUpdate === true
+    });
     if (!clinic) fail('tenant_mapping_not_found', 404);
     return { tenantId: safeTenantId, clinic };
   }
@@ -440,6 +461,52 @@ function createPortalOperationalAlertsService(overrides = {}) {
         operationalAlertsEnabled: isOperationalAlertsEnabled(context.clinic),
         mutable: false
       };
+    });
+  }
+
+  async function updateOperationalAlertsEnabled(tenantId, payload, actor) {
+    return execute(async () => {
+      assertPayload(payload, SETTINGS_UPDATE_KEYS, 'operational_alert_settings_update_payload_invalid');
+      const enabled = assertBoolean(
+        payload.operationalAlertsEnabled,
+        'operational_alert_settings_operational_alerts_enabled_invalid'
+      );
+      const safeActor = requireOperationalAlertsAdminActor(actor);
+
+      return dependencies.withTransaction(async (client) => {
+        const context = await requireClinic(tenantId, client, { forUpdate: true });
+        const previousValue = isOperationalAlertsEnabled(context.clinic);
+        if (previousValue === enabled) {
+          return {
+            operationalAlertsEnabled: previousValue,
+            changed: false
+          };
+        }
+
+        const updatedClinic = await dependencies.updateOperationalAlertsEnabled(
+          context.clinic.id,
+          enabled,
+          client
+        );
+        if (!updatedClinic) fail('tenant_mapping_not_found', 404);
+
+        await writeAudit({
+          tenantId: context.tenantId,
+          clinicId: context.clinic.id,
+          actor: safeActor,
+          action: 'operational_alerts_enabled_updated',
+          payload: {
+            objectType: 'operational_alert_settings',
+            previousValue,
+            newValue: enabled
+          }
+        }, client);
+
+        return {
+          operationalAlertsEnabled: isOperationalAlertsEnabled(updatedClinic),
+          changed: true
+        };
+      });
     });
   }
 
@@ -1044,6 +1111,7 @@ function createPortalOperationalAlertsService(overrides = {}) {
   return {
     getEventTypes,
     getSettings,
+    updateOperationalAlertsEnabled,
     listRecipients,
     getRecipient,
     createRecipient,

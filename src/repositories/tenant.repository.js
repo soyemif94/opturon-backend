@@ -166,14 +166,34 @@ async function findChannelByIdAndClinicId(channelId, clinicId, client = null) {
   return mapChannelTokenRecord(result.rows[0] || null);
 }
 
-async function findClinicByExternalTenantId(externalTenantId, client = null) {
+async function findClinicByExternalTenantId(externalTenantId, client = null, options = {}) {
+  const lockClause = options && options.forUpdate === true ? ' FOR UPDATE' : '';
   const result = await dbQuery(
     client,
     `SELECT id, name, timezone, "externalTenantId", settings
      FROM clinics
      WHERE "externalTenantId" = $1
-     LIMIT 1`,
+     LIMIT 1${lockClause}`,
     [externalTenantId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function updateClinicOperationalAlertsEnabledById(clinicId, enabled, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE clinics
+     SET settings = jsonb_set(
+       COALESCE(settings, '{}'::jsonb),
+       '{operationalAlertsEnabled}',
+       $2::jsonb,
+       true
+     ),
+     "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id, name, timezone, "externalTenantId", settings`,
+    [clinicId, JSON.stringify(enabled === true)]
   );
 
   return result.rows[0] || null;
@@ -857,6 +877,7 @@ module.exports = {
   findChannelById,
   findChannelByIdAndClinicId,
   findClinicByExternalTenantId,
+  updateClinicOperationalAlertsEnabledById,
   provisionCleanClinicForExternalTenant,
   getClinicPortalAccountConfigById,
   getClinicPortalSubaccountLimitById,

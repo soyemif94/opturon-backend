@@ -175,6 +175,7 @@ const {
 const {
   getOperationalAlertEventTypes,
   getOperationalAlertSettings,
+  patchOperationalAlertSettings,
   getOperationalAlertRecipients,
   getOperationalAlertRecipient,
   postOperationalAlertRecipient,
@@ -187,6 +188,9 @@ const {
   patchOperationalAlertRule,
   putOperationalAlertRuleRecipients,
   getOperationalAlertRuleReadiness,
+  getOperationalAlertRuleCandidatePreview,
+  getOperationalAlertObservability,
+  getOperationalAlertRuleCanaryPreflight,
   postOperationalAlertRuleEnable,
   postOperationalAlertRuleDisable,
   postOperationalAlertRulePreview,
@@ -199,7 +203,8 @@ const { requirePortalModule, requirePortalCapability } = require('../middlewares
 const { requireSensitiveInventoryRole, requireInventoryReceiptRole } = require('../middlewares/portal-inventory-authorization.middleware');
 const {
   requireOperationalAlertsReadPermission,
-  requireOperationalAlertsWritePermission
+  requireOperationalAlertsWritePermission,
+  requireOperationalAlertsAdminPermission
 } = require('../middlewares/portal-operational-alerts-authorization.middleware');
 const {
   requireWhatsAppTemplateSyncAdmin
@@ -223,6 +228,7 @@ const sensitiveInventoryRole = requireSensitiveInventoryRole();
 const inventoryReceiptRole = requireInventoryReceiptRole();
 const operationalAlertsReadPermission = requireOperationalAlertsReadPermission();
 const operationalAlertsWritePermission = requireOperationalAlertsWritePermission();
+const operationalAlertsAdminPermission = requireOperationalAlertsAdminPermission();
 function operationalAlertsNoStore(_req, res, next) {
   res.setHeader('Cache-Control', 'private, no-store');
   res.setHeader('Pragma', 'no-cache');
@@ -521,6 +527,8 @@ router.get('/tenants/:tenantId/bot/transfer-config', requirePortalInternalAuth, 
 router.post('/tenants/:tenantId/bot/transfer-config', requirePortalInternalAuth, postPortalBotTransferConfigController);
 router.get('/tenants/:tenantId/operational-alerts/event-types', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertEventTypes);
 router.get('/tenants/:tenantId/operational-alerts/settings', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertSettings);
+router.patch('/tenants/:tenantId/operational-alerts/settings', requirePortalInternalAuth, operationalAlertsAdminPermission, patchOperationalAlertSettings);
+router.get('/tenants/:tenantId/operational-alerts/observability', requirePortalInternalAuth, operationalAlertsAdminPermission, getOperationalAlertObservability);
 router.get('/tenants/:tenantId/operational-alerts/recipients', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertRecipients);
 router.post('/tenants/:tenantId/operational-alerts/recipients', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRecipient);
 router.get('/tenants/:tenantId/operational-alerts/recipients/:recipientId', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertRecipient);
@@ -533,6 +541,8 @@ router.get('/tenants/:tenantId/operational-alerts/rules/:ruleId', requirePortalI
 router.patch('/tenants/:tenantId/operational-alerts/rules/:ruleId', requirePortalInternalAuth, operationalAlertsWritePermission, patchOperationalAlertRule);
 router.put('/tenants/:tenantId/operational-alerts/rules/:ruleId/recipients', requirePortalInternalAuth, operationalAlertsWritePermission, putOperationalAlertRuleRecipients);
 router.get('/tenants/:tenantId/operational-alerts/rules/:ruleId/readiness', requirePortalInternalAuth, operationalAlertsReadPermission, getOperationalAlertRuleReadiness);
+router.get('/tenants/:tenantId/operational-alerts/rules/:ruleId/candidate-preview', requirePortalInternalAuth, operationalAlertsAdminPermission, getOperationalAlertRuleCandidatePreview);
+router.get('/tenants/:tenantId/operational-alerts/rules/:ruleId/canary-preflight', requirePortalInternalAuth, operationalAlertsAdminPermission, getOperationalAlertRuleCanaryPreflight);
 router.post('/tenants/:tenantId/operational-alerts/rules/:ruleId/enable', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRuleEnable);
 router.post('/tenants/:tenantId/operational-alerts/rules/:ruleId/disable', requirePortalInternalAuth, operationalAlertsWritePermission, postOperationalAlertRuleDisable);
 router.post('/tenants/:tenantId/operational-alerts/rules/:ruleId/preview', requirePortalInternalAuth, operationalAlertsReadPermission, postOperationalAlertRulePreview);

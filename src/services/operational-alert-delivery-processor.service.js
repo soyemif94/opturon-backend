@@ -61,6 +61,26 @@ function safeErrorMetadata(error, extra = {}) {
   };
 }
 
+function resolveDeliveryMaxAttempts(ruleSnapshot) {
+  const configured = Number(
+    ruleSnapshot &&
+    ruleSnapshot.deliveryPolicy &&
+    ruleSnapshot.deliveryPolicy.maxAttempts
+  );
+  return Number.isInteger(configured) && configured >= 1 ? configured : MAX_ATTEMPTS;
+}
+
+function classifyOperationalAlertSendFailure(error, attemptCount, now, maxAttempts) {
+  const classification = classifySendFailure(error, attemptCount, now);
+  if (
+    classification.status === 'failed_retryable' &&
+    Number(attemptCount) >= maxAttempts
+  ) {
+    return { status: 'failed_permanent', reason: 'retry_attempts_exhausted', availableAt: null };
+  }
+  return classification;
+}
+
 async function finishDelivery(delivery, patch, dependencies) {
   const updated = await dependencies.updateStatus(delivery.id, delivery.clinicId, {
     ...patch,
@@ -92,6 +112,7 @@ async function processOperationalAlertDelivery(claimedDelivery, options = {}) {
   let delivery = claimedDelivery;
   let graphBoundaryStarted = false;
   let graphSuccessMessageId = null;
+  let maxAttempts = MAX_ATTEMPTS;
 
   try {
     const instance = await dependencies.findInstance(delivery.instanceId, delivery.clinicId);
@@ -110,6 +131,16 @@ async function processOperationalAlertDelivery(claimedDelivery, options = {}) {
         errorMetadata: { reason: 'instance_snapshot_identity_invalid', retriable: false }
       }, dependencies);
       return { outcome: 'failed_permanent', reason: 'instance_snapshot_identity_invalid', delivery: updated };
+    }
+    maxAttempts = resolveDeliveryMaxAttempts(ruleSnapshot);
+    if (Number(delivery.attemptCount) > maxAttempts) {
+      const updated = await finishDelivery(delivery, {
+        status: 'failed_permanent',
+        resultCode: 'retry_attempts_exhausted',
+        lastError: 'retry_attempts_exhausted',
+        errorMetadata: { reason: 'retry_attempts_exhausted', maxAttempts, retriable: false }
+      }, dependencies);
+      return { outcome: 'failed_permanent', reason: 'retry_attempts_exhausted', delivery: updated };
     }
     if (instance.expiresAt && new Date(instance.expiresAt).getTime() <= now.getTime()) {
       const updated = await finishDelivery(delivery, {
@@ -309,7 +340,12 @@ async function processOperationalAlertDelivery(claimedDelivery, options = {}) {
       return { outcome: 'unknown_delivery', reason: 'graph_accepted_but_sent_state_uncertain', delivery: updated };
     }
     if (graphBoundaryStarted) {
-      const classification = classifySendFailure(error, delivery.attemptCount, now);
+      const classification = classifyOperationalAlertSendFailure(
+        error,
+        delivery.attemptCount,
+        now,
+        maxAttempts
+      );
       const updated = await finishDelivery(delivery, {
         status: classification.status,
         resultCode: classification.reason,
@@ -329,7 +365,7 @@ async function processOperationalAlertDelivery(claimedDelivery, options = {}) {
       return { outcome: classification.status, reason: classification.reason, delivery: updated };
     }
 
-    const permanent = Number(delivery.attemptCount) >= MAX_ATTEMPTS;
+    const permanent = Number(delivery.attemptCount) >= maxAttempts;
     const updated = await finishDelivery(delivery, {
       status: permanent ? 'failed_permanent' : 'failed_retryable',
       resultCode: permanent ? 'retry_attempts_exhausted_pre_graph' : 'processor_failed_before_graph_request',
@@ -408,6 +444,8 @@ module.exports = {
   recoverOperationalAlertDeliveries,
   processAvailableOperationalAlertDeliveries,
   __private__: {
-    safeErrorMetadata
+    safeErrorMetadata,
+    resolveDeliveryMaxAttempts,
+    classifyOperationalAlertSendFailure
   }
 };
