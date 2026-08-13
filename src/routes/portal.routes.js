@@ -209,6 +209,15 @@ const {
 const {
   requireWhatsAppTemplateSyncAdmin
 } = require('../middlewares/portal-whatsapp-template-sync-authorization.middleware');
+const {
+  requireAdminQaInventoryPermission
+} = require('../middlewares/portal-admin-qa-inventory-authorization.middleware');
+const {
+  postAdminQaInventoryProduct,
+  postAdminQaInventoryLocation,
+  postAdminQaInventoryLot,
+  postAdminQaInventoryLotRollback
+} = require('../controllers/portal-admin-qa-inventory.controller');
 
 const router = express.Router();
 
@@ -449,6 +458,13 @@ router.post('/tenants/:tenantId/inventory/lots/:lotId/adjust', inventoryCapabili
 router.post('/tenants/:tenantId/inventory/lots/:lotId/block', inventoryCapability, sensitiveInventoryRole, postPortalInventoryLotBlock);
 router.post('/tenants/:tenantId/inventory/lots/:lotId/unblock', inventoryCapability, sensitiveInventoryRole, postPortalInventoryLotUnblock);
 router.patch('/tenants/:tenantId/inventory/lots/:lotId/expiration', inventoryCapability, sensitiveInventoryRole, patchPortalInventoryLotExpiration);
+// Deliberately separate from generic inventory routes: only a server-resolved
+// Opturon Admin selecting an active client tenant can create this one canonical
+// QA inventory fixture and its audit-preserving rollback.
+router.post('/tenants/:tenantId/admin-qa-inventory/products', requirePortalInternalAuth, requireAdminQaInventoryPermission, catalogModule, inventoryCapability, postAdminQaInventoryProduct);
+router.post('/tenants/:tenantId/admin-qa-inventory/locations', requirePortalInternalAuth, requireAdminQaInventoryPermission, inventoryCapability, postAdminQaInventoryLocation);
+router.post('/tenants/:tenantId/admin-qa-inventory/lots', requirePortalInternalAuth, requireAdminQaInventoryPermission, inventoryCapability, postAdminQaInventoryLot);
+router.post('/tenants/:tenantId/admin-qa-inventory/lots/:lotId/rollback', requirePortalInternalAuth, requireAdminQaInventoryPermission, inventoryCapability, postAdminQaInventoryLotRollback);
 router.get('/tenants/:tenantId/products/:productId', catalogModule, getPortalProduct);
 router.post('/tenants/:tenantId/products/:productId/inventory-mode', catalogModule, postPortalProductInventoryMode);
 router.patch('/tenants/:tenantId/products/:productId', catalogModule, updatePortalProduct);
