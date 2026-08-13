@@ -367,6 +367,7 @@ async function main() {
   await testControllerContracts();
 
   const routes = require('node:fs').readFileSync(modulePath('src/routes/portal.routes.js'), 'utf8');
+  const qaServiceSource = require('node:fs').readFileSync(modulePath('src/services/admin-qa-inventory.service.js'), 'utf8');
   assert.match(routes, /admin-qa-inventory\/products'[\s\S]*requirePortalInternalAuth[\s\S]*requireAdminQaInventoryPermission[\s\S]*catalogModule[\s\S]*inventoryCapability/);
   assert.match(routes, /admin-qa-inventory\/lots\/:lotId\/rollback'[\s\S]*requirePortalInternalAuth[\s\S]*requireAdminQaInventoryPermission/);
   const genericInventoryRouteLines = routes
@@ -377,6 +378,8 @@ async function main() {
     genericInventoryRouteLines.every((line) => !line.includes('requireAdminQaInventoryPermission')),
     'generic inventory routes remain unchanged'
   );
+  assert.doesNotMatch(qaServiceSource, /require\(['"]\.\/(?:portal-operational-alerts|operational-alert|portal-whatsapp|whatsapp)/i);
+  assert.doesNotMatch(qaServiceSource, /\b(?:INSERT|UPDATE|DELETE)\b[\s\S]*\b(?:operational_alert|whatsapp)/i);
   console.log('Admin QA inventory safety tests PASS');
 }
 
