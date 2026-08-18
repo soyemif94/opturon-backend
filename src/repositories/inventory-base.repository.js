@@ -20,6 +20,12 @@ function stringValue(value) {
   return String(value);
 }
 
+function positiveInteger(value, fallback, max = null) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return max === null ? parsed : Math.min(parsed, max);
+}
+
 function normalizeInventoryMovementRow(row) {
   if (!row) return null;
   const metadata = normalizeMetadata(row.metadata);
@@ -186,7 +192,7 @@ async function updateInventoryBalanceQuantity(balanceId, tenantId, quantity, met
 
 async function listInventoryBalancesByTenant(tenantId, filters = {}, client = null) {
   const params = [tenantId];
-  const conditions = [
+  const productConditions = [
     'p."clinicId" = $1::uuid',
     'p."deletedAt" IS NULL',
     `COALESCE(p.metadata->'catalog'->>'inventoryTrackingMode', 'legacy') <> 'lot_based'`
@@ -194,7 +200,7 @@ async function listInventoryBalancesByTenant(tenantId, filters = {}, client = nu
 
   if (filters.search) {
     params.push(`%${String(filters.search).trim()}%`);
-    conditions.push(`(
+    productConditions.push(`(
       p.name ILIKE $${params.length}
       OR COALESCE(p.sku, '') ILIKE $${params.length}
       OR COALESCE(p."internalCode", '') ILIKE $${params.length}
@@ -202,14 +208,15 @@ async function listInventoryBalancesByTenant(tenantId, filters = {}, client = nu
     )`);
   }
 
+  const inventoryConditions = [];
   if (filters.stockFilter === 'with_stock') {
-    conditions.push('COALESCE(b.quantity, p.stock, 0) > 0');
+    inventoryConditions.push('"balanceQuantity" > 0');
   } else if (filters.stockFilter === 'without_stock') {
-    conditions.push('COALESCE(b.quantity, p.stock, 0) <= 0');
+    inventoryConditions.push('"balanceQuantity" <= 0');
   }
 
-  const pageSize = Math.min(Math.max(Number(filters.pageSize || 50), 1), 100);
-  const page = Math.max(Number(filters.page || 1), 1);
+  const pageSize = positiveInteger(filters.pageSize, 50, 100);
+  const page = positiveInteger(filters.page, 1);
   params.push(pageSize);
   const limitIndex = params.length;
   params.push((page - 1) * pageSize);
@@ -217,7 +224,15 @@ async function listInventoryBalancesByTenant(tenantId, filters = {}, client = nu
 
   const result = await dbQuery(
     client,
-    `WITH scoped AS (
+    `WITH primary_location AS (
+       SELECT id, name
+       FROM inventory_locations
+       WHERE "tenantId" = $1::uuid
+         AND "isPrimary" = TRUE
+       ORDER BY "createdAt" ASC, id ASC
+       LIMIT 1
+     ),
+     product_scope AS (
        SELECT
          p.id,
          p."clinicId",
@@ -232,19 +247,38 @@ async function listInventoryBalancesByTenant(tenantId, filters = {}, client = nu
          p.sku,
          p."internalCode",
          p."categoryId",
-         c.name AS "categoryName",
+         (
+           SELECT c.name
+           FROM product_categories c
+           WHERE c.id = p."categoryId"
+             AND c."clinicId" = p."clinicId"
+           LIMIT 1
+         ) AS "categoryName",
          p.metadata,
          p."createdAt",
          p."updatedAt",
-         l.id AS "locationId",
-         l.name AS "locationName",
-         COALESCE(b.quantity, p.stock, 0) AS "balanceQuantity",
+         (SELECT location.id FROM primary_location location) AS "locationId",
+         (SELECT location.name FROM primary_location location) AS "locationName",
+         COALESCE(
+           (
+             SELECT b.quantity
+             FROM inventory_balances b
+             INNER JOIN primary_location location
+               ON location.id = b."locationId"
+             WHERE b."tenantId" = p."clinicId"
+               AND b."productId" = p.id
+             ORDER BY b."updatedAt" DESC, b.id DESC
+             LIMIT 1
+           ),
+           p.stock,
+           0
+         ) AS "balanceQuantity",
          (
            SELECT im."createdAt"
            FROM inventory_movements im
            WHERE im."tenantId" = p."clinicId"
              AND im."productId" = p.id
-           ORDER BY im."createdAt" DESC
+           ORDER BY im."createdAt" DESC, im.id DESC
            LIMIT 1
          ) AS "lastMovementAt",
          (
@@ -252,36 +286,54 @@ async function listInventoryBalancesByTenant(tenantId, filters = {}, client = nu
            FROM inventory_movements im
            WHERE im."tenantId" = p."clinicId"
              AND im."productId" = p.id
-           ORDER BY im."createdAt" DESC
+           ORDER BY im."createdAt" DESC, im.id DESC
            LIMIT 1
          ) AS "lastMovementType"
        FROM products p
-       LEFT JOIN product_categories c
-         ON c.id = p."categoryId"
-       LEFT JOIN inventory_locations l
-         ON l."tenantId" = p."clinicId"
-        AND l."isPrimary" = TRUE
-       LEFT JOIN inventory_balances b
-         ON b."tenantId" = p."clinicId"
-        AND b."productId" = p.id
-        AND b."locationId" = l.id
-       WHERE ${conditions.join(' AND ')}
+       WHERE ${productConditions.join(' AND ')}
      ),
-     counted AS (
-       SELECT COUNT(*)::int AS total FROM scoped
+     scoped AS (
+       SELECT product_scope.*
+       FROM product_scope
+       ${inventoryConditions.length > 0 ? `WHERE ${inventoryConditions.join(' AND ')}` : ''}
+     ),
+     aggregated AS (
+       SELECT
+         COUNT(DISTINCT id)::int AS "totalItems",
+         COUNT(DISTINCT id) FILTER (WHERE "balanceQuantity" > 0)::int AS "withStock",
+         COUNT(DISTINCT id) FILTER (WHERE "balanceQuantity" <= 0)::int AS "withoutStock"
+       FROM scoped
+     ),
+     paged AS (
+       SELECT scoped.*
+       FROM scoped
+       ORDER BY "internalCode" ASC NULLS LAST, "createdAt" ASC, id ASC
+       LIMIT $${limitIndex}
+       OFFSET $${offsetIndex}
      )
-     SELECT scoped.*, counted.total
-     FROM scoped
-     CROSS JOIN counted
-     ORDER BY scoped."internalCode" ASC NULLS LAST, scoped."createdAt" ASC, scoped.id ASC
-     LIMIT $${limitIndex}
-     OFFSET $${offsetIndex}`,
+     SELECT
+       paged.*,
+       aggregated."totalItems",
+       aggregated."withStock",
+       aggregated."withoutStock"
+     FROM aggregated
+     LEFT JOIN paged ON TRUE
+     ORDER BY paged."internalCode" ASC NULLS LAST, paged."createdAt" ASC, paged.id ASC`,
     params
   );
 
+  const metadata = result.rows[0] || {};
+  const total = Number(metadata.totalItems || 0);
   return {
-    total: Number(result.rows[0] && result.rows[0].total || 0),
-    rows: result.rows
+    page,
+    pageSize,
+    total,
+    summary: {
+      totalProducts: total,
+      withStock: Number(metadata.withStock || 0),
+      withoutStock: Number(metadata.withoutStock || 0)
+    },
+    rows: result.rows.filter((row) => row && row.id)
   };
 }
 

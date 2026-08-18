@@ -6,6 +6,7 @@ const { insertInventoryMovement } = require('../repositories/inventory.repositor
 const {
   reserveNextInternalCodeNumber,
   ensurePrimaryInventoryLocation,
+  findPrimaryInventoryLocation,
   ensureInventoryBalanceRow,
   updateInventoryBalanceQuantity,
   listInventoryBalancesByTenant,
@@ -125,16 +126,25 @@ async function listPortalInventoryProducts(tenantId, filters = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
 
-  const location = await withTransaction((client) => ensurePrimaryInventoryLocation(context.clinic.id, client));
+  const existingLocation = await findPrimaryInventoryLocation(context.clinic.id);
+  const location = existingLocation || await withTransaction((client) => ensurePrimaryInventoryLocation(context.clinic.id, client));
   const result = await listInventoryBalancesByTenant(context.clinic.id, filters);
+  const totalPages = result.total === 0 ? 0 : Math.ceil(result.total / result.pageSize);
   return {
     ok: true,
     tenantId: context.tenantId,
     clinic: context.clinic,
     location,
-    page: Math.max(Number(filters.page || 1), 1),
-    pageSize: Math.min(Math.max(Number(filters.pageSize || 50), 1), 100),
+    page: result.page,
+    pageSize: result.pageSize,
     total: result.total,
+    pagination: {
+      page: result.page,
+      pageSize: result.pageSize,
+      totalItems: result.total,
+      totalPages
+    },
+    summary: result.summary,
     products: result.rows.map((row) => ({
       id: row.id,
       clinicId: row.clinicId,

@@ -4448,6 +4448,8 @@ async function getPortalInventoryProductsController(req, res) {
         page: result.page,
         pageSize: result.pageSize,
         total: result.total,
+        pagination: result.pagination,
+        summary: result.summary,
         products: result.products
       }
     });

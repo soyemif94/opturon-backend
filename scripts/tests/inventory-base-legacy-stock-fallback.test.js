@@ -105,6 +105,7 @@ async function main() {
       mockModule('src/repositories/inventory-base.repository.js', {
         reserveNextInternalCodeNumber: async () => 0,
         ensurePrimaryInventoryLocation: async () => ({ id: 'loc-1', code: 'main', name: 'Principal' }),
+        findPrimaryInventoryLocation: async () => ({ id: 'loc-1', code: 'main', name: 'Principal' }),
         ensureInventoryBalanceRow: async (_tenantId, _productId, _locationId, _client, options = {}) => {
           if (balanceQuantity == null) {
             balanceQuantity = Number(options.initialQuantity || 0);
@@ -117,7 +118,10 @@ async function main() {
           return { id: 'bal-1', quantity };
         },
         listInventoryBalancesByTenant: async () => ({
+          page: 1,
+          pageSize: 50,
           total: 2,
+          summary: { totalProducts: 2, withStock: 1, withoutStock: 1 },
           rows: [
             {
               id: 'prod-legacy-no-balance',

@@ -27,12 +27,14 @@ assert.match(inventoryBaseRepo, /async function ensurePrimaryInventoryLocation/)
 assert.match(inventoryBaseRepo, /FOR UPDATE/);
 assert.match(inventoryBaseRepo, /async function findInventoryMovementByIdempotencyKey/);
 assert.match(inventoryBaseRepo, /COALESCE\(p\.metadata->'catalog'->>'inventoryTrackingMode', 'legacy'\) <> 'lot_based'/);
-assert.match(inventoryBaseRepo, /COALESCE\(b\.quantity, p\.stock, 0\)/);
+assert.match(inventoryBaseRepo, /COALESCE\([\s\S]*SELECT b\.quantity[\s\S]*p\.stock,[\s\S]*0[\s\S]*\) AS "balanceQuantity"/);
+assert.match(inventoryBaseRepo, /COUNT\(DISTINCT id\)[\s\S]*FILTER \(WHERE "balanceQuantity" > 0\)[\s\S]*FILTER \(WHERE "balanceQuantity" <= 0\)/);
 
 assert.match(inventoryBaseService, /function formatInternalCodeFromNumber/);
 assert.match(inventoryBaseService, /if \(!Number\.isInteger\(safeValue\) \|\| safeValue < 0 \|\| safeValue > 259999\)/);
 assert.match(inventoryBaseService, /throw new Error\('internal_code_range_exhausted'\)/);
 assert.match(inventoryBaseService, /async function applyInventoryMovementWithClient/);
+assert.match(inventoryBaseService, /findPrimaryInventoryLocation/);
 assert.match(inventoryBaseService, /findInventoryMovementByIdempotencyKey/);
 assert.match(inventoryBaseService, /error && error\.code === '23505'/);
 assert.match(inventoryBaseService, /inventory_negative_stock_blocked/);
