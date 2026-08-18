@@ -260,10 +260,13 @@ async function listPortalInventoryMovements(tenantId, filters = {}) {
 
 function resolveMovementDraft(payload = {}) {
   const movementType = normalizeString(payload.movementType).toLowerCase();
+  const hasExpectedCurrentQuantity = Object.prototype.hasOwnProperty.call(payload, 'expectedCurrentQuantity');
   return {
     movementType,
     quantity: normalizeNumber(payload.quantity),
     countedStock: payload.countedStock === undefined ? NaN : normalizeNumber(payload.countedStock),
+    expectedCurrentQuantity: hasExpectedCurrentQuantity ? normalizeNumber(payload.expectedCurrentQuantity) : null,
+    hasExpectedCurrentQuantity,
     reason: normalizeString(payload.reason) || null,
     referenceType: normalizeString(payload.referenceType) || null,
     referenceId: normalizeString(payload.referenceId) || null,
@@ -275,6 +278,9 @@ function resolveMovementDraft(payload = {}) {
 function validateMovementDraft(draft) {
   if (!MOVEMENT_TYPES.has(draft.movementType)) return 'invalid_inventory_movement_type';
   if (!draft.idempotencyKey) return 'missing_inventory_idempotency_key';
+  if (draft.hasExpectedCurrentQuantity && (!Number.isFinite(draft.expectedCurrentQuantity) || draft.expectedCurrentQuantity < 0)) {
+    return 'invalid_inventory_expected_current_quantity';
+  }
   if (draft.movementType === 'correction') {
     if (!Number.isFinite(draft.countedStock) || draft.countedStock < 0) return 'invalid_inventory_counted_stock';
     return null;
@@ -305,7 +311,7 @@ function resolveAuditAction(draft) {
   return 'inventory_movement_created';
 }
 
-async function applyInventoryMovementWithClient(clinicId, productId, payload, actor = {}, client) {
+async function applyInventoryMovementWithClient(clinicId, productId, payload, actor = {}, client, options = {}) {
   const safeClinicId = normalizeString(clinicId);
   const safeProductId = normalizeString(productId);
   if (!safeClinicId || !safeProductId) return { ok: false, reason: 'missing_product_id' };
@@ -314,7 +320,16 @@ async function applyInventoryMovementWithClient(clinicId, productId, payload, ac
   const invalidReason = validateMovementDraft(draft);
   if (invalidReason) return { ok: false, reason: invalidReason };
 
-  const product = await findProductById(safeProductId, safeClinicId, client);
+  const suppliedProduct = options.productLocked === true && options.product && typeof options.product === 'object'
+    ? options.product
+    : null;
+  if (
+    suppliedProduct &&
+    (normalizeString(suppliedProduct.id) !== safeProductId || normalizeString(suppliedProduct.clinicId) !== safeClinicId)
+  ) {
+    return { ok: false, reason: 'inventory_product_scope_mismatch' };
+  }
+  const product = suppliedProduct || await findProductById(safeProductId, safeClinicId, client, { forUpdate: true });
   if (!product) return { ok: false, reason: 'product_not_found' };
   if (product.deletedAt) return { ok: false, reason: 'product_deleted_cannot_receive_inventory_movements' };
   if (product.inventoryTrackingMode === 'lot_based') {
@@ -322,9 +337,13 @@ async function applyInventoryMovementWithClient(clinicId, productId, payload, ac
   }
 
   const internalCode = product.internalCode || await assignInternalCodeToProduct(safeClinicId, safeProductId, client);
-  const location = await ensurePrimaryInventoryLocation(safeClinicId, client);
+  const location = options.location || await ensurePrimaryInventoryLocation(safeClinicId, client);
+  if (!location || !location.id) return { ok: false, reason: 'inventory_primary_location_not_found' };
   const existing = await findInventoryMovementByIdempotencyKey(safeClinicId, draft.movementType, draft.idempotencyKey, client);
   if (existing) {
+    if (normalizeString(existing.productId) !== safeProductId) {
+      return { ok: false, reason: 'inventory_idempotency_payload_mismatch' };
+    }
     const balance = await ensureInventoryBalanceRow(safeClinicId, safeProductId, location.id, client, {
       initialQuantity: Math.max(0, Number(product.stock || 0)),
       metadata: { source: 'inventory_base_legacy_seed' }
@@ -337,6 +356,37 @@ async function applyInventoryMovementWithClient(clinicId, productId, payload, ac
     metadata: { source: 'inventory_base_legacy_seed' }
   });
   const currentQuantity = Number(balance.quantity || 0);
+  const persistedAfterLock = await findInventoryMovementByIdempotencyKey(
+    safeClinicId,
+    draft.movementType,
+    draft.idempotencyKey,
+    client
+  );
+  if (persistedAfterLock) {
+    if (normalizeString(persistedAfterLock.productId) !== safeProductId) {
+      return { ok: false, reason: 'inventory_idempotency_payload_mismatch' };
+    }
+    return {
+      ok: true,
+      idempotent: true,
+      product,
+      location,
+      balance,
+      movement: persistedAfterLock,
+      internalCode
+    };
+  }
+  if (draft.hasExpectedCurrentQuantity && currentQuantity !== draft.expectedCurrentQuantity) {
+    return {
+      ok: false,
+      reason: 'inventory_changed',
+      details: {
+        productId: safeProductId,
+        expectedCurrentQuantity: draft.expectedCurrentQuantity,
+        currentQuantity
+      }
+    };
+  }
   if (draft.movementType === 'opening_balance') {
     const existingHistory = await listInventoryMovementsByProductId(safeClinicId, safeProductId, { page: 1, pageSize: 1 }, client);
     if (existingHistory.length > 0) {

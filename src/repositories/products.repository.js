@@ -336,6 +336,7 @@ async function findProductsByIds(clinicId, productIds, client = null, options = 
   if (!ids.length) return [];
 
   const includeDeleted = options.includeDeleted === true;
+  const forUpdate = options.forUpdate === true;
   const result = await dbQuery(
     client,
     `SELECT
@@ -374,14 +375,15 @@ async function findProductsByIds(clinicId, productIds, client = null, options = 
      WHERE p."clinicId" = $1::uuid
        AND p.id = ANY($2::uuid[])
        ${includeDeleted ? '' : 'AND p."deletedAt" IS NULL'}
-     ORDER BY p."createdAt" DESC`,
+      ORDER BY ${forUpdate ? 'p.id ASC' : 'p."createdAt" DESC'}
+      ${forUpdate ? 'FOR UPDATE OF p' : ''}`,
     [clinicId, ids]
   );
 
   return result.rows.map(normalizeProduct);
 }
 
-async function findProductById(productId, clinicId, client = null) {
+async function findProductById(productId, clinicId, client = null, options = {}) {
   const result = await dbQuery(
     client,
     `SELECT
@@ -420,7 +422,8 @@ async function findProductById(productId, clinicId, client = null) {
      WHERE p.id = $1::uuid
        AND p."clinicId" = $2::uuid
        AND p."deletedAt" IS NULL
-     LIMIT 1`,
+      LIMIT 1
+      ${options.forUpdate === true ? 'FOR UPDATE OF p' : ''}`,
     [productId, clinicId]
   );
 

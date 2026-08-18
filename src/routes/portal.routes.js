@@ -67,6 +67,7 @@ const {
   postPortalInventoryLocationController,
   patchPortalInventoryLocationController,
   postPortalInventoryMovementController,
+  postPortalInventoryBulkAdjustmentController,
   postPortalProductInventoryMode,
   updatePortalProduct,
   patchPortalSupplier,
@@ -442,6 +443,7 @@ router.get('/tenants/:tenantId/catalog-imports/:importId/errors', requirePortalI
 router.get('/tenants/:tenantId/inventory/products', inventoryCapability, getPortalInventoryProductsController);
 router.get('/tenants/:tenantId/inventory/movements', inventoryCapability, getPortalInventoryMovementsController);
 router.get('/tenants/:tenantId/inventory/products/:productId/movements', inventoryCapability, getPortalInventoryProductHistoryController);
+router.post('/tenants/:tenantId/inventory/bulk-adjust', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, postPortalInventoryBulkAdjustmentController);
 router.post('/tenants/:tenantId/inventory/products/:productId/movements', requirePortalInternalAuth, inventoryCapability, postPortalInventoryMovementController);
 router.get('/tenants/:tenantId/inventory/lots', inventoryCapability, getPortalInventoryLots);
 router.post('/tenants/:tenantId/inventory/lots', inventoryCapability, inventoryReceiptRole, postPortalInventoryLot);

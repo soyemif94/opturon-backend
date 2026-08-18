@@ -190,6 +190,26 @@ async function updateInventoryBalanceQuantity(balanceId, tenantId, quantity, met
   return normalizeBalance(result.rows[0] || null);
 }
 
+async function lockInventoryBalancesByProductIds(tenantId, productIds, locationId, client) {
+  const ids = Array.isArray(productIds)
+    ? Array.from(new Set(productIds.map((value) => String(value || '').trim()).filter(Boolean))).sort()
+    : [];
+  if (!ids.length || !locationId) return [];
+
+  const result = await dbQuery(
+    client,
+    `SELECT id, "tenantId", "productId", "locationId", quantity, metadata, "createdAt", "updatedAt"
+     FROM inventory_balances
+     WHERE "tenantId" = $1::uuid
+       AND "locationId" = $2::uuid
+       AND "productId" = ANY($3::uuid[])
+     ORDER BY "productId" ASC
+     FOR UPDATE`,
+    [tenantId, locationId, ids]
+  );
+  return result.rows.map(normalizeBalance);
+}
+
 async function listInventoryBalancesByTenant(tenantId, filters = {}, client = null) {
   const params = [tenantId];
   const productConditions = [
@@ -546,6 +566,7 @@ module.exports = {
   findPrimaryInventoryLocation,
   ensureInventoryBalanceRow,
   updateInventoryBalanceQuantity,
+  lockInventoryBalancesByProductIds,
   listInventoryBalancesByTenant,
   listInventoryMovementsByProductId,
   listInventoryMovementsByTenant,

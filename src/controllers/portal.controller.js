@@ -91,6 +91,7 @@ const {
   getPortalInventoryProductHistory,
   createPortalInventoryMovement
 } = require('../services/inventory-base.service');
+const { createPortalInventoryBulkAdjustment } = require('../services/inventory-bulk-stock.service');
 const {
   analyzeCatalogImport,
   listCatalogImports,
@@ -4715,11 +4716,14 @@ async function postPortalInventoryMovementController(req, res) {
         result.reason === 'missing_inventory_idempotency_key' ||
         result.reason === 'invalid_inventory_movement_type' ||
         result.reason === 'invalid_inventory_quantity' ||
-        result.reason === 'invalid_inventory_counted_stock'
+        result.reason === 'invalid_inventory_counted_stock' ||
+        result.reason === 'invalid_inventory_expected_current_quantity'
           ? 400
           : result.reason === 'inventory_negative_stock_blocked' ||
               result.reason === 'inventory_opening_balance_already_exists' ||
-              result.reason === 'inventory_zero_delta_not_allowed'
+              result.reason === 'inventory_zero_delta_not_allowed' ||
+              result.reason === 'inventory_changed' ||
+              result.reason === 'inventory_idempotency_payload_mismatch'
             ? 409
             : 404;
 
@@ -4746,6 +4750,79 @@ async function postPortalInventoryMovementController(req, res) {
     return res.status(500).json({
       success: false,
       error: 'portal_inventory_movement_create_failed',
+      details: error.message
+    });
+  }
+}
+
+async function postPortalInventoryBulkAdjustmentController(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const actor = getPortalActorMeta(req);
+
+  try {
+    const result = await createPortalInventoryBulkAdjustment(tenantId, req.body || {}, actor);
+    if (!result.ok) {
+      const badRequestReasons = new Set([
+        'missing_inventory_bulk_idempotency_key',
+        'invalid_inventory_bulk_idempotency_key',
+        'invalid_inventory_bulk_reason',
+        'invalid_inventory_bulk_note',
+        'inventory_bulk_note_required',
+        'invalid_inventory_bulk_items',
+        'inventory_bulk_too_many_items',
+        'invalid_inventory_bulk_product_id',
+        'invalid_inventory_bulk_target_quantity',
+        'invalid_inventory_bulk_expected_quantity',
+        'duplicate_inventory_bulk_product'
+      ]);
+      const conflictReasons = new Set([
+        'inventory_changed',
+        'inventory_bulk_idempotency_payload_mismatch',
+        'inventory_bulk_idempotency_conflict',
+        'inventory_idempotency_payload_mismatch'
+      ]);
+      const unprocessableReasons = new Set([
+        'product_deleted_cannot_receive_inventory_movements',
+        'inventory_base_not_supported_for_lot_based_product',
+        'inventory_negative_stock_blocked',
+        'inventory_zero_delta_not_allowed'
+      ]);
+      const status = badRequestReasons.has(result.reason)
+        ? 400
+        : result.reason === 'inventory_bulk_actor_required'
+          ? 403
+          : conflictReasons.has(result.reason)
+            ? 409
+            : unprocessableReasons.has(result.reason)
+              ? 422
+              : result.reason === 'product_not_found' || result.reason === 'tenant_mapping_not_found'
+                ? 404
+                : 400;
+
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId,
+        details: result.details || null
+      });
+    }
+
+    return res.status(result.idempotent ? 200 : 201).json({
+      success: true,
+      data: {
+        operationId: result.operationId,
+        reason: result.reason,
+        note: result.note,
+        idempotent: result.idempotent === true,
+        location: result.location,
+        summary: result.summary,
+        items: result.items
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_inventory_bulk_adjustment_failed',
       details: error.message
     });
   }
@@ -5966,6 +6043,7 @@ module.exports = {
   postPortalInventoryLocationController,
   patchPortalInventoryLocationController,
   postPortalInventoryMovementController,
+  postPortalInventoryBulkAdjustmentController,
   postPortalProductInventoryMode,
   updatePortalProduct,
   patchPortalSupplier,
