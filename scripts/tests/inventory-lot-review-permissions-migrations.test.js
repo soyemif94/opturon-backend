@@ -27,7 +27,7 @@ async function testSensitiveInventoryRoles() {
     touched.push(
       mockModule('src/services/portal-active-tenant.service.js', {
         hasPortalInternalAuth: () => true,
-        findPortalActorContext: async () => ({ id: 'actor-1', role: actorRole, isAdmin: false })
+        findPortalActorContext: async () => ({ id: 'actor-1', role: actorRole, tenantId: 'tenant-1', isAdmin: false })
       })
     );
     clearModule('src/middlewares/portal-inventory-authorization.middleware.js');
@@ -113,7 +113,7 @@ function testMigrationsAndScripts() {
   assert.match(preflightLib, /if \(args\.apply\) await client\.query\('COMMIT'\);\s*else await client\.query\('ROLLBACK'\);/);
 
   assert.match(routes, /requireSensitiveInventoryRole/);
-  assert.match(routes, /inventory\/lots\/:lotId\/block', inventoryCapability, sensitiveInventoryRole/);
+  assert.match(routes, /inventory\/lots\/:lotId\/block', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole/);
 }
 
 Promise.resolve()

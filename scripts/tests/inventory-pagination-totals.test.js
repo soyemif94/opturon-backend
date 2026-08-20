@@ -335,6 +335,9 @@ async function testRepositoryPaginationAndTotals() {
 async function testServiceContractAndReadOnlyFastPath() {
   let transactionCalls = 0;
   let ensureCalls = 0;
+  const writeCalls = [];
+  const productSnapshot = { id: 'product-505', stock: 0, updatedAt: '2026-08-01T00:00:00.000Z' };
+  const beforeProduct = JSON.stringify(productSnapshot);
   const touched = [];
   try {
     touched.push(mockModule('src/db/client.js', {
@@ -348,23 +351,24 @@ async function testServiceContractAndReadOnlyFastPath() {
     }));
     touched.push(mockModule('src/repositories/products.repository.js', {
       findProductById: async () => null,
-      updateProduct: async () => null
+      updateProduct: async () => { writeCalls.push('product'); return null; }
     }));
     touched.push(mockModule('src/repositories/portal-user-audit.repository.js', {
-      createPortalUserAuditEvent: async () => null
+      createPortalUserAuditEvent: async () => { writeCalls.push('audit'); return null; }
     }));
     touched.push(mockModule('src/repositories/inventory.repository.js', {
-      insertInventoryMovement: async () => null
+      insertInventoryMovement: async () => { writeCalls.push('movement'); return null; }
     }));
     touched.push(mockModule('src/repositories/inventory-base.repository.js', {
       reserveNextInternalCodeNumber: async () => 0,
-      findPrimaryInventoryLocation: async () => ({ id: 'loc-1', code: 'main', name: 'Principal' }),
+      findPrimaryInventoryLocation: async () => null,
       ensurePrimaryInventoryLocation: async () => {
         ensureCalls += 1;
+        writeCalls.push('location');
         return { id: 'loc-1', code: 'main', name: 'Principal' };
       },
-      ensureInventoryBalanceRow: async () => null,
-      updateInventoryBalanceQuantity: async () => null,
+      ensureInventoryBalanceRow: async () => { writeCalls.push('balance_create'); return null; },
+      updateInventoryBalanceQuantity: async () => { writeCalls.push('balance_update'); return null; },
       listInventoryBalancesByTenant: async () => ({
         page: 11,
         pageSize: 50,
@@ -389,8 +393,12 @@ async function testServiceContractAndReadOnlyFastPath() {
     assert.equal(result.products.length, 1, 'legacy products must remain available');
     assert.deepEqual(result.pagination, { page: 11, pageSize: 50, totalItems: 505, totalPages: 11 });
     assert.deepEqual(result.summary, { totalProducts: 505, withStock: 1, withoutStock: 504 });
-    assert.equal(ensureCalls, 0, 'an existing primary location must keep GET inventory read-only');
-    assert.equal(transactionCalls, 0, 'the read-only fast path must not open the write transaction');
+    assert.equal(result.location, null, 'missing setup must be represented without creating a location');
+    assert.equal(result.products[0].locationId, null, 'missing setup must not invent a location id');
+    assert.equal(ensureCalls, 0, 'GET inventory must never create a missing primary location');
+    assert.equal(transactionCalls, 0, 'GET inventory must not open a write transaction');
+    assert.deepEqual(writeCalls, [], 'GET inventory must not write locations, balances, movements, audits or products');
+    assert.equal(JSON.stringify(productSnapshot), beforeProduct, 'GET inventory must preserve product timestamps and values');
 
     const controller = fs.readFileSync(path.join(root, 'src/controllers/portal.controller.js'), 'utf8');
     assert.match(controller, /pagination: result\.pagination/);

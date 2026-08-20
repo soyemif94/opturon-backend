@@ -462,7 +462,8 @@ async function main() {
     assert.deepStrictEqual(staleNoop.details, {
       productId: staleNoopProductId,
       expectedCurrentQuantity: 7,
-      currentQuantity: 5
+      currentQuantity: 5,
+      conflicts: [{ productId: staleNoopProductId, expectedCurrentQuantity: 7, currentQuantity: 5 }]
     });
     assert.deepStrictEqual(
       {

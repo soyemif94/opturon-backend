@@ -201,7 +201,7 @@ const {
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
-const { requireSensitiveInventoryRole, requireInventoryReceiptRole } = require('../middlewares/portal-inventory-authorization.middleware');
+const { requireInventoryReadRole, requireSensitiveInventoryRole, requireInventoryReceiptRole } = require('../middlewares/portal-inventory-authorization.middleware');
 const {
   requireOperationalAlertsReadPermission,
   requireOperationalAlertsWritePermission,
@@ -234,6 +234,7 @@ const ordersCapability = requirePortalCapability('orders');
 const receiptsCapability = requirePortalCapability('receipts');
 const cashCapability = requirePortalCapability('cash_management');
 const inventoryCapability = requirePortalCapability('inventory');
+const inventoryReadRole = requireInventoryReadRole();
 const sensitiveInventoryRole = requireSensitiveInventoryRole();
 const inventoryReceiptRole = requireInventoryReceiptRole();
 const operationalAlertsReadPermission = requireOperationalAlertsReadPermission();
@@ -440,26 +441,26 @@ router.post('/tenants/:tenantId/catalog-imports/:importId/cancel', requirePortal
 router.post('/tenants/:tenantId/catalog-imports/:importId/rollback/preview', requirePortalInternalAuth, catalogModule, postPortalCatalogImportRollbackPreview);
 router.post('/tenants/:tenantId/catalog-imports/:importId/rollback', requirePortalInternalAuth, catalogModule, postPortalCatalogImportRollbackExecute);
 router.get('/tenants/:tenantId/catalog-imports/:importId/errors', requirePortalInternalAuth, catalogModule, getPortalCatalogImportErrors);
-router.get('/tenants/:tenantId/inventory/products', inventoryCapability, getPortalInventoryProductsController);
-router.get('/tenants/:tenantId/inventory/movements', inventoryCapability, getPortalInventoryMovementsController);
-router.get('/tenants/:tenantId/inventory/products/:productId/movements', inventoryCapability, getPortalInventoryProductHistoryController);
+router.get('/tenants/:tenantId/inventory/products', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryProductsController);
+router.get('/tenants/:tenantId/inventory/movements', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryMovementsController);
+router.get('/tenants/:tenantId/inventory/products/:productId/movements', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryProductHistoryController);
 router.post('/tenants/:tenantId/inventory/bulk-adjust', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, postPortalInventoryBulkAdjustmentController);
-router.post('/tenants/:tenantId/inventory/products/:productId/movements', requirePortalInternalAuth, inventoryCapability, postPortalInventoryMovementController);
-router.get('/tenants/:tenantId/inventory/lots', inventoryCapability, getPortalInventoryLots);
-router.post('/tenants/:tenantId/inventory/lots', inventoryCapability, inventoryReceiptRole, postPortalInventoryLot);
-router.get('/tenants/:tenantId/inventory/locations', inventoryCapability, getPortalInventoryLocationsController);
-router.post('/tenants/:tenantId/inventory/locations', inventoryCapability, sensitiveInventoryRole, postPortalInventoryLocationController);
-router.patch('/tenants/:tenantId/inventory/locations/:locationId', inventoryCapability, sensitiveInventoryRole, patchPortalInventoryLocationController);
-router.get('/tenants/:tenantId/inventory/expiration-summary', inventoryCapability, getPortalInventoryExpirationSummary);
-router.get('/tenants/:tenantId/inventory/expiration-settings', inventoryCapability, getPortalInventoryExpirationSettings);
-router.put('/tenants/:tenantId/inventory/expiration-settings', inventoryCapability, sensitiveInventoryRole, putPortalInventoryExpirationSettings);
-router.post('/tenants/:tenantId/inventory/lots/bulk-writeoff-expired', inventoryCapability, sensitiveInventoryRole, postPortalInventoryExpiredBulkWriteoff);
-router.get('/tenants/:tenantId/inventory/lots/:lotId', inventoryCapability, getPortalInventoryLot);
-router.get('/tenants/:tenantId/inventory/lots/:lotId/history', inventoryCapability, getPortalInventoryLotHistoryController);
-router.post('/tenants/:tenantId/inventory/lots/:lotId/adjust', inventoryCapability, sensitiveInventoryRole, postPortalInventoryLotAdjustment);
-router.post('/tenants/:tenantId/inventory/lots/:lotId/block', inventoryCapability, sensitiveInventoryRole, postPortalInventoryLotBlock);
-router.post('/tenants/:tenantId/inventory/lots/:lotId/unblock', inventoryCapability, sensitiveInventoryRole, postPortalInventoryLotUnblock);
-router.patch('/tenants/:tenantId/inventory/lots/:lotId/expiration', inventoryCapability, sensitiveInventoryRole, patchPortalInventoryLotExpiration);
+router.post('/tenants/:tenantId/inventory/products/:productId/movements', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, postPortalInventoryMovementController);
+router.get('/tenants/:tenantId/inventory/lots', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryLots);
+router.post('/tenants/:tenantId/inventory/lots', requirePortalInternalAuth, inventoryCapability, inventoryReceiptRole, postPortalInventoryLot);
+router.get('/tenants/:tenantId/inventory/locations', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryLocationsController);
+router.post('/tenants/:tenantId/inventory/locations', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, postPortalInventoryLocationController);
+router.patch('/tenants/:tenantId/inventory/locations/:locationId', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, patchPortalInventoryLocationController);
+router.get('/tenants/:tenantId/inventory/expiration-summary', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryExpirationSummary);
+router.get('/tenants/:tenantId/inventory/expiration-settings', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryExpirationSettings);
+router.put('/tenants/:tenantId/inventory/expiration-settings', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, putPortalInventoryExpirationSettings);
+router.post('/tenants/:tenantId/inventory/lots/bulk-writeoff-expired', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, postPortalInventoryExpiredBulkWriteoff);
+router.get('/tenants/:tenantId/inventory/lots/:lotId', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryLot);
+router.get('/tenants/:tenantId/inventory/lots/:lotId/history', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryLotHistoryController);
+router.post('/tenants/:tenantId/inventory/lots/:lotId/adjust', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, postPortalInventoryLotAdjustment);
+router.post('/tenants/:tenantId/inventory/lots/:lotId/block', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, postPortalInventoryLotBlock);
+router.post('/tenants/:tenantId/inventory/lots/:lotId/unblock', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, postPortalInventoryLotUnblock);
+router.patch('/tenants/:tenantId/inventory/lots/:lotId/expiration', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, patchPortalInventoryLotExpiration);
 // Deliberately separate from generic inventory routes: only a server-resolved
 // Opturon Admin selecting an active client tenant can create this one canonical
 // QA inventory fixture and its audit-preserving rollback.
@@ -468,7 +469,7 @@ router.post('/tenants/:tenantId/admin-qa-inventory/locations', requirePortalInte
 router.post('/tenants/:tenantId/admin-qa-inventory/lots', requirePortalInternalAuth, requireAdminQaInventoryPermission, inventoryCapability, postAdminQaInventoryLot);
 router.post('/tenants/:tenantId/admin-qa-inventory/lots/:lotId/rollback', requirePortalInternalAuth, requireAdminQaInventoryPermission, inventoryCapability, postAdminQaInventoryLotRollback);
 router.get('/tenants/:tenantId/products/:productId', catalogModule, getPortalProduct);
-router.post('/tenants/:tenantId/products/:productId/inventory-mode', catalogModule, postPortalProductInventoryMode);
+router.post('/tenants/:tenantId/products/:productId/inventory-mode', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, catalogModule, postPortalProductInventoryMode);
 router.patch('/tenants/:tenantId/products/:productId', catalogModule, updatePortalProduct);
 router.patch('/tenants/:tenantId/product-categories/:categoryId', catalogModule, updatePortalProductCategory);
 router.delete('/tenants/:tenantId/product-categories/:categoryId', catalogModule, destroyPortalProductCategory);

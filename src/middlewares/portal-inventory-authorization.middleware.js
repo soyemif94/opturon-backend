@@ -2,6 +2,7 @@ const { findPortalActorContext, hasPortalInternalAuth } = require('../services/p
 
 const SENSITIVE_TENANT_ROLES = new Set(['owner', 'manager']);
 const OPERATIONAL_RECEIPT_TENANT_ROLES = new Set(['owner', 'manager', 'seller']);
+const INVENTORY_READ_TENANT_ROLES = new Set(['owner', 'manager', 'seller', 'viewer']);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -19,7 +20,8 @@ function buildForbiddenResponse(res) {
   });
 }
 
-function buildInventoryRoleGate(allowedTenantRoles) {
+function buildInventoryRoleGate(allowedTenantRoles, options = {}) {
+  const allowOpturonAdmin = options.allowOpturonAdmin === true;
   return async function portalInventoryRoleGate(req, res, next) {
     if (!hasPortalInternalAuth(req)) {
       return buildForbiddenResponse(res);
@@ -31,19 +33,30 @@ function buildInventoryRoleGate(allowedTenantRoles) {
       return buildForbiddenResponse(res);
     }
     if (actor.isAdmin) {
+      if (allowOpturonAdmin && normalizeString(actor.accountScope).toLowerCase() === 'opturon_admin') {
+        req.inventoryActor = actor;
+        return next();
+      }
       return buildForbiddenResponse(res);
     }
-    if (normalizeString(req.params?.tenantId) && normalizeString(actor.tenantId) && normalizeString(req.params.tenantId) !== normalizeString(actor.tenantId)) {
+    const targetTenantId = normalizeString(req.params?.tenantId);
+    const actorTenantId = normalizeString(actor.tenantId);
+    if (targetTenantId && (!actorTenantId || targetTenantId !== actorTenantId)) {
       return buildForbiddenResponse(res);
     }
 
     const actorRole = normalizeRole(actor.role);
     if (allowedTenantRoles.has(actorRole)) {
+      req.inventoryActor = actor;
       return next();
     }
 
     return buildForbiddenResponse(res);
   };
+}
+
+function requireInventoryReadRole() {
+  return buildInventoryRoleGate(INVENTORY_READ_TENANT_ROLES, { allowOpturonAdmin: true });
 }
 
 function requireSensitiveInventoryRole() {
@@ -55,6 +68,8 @@ function requireInventoryReceiptRole() {
 }
 
 module.exports = {
+  INVENTORY_READ_TENANT_ROLES,
+  requireInventoryReadRole,
   requireSensitiveInventoryRole,
   requireInventoryReceiptRole
 };

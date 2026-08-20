@@ -126,8 +126,9 @@ async function listPortalInventoryProducts(tenantId, filters = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
 
-  const existingLocation = await findPrimaryInventoryLocation(context.clinic.id);
-  const location = existingLocation || await withTransaction((client) => ensurePrimaryInventoryLocation(context.clinic.id, client));
+  // Listing is deliberately read-only. Location creation belongs to an explicit
+  // setup/write flow, never to a GET request.
+  const location = await findPrimaryInventoryLocation(context.clinic.id);
   const result = await listInventoryBalancesByTenant(context.clinic.id, filters);
   const totalPages = result.total === 0 ? 0 : Math.ceil(result.total / result.pageSize);
   return {
@@ -161,8 +162,8 @@ async function listPortalInventoryProducts(tenantId, filters = {}) {
       categoryId: row.categoryId || null,
       categoryName: row.categoryName || null,
       metadata: normalizeMetadata(row.metadata),
-      locationId: row.locationId || location.id,
-      locationName: row.locationName || location.name,
+      locationId: row.locationId || location?.id || null,
+      locationName: row.locationName || location?.name || null,
       lastMovementAt: row.lastMovementAt || null,
       lastMovementType: normalizeInventoryMovementTypeForApi(row.lastMovementType || null),
       stockState: classifyStockState(resolveDisplayedStock(row)),

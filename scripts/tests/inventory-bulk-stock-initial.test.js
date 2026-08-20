@@ -525,7 +525,8 @@ async function testStaleNoopIsRejectedWithoutWrites() {
     assert.deepStrictEqual(result.details, {
       productId: product.id,
       expectedCurrentQuantity: 7,
-      currentQuantity: 5
+      currentQuantity: 5,
+      conflicts: [{ productId: product.id, expectedCurrentQuantity: 7, currentQuantity: 5 }]
     });
     assert.equal(harness.state.rollbackCalls, 1);
     assert.equal(harness.state.primaryLocationReads, 1);
@@ -569,6 +570,36 @@ async function testStaleNoopIsRejectedWithoutWrites() {
     assert.equal(mixedHarness.state.stocks.get(staleNoopProduct.id), 3);
   } finally {
     mixedHarness.cleanup();
+  }
+
+  const firstStale = makeProduct(uuidFor(8321), { stock: 10 });
+  const secondStale = makeProduct(uuidFor(8322), { stock: 20 });
+  const multiHarness = createHarness([firstStale, secondStale]);
+  try {
+    multiHarness.state.stocks.set(firstStale.id, 9);
+    multiHarness.state.stocks.set(secondStale.id, 18);
+    const result = await multiHarness.service.createPortalInventoryBulkAdjustment(
+      'tenant-qa',
+      {
+        idempotencyKey: uuidFor(8323),
+        reason: 'physical_count',
+        items: [
+          { productId: firstStale.id, expectedCurrentQuantity: 10, targetQuantity: 12 },
+          { productId: secondStale.id, expectedCurrentQuantity: 20, targetQuantity: 22 }
+        ]
+      },
+      { actorId: ACTOR_ID }
+    );
+    assert.equal(result.reason, 'inventory_changed');
+    assert.deepStrictEqual(result.details.conflicts, [
+      { productId: firstStale.id, expectedCurrentQuantity: 10, currentQuantity: 9 },
+      { productId: secondStale.id, expectedCurrentQuantity: 20, currentQuantity: 18 }
+    ]);
+    assert.equal(multiHarness.state.applyCalls.length, 0);
+    assert.equal(multiHarness.state.movements.length, 0);
+    assert.equal(multiHarness.state.audits.length, 0);
+  } finally {
+    multiHarness.cleanup();
   }
 }
 
@@ -658,6 +689,26 @@ function testStaticSecurityAndConcurrencyContracts() {
   assert.doesNotMatch(service, /allowZeroDelta/);
 }
 
+function testBulkItemBoundaryValidation() {
+  const harness = createHarness([]);
+  try {
+    const validateCount = (count) => harness.service.validateBulkDraft(harness.service.normalizeBulkDraft({
+      idempotencyKey: uuidFor(9901),
+      reason: 'physical_count',
+      items: Array.from({ length: count }, (_, index) => ({
+        productId: uuidFor(10000 + index),
+        expectedCurrentQuantity: 0,
+        targetQuantity: 1
+      }))
+    }));
+    assert.equal(validateCount(1999), null);
+    assert.equal(validateCount(2000), null);
+    assert.equal(validateCount(2001), 'inventory_bulk_too_many_items');
+  } finally {
+    harness.cleanup();
+  }
+}
+
 async function main() {
   await testLargeAtomicWorkflow();
   await testValidationIsolationAndRollback();
@@ -665,6 +716,7 @@ async function main() {
   await testAllNoopIsZeroWrite();
   await testStaleNoopIsRejectedWithoutWrites();
   await testSensitiveInventoryRoleMatrix();
+  testBulkItemBoundaryValidation();
   testStaticSecurityAndConcurrencyContracts();
   console.log('inventory-bulk-stock-initial.test.js passed');
 }

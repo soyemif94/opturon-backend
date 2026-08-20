@@ -216,17 +216,24 @@ async function createPortalInventoryBulkAdjustment(tenantId, payload = {}, actor
         : [];
       const balancesByProductId = new Map(balances.map((balance) => [balance.productId, balance]));
 
+      const inventoryConflicts = [];
       for (const item of orderedItems) {
         const product = productsById.get(item.productId);
         const balance = balancesByProductId.get(item.productId);
         const currentQuantity = balance ? Number(balance.quantity || 0) : Math.max(0, Number(product.stock || 0));
         if (currentQuantity !== item.expectedCurrentQuantity) {
-          throw createDomainError('inventory_changed', {
+          inventoryConflicts.push({
             productId: item.productId,
             expectedCurrentQuantity: item.expectedCurrentQuantity,
             currentQuantity
           });
         }
+      }
+      if (inventoryConflicts.length > 0) {
+        throw createDomainError('inventory_changed', {
+          ...inventoryConflicts[0],
+          conflicts: inventoryConflicts
+        });
       }
 
       const unchangedItems = orderedItems.filter((item) => item.targetQuantity === item.expectedCurrentQuantity);

@@ -30,6 +30,6 @@ assert.match(controller, /portal_inventory_movements_failed/);
 assert.match(controller, /invalid_inventory_movements_page/);
 assert.match(controller, /items: result\.items/);
 
-assert.match(routes, /router\.get\('\/tenants\/:tenantId\/inventory\/movements', inventoryCapability, getPortalInventoryMovementsController\)/);
+assert.match(routes, /router\.get\('\/tenants\/:tenantId\/inventory\/movements', requirePortalInternalAuth, inventoryReadRole, inventoryCapability, getPortalInventoryMovementsController\)/);
 
 console.log('inventory-movements-listing-backend.test.js passed');
