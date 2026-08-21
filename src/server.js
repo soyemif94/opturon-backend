@@ -11,6 +11,7 @@ const env = require('./config/env');
 const { logInfo, logWarn, logError } = require('./utils/logger');
 const { autoDetectPhoneNumberId } = require('./whatsapp/whatsapp.service');
 const buildInfo = require('./utils/build');
+const { ensureInboxConversationSoftDeleteSchema } = require('./db/ensure-inbox-conversation-soft-delete');
 
 const app = createApp();
 const host = '0.0.0.0';
@@ -52,7 +53,7 @@ server.requestTimeout = 30000;
 server.headersTimeout = 35000;
 server.keepAliveTimeout = 5000;
 
-server.listen(env.port, host, () => {
+function handleServerListening() {
   logInfo('server_started', {
     host,
     port: env.port,
@@ -117,7 +118,24 @@ server.listen(env.port, host, () => {
       );
     });
   }
-});
+}
+
+ensureInboxConversationSoftDeleteSchema()
+  .then((result) => {
+    logInfo('inbox_conversation_soft_delete_schema_ready', {
+      migration: result.migration,
+      columns: Object.keys(result.columns || {})
+    });
+    server.listen(env.port, host, handleServerListening);
+  })
+  .catch((error) => {
+    logError('server_schema_bootstrap_failed', {
+      migration: '076_inbox_conversation_soft_delete.sql',
+      error: error.message,
+      code: error.code || null
+    });
+    process.exit(1);
+  });
 
 server.on('error', (error) => {
   logError('server_start_failed', {
