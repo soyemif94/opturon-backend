@@ -228,6 +228,11 @@ async function listInventoryBalancesByTenant(tenantId, filters = {}, client = nu
     )`);
   }
 
+  if (filters.productId) {
+    params.push(String(filters.productId).trim());
+    productConditions.push(`p.id = $${params.length}::uuid`);
+  }
+
   const inventoryConditions = [];
   if (filters.stockFilter === 'with_stock') {
     inventoryConditions.push('"balanceQuantity" > 0');

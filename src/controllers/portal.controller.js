@@ -4434,11 +4434,12 @@ async function getPortalInventoryProductsController(req, res) {
     const result = await listPortalInventoryProducts(tenantId, {
       search: req.query.search,
       stockFilter: req.query.stockFilter,
+      productId: req.query.productId,
       page: req.query.page,
       pageSize: req.query.pageSize
     });
     if (!result.ok) {
-      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      const status = ['missing_tenant_id', 'invalid_inventory_product_id'].includes(result.reason) ? 400 : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
     }
 

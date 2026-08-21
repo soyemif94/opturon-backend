@@ -126,10 +126,15 @@ async function listPortalInventoryProducts(tenantId, filters = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) return context;
 
+  const productId = normalizeString(filters.productId) || null;
+  if (productId && !isUuid(productId)) {
+    return { ok: false, tenantId: context.tenantId, reason: 'invalid_inventory_product_id' };
+  }
+
   // Listing is deliberately read-only. Location creation belongs to an explicit
   // setup/write flow, never to a GET request.
   const location = await findPrimaryInventoryLocation(context.clinic.id);
-  const result = await listInventoryBalancesByTenant(context.clinic.id, filters);
+  const result = await listInventoryBalancesByTenant(context.clinic.id, { ...filters, productId });
   const totalPages = result.total === 0 ? 0 : Math.ceil(result.total / result.pageSize);
   return {
     ok: true,
@@ -146,30 +151,44 @@ async function listPortalInventoryProducts(tenantId, filters = {}) {
       totalPages
     },
     summary: result.summary,
-    products: result.rows.map((row) => ({
-      id: row.id,
-      clinicId: row.clinicId,
-      name: row.name,
-      description: row.description || null,
-      price: Number(row.price || 0),
-      unitPrice: Number(row.unitPrice || row.price || 0),
-      currency: row.currency,
-      vatRate: Number(row.vatRate || 0),
-      stock: resolveDisplayedStock(row),
-      status: row.status,
-      sku: row.sku || null,
-      internalCode: row.internalCode || null,
-      categoryId: row.categoryId || null,
-      categoryName: row.categoryName || null,
-      metadata: normalizeMetadata(row.metadata),
-      locationId: row.locationId || location?.id || null,
-      locationName: row.locationName || location?.name || null,
-      lastMovementAt: row.lastMovementAt || null,
-      lastMovementType: normalizeInventoryMovementTypeForApi(row.lastMovementType || null),
-      stockState: classifyStockState(resolveDisplayedStock(row)),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt
-    }))
+    products: result.rows.map((row) => {
+      const metadata = normalizeMetadata(row.metadata);
+      const catalogMetadata = normalizeMetadata(metadata.catalog);
+      const imageMetadata = normalizeMetadata(catalogMetadata.image);
+      const imageUrl = normalizeString(imageMetadata.url);
+      return {
+        id: row.id,
+        clinicId: row.clinicId,
+        name: row.name,
+        description: row.description || null,
+        price: Number(row.price || 0),
+        unitPrice: Number(row.unitPrice || row.price || 0),
+        currency: row.currency,
+        vatRate: Number(row.vatRate || 0),
+        stock: resolveDisplayedStock(row),
+        status: row.status,
+        sku: row.sku || null,
+        internalCode: row.internalCode || null,
+        categoryId: row.categoryId || null,
+        categoryName: row.categoryName || null,
+        barcode: normalizeString(catalogMetadata.barcode) || null,
+        unitOfMeasure: normalizeString(catalogMetadata.unitOfMeasure) || null,
+        inventoryTrackingMode: catalogMetadata.inventoryTrackingMode === 'lot_based' ? 'lot_based' : 'legacy',
+        image: imageUrl ? {
+          url: imageUrl,
+          alt: normalizeString(imageMetadata.alt) || row.name,
+          source: normalizeString(imageMetadata.source) || null
+        } : null,
+        metadata,
+        locationId: row.locationId || location?.id || null,
+        locationName: row.locationName || location?.name || null,
+        lastMovementAt: row.lastMovementAt || null,
+        lastMovementType: normalizeInventoryMovementTypeForApi(row.lastMovementType || null),
+        stockState: classifyStockState(resolveDisplayedStock(row)),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt
+      };
+    })
   };
 }
 

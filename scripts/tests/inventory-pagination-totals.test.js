@@ -180,7 +180,7 @@ async function seedInventory(db) {
     sku: `SKU-${String(index + 1).padStart(4, '0')}`,
     internalCode: `A-${String(index + 1).padStart(4, '0')}`,
     categoryId: categoryA,
-    metadata: { catalog: {} },
+    metadata: index === 0 ? { catalog: { image: { url: 'https://cdn.example.test/product-1.png', alt: 'Producto 1' }, unitOfMeasure: 'u' } } : { catalog: {} },
     createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString()
   }));
   const excludedA = [
@@ -251,7 +251,7 @@ async function seedInventory(db) {
     [randomUUID(), tenantA, eligibleA[0].id, randomUUID(), randomUUID()]
   );
 
-  return { tenantA, tenantB, emptyTenant, eligibleA, primaryA };
+  return { tenantA, tenantB, emptyTenant, eligibleA, productsB, excludedA, primaryA };
 }
 
 async function testRepositoryPaginationAndTotals() {
@@ -310,6 +310,18 @@ async function testRepositoryPaginationAndTotals() {
     assert.equal(searched.rows[0].name, 'Producto Especial Buscable');
     assert.deepEqual(searched.summary, { totalProducts: 1, withStock: 0, withoutStock: 1 });
 
+    const focused = await listInventoryBalancesByTenant(seeded.tenantA, { productId: seeded.eligibleA[249].id, page: 1, pageSize: 50 });
+    assert.equal(focused.total, 1);
+    assert.equal(focused.rows[0].id, seeded.eligibleA[249].id);
+    assert.deepEqual(focused.summary, { totalProducts: 1, withStock: 0, withoutStock: 1 });
+
+    const crossTenantFocused = await listInventoryBalancesByTenant(seeded.tenantA, { productId: seeded.productsB[0].id, page: 1, pageSize: 50 });
+    assert.equal(crossTenantFocused.total, 0, 'a productId from another tenant must not be visible');
+    assert.equal(crossTenantFocused.rows.length, 0);
+
+    const lotBasedFocused = await listInventoryBalancesByTenant(seeded.tenantA, { productId: seeded.excludedA[1].id, page: 1, pageSize: 50 });
+    assert.equal(lotBasedFocused.total, 0, 'Inventory Base must preserve its lot_based exclusion');
+
     const otherTenant = await listInventoryBalancesByTenant(seeded.tenantB, { page: 1, pageSize: 50 });
     assert.equal(otherTenant.total, 7);
     assert.equal(otherTenant.rows.every((row) => row.clinicId === seeded.tenantB), true);
@@ -339,6 +351,7 @@ async function testServiceContractAndReadOnlyFastPath() {
   const productSnapshot = { id: 'product-505', stock: 0, updatedAt: '2026-08-01T00:00:00.000Z' };
   const beforeProduct = JSON.stringify(productSnapshot);
   const touched = [];
+  let receivedFilters = null;
   try {
     touched.push(mockModule('src/db/client.js', {
       withTransaction: async (work) => {
@@ -369,13 +382,16 @@ async function testServiceContractAndReadOnlyFastPath() {
       },
       ensureInventoryBalanceRow: async () => { writeCalls.push('balance_create'); return null; },
       updateInventoryBalanceQuantity: async () => { writeCalls.push('balance_update'); return null; },
-      listInventoryBalancesByTenant: async () => ({
+      listInventoryBalancesByTenant: async (_clinicId, filters) => {
+        receivedFilters = filters;
+        return ({
         page: 11,
         pageSize: 50,
         total: 505,
         summary: { totalProducts: 505, withStock: 1, withoutStock: 504 },
-        rows: [{ id: 'product-505', clinicId: 'clinic-1', name: 'Last', stock: 0, balanceQuantity: 0, metadata: {} }]
-      }),
+        rows: [{ id: 'product-505', clinicId: 'clinic-1', name: 'Last', stock: 0, balanceQuantity: 0, metadata: { catalog: { image: { url: 'https://cdn.example.test/last.png', alt: 'Last image' }, unitOfMeasure: 'u' } } }]
+      });
+      },
       listInventoryMovementsByProductId: async () => [],
       listInventoryMovementsByTenant: async () => ({ total: 0, rows: [] }),
       findInventoryMovementByIdempotencyKey: async () => null
@@ -385,7 +401,8 @@ async function testServiceContractAndReadOnlyFastPath() {
     delete require.cache[servicePath];
     touched.push(servicePath);
     const { listPortalInventoryProducts } = require(servicePath);
-    const result = await listPortalInventoryProducts('tenant-a', { page: 11, pageSize: 50 });
+    const focusedProductId = '00000000-0000-4000-8000-000000000505';
+    const result = await listPortalInventoryProducts('tenant-a', { productId: focusedProductId, page: 11, pageSize: 50 });
 
     assert.equal(result.total, 505, 'legacy total must remain available');
     assert.equal(result.page, 11, 'legacy page must remain available');
@@ -395,6 +412,10 @@ async function testServiceContractAndReadOnlyFastPath() {
     assert.deepEqual(result.summary, { totalProducts: 505, withStock: 1, withoutStock: 504 });
     assert.equal(result.location, null, 'missing setup must be represented without creating a location');
     assert.equal(result.products[0].locationId, null, 'missing setup must not invent a location id');
+    assert.equal(result.products[0].image.url, 'https://cdn.example.test/last.png', 'image metadata must reuse the existing inventory query');
+    assert.equal(result.products[0].unitOfMeasure, 'u');
+    assert.equal(result.products[0].inventoryTrackingMode, 'legacy');
+    assert.equal(receivedFilters.productId, focusedProductId, 'validated productId must reach the tenant-scoped repository');
     assert.equal(ensureCalls, 0, 'GET inventory must never create a missing primary location');
     assert.equal(transactionCalls, 0, 'GET inventory must not open a write transaction');
     assert.deepEqual(writeCalls, [], 'GET inventory must not write locations, balances, movements, audits or products');
@@ -403,6 +424,11 @@ async function testServiceContractAndReadOnlyFastPath() {
     const controller = fs.readFileSync(path.join(root, 'src/controllers/portal.controller.js'), 'utf8');
     assert.match(controller, /pagination: result\.pagination/);
     assert.match(controller, /summary: result\.summary/);
+    assert.match(controller, /productId: req\.query\.productId/);
+
+    const invalid = await listPortalInventoryProducts('tenant-a', { productId: 'not-a-uuid' });
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.reason, 'invalid_inventory_product_id');
   } finally {
     for (const resolved of touched) delete require.cache[resolved];
   }
