@@ -10,12 +10,19 @@ function dbQuery(client, text, params) {
 }
 
 async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId }, client = null) {
+  if (client) {
+    await dbQuery(client, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [
+      `inbox_conversation:${clinicId}`,
+      `${channelId}:${contactId}`
+    ]);
+  }
   const byOwner = await dbQuery(
     client,
     `SELECT id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "nextActionAt", "nextActionNote", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE "clinicId" = $1 AND "channelId" = $2 AND "contactId" = $3
+       AND "deletedAt" IS NULL
      LIMIT 1`,
     [clinicId, channelId, contactId]
   );
@@ -40,14 +47,36 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
     return updated.rows[0];
   }
 
+  const previousResult = await dbQuery(
+    client,
+    `SELECT "assignedSellerUserId", "leadStatus", "nextActionAt", "nextActionNote",
+            jsonb_strip_nulls(jsonb_build_object(
+              'portalAssignedTo', context->'portalAssignedTo',
+              'portalAssignedToUserId', context->'portalAssignedToUserId',
+              'portalPriority', context->'portalPriority',
+              'portalDealStage', context->'portalDealStage',
+              'portalNotes', context->'portalNotes',
+              'portalTasks', context->'portalTasks'
+            )) AS context
+     FROM conversations
+     WHERE "clinicId" = $1 AND "channelId" = $2 AND "contactId" = $3
+       AND "deletedAt" IS NOT NULL
+     ORDER BY "deletedAt" DESC
+     LIMIT 1`,
+    [clinicId, channelId, contactId]
+  );
+  const previous = previousResult.rows[0] || {};
+
   try {
     const inserted = await dbQuery(
       client,
       `INSERT INTO conversations (
         "clinicId", "channelId", "contactId", "waFrom", "waTo",
-        status, stage, state, "leadStatus", context, "lastInboundAt", "updatedAt"
-      ) VALUES ($1, $2, $3, $4, $5, 'open', 'new', 'NEW', 'NEW', '{}'::jsonb, NOW(), NOW())
-      ON CONFLICT ("clinicId", "channelId", "contactId")
+        status, stage, state, "assignedSellerUserId", "leadStatus", "nextActionAt", "nextActionNote",
+        context, "lastInboundAt", "updatedAt"
+      ) VALUES ($1, $2, $3, $4, $5, 'open', 'new', 'NEW', $6::uuid, COALESCE($7, 'NEW'), $8, $9,
+                COALESCE($10::jsonb, '{}'::jsonb), NOW(), NOW())
+      ON CONFLICT ("clinicId", "channelId", "contactId") WHERE "deletedAt" IS NULL
       DO UPDATE SET
         "waFrom" = EXCLUDED."waFrom",
         "waTo" = EXCLUDED."waTo",
@@ -59,7 +88,9 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
         "updatedAt" = NOW()
       RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "nextActionAt", "nextActionNote", "waFrom", "waTo", status, stage, state, context,
                 "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
-      [clinicId, channelId, contactId, waFrom, waTo]
+      [clinicId, channelId, contactId, waFrom, waTo, previous.assignedSellerUserId || null,
+        previous.leadStatus || 'NEW', previous.nextActionAt || null, previous.nextActionNote || null,
+        JSON.stringify(previous.context || {})]
     );
 
     return inserted.rows[0];
@@ -77,6 +108,7 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
          WHERE c."channelId" = $1
            AND c."waFrom" = $2
            AND c."waTo" = $3
+           AND c."deletedAt" IS NULL
          LIMIT 1`,
         [channelId, waFrom, waTo]
       );
@@ -143,6 +175,18 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
 
     throw error;
   }
+}
+
+async function findInboundMessageByProviderId(waMessageId, client = null) {
+  const safeId = String(waMessageId || '').trim();
+  if (!safeId) return null;
+  const result = await dbQuery(
+    client,
+    `SELECT id, "conversationId", "waMessageId", "createdAt"
+     FROM conversation_messages WHERE "waMessageId" = $1 LIMIT 1`,
+    [safeId]
+  );
+  return result.rows[0] || null;
 }
 
 async function insertInboundMessage(record, client = null) {
@@ -267,6 +311,7 @@ async function getConversationById(id, client = null) {
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
      WHERE id = $1
+       AND "deletedAt" IS NULL
      LIMIT 1`,
     [id]
   );
@@ -281,6 +326,7 @@ async function getConversationByIdAndClinicId(id, clinicId, client = null) {
      FROM conversations
      WHERE id = $1
        AND "clinicId" = $2
+       AND "deletedAt" IS NULL
      LIMIT 1`,
     [id, clinicId]
   );
@@ -295,6 +341,7 @@ async function listConversationsByContactIdAndClinicId(contactId, clinicId, clie
      FROM conversations
      WHERE "contactId" = $1::uuid
        AND "clinicId" = $2::uuid
+       AND "deletedAt" IS NULL
      ORDER BY "lastInboundAt" DESC NULLS LAST, "updatedAt" DESC, id ASC`,
     [contactId, clinicId]
   );
@@ -580,6 +627,7 @@ async function listConversations(limit = 50, client = null) {
     `SELECT id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
             "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"
      FROM conversations
+     WHERE "deletedAt" IS NULL
      ORDER BY "updatedAt" DESC
      LIMIT $1`,
     [safeLimit]
@@ -1547,6 +1595,7 @@ async function cancelAppointmentById({ appointmentId } = {}, client = null) {
 
 module.exports = {
   upsertConversation,
+  findInboundMessageByProviderId,
   insertInboundMessage,
   insertOutboundMessage,
   getConversationById,

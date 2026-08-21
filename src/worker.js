@@ -4,7 +4,7 @@ const { DateTime } = require('luxon');
 const path = require('path');
 const { execSync } = require('child_process');
 const env = require('./config/env');
-const { withTransaction } = require('./db/client');
+const { pool, withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
 const {
   findChannelById,
@@ -17967,7 +17967,7 @@ async function processInboundJob(job) {
   });
 }
 
-async function processConversationReplyJob(job) {
+async function processConversationReplyJobUnlocked(job) {
   const payload = parseJobPayload(job.payload);
   const requestId = `worker:${job.id}`;
   const conversationId = String(payload.conversationId || '').trim();
@@ -19631,6 +19631,28 @@ async function processConversationReplyJob(job) {
     graphStatus: effectiveSendResult && effectiveSendResult.status ? effectiveSendResult.status : null,
     outboundMessageId: effectiveSendResult && effectiveSendResult.messageId ? effectiveSendResult.messageId : null
   });
+}
+
+async function processConversationReplyJob(job) {
+  const payload = parseJobPayload(job.payload);
+  const conversationId = String(payload.conversationId || '').trim();
+  if (!conversationId) return processConversationReplyJobUnlocked(job);
+
+  const lockClient = await pool.connect();
+  try {
+    await lockClient.query(`SELECT pg_advisory_lock(hashtext($1), hashtext($2))`, [
+      'inbox_conversation_worker', conversationId
+    ]);
+    return await processConversationReplyJobUnlocked(job);
+  } finally {
+    try {
+      await lockClient.query(`SELECT pg_advisory_unlock(hashtext($1), hashtext($2))`, [
+        'inbox_conversation_worker', conversationId
+      ]);
+    } finally {
+      lockClient.release();
+    }
+  }
 }
 
 async function processJob(job) {

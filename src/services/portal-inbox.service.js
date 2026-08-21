@@ -720,6 +720,7 @@ async function listPortalConversations(tenantId, options = {}) {
          )
      ) unread ON TRUE
       WHERE c."clinicId" = $1::uuid
+       AND c."deletedAt" IS NULL
        AND COALESCE(ct.status, 'active') <> 'deleted'
        ${visibilityClause}
        ${channelFilterClause}

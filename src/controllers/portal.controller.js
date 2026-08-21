@@ -13,6 +13,7 @@ const {
   archivePortalConversations,
   restorePortalConversations
 } = require('../services/portal-inbox.service');
+const { deletePortalConversation } = require('../services/conversation-deletion.service');
 const {
   listPortalOrders,
   getPortalOrderPaymentMetrics,
@@ -4757,6 +4758,23 @@ async function postPortalInventoryMovementController(req, res) {
   }
 }
 
+async function destroyPortalConversation(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const conversationId = String(req.params.conversationId || '').trim();
+  try {
+    const result = await deletePortalConversation(tenantId, conversationId, req.inboxActor || {});
+    if (!result.ok) {
+      const status = result.reason === 'missing_conversation_id' || result.reason === 'invalid_conversation_id'
+        ? 400
+        : result.reason === 'conversation_changed' ? 409 : 404;
+      return res.status(status).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'portal_conversation_delete_failed' });
+  }
+}
+
 async function getPortalProductImages(req, res) {
   const tenantId = getRequestTenantId(req);
 
@@ -6026,6 +6044,7 @@ module.exports = {
   getPortalConversation,
   getPortalConversationMessageMedia,
   updatePortalConversation,
+  destroyPortalConversation,
   patchPortalConversationAssignSeller,
   patchPortalConversationLeadStatusController,
   patchPortalConversationNextActionController,

@@ -5,7 +5,7 @@ const { logInfo, logWarn, logError } = require('../utils/logger');
 const { findChannelByPhoneNumberId } = require('../repositories/tenant.repository');
 const { upsertContact } = require('../repositories/contact.repository');
 const { upsertConversation } = require('../repositories/conversation.repository');
-const { insertInboundMessage } = require('../repositories/message.repository');
+const { findInboundMessageByProviderId, insertInboundMessage } = require('../repositories/message.repository');
 const { enqueueInboundJob } = require('../repositories/job.repository');
 const { createFailure } = require('../repositories/inbound-failures.repository');
 const { insertWebhookEvent } = require('../repositories/webhook-event.repository');
@@ -331,6 +331,15 @@ async function persistAndEnqueue(event, req) {
     const txResult = await withTransaction(async (client) => {
       const clinicId = channel.clinicId;
       const channelId = channel.id;
+
+      const existingMessage = await findInboundMessageByProviderId(clinicId, messageId, client);
+      if (existingMessage) {
+        return {
+          status: 'duplicate', clinicId, channelId,
+          conversationId: existingMessage.conversationId,
+          dbMessageId: existingMessage.id
+        };
+      }
 
       const contact = await upsertContact(
         {

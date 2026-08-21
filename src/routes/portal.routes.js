@@ -8,6 +8,7 @@ const {
   getPortalConversation,
   getPortalConversationMessageMedia,
   updatePortalConversation,
+  destroyPortalConversation,
   patchPortalConversationAssignSeller,
   patchPortalConversationLeadStatusController,
   patchPortalConversationNextActionController,
@@ -203,6 +204,7 @@ const { requirePortalInternalAuth } = require('../middlewares/portal-internal-au
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
 const { requireInventoryReadRole, requireSensitiveInventoryRole, requireInventoryReceiptRole } = require('../middlewares/portal-inventory-authorization.middleware');
+const { requireConversationDeleteRole } = require('../middlewares/portal-inbox-authorization.middleware');
 const {
   requireOperationalAlertsReadPermission,
   requireOperationalAlertsWritePermission,
@@ -238,6 +240,7 @@ const inventoryCapability = requirePortalCapability('inventory');
 const inventoryReadRole = requireInventoryReadRole();
 const sensitiveInventoryRole = requireSensitiveInventoryRole();
 const inventoryReceiptRole = requireInventoryReceiptRole();
+const conversationDeleteRole = requireConversationDeleteRole();
 const operationalAlertsReadPermission = requireOperationalAlertsReadPermission();
 const operationalAlertsWritePermission = requireOperationalAlertsWritePermission();
 const operationalAlertsAdminPermission = requireOperationalAlertsAdminPermission();
@@ -406,6 +409,7 @@ router.patch('/tenants/:tenantId/conversations/:conversationId/assign-seller', i
 router.patch('/tenants/:tenantId/conversations/:conversationId/lead-status', inboxModule, patchPortalConversationLeadStatusController);
 router.patch('/tenants/:tenantId/conversations/:conversationId/next-action', inboxModule, patchPortalConversationNextActionController);
 router.patch('/tenants/:tenantId/conversations/:conversationId', inboxModule, updatePortalConversation);
+router.delete('/tenants/:tenantId/conversations/:conversationId', requirePortalInternalAuth, inboxModule, conversationDeleteRole, destroyPortalConversation);
 router.post('/tenants/:tenantId/messages', inboxModule, postPortalMessage);
 router.post('/tenants/:tenantId/whatsapp-imports/preview', requirePortalInternalAuth, inboxModule, handleWhatsAppChatImportUpload, postPortalWhatsAppImportPreview);
 router.post('/tenants/:tenantId/whatsapp-imports/:importId/confirm', requirePortalInternalAuth, inboxModule, postPortalWhatsAppImportConfirm);

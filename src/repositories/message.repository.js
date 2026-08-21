@@ -50,6 +50,18 @@ async function insertInboundMessage(record, client = null) {
   return { message: existing.rows[0] || null, inserted: false };
 }
 
+async function findInboundMessageByProviderId(clinicId, providerMessageId, client = null) {
+  const safeProviderId = String(providerMessageId || '').trim();
+  if (!clinicId || !safeProviderId) return null;
+  const result = await dbQuery(
+    client,
+    `SELECT id, "providerMessageId", "clinicId", "channelId", "conversationId"
+     FROM messages WHERE "clinicId"=$1 AND "providerMessageId"=$2 LIMIT 1`,
+    [clinicId, safeProviderId]
+  );
+  return result.rows[0] || null;
+}
+
 async function insertOutboundMessage(record, client = null) {
   const result = await dbQuery(
     client,
@@ -89,6 +101,7 @@ async function getMessageById(messageId, client = null) {
 
 module.exports = {
   insertInboundMessage,
+  findInboundMessageByProviderId,
   insertOutboundMessage,
   getMessageById
 };

@@ -8,6 +8,7 @@ const {
 const { upsertContact } = require('../repositories/contact.repository');
 const repo = require('./conversation.repo');
 const { extractMetaInboundMessages } = require('../webhooks/meta.webhook');
+const { withTransaction } = require('../db/client');
 
 function normalizeWaNumber(value) {
   return String(value || '').replace(/[^\d]/g, '');
@@ -66,32 +67,42 @@ async function processInboundMessages({ body, headers, requestId }) {
         continue;
       }
 
-      const contact = await upsertContact({
-        clinicId: channel.clinicId,
-        waId: event.fromId,
-        phone: event.fromId,
-        name: event.name || null
-      });
+      const persisted = await withTransaction(async (client) => {
+        // Dedup precedes generation creation: a provider retry belonging to a
+        // tombstoned thread must not manufacture an empty replacement thread.
+        const existingMessage = await repo.findInboundMessageByProviderId(event.providerMessageId, client);
+        if (existingMessage) return { duplicate: true, conversation: null, inboundWrite: { inserted: false } };
 
-      const conversation = await repo.upsertConversation({
-        waFrom: event.fromId,
-        waTo: event.toId || channel.externalId || channel.phoneNumberId,
-        clinicId: channel.clinicId,
-        channelId: channel.id,
-        contactId: contact.id
+        const contact = await upsertContact({
+          clinicId: channel.clinicId, waId: event.fromId, phone: event.fromId, name: event.name || null
+        }, client);
+        const conversation = await repo.upsertConversation({
+          waFrom: event.fromId,
+          waTo: event.toId || channel.externalId || channel.phoneNumberId,
+          clinicId: channel.clinicId,
+          channelId: channel.id,
+          contactId: contact.id
+        }, client);
+        const inboundWrite = await repo.insertInboundMessage({
+          conversationId: conversation.id,
+          waMessageId: event.providerMessageId,
+          from: event.fromId,
+          to: event.toId || channel.externalId || channel.phoneNumberId,
+          type: event.type || 'text',
+          text: event.text || '',
+          raw: event.raw || {}
+        }, client);
+        if (inboundWrite.inserted && String(channel.provider || '').trim().toLowerCase() === 'whatsapp_cloud') {
+          await repo.enqueueJob('conversation_reply', {
+            clinicId: channel.clinicId, channelId: channel.id, conversationId: conversation.id,
+            contactId: contact.id, inboundMessageId: inboundWrite.row.id, waMessageId: event.providerMessageId
+          }, client);
+        }
+        return { duplicate: !inboundWrite.inserted, contact, conversation, inboundWrite };
       });
+      const { conversation, inboundWrite } = persisted;
 
-      const inboundWrite = await repo.insertInboundMessage({
-        conversationId: conversation.id,
-        waMessageId: event.providerMessageId,
-        from: event.fromId,
-        to: event.toId || channel.externalId || channel.phoneNumberId,
-        type: event.type || 'text',
-        text: event.text || '',
-        raw: event.raw || {}
-      });
-
-      if (!inboundWrite.inserted) {
+      if (persisted.duplicate || !inboundWrite.inserted) {
         if (inboundWrite.reason === 'missing_waMessageId') {
           ignoredMissingWaMessageId += 1;
           logWarn('inbound_missing_waMessageId_ignored', {
@@ -106,7 +117,7 @@ async function processInboundMessages({ body, headers, requestId }) {
         logInfo('conversation_inbound_deduped', {
           requestId,
           provider: event.channelProvider || null,
-          conversationId: conversation.id,
+          conversationId: conversation ? conversation.id : null,
           waMessageId: event.providerMessageId
         });
         continue;
@@ -116,7 +127,7 @@ async function processInboundMessages({ body, headers, requestId }) {
         requestId,
         clinicId: channel.clinicId,
         channelId: channel.id,
-        contactId: contact.id,
+        contactId: persisted.contact.id,
         conversationId: conversation.id,
         waMessageId: event.providerMessageId || null,
         inboundMessageId: inboundWrite && inboundWrite.row ? inboundWrite.row.id : null,
@@ -135,23 +146,14 @@ async function processInboundMessages({ body, headers, requestId }) {
         continue;
       }
 
-      const job = await repo.enqueueJob('conversation_reply', {
-        clinicId: channel.clinicId,
-        channelId: channel.id,
-        conversationId: conversation.id,
-        contactId: contact.id,
-        inboundMessageId: inboundWrite.row.id,
-        waMessageId: event.providerMessageId
-      });
-
       enqueued += 1;
       logInfo('conversation_reply_enqueued', {
         requestId,
-        jobId: job ? job.id : null,
+        jobId: null,
         clinicId: channel.clinicId,
         channelId: channel.id,
         conversationId: conversation.id,
-        contactId: contact.id,
+        contactId: persisted.contact.id,
         inboundMessageId: inboundWrite && inboundWrite.row ? inboundWrite.row.id : null,
         waMessageId: event.providerMessageId
       });

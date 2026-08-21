@@ -87,7 +87,15 @@ mockModule('src/repositories/contact.repository.js', {
   }
 });
 
+mockModule('src/db/client.js', {
+  withTransaction: async (fn) => fn({ query: async () => ({ rows: [], rowCount: 0 }) })
+});
+
 mockModule('src/conversations/conversation.repo.js', {
+  findInboundMessageByProviderId: async (waMessageId) => {
+    const row = state.inboundMessages.find((message) => message.waMessageId === waMessageId);
+    return row ? clone(row) : null;
+  },
   upsertConversation: async ({ waFrom, waTo, clinicId, channelId, contactId }) => {
     const key = `${clinicId}:${channelId}:${waFrom}:${waTo}`;
     if (!state.conversations.has(key)) {
