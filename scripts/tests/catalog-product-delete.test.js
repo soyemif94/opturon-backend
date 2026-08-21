@@ -12,7 +12,7 @@ const controllerSource = read('src/controllers/portal.controller.js');
 const routesSource = read('src/routes/portal.routes.js');
 const migrationSource = read('db/migrations/062_catalog_product_tombstones.sql');
 
-assert.match(routesSource, /router\.delete\('\/tenants\/:tenantId\/products\/:productId', requirePortalInternalAuth, catalogModule, destroyPortalProduct\)/);
+assert.match(routesSource, /router\.delete\('\/tenants\/:tenantId\/products\/:productId', requirePortalInternalAuth, catalogWriteRole, catalogModule, destroyPortalProduct\)/);
 assert.match(routesSource, /destroyPortalProduct/);
 
 assert.match(repositorySource, /function buildProductDeleteReferenceSummary/);

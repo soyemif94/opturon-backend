@@ -361,7 +361,7 @@ async function main() {
           quantity: '3.000',
           unitCost: '7.2500',
           lotNumber: 'L-001',
-          expiresAt: '2026-08-15'
+          expiresAt: '2099-08-15'
         }
       ]
     });
@@ -385,7 +385,7 @@ async function main() {
           quantity: '2.000',
           unitCost: '7.2500',
           lotNumber: 'L-001',
-          expiresAt: '2026-08-15'
+          expiresAt: '2099-08-15'
         }
       ]
     });
@@ -412,7 +412,7 @@ async function main() {
           quantity: '1.000',
           unitCost: '7.2500',
           lotNumber: 'L-001',
-          expiresAt: '2026-08-16'
+          expiresAt: '2099-08-16'
         }
       ]
     });
@@ -444,7 +444,7 @@ async function main() {
           quantity: '1.000',
           unitCost: '7.2500',
           lotNumber: 'L-002',
-          expiresAt: '2026-08-20'
+          expiresAt: '2099-08-20'
         }
       ]
     });
@@ -543,21 +543,21 @@ async function main() {
         locationId: locationA.id,
         receivedAt: '2026-07-29T16:00:00.000Z',
         idempotencyKey: 'invalid-expired',
-        items: [{ productId: lotProductA.id, quantity: '1.000', lotNumber: 'OLD-1', expiresAt: '2026-07-01' }]
+        items: [{ productId: lotProductA.id, quantity: '1.000', lotNumber: 'OLD-1', expiresAt: '2000-07-01' }]
       }),
       createPortalPurchaseReceipt(tenantA.tenantId, {
         supplierId: supplierA.id,
         locationId: locationA.id,
         receivedAt: '2026-07-29T16:00:00.000Z',
         idempotencyKey: 'invalid-quantity-scale',
-        items: [{ productId: lotProductA.id, quantity: '1.0001', lotNumber: 'LOT-OVER', expiresAt: '2026-08-21' }]
+        items: [{ productId: lotProductA.id, quantity: '1.0001', lotNumber: 'LOT-OVER', expiresAt: '2099-08-21' }]
       }),
       createPortalPurchaseReceipt(tenantA.tenantId, {
         supplierId: supplierA.id,
         locationId: locationA.id,
         receivedAt: '2026-07-29T16:00:00.000Z',
         idempotencyKey: 'invalid-unit-cost-scale',
-        items: [{ productId: lotProductA.id, quantity: '1.000', unitCost: '1.00001', lotNumber: 'LOT-COST', expiresAt: '2026-08-21' }]
+        items: [{ productId: lotProductA.id, quantity: '1.000', unitCost: '1.00001', lotNumber: 'LOT-COST', expiresAt: '2099-08-21' }]
       })
     ]);
     assert.deepStrictEqual(

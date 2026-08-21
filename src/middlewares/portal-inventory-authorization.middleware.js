@@ -3,6 +3,8 @@ const { findPortalActorContext, hasPortalInternalAuth } = require('../services/p
 const SENSITIVE_TENANT_ROLES = new Set(['owner', 'manager']);
 const OPERATIONAL_RECEIPT_TENANT_ROLES = new Set(['owner', 'manager', 'seller']);
 const INVENTORY_READ_TENANT_ROLES = new Set(['owner', 'manager', 'seller', 'viewer']);
+const CATALOG_WRITE_TENANT_ROLES = new Set(['owner', 'manager']);
+const OPTURON_ADMIN_ROLES = new Set(['superadmin', 'ops_admin']);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -20,6 +22,14 @@ function buildForbiddenResponse(res) {
   });
 }
 
+function isAuthorizedAdminTenantSelection(req, actor, targetTenantId) {
+  if (normalizeString(actor.tenantId) === targetTenantId) return true;
+  const context = req.activeTenantContext || {};
+  return context.source === 'active_tenant' &&
+    normalizeString(context.actorUserId) === normalizeString(actor.id) &&
+    normalizeString(context.activeTenantId) === targetTenantId;
+}
+
 function buildInventoryRoleGate(allowedTenantRoles, options = {}) {
   const allowOpturonAdmin = options.allowOpturonAdmin === true;
   return async function portalInventoryRoleGate(req, res, next) {
@@ -33,13 +43,20 @@ function buildInventoryRoleGate(allowedTenantRoles, options = {}) {
       return buildForbiddenResponse(res);
     }
     if (actor.isAdmin) {
-      if (allowOpturonAdmin && normalizeString(actor.accountScope).toLowerCase() === 'opturon_admin') {
+      const globalRole = normalizeRole(req.get('x-portal-actor-global-role'));
+      const targetTenantId = normalizeString(req.activeTenantId || req.params?.tenantId);
+      if (
+        allowOpturonAdmin &&
+        normalizeString(actor.accountScope).toLowerCase() === 'opturon_admin' &&
+        OPTURON_ADMIN_ROLES.has(globalRole) &&
+        isAuthorizedAdminTenantSelection(req, actor, targetTenantId)
+      ) {
         req.inventoryActor = actor;
         return next();
       }
       return buildForbiddenResponse(res);
     }
-    const targetTenantId = normalizeString(req.params?.tenantId);
+    const targetTenantId = normalizeString(req.activeTenantId || req.params?.tenantId);
     const actorTenantId = normalizeString(actor.tenantId);
     if (targetTenantId && (!actorTenantId || targetTenantId !== actorTenantId)) {
       return buildForbiddenResponse(res);
@@ -64,12 +81,18 @@ function requireSensitiveInventoryRole() {
 }
 
 function requireInventoryReceiptRole() {
-  return buildInventoryRoleGate(OPERATIONAL_RECEIPT_TENANT_ROLES);
+  return buildInventoryRoleGate(OPERATIONAL_RECEIPT_TENANT_ROLES, { allowOpturonAdmin: true });
+}
+
+function requireCatalogWriteRole() {
+  return buildInventoryRoleGate(CATALOG_WRITE_TENANT_ROLES, { allowOpturonAdmin: true });
 }
 
 module.exports = {
   INVENTORY_READ_TENANT_ROLES,
+  CATALOG_WRITE_TENANT_ROLES,
   requireInventoryReadRole,
   requireSensitiveInventoryRole,
-  requireInventoryReceiptRole
+  requireInventoryReceiptRole,
+  requireCatalogWriteRole
 };

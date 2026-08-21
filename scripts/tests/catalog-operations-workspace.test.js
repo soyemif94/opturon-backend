@@ -96,7 +96,7 @@ async function main() {
   assert.equal(tenantBResult.products[0].name, 'Privado B');
 
   const routes = fs.readFileSync(path.join(root, 'src/routes/portal.routes.js'), 'utf8');
-  assert.match(routes, /products\/workspace', requirePortalInternalAuth, catalogModule, getPortalProductImages/);
+  assert.match(routes, /products\/workspace', requirePortalInternalAuth, inventoryReadRole, catalogModule, getPortalProductImages/);
 
   delete require.cache[repositoryPath];
   delete require.cache[dbClientPath];

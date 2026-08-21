@@ -32,12 +32,15 @@ async function runGate(actor, options = {}) {
       findPortalActorContext: async () => actor
     }
   };
-  const { requireInventoryReadRole } = require(authorizationPath);
-  const middleware = requireInventoryReadRole();
+  const authorization = require(authorizationPath);
+  const middleware = authorization[options.gate || 'requireInventoryReadRole']();
   const req = {
     params: { tenantId: options.targetTenantId || 'tenant-a' },
+    activeTenantId: options.activeTenantId,
+    activeTenantContext: options.activeTenantContext,
     get(name) {
       if (String(name).toLowerCase() === 'x-portal-actor-id') return options.actorId === undefined ? 'actor-1' : options.actorId;
+      if (String(name).toLowerCase() === 'x-portal-actor-global-role') return options.globalRole || null;
       return null;
     }
   };
@@ -73,8 +76,42 @@ async function testReadRoleMatrix() {
   const noInternalKey = await runGate({ role: 'owner', tenantId: 'tenant-a', isAdmin: false }, { internalAuth: false });
   assert.equal(noInternalKey.res.statusCode, 403, 'missing server-to-server auth must be forbidden');
 
-  const admin = await runGate({ role: 'superadmin', tenantId: null, isAdmin: true, accountScope: 'opturon_admin' });
-  assert.equal(admin.nextCalls, 1, 'authenticated Opturon admin retains operational read access');
+  const adminActor = { id: 'actor-1', role: 'owner', tenantId: 'admin-tenant', isAdmin: true, accountScope: 'opturon_admin' };
+  for (const globalRole of ['superadmin', 'ops_admin']) {
+    const ownTenant = await runGate(adminActor, { targetTenantId: 'admin-tenant', globalRole });
+    assert.equal(ownTenant.nextCalls, 1, `${globalRole} may read its canonical tenant`);
+    const selectedTenant = await runGate(adminActor, {
+      targetTenantId: 'admin-tenant',
+      activeTenantId: 'tenant-a',
+      activeTenantContext: { source: 'active_tenant', actorUserId: 'actor-1', activeTenantId: 'tenant-a' },
+      globalRole
+    });
+    assert.equal(selectedTenant.nextCalls, 1, `${globalRole} may read a server-resolved active tenant`);
+  }
+
+  for (const globalRole of ['', 'sales_rep', 'support_agent']) {
+    const denied = await runGate(adminActor, { targetTenantId: 'admin-tenant', globalRole });
+    assert.equal(denied.res.statusCode, 403, `${globalRole || 'missing role'} must not gain admin inventory access`);
+  }
+  const forgedSelection = await runGate(adminActor, {
+    targetTenantId: 'admin-tenant',
+    activeTenantId: 'tenant-b',
+    activeTenantContext: { source: 'active_tenant', actorUserId: 'different-actor', activeTenantId: 'tenant-b' },
+    globalRole: 'superadmin'
+  });
+  assert.equal(forgedSelection.res.statusCode, 403, 'admin cross-tenant scope must come from the canonical selection middleware');
+
+  for (const gate of ['requireCatalogWriteRole', 'requireInventoryReceiptRole']) {
+    const allowedAdmin = await runGate(adminActor, { targetTenantId: 'admin-tenant', globalRole: 'ops_admin', gate });
+    assert.equal(allowedAdmin.nextCalls, 1, `${gate} must allow a canonical Opturon admin`);
+    const deniedSupport = await runGate(adminActor, { targetTenantId: 'admin-tenant', globalRole: 'support_agent', gate });
+    assert.equal(deniedSupport.res.statusCode, 403, `${gate} must reject support staff`);
+  }
+
+  const sensitiveAdmin = await runGate(adminActor, {
+    targetTenantId: 'admin-tenant', globalRole: 'superadmin', gate: 'requireSensitiveInventoryRole'
+  });
+  assert.equal(sensitiveAdmin.res.statusCode, 403, 'generic sensitive inventory mutations remain tenant owner/manager only');
 }
 
 function testInventoryRouteDefenseInDepth() {

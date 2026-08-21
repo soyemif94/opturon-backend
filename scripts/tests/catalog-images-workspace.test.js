@@ -116,8 +116,8 @@ async function main() {
   assert.deepEqual(untouched.rows[0].metadata, {});
 
   const routes = fs.readFileSync(path.join(root, 'src/routes/portal.routes.js'), 'utf8');
-  assert.match(routes, /products\/images', requirePortalInternalAuth, catalogModule, getPortalProductImages/);
-  assert.match(routes, /products\/:productId', requirePortalInternalAuth, catalogModule, updatePortalProduct/);
+  assert.match(routes, /products\/images', requirePortalInternalAuth, inventoryReadRole, catalogModule, getPortalProductImages/);
+  assert.match(routes, /products\/:productId', requirePortalInternalAuth, catalogWriteRole, catalogModule, updatePortalProduct/);
 
   delete require.cache[repositoryPath];
   delete require.cache[dbClientPath];

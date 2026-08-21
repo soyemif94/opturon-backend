@@ -318,6 +318,11 @@ async function testRepositoryPaginationAndTotals() {
     const crossTenantFocused = await listInventoryBalancesByTenant(seeded.tenantA, { productId: seeded.productsB[0].id, page: 1, pageSize: 50 });
     assert.equal(crossTenantFocused.total, 0, 'a productId from another tenant must not be visible');
     assert.equal(crossTenantFocused.rows.length, 0);
+    for (const forgedSearch of ['Tenant B product 1', 'B-1', 'B-0001']) {
+      const crossTenantSearch = await listInventoryBalancesByTenant(seeded.tenantA, { search: forgedSearch, page: 1, pageSize: 50 });
+      assert.equal(crossTenantSearch.total, 0, `cross-tenant search must not leak ${forgedSearch}`);
+      assert.equal(crossTenantSearch.rows.length, 0);
+    }
 
     const lotBasedFocused = await listInventoryBalancesByTenant(seeded.tenantA, { productId: seeded.excludedA[1].id, page: 1, pageSize: 50 });
     assert.equal(lotBasedFocused.total, 0, 'Inventory Base must preserve its lot_based exclusion');

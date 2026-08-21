@@ -4,6 +4,7 @@ const { PGlite } = require('@electric-sql/pglite');
 
 const root = path.resolve(__dirname, '..', '..');
 const CLINIC_ID = '40000000-0000-4000-8000-000000000001';
+const OTHER_CLINIC_ID = '40000000-0000-4000-8000-000000000004';
 const ACTOR_ID = '40000000-0000-4000-8000-000000000002';
 const LOCATION_ID = '40000000-0000-4000-8000-000000000003';
 
@@ -512,6 +513,48 @@ async function main() {
       'a stale no-op in a mixed payload must prevent every write'
     );
     assert.deepStrictEqual(counters, { begin: 8, commit: 3, rollback: 5, advisory: 8 });
+
+    const otherTenantProductId = uuidFor(8001);
+    await db.query(
+      `INSERT INTO products
+       (id,"clinicId",name,price,"unitPrice",currency,"vatRate",stock,status,sku,"internalCode",metadata,"createdAt","updatedAt")
+       VALUES ($1::uuid,$2::uuid,'Producto privado tenant B',0,0,'ARS',0,37,'active','SKU-PRIVADO-B','B-PRIVADO',$3::jsonb,NOW(),NOW())`,
+      [otherTenantProductId, OTHER_CLINIC_ID, JSON.stringify({ catalog: { inventoryTrackingMode: 'legacy' } })]
+    );
+    const crossTenantBefore = {
+      tenantAStock: await scalar(db, 'SELECT stock FROM products WHERE id = $1::uuid', [productIds[0]]),
+      tenantBStock: await scalar(db, 'SELECT stock FROM products WHERE id = $1::uuid', [otherTenantProductId]),
+      movements: await scalar(db, 'SELECT COUNT(*) FROM inventory_movements'),
+      audits: await scalar(db, 'SELECT COUNT(*) FROM portal_user_audit_log')
+    };
+    const mixedCrossTenant = await createPortalInventoryBulkAdjustment(
+      'tenant-pglite',
+      {
+        idempotencyKey: uuidFor(8002),
+        reason: 'physical_count',
+        note: 'Payload A+B debe fallar cerrado',
+        tenantId: 'tenant-forged-b',
+        clinicId: OTHER_CLINIC_ID,
+        items: [
+          { productId: productIds[0], expectedCurrentQuantity: 0, targetQuantity: 2 },
+          { productId: otherTenantProductId, expectedCurrentQuantity: 37, targetQuantity: 99 }
+        ]
+      },
+      { actorId: ACTOR_ID }
+    );
+    assert.equal(mixedCrossTenant.ok, false);
+    assert.equal(mixedCrossTenant.reason, 'product_not_found');
+    assert.deepStrictEqual(
+      {
+        tenantAStock: await scalar(db, 'SELECT stock FROM products WHERE id = $1::uuid', [productIds[0]]),
+        tenantBStock: await scalar(db, 'SELECT stock FROM products WHERE id = $1::uuid', [otherTenantProductId]),
+        movements: await scalar(db, 'SELECT COUNT(*) FROM inventory_movements'),
+        audits: await scalar(db, 'SELECT COUNT(*) FROM portal_user_audit_log')
+      },
+      crossTenantBefore,
+      'a mixed Tenant A + Tenant B payload must roll back atomically and ignore forged scope fields'
+    );
+    assert.deepStrictEqual(counters, { begin: 9, commit: 3, rollback: 6, advisory: 9 });
 
     console.log('inventory-bulk-stock-pglite.test.js passed');
   } finally {
