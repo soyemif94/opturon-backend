@@ -4763,6 +4763,9 @@ async function getPortalProductImages(req, res) {
     const result = await listPortalProductImages(tenantId, {
       search: req.query.search,
       imageFilter: req.query.imageFilter,
+      stockFilter: req.query.stockFilter,
+      statusFilter: req.query.statusFilter,
+      categoryId: req.query.categoryId,
       page: req.query.page,
       pageSize: req.query.pageSize
     });

@@ -77,7 +77,15 @@ async function main() {
   const first = await listProductImagesByClinicId(tenantA, { page: 1, pageSize: 50, imageFilter: 'all' });
   assert.equal(first.total, 505);
   assert.equal(first.products.length, 50);
-  assert.deepEqual(first.summary, { totalProducts: 505, withImage: 17, withoutImage: 488 });
+  assert.deepEqual(first.summary, {
+    totalProducts: 505,
+    withStock: 0,
+    withoutStock: 505,
+    withImage: 17,
+    withoutImage: 488,
+    activeProducts: 505,
+    archivedProducts: 0
+  });
 
   const last = await listProductImagesByClinicId(tenantA, { page: 11, pageSize: 50 });
   assert.equal(last.products.length, 5);

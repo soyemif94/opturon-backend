@@ -419,6 +419,7 @@ router.patch('/tenants/:tenantId/orders/:orderId/status', ordersCapability, upda
 router.post('/tenants/:tenantId/orders/:orderId/payment-validation', ordersCapability, postPortalOrderPaymentValidation);
 router.get('/tenants/:tenantId/products', catalogModule, getPortalProducts);
 router.get('/tenants/:tenantId/products/images', requirePortalInternalAuth, catalogModule, getPortalProductImages);
+router.get('/tenants/:tenantId/products/workspace', requirePortalInternalAuth, catalogModule, getPortalProductImages);
 router.get('/tenants/:tenantId/suppliers', inventoryCapability, getPortalSuppliers);
 router.get('/tenants/:tenantId/purchase-receipts', inventoryCapability, getPortalPurchaseReceiptsController);
 router.get('/tenants/:tenantId/purchase-receipts/:receiptId', inventoryCapability, getPortalPurchaseReceiptController);

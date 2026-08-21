@@ -297,7 +297,18 @@ async function listProductImagesByClinicId(clinicId, options = {}, client = null
   const imageFilter = ['all', 'with_image', 'without_image'].includes(options.imageFilter)
     ? options.imageFilter
     : 'all';
+  const stockFilter = ['all', 'with_stock', 'without_stock'].includes(options.stockFilter)
+    ? options.stockFilter
+    : 'all';
+  const statusFilter = ['all', 'active', 'archived'].includes(options.statusFilter)
+    ? options.statusFilter
+    : 'all';
+  const rawCategoryId = String(options.categoryId || '').trim();
+  const categoryId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawCategoryId)
+    ? rawCategoryId
+    : null;
   const hasImageSql = `NULLIF(BTRIM(COALESCE(p.metadata->'catalog'->'image'->>'url', '')), '') IS NOT NULL`;
+  const hasStockSql = `COALESCE(p.stock, 0) > 0`;
   const scopedWhereSql = `
     p."clinicId" = $1::uuid
     AND p."deletedAt" IS NULL
@@ -306,24 +317,37 @@ async function listProductImagesByClinicId(clinicId, options = {}, client = null
       OR p.name ILIKE '%' || $2::text || '%'
       OR COALESCE(p.sku, '') ILIKE '%' || $2::text || '%'
       OR COALESCE(p."internalCode", '') ILIKE '%' || $2::text || '%'
+    )
+    AND ($3::uuid IS NULL OR p."categoryId" = $3::uuid)
+    AND (
+      $4::text = 'all'
+      OR ($4::text = 'active' AND p.status = 'active')
+      OR ($4::text = 'archived' AND p.status <> 'active')
     )`;
+  const filteredWhereSql = `
+    ($5::text = 'all'
+      OR ($5::text = 'with_stock' AND ${hasStockSql})
+      OR ($5::text = 'without_stock' AND NOT (${hasStockSql})))
+    AND ($6::text = 'all'
+      OR ($6::text = 'with_image' AND ${hasImageSql})
+      OR ($6::text = 'without_image' AND NOT (${hasImageSql})))`;
 
   const summaryResult = await dbQuery(
     client,
     `SELECT
        COUNT(*)::int AS "totalProducts",
+       COUNT(*) FILTER (WHERE ${hasStockSql})::int AS "withStock",
+       COUNT(*) FILTER (WHERE NOT (${hasStockSql}))::int AS "withoutStock",
        COUNT(*) FILTER (WHERE ${hasImageSql})::int AS "withImage",
-       COUNT(*) FILTER (WHERE NOT (${hasImageSql}))::int AS "withoutImage"
+       COUNT(*) FILTER (WHERE NOT (${hasImageSql}))::int AS "withoutImage",
+       COUNT(*) FILTER (WHERE p.status = 'active')::int AS "activeProducts",
+       COUNT(*) FILTER (WHERE p.status <> 'active')::int AS "archivedProducts",
+       COUNT(*) FILTER (WHERE ${filteredWhereSql})::int AS "filteredTotal"
      FROM products p
      WHERE ${scopedWhereSql}`,
-    [clinicId, search]
+    [clinicId, search, categoryId, statusFilter, stockFilter, imageFilter]
   );
 
-  const imageFilterSql = imageFilter === 'with_image'
-    ? `AND ${hasImageSql}`
-    : imageFilter === 'without_image'
-      ? `AND NOT (${hasImageSql})`
-      : '';
   const productsResult = await dbQuery(
     client,
     `SELECT
@@ -360,24 +384,24 @@ async function listProductImagesByClinicId(clinicId, options = {}, client = null
        ON s.id = p."defaultSupplierId"
       AND s."tenantId" = p."clinicId"
      WHERE ${scopedWhereSql}
-       ${imageFilterSql}
+       AND ${filteredWhereSql}
      ORDER BY p.name ASC, p.id ASC
-     LIMIT $3::int
-     OFFSET $4::int`,
-    [clinicId, search, pageSize, offset]
+     LIMIT $7::int
+     OFFSET $8::int`,
+    [clinicId, search, categoryId, statusFilter, stockFilter, imageFilter, pageSize, offset]
   );
 
   const summaryRow = summaryResult.rows[0] || {};
   const summary = {
     totalProducts: Number(summaryRow.totalProducts || 0),
+    withStock: Number(summaryRow.withStock || 0),
+    withoutStock: Number(summaryRow.withoutStock || 0),
     withImage: Number(summaryRow.withImage || 0),
-    withoutImage: Number(summaryRow.withoutImage || 0)
+    withoutImage: Number(summaryRow.withoutImage || 0),
+    activeProducts: Number(summaryRow.activeProducts || 0),
+    archivedProducts: Number(summaryRow.archivedProducts || 0)
   };
-  const total = imageFilter === 'with_image'
-    ? summary.withImage
-    : imageFilter === 'without_image'
-      ? summary.withoutImage
-      : summary.totalProducts;
+  const total = Number(summaryRow.filteredTotal || 0);
 
   return {
     page,
