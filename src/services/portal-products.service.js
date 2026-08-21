@@ -6,6 +6,7 @@ const { buildCatalogRiskDiscountSuggestion } = require('./catalog-risk-discount.
 const { insertAutomationActionEvent } = require('../repositories/automation-action-events.repository');
 const {
   listProductsByClinicId,
+  listProductImagesByClinicId,
   listProductsByClinicIdIncludingDeleted,
   findProductsByIds,
   findProductById,
@@ -458,6 +459,29 @@ async function listPortalProducts(tenantId) {
     tenantId: context.tenantId,
     clinic: context.clinic,
     products: decoratedProducts
+  };
+}
+
+async function listPortalProductImages(tenantId, filters = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) {
+    return context;
+  }
+
+  const result = await listProductImagesByClinicId(context.clinic.id, filters);
+  const products = await decorateProductsWithAutomations(context, result.products);
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinic: context.clinic,
+    pagination: {
+      page: result.page,
+      pageSize: result.pageSize,
+      totalItems: result.total,
+      totalPages: result.total === 0 ? 0 : Math.ceil(result.total / result.pageSize)
+    },
+    summary: result.summary,
+    products
   };
 }
 
@@ -1362,6 +1386,7 @@ async function getPortalProductImageAsset(tenantId, fileName) {
 module.exports = {
   PRODUCT_STATUSES: Array.from(PRODUCT_STATUSES),
   listPortalProducts,
+  listPortalProductImages,
   listPortalProductCategories,
   getPortalProductDetail,
   createPortalProduct,

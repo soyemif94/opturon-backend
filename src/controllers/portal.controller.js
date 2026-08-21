@@ -40,6 +40,7 @@ const {
 } = require('../services/portal-invoices.service');
 const {
   listPortalProducts,
+  listPortalProductImages,
   listPortalProductCategories,
   getPortalProductDetail,
   createPortalProduct,
@@ -4755,6 +4756,43 @@ async function postPortalInventoryMovementController(req, res) {
   }
 }
 
+async function getPortalProductImages(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await listPortalProductImages(tenantId, {
+      search: req.query.search,
+      imageFilter: req.query.imageFilter,
+      page: req.query.page,
+      pageSize: req.query.pageSize
+    });
+    if (!result.ok) {
+      const status = result.reason === 'missing_tenant_id' ? 400 : 404;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        tenantId: result.tenantId,
+        pagination: result.pagination,
+        summary: result.summary,
+        products: result.products
+      }
+    });
+  } catch (error) {
+    logError('portal_product_images_workspace_failed', {
+      tenantId,
+      error: error.message
+    });
+    return res.status(500).json({
+      success: false,
+      error: 'portal_product_images_workspace_failed',
+      details: error.message
+    });
+  }
+}
+
 async function postPortalInventoryBulkAdjustmentController(req, res) {
   const tenantId = getRequestTenantId(req);
   const actor = getPortalActorMeta(req);
@@ -6001,6 +6039,7 @@ module.exports = {
   updatePortalOrderStatus,
   postPortalOrderPaymentValidation,
   getPortalProducts,
+  getPortalProductImages,
   getPortalSuppliers,
   getPortalPurchaseReceiptsController,
   getPortalPurchaseReceiptController,

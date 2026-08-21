@@ -285,6 +285,109 @@ async function listProductsByClinicId(clinicId, client = null) {
   return result.rows.map(normalizeProduct);
 }
 
+async function listProductImagesByClinicId(clinicId, options = {}, client = null) {
+  const parsedPage = Number(options.page);
+  const parsedPageSize = Number(options.pageSize);
+  const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const pageSize = Number.isInteger(parsedPageSize) && parsedPageSize > 0
+    ? Math.min(parsedPageSize, 100)
+    : 50;
+  const offset = (page - 1) * pageSize;
+  const search = String(options.search || '').trim().slice(0, 200) || null;
+  const imageFilter = ['all', 'with_image', 'without_image'].includes(options.imageFilter)
+    ? options.imageFilter
+    : 'all';
+  const hasImageSql = `NULLIF(BTRIM(COALESCE(p.metadata->'catalog'->'image'->>'url', '')), '') IS NOT NULL`;
+  const scopedWhereSql = `
+    p."clinicId" = $1::uuid
+    AND p."deletedAt" IS NULL
+    AND (
+      $2::text IS NULL
+      OR p.name ILIKE '%' || $2::text || '%'
+      OR COALESCE(p.sku, '') ILIKE '%' || $2::text || '%'
+      OR COALESCE(p."internalCode", '') ILIKE '%' || $2::text || '%'
+    )`;
+
+  const summaryResult = await dbQuery(
+    client,
+    `SELECT
+       COUNT(*)::int AS "totalProducts",
+       COUNT(*) FILTER (WHERE ${hasImageSql})::int AS "withImage",
+       COUNT(*) FILTER (WHERE NOT (${hasImageSql}))::int AS "withoutImage"
+     FROM products p
+     WHERE ${scopedWhereSql}`,
+    [clinicId, search]
+  );
+
+  const imageFilterSql = imageFilter === 'with_image'
+    ? `AND ${hasImageSql}`
+    : imageFilter === 'without_image'
+      ? `AND NOT (${hasImageSql})`
+      : '';
+  const productsResult = await dbQuery(
+    client,
+    `SELECT
+       p.id,
+       p."clinicId",
+       p.name,
+       p.description,
+       p.price,
+       p."unitPrice",
+       p.currency,
+       p."vatRate",
+       p.stock,
+       p.status,
+       p.sku,
+       p."internalCode",
+       p."categoryId",
+       p."defaultSupplierId",
+       p."expirationDate",
+       p."discountPercentage",
+       c.name AS "categoryName",
+       s.status AS "defaultSupplierStatus",
+       COALESCE(s."tradeName", s."legalName") AS "defaultSupplierDisplayName",
+       p.metadata,
+       p."deletedAt",
+       p."deletedBy",
+       p."deleteReason",
+       p."deletionMetadata",
+       p."createdAt",
+       p."updatedAt"
+     FROM products p
+     LEFT JOIN product_categories c
+       ON c.id = p."categoryId"
+     LEFT JOIN suppliers s
+       ON s.id = p."defaultSupplierId"
+      AND s."tenantId" = p."clinicId"
+     WHERE ${scopedWhereSql}
+       ${imageFilterSql}
+     ORDER BY p.name ASC, p.id ASC
+     LIMIT $3::int
+     OFFSET $4::int`,
+    [clinicId, search, pageSize, offset]
+  );
+
+  const summaryRow = summaryResult.rows[0] || {};
+  const summary = {
+    totalProducts: Number(summaryRow.totalProducts || 0),
+    withImage: Number(summaryRow.withImage || 0),
+    withoutImage: Number(summaryRow.withoutImage || 0)
+  };
+  const total = imageFilter === 'with_image'
+    ? summary.withImage
+    : imageFilter === 'without_image'
+      ? summary.withoutImage
+      : summary.totalProducts;
+
+  return {
+    page,
+    pageSize,
+    total,
+    summary,
+    products: productsResult.rows.map(normalizeProduct)
+  };
+}
+
 async function listProductsByClinicIdIncludingDeleted(clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -664,6 +767,7 @@ async function tombstoneProductById(productId, clinicId, deletion = {}, client =
 
 module.exports = {
   listProductsByClinicId,
+  listProductImagesByClinicId,
   listProductsByClinicIdIncludingDeleted,
   findProductsByIds,
   findProductById,

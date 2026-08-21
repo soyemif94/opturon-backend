@@ -25,6 +25,7 @@ const {
   updatePortalOrderStatus,
   postPortalOrderPaymentValidation,
   getPortalProducts,
+  getPortalProductImages,
   getPortalPurchaseReceiptsController,
   getPortalPurchaseReceiptController,
   getPortalSuppliers,
@@ -417,6 +418,7 @@ router.patch('/tenants/:tenantId/orders/:orderId', ordersCapability, patchPortal
 router.patch('/tenants/:tenantId/orders/:orderId/status', ordersCapability, updatePortalOrderStatus);
 router.post('/tenants/:tenantId/orders/:orderId/payment-validation', ordersCapability, postPortalOrderPaymentValidation);
 router.get('/tenants/:tenantId/products', catalogModule, getPortalProducts);
+router.get('/tenants/:tenantId/products/images', requirePortalInternalAuth, catalogModule, getPortalProductImages);
 router.get('/tenants/:tenantId/suppliers', inventoryCapability, getPortalSuppliers);
 router.get('/tenants/:tenantId/purchase-receipts', inventoryCapability, getPortalPurchaseReceiptsController);
 router.get('/tenants/:tenantId/purchase-receipts/:receiptId', inventoryCapability, getPortalPurchaseReceiptController);
@@ -470,7 +472,7 @@ router.post('/tenants/:tenantId/admin-qa-inventory/lots', requirePortalInternalA
 router.post('/tenants/:tenantId/admin-qa-inventory/lots/:lotId/rollback', requirePortalInternalAuth, requireAdminQaInventoryPermission, inventoryCapability, postAdminQaInventoryLotRollback);
 router.get('/tenants/:tenantId/products/:productId', catalogModule, getPortalProduct);
 router.post('/tenants/:tenantId/products/:productId/inventory-mode', requirePortalInternalAuth, inventoryCapability, sensitiveInventoryRole, catalogModule, postPortalProductInventoryMode);
-router.patch('/tenants/:tenantId/products/:productId', catalogModule, updatePortalProduct);
+router.patch('/tenants/:tenantId/products/:productId', requirePortalInternalAuth, catalogModule, updatePortalProduct);
 router.patch('/tenants/:tenantId/product-categories/:categoryId', catalogModule, updatePortalProductCategory);
 router.delete('/tenants/:tenantId/product-categories/:categoryId', catalogModule, destroyPortalProductCategory);
 router.patch('/tenants/:tenantId/products/:productId/status', catalogModule, updatePortalProductStatus);
