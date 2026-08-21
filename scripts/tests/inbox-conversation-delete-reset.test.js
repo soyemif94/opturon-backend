@@ -58,6 +58,8 @@ async function main() {
         "actorUserId" UUID, "targetUserId" UUID, action TEXT, payload JSONB,
         "createdAt" TIMESTAMPTZ DEFAULT NOW()
       );
+      CREATE TABLE orders (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), "clinicId" UUID, "conversationId" UUID, status TEXT);
+      CREATE TABLE payments (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), "clinicId" UUID, "conversationId" UUID, amount NUMERIC);
     `);
     await db.query('INSERT INTO staff_users(id) VALUES ($1)', [ids.actor]);
     await db.exec(fs.readFileSync(path.join(root, 'db/migrations/076_inbox_conversation_soft_delete.sql'), 'utf8'));
@@ -75,6 +77,8 @@ async function main() {
     await db.query(`INSERT INTO conversation_messages("conversationId",direction,"waMessageId",text,raw) VALUES ($1,'inbound','provider-old','hola','{}')`, [ids.conversation]);
     await db.query(`INSERT INTO jobs("clinicId","channelId",type,payload,status) VALUES ($1,$2,'conversation_reply',$3::jsonb,'queued')`, [ids.tenant, ids.channel, JSON.stringify({ conversationId: ids.conversation })]);
     await db.query(`INSERT INTO handoff_requests("clinicId","conversationId",status) VALUES ($1,$2,'open')`, [ids.tenant, ids.conversation]);
+    await db.query(`INSERT INTO orders("clinicId","conversationId",status) VALUES ($1,$2,'confirmed')`, [ids.tenant, ids.conversation]);
+    await db.query(`INSERT INTO payments("clinicId","conversationId",amount) VALUES ($1,$2,1500)`, [ids.tenant, ids.conversation]);
 
     const queryClient = {
       query(text, params) {
@@ -125,8 +129,12 @@ async function main() {
     assert.equal(old.context.portalDealStage, 'proposal');
     assert.equal(old.context.intent, undefined);
     assert.equal(old.context.portalBotEnabled, undefined);
-    assert.equal((await db.query('SELECT count(*)::int n FROM contacts')).rows[0].n, 1);
+    const preservedContact = (await db.query('SELECT * FROM contacts')).rows[0];
+    assert.equal(preservedContact.name, 'Cliente QA');
+    assert.equal(preservedContact.profileImageUrl, 'https://avatar.test/qa.png');
     assert.equal((await db.query('SELECT count(*)::int n FROM conversation_messages')).rows[0].n, 1);
+    assert.equal((await db.query('SELECT status FROM orders')).rows[0].status, 'confirmed');
+    assert.equal(Number((await db.query('SELECT amount FROM payments')).rows[0].amount), 1500);
     assert.equal((await db.query('SELECT status FROM jobs')).rows[0].status, 'failed');
     assert.equal((await db.query('SELECT status FROM handoff_requests')).rows[0].status, 'resolved');
     assert.equal((await db.query('SELECT count(*)::int n FROM portal_user_audit_log')).rows[0].n, 1);
