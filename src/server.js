@@ -12,6 +12,7 @@ const { logInfo, logWarn, logError } = require('./utils/logger');
 const { autoDetectPhoneNumberId } = require('./whatsapp/whatsapp.service');
 const buildInfo = require('./utils/build');
 const { ensureInboxConversationSoftDeleteSchema } = require('./db/ensure-inbox-conversation-soft-delete');
+const { ensureWhatsAppTemplateCanarySchema } = require('./db/ensure-whatsapp-template-canary');
 
 const app = createApp();
 const host = '0.0.0.0';
@@ -120,17 +121,27 @@ function handleServerListening() {
   }
 }
 
-ensureInboxConversationSoftDeleteSchema()
-  .then((result) => {
+async function ensureStartupSchema() {
+  const inboxResult = await ensureInboxConversationSoftDeleteSchema();
+  const canaryResult = await ensureWhatsAppTemplateCanarySchema();
+  return { inboxResult, canaryResult };
+}
+
+ensureStartupSchema()
+  .then(({ inboxResult, canaryResult }) => {
     logInfo('inbox_conversation_soft_delete_schema_ready', {
-      migration: result.migration,
-      columns: Object.keys(result.columns || {})
+      migration: inboxResult.migration,
+      columns: Object.keys(inboxResult.columns || {})
+    });
+    logInfo('whatsapp_template_canary_schema_ready', {
+      migration: canaryResult.migration,
+      schema: canaryResult.schema
     });
     server.listen(env.port, host, handleServerListening);
   })
   .catch((error) => {
     logError('server_schema_bootstrap_failed', {
-      migration: '076_inbox_conversation_soft_delete.sql',
+      migrations: ['076_inbox_conversation_soft_delete.sql', '077_whatsapp_template_canary_attempts.sql'],
       error: error.message,
       code: error.code || null
     });

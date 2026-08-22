@@ -35,6 +35,7 @@ function loadService(fx) {
     'src/repositories/contact.repository.js': { upsertContact: async () => ({ id: '70000000-0000-4000-8000-000000000001' }) },
     'src/conversations/conversation.repo.js': { upsertOutboundConversation: async () => ({ id: '80000000-0000-4000-8000-000000000001' }), insertOutboundMessage: async () => { fx.state.inserts += 1; if (fx.inboxError) throw fx.inboxError; return { row: { id: '90000000-0000-4000-8000-000000000001' } }; } },
     'src/whatsapp/whatsapp.service.js': { sendChannelScopedMessage: async () => { fx.state.sends += 1; if (fx.sendError) throw fx.sendError; return { messageId: 'wamid.canary' }; } },
+    'src/services/portal-whatsapp-templates.service.js': { syncPortalWhatsAppTemplates: async () => ({ ok: true, syncedCount: 1, summary: { recognized: 1 } }) },
     'src/utils/logger.js': { logInfo() {}, logWarn() {} }
   };
   for (const [relative, exports] of Object.entries(modules)) {
@@ -54,6 +55,11 @@ test('tenant/WABA listing excludes templates from another channel', async () => 
   fx.extraTemplates = [{ ...fx.template, id: 'other', channelId: 'other-channel' }];
   const result = await loadService(fx).getCanaryWorkspace('tenant-a');
   assert.equal(result.templates.length, 1);
+});
+test('readiness refresh syncs Meta then returns tenant-scoped workspace', async () => {
+  const fx = fixture();
+  const result = await loadService(fx).refreshCanaryWorkspace('tenant-a');
+  assert.equal(result.ok, true); assert.equal(result.sync.syncedCount, 1); assert.equal(result.templates.length, 1);
 });
 test('template inexistente is rejected before provider call', async () => {
   const fx = fixture({ templateResult: null }); const result = await loadService(fx).sendCanary('tenant-a', payload(fx), actor);
@@ -119,6 +125,11 @@ test('migration and routes enforce tenant keys, idempotency and backend permissi
   const routes = fs.readFileSync(path.join(root, 'src/routes/portal.routes.js'), 'utf8');
   assert.match(migration, /UNIQUE \("clinicId", "idempotencyKey"\)/); assert.match(migration, /fk_whatsapp_template_canary_channel_tenant/);
   assert.match(routes, /requireWhatsAppCanaryRead/); assert.match(routes, /requireWhatsAppCanaryWrite/);
+  assert.match(routes, /whatsapp\/templates\/canary\/refresh'[^\n]*requireWhatsAppCanaryWrite/);
+  const startup = fs.readFileSync(path.join(root, 'src/server.js'), 'utf8');
+  const ensure = fs.readFileSync(path.join(root, 'src/db/ensure-whatsapp-template-canary.js'), 'utf8');
+  assert.match(startup, /ensureWhatsAppTemplateCanarySchema/); assert.match(ensure, /077_whatsapp_template_canary_attempts\.sql/);
+  assert.match(ensure, /schema_migrations/); assert.match(ensure, /pg_advisory_xact_lock/);
   const conversations = fs.readFileSync(path.join(root, 'src/conversations/conversation.repo.js'), 'utf8');
   assert.match(conversations, /upsertOutboundConversation[\s\S]*?"lastInboundAt"[\s\S]*?NULL/);
 });

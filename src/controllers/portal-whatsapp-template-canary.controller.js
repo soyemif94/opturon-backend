@@ -10,6 +10,15 @@ async function getCanary(req, res) {
     return res.status(500).json({ success: false, error: 'whatsapp_canary_load_failed', detail: String(error.message || '').slice(0, 300) });
   }
 }
+async function postCanaryRefresh(req, res) {
+  try {
+    const result = await service.refreshCanaryWorkspace(tenantId(req));
+    if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.reason, detail: result.detail || null });
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'whatsapp_canary_sync_failed', detail: String(error.message || '').slice(0, 300) });
+  }
+}
 async function postCanary(req, res) {
   try {
     const result = await service.sendCanary(tenantId(req), req.body || {}, req.whatsappCanaryActor);
@@ -19,4 +28,4 @@ async function postCanary(req, res) {
     return res.status(500).json({ success: false, error: 'whatsapp_canary_send_failed', detail: String(error.message || '').slice(0, 300) });
   }
 }
-module.exports = { getCanary, postCanary };
+module.exports = { getCanary, postCanaryRefresh, postCanary };

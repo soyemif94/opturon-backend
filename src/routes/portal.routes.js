@@ -219,6 +219,7 @@ const {
 } = require('../middlewares/portal-whatsapp-canary-authorization.middleware');
 const {
   getCanary: getPortalWhatsAppTemplateCanary,
+  postCanaryRefresh: postPortalWhatsAppTemplateCanaryRefresh,
   postCanary: postPortalWhatsAppTemplateCanary
 } = require('../controllers/portal-whatsapp-template-canary.controller');
 const {
@@ -598,6 +599,7 @@ router.patch('/tenants/:tenantId/whatsapp/default-channel', requirePortalInterna
 router.get('/tenants/:tenantId/whatsapp/templates/blueprints', requirePortalInternalAuth, getPortalWhatsAppTemplateBlueprints);
 router.get('/tenants/:tenantId/whatsapp/templates', requirePortalInternalAuth, getPortalWhatsAppTemplates);
 router.get('/tenants/:tenantId/whatsapp/templates/canary', requirePortalInternalAuth, requireWhatsAppCanaryRead, getPortalWhatsAppTemplateCanary);
+router.post('/tenants/:tenantId/whatsapp/templates/canary/refresh', requirePortalInternalAuth, requireWhatsAppCanaryWrite, postPortalWhatsAppTemplateCanaryRefresh);
 router.post('/tenants/:tenantId/whatsapp/templates/canary', requirePortalInternalAuth, requireWhatsAppCanaryWrite, postPortalWhatsAppTemplateCanary);
 router.post('/tenants/:tenantId/whatsapp/templates/create-from-blueprint', requirePortalInternalAuth, postPortalWhatsAppTemplateFromBlueprint);
 router.post(

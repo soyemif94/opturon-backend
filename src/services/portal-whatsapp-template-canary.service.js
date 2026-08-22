@@ -9,6 +9,7 @@ const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('../whatsapp/normalize-phone');
 const { variableDescriptors, validateVariables, buildTemplatePayload, unsupportedTemplateReason } = require('../whatsapp/whatsapp-template-canary-domain');
 const { logInfo, logWarn } = require('../utils/logger');
+const { syncPortalWhatsAppTemplates } = require('./portal-whatsapp-templates.service');
 
 function normalize(value) { return String(value || '').trim(); }
 function maskPhone(value) {
@@ -65,6 +66,20 @@ async function getCanaryWorkspace(tenantId) {
         canSend: normalize(item.status).toLowerCase() === 'approved' && !unsupportedReason }; }),
     recipients: allowedRecipients.map((item) => ({ id: item.id, name: item.name, phoneMasked: maskPhone(item.phoneE164), consentStatus: item.consentStatus })),
     attempts: attempts.map((item) => summarizeAttempt({ ...item, recipientMasked: maskPhone(recipients.find((recipient) => recipient.id === item.recipientId)?.phoneE164) }))
+  };
+}
+
+async function refreshCanaryWorkspace(tenantId) {
+  const synced = await syncPortalWhatsAppTemplates(tenantId);
+  if (!synced.ok) return synced;
+  const workspace = await getCanaryWorkspace(tenantId);
+  if (!workspace.ok) return workspace;
+  return {
+    ...workspace,
+    sync: {
+      syncedCount: synced.syncedCount,
+      summary: synced.summary || null
+    }
   };
 }
 async function sendCanary(tenantId, payload, actor) {
@@ -126,4 +141,4 @@ async function sendCanary(tenantId, payload, actor) {
   }
 }
 
-module.exports = { getCanaryWorkspace, sendCanary, maskPhone, summarizeAttempt };
+module.exports = { getCanaryWorkspace, refreshCanaryWorkspace, sendCanary, maskPhone, summarizeAttempt };
