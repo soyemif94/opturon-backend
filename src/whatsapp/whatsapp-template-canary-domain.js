@@ -86,4 +86,3 @@ function buildTemplatePayload(template, variables) {
 }
 
 module.exports = { templateComponents, variableDescriptors, validateVariables, buildTemplatePayload };
-
