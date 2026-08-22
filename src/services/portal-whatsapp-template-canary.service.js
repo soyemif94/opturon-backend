@@ -7,7 +7,7 @@ const { upsertContact } = require('../repositories/contact.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('../whatsapp/normalize-phone');
-const { variableDescriptors, validateVariables, buildTemplatePayload } = require('../whatsapp/whatsapp-template-canary-domain');
+const { variableDescriptors, validateVariables, buildTemplatePayload, unsupportedTemplateReason } = require('../whatsapp/whatsapp-template-canary-domain');
 const { logInfo, logWarn } = require('../utils/logger');
 
 function normalize(value) { return String(value || '').trim(); }
@@ -61,7 +61,8 @@ async function getCanaryWorkspace(tenantId) {
     channel: { id: context.channel.id, wabaId: context.channel.wabaId, phoneNumberId: context.channel.phoneNumberId,
       displayPhoneNumber: context.channel.displayPhoneNumber || null, verifiedName: context.channel.verifiedName || null, status: context.channel.status },
     templates: templates.filter((item) => String(item.channelId) === String(context.channel.id) && String(item.wabaId) === String(context.channel.wabaId))
-      .map((item) => ({ ...item, variables: variableDescriptors(item), canSend: normalize(item.status).toLowerCase() === 'approved' })),
+      .map((item) => { const unsupportedReason = unsupportedTemplateReason(item); return { ...item, variables: variableDescriptors(item), unsupportedReason,
+        canSend: normalize(item.status).toLowerCase() === 'approved' && !unsupportedReason }; }),
     recipients: allowedRecipients.map((item) => ({ id: item.id, name: item.name, phoneMasked: maskPhone(item.phoneE164), consentStatus: item.consentStatus })),
     attempts: attempts.map((item) => summarizeAttempt({ ...item, recipientMasked: maskPhone(recipients.find((recipient) => recipient.id === item.recipientId)?.phoneE164) }))
   };
@@ -79,6 +80,7 @@ async function sendCanary(tenantId, payload, actor) {
   ]);
   if (!template) return { ok: false, reason: 'whatsapp_template_not_found', status: 404 };
   if (normalize(template.status).toLowerCase() !== 'approved') return { ok: false, reason: 'whatsapp_template_not_sendable', status: 409 };
+  if (unsupportedTemplateReason(template)) return { ok: false, reason: 'whatsapp_template_component_unsupported', status: 409 };
   if (!recipient || !recipient.active || recipient.consentStatus !== 'granted') return { ok: false, reason: 'whatsapp_canary_recipient_not_authorized', status: 400 };
   const validation = validateVariables(template, payload.variables);
   if (!validation.ok) return { ok: false, reason: 'whatsapp_template_variables_missing', status: 400, details: { missing: validation.missing } };

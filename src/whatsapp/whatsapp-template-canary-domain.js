@@ -23,6 +23,20 @@ function variableDescriptors(template) {
   const descriptors = [];
   templateComponents(template).forEach((component, componentIndex) => {
     const type = normalize(component && component.type).toLowerCase();
+    if (type === 'buttons') {
+      (Array.isArray(component && component.buttons) ? component.buttons : []).forEach((button, buttonIndex) => {
+        placeholderNumbers(button && button.url).forEach((position) => descriptors.push({
+          key: `button.${buttonIndex}.${position}`,
+          componentType: 'button',
+          componentIndex,
+          buttonIndex,
+          subType: normalize(button && button.type).toLowerCase(),
+          position,
+          label: `Boton ${buttonIndex + 1} {{${position}}}`
+        }));
+      });
+      return;
+    }
     const values = placeholderNumbers(component && component.text);
     if (type === 'header' && normalize(component && component.format).toLowerCase() && normalize(component.format).toLowerCase() !== 'text' && values.length) {
       return;
@@ -65,6 +79,18 @@ function buildTemplatePayload(template, variables) {
   templateComponents(template).forEach((component, componentIndex) => {
     const type = normalize(component && component.type).toLowerCase();
     const scoped = descriptors.filter((item) => item.componentIndex === componentIndex);
+    if (type === 'buttons') {
+      const buttons = Array.isArray(component && component.buttons) ? component.buttons : [];
+      buttons.forEach((button, buttonIndex) => {
+        const buttonVariables = scoped.filter((item) => item.buttonIndex === buttonIndex);
+        let url = String(button && button.url || '');
+        buttonVariables.forEach((item) => { url = url.replace(new RegExp(`\\{\\{${item.position}\\}\\}`, 'g'), normalize(variables[item.key])); });
+        preview.push({ type: 'button', text: [normalize(button && button.text), url].filter(Boolean).join(' · ') });
+        if (buttonVariables.length) components.push({ type: 'button', sub_type: 'url', index: String(buttonIndex),
+          parameters: buttonVariables.map((item) => ({ type: 'text', text: normalize(variables[item.key]) })) });
+      });
+      return;
+    }
     const text = renderText(component && component.text, descriptors, variables, componentIndex);
     if (text) preview.push({ type, text });
     if (!scoped.length) return;
@@ -85,4 +111,19 @@ function buildTemplatePayload(template, variables) {
   return { components, preview };
 }
 
-module.exports = { templateComponents, variableDescriptors, validateVariables, buildTemplatePayload };
+function unsupportedTemplateReason(template) {
+  for (const component of templateComponents(template)) {
+    const type = normalize(component && component.type).toLowerCase();
+    const format = normalize(component && component.format).toLowerCase();
+    if (type === 'header' && format && format !== 'text') return 'unsupported_header_media';
+    if (type === 'buttons') {
+      const buttons = Array.isArray(component && component.buttons) ? component.buttons : [];
+      if (buttons.some((button) => placeholderNumbers(button && button.url).length && normalize(button && button.type).toLowerCase() !== 'url')) {
+        return 'unsupported_dynamic_button';
+      }
+    }
+  }
+  return null;
+}
+
+module.exports = { templateComponents, variableDescriptors, validateVariables, buildTemplatePayload, unsupportedTemplateReason };

@@ -94,6 +94,17 @@ test('template parser preserves component order and builds Graph parameters', ()
   const fx = fixture(); const result = domain.buildTemplatePayload(fx.template, { 'body.1': 'Emi' });
   assert.deepEqual(result.components[0].parameters, [{ type: 'text', text: 'Emi' }]); assert.equal(result.preview[0].text, 'Hola Emi');
 });
+test('dynamic URL buttons use Meta nested button contract and multimedia headers fail closed', () => {
+  const domain = require(path.join(root, 'src/whatsapp/whatsapp-template-canary-domain.js'));
+  const fx = fixture();
+  fx.template.definition.provider.components.push({ type: 'BUTTONS', buttons: [{ type: 'URL', text: 'Ver pedido', url: 'https://opturon.com/p/{{1}}' }] });
+  const descriptors = domain.variableDescriptors(fx.template);
+  assert.equal(descriptors.at(-1).key, 'button.0.1');
+  const built = domain.buildTemplatePayload(fx.template, { 'body.1': 'Emi', 'button.0.1': 'ABC' });
+  assert.deepEqual(built.components.at(-1), { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: 'ABC' }] });
+  fx.template.definition.provider.components.unshift({ type: 'HEADER', format: 'IMAGE' });
+  assert.equal(domain.unsupportedTemplateReason(fx.template), 'unsupported_header_media');
+});
 test('recent audit query qualifies every attempt column across the recipient join', () => {
   const qualified = actualCanaryRepo._internals.qualifyColumns('a');
   assert.match(qualified, /^a\.id/); assert.match(qualified, /a\."templateName"/); assert.match(qualified, /a\.status/); assert.match(qualified, /a\."createdAt"/);
