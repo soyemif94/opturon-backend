@@ -5,7 +5,8 @@ param(
   [string]$PhoneNumberId = '1070249406167861',
   [string]$BackendBaseUrl = 'https://opturon-api.onrender.com',
   [string]$GraphVersion = 'v22.0',
-  [switch]$SelfTest
+  [switch]$SelfTest,
+  [switch]$HttpErrorSelfTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,16 +46,55 @@ function Invoke-CompatibleWebRequest {
     UseBasicParsing = $true
     ErrorAction = 'Stop'
   }
-  if ($null -ne $Body) { $parameters.Body = $Body }
+  if ($PSBoundParameters.ContainsKey('Body')) { $parameters.Body = $Body }
 
   try {
-    return Invoke-WebRequest @parameters
-  } catch {
-    $statusCode = $null
-    if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
-      $statusCode = [int]$_.Exception.Response.StatusCode
+    $result = Invoke-WebRequest @parameters
+    return [pscustomobject]@{
+      StatusCode = [int]$result.StatusCode
+      Content = [string]$result.Content
+      HadResponse = $true
     }
-    if ($statusCode) { throw "HTTP request failed with status $statusCode." }
+  } catch {
+    $errorRecord = $_
+    $exception = $errorRecord.Exception
+    $response = $null
+    while ($exception -and -not $response) {
+      $responseProperty = $exception.PSObject.Properties['Response']
+      if ($responseProperty -and $responseProperty.Value) { $response = $responseProperty.Value }
+      $exception = $exception.InnerException
+    }
+
+    if ($response) {
+      $statusCode = $null
+      if ($response.PSObject.Properties['StatusCode']) { $statusCode = [int]$response.StatusCode }
+
+      $content = [string]$errorRecord.ErrorDetails.Message
+      if (-not $content -and $response.PSObject.Methods['GetResponseStream']) {
+        $stream = $null
+        $reader = $null
+        try {
+          $stream = $response.GetResponseStream()
+          if ($stream) {
+            $reader = New-Object IO.StreamReader($stream)
+            $content = $reader.ReadToEnd()
+          }
+        } finally {
+          if ($reader) { $reader.Dispose() }
+          if ($stream) { $stream.Dispose() }
+        }
+      }
+      if (-not $content -and $response.PSObject.Properties['Content'] -and $response.Content) {
+        $content = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+      }
+
+      return [pscustomobject]@{
+        StatusCode = $statusCode
+        Content = [string]$content
+        HadResponse = $true
+      }
+    }
+
     throw 'HTTP request failed before receiving a response.'
   } finally {
     $parameters.Headers = $null
@@ -62,13 +102,14 @@ function Invoke-CompatibleWebRequest {
   }
 }
 
-function Invoke-MetaRead([string]$Path, [string]$Token) {
+function Invoke-MetaRead([string]$RequestName, [string]$Path, [string]$Token) {
   $headers = @{ Authorization = "Bearer $Token" }
   try {
     $response = Invoke-CompatibleWebRequest -Uri "https://graph.facebook.com/$GraphVersion/$Path" -Headers $headers -Method GET
     $json = $response.Content | ConvertFrom-Json
     if ([int]$response.StatusCode -ne 200) {
-      throw "Meta HTTP $([int]$response.StatusCode): code=$($json.error.code) subcode=$($json.error.error_subcode) type=$($json.error.type)"
+      $graph = $json.error
+      throw "Meta request '$RequestName' failed: HTTP $([int]$response.StatusCode); type=$($graph.type); code=$($graph.code); subcode=$($graph.error_subcode); message=$($graph.message); fbtrace_id=$($graph.fbtrace_id)"
     }
     return $json
   } finally {
@@ -82,11 +123,30 @@ if ($SelfTest) {
   if (-not (Get-Command Invoke-WebRequest).Parameters.ContainsKey('UseBasicParsing')) {
     throw 'Invoke-WebRequest compatibility self-test failed.'
   }
+  $httpError = $null
+  if ($HttpErrorSelfTest) {
+    $httpResponse = Invoke-CompatibleWebRequest -Uri 'https://graph.facebook.com' -Method GET
+    if (-not $httpResponse.HadResponse -or [int]$httpResponse.StatusCode -lt 400) {
+      throw 'HTTP error response compatibility self-test failed.'
+    }
+    $httpJson = $httpResponse.Content | ConvertFrom-Json
+    if (-not $httpJson.error -or [int]$httpJson.error.code -ne 100) {
+      throw 'Graph error body compatibility self-test failed.'
+    }
+    $httpError = [pscustomobject]@{
+      httpStatus = [int]$httpResponse.StatusCode
+      graphType = [string]$httpJson.error.type
+      graphCode = [int]$httpJson.error.code
+      graphSubcode = [int]$httpJson.error.error_subcode
+      fbtraceIdPresent = [bool]$httpJson.error.fbtrace_id
+    }
+  }
   [pscustomobject]@{
     compatibilitySelfTest = 'PASS'
     powershellVersion = $PSVersionTable.PSVersion.ToString()
     edition = if ($PSVersionTable.PSEdition) { $PSVersionTable.PSEdition } else { 'Desktop' }
   } | Format-List
+  if ($httpError) { $httpError | Format-List }
   return
 }
 
@@ -111,14 +171,14 @@ try {
     tokenFingerprint = Get-SafeFingerprint $token
   } | Format-List
 
-  $waba = Invoke-MetaRead -Path "$WabaId`?fields=id,name" -Token $token
+  $waba = Invoke-MetaRead -RequestName 'GET WABA' -Path "$WabaId`?fields=id,name" -Token $token
   if ([string]$waba.id -ne $WabaId) { throw 'Meta devolvió un WABA distinto.' }
 
-  $phones = Invoke-MetaRead -Path "$WabaId/phone_numbers?fields=id,display_phone_number,verified_name,status,quality_rating&limit=100" -Token $token
+  $phones = Invoke-MetaRead -RequestName 'GET phone_numbers' -Path "$WabaId/phone_numbers?fields=id,display_phone_number,verified_name,status,quality_rating&limit=100" -Token $token
   $phone = @($phones.data) | Where-Object { [string]$_.id -eq $PhoneNumberId } | Select-Object -First 1
   if (-not $phone) { throw 'El Phone Number ID no pertenece al WABA indicado. Cutover bloqueado.' }
 
-  $templates = Invoke-MetaRead -Path "$WabaId/message_templates?fields=id,name,language,status,category,components&limit=100" -Token $token
+  $templates = Invoke-MetaRead -RequestName 'GET message_templates' -Path "$WabaId/message_templates?fields=id,name,language,status,category,components&limit=100" -Token $token
   [pscustomobject]@{
     wabaHttp = 200
     phoneNumbersHttp = 200
