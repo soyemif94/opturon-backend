@@ -13,6 +13,7 @@ const {
 } = require('../repositories/operational-alert-instances.repository');
 const { extractWhatsAppStatusEvents } = require('../webhooks/meta.webhook');
 const { logInfo } = require('../utils/logger');
+const { reconcileStatus: reconcileWhatsAppTemplateCanaryStatus } = require('../repositories/whatsapp-template-canary.repository');
 
 function sanitizeText(value, maxLength = 500) {
   const safe = String(value || '').replace(/\s+/g, ' ').trim();
@@ -61,6 +62,7 @@ async function reconcileOrderCustomerNotificationStatuses(payload, options = {})
       findWhatsAppChannelByPhoneNumberIdIncludingInactive || findChannelByPhoneNumberId,
     reconcileStatus: reconcileOrderCustomerNotificationDeliveryStatus,
     reconcileOperationalStatus: reconcileOperationalAlertDeliveryStatus,
+    reconcileCanaryStatus: reconcileWhatsAppTemplateCanaryStatus,
     aggregateOperationalInstance: aggregateOperationalAlertInstanceStatus,
     ...(options.dependencies || {})
   };
@@ -115,7 +117,13 @@ async function reconcileOrderCustomerNotificationStatuses(payload, options = {})
         resultCode: delivery.resultCode || null
       });
     } else {
-      stats.ignored += 1;
+      const canary = await dependencies.reconcileCanaryStatus(statusInput);
+      if (canary) {
+        stats.matched += 1;
+        stats.canaryMatched = Number(stats.canaryMatched || 0) + 1;
+      } else {
+        stats.ignored += 1;
+      }
     }
   }
 

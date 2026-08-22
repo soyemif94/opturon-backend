@@ -214,6 +214,14 @@ const {
   requireWhatsAppTemplateSyncAdmin
 } = require('../middlewares/portal-whatsapp-template-sync-authorization.middleware');
 const {
+  requireWhatsAppCanaryRead,
+  requireWhatsAppCanaryWrite
+} = require('../middlewares/portal-whatsapp-canary-authorization.middleware');
+const {
+  getCanary: getPortalWhatsAppTemplateCanary,
+  postCanary: postPortalWhatsAppTemplateCanary
+} = require('../controllers/portal-whatsapp-template-canary.controller');
+const {
   requireAdminQaInventoryPermission
 } = require('../middlewares/portal-admin-qa-inventory-authorization.middleware');
 const {
@@ -589,6 +597,8 @@ router.get('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalA
 router.patch('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalAuth, patchPortalWhatsAppDefaultChannel);
 router.get('/tenants/:tenantId/whatsapp/templates/blueprints', requirePortalInternalAuth, getPortalWhatsAppTemplateBlueprints);
 router.get('/tenants/:tenantId/whatsapp/templates', requirePortalInternalAuth, getPortalWhatsAppTemplates);
+router.get('/tenants/:tenantId/whatsapp/templates/canary', requirePortalInternalAuth, requireWhatsAppCanaryRead, getPortalWhatsAppTemplateCanary);
+router.post('/tenants/:tenantId/whatsapp/templates/canary', requirePortalInternalAuth, requireWhatsAppCanaryWrite, postPortalWhatsAppTemplateCanary);
 router.post('/tenants/:tenantId/whatsapp/templates/create-from-blueprint', requirePortalInternalAuth, postPortalWhatsAppTemplateFromBlueprint);
 router.post(
   '/tenants/:tenantId/whatsapp/templates/sync',

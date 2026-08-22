@@ -177,6 +177,23 @@ async function upsertConversation({ waFrom, waTo, clinicId, channelId, contactId
   }
 }
 
+async function upsertOutboundConversation({ waFrom, waTo, clinicId, channelId, contactId }, client = null) {
+  if (client) {
+    await dbQuery(client, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [
+      `inbox_conversation:${clinicId}`,
+      `${channelId}:${contactId}`
+    ]);
+  }
+  const result = await dbQuery(client, `INSERT INTO conversations (
+      "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context, "lastInboundAt", "updatedAt"
+    ) VALUES ($1,$2,$3,$4,$5,'open','new','NEW','{}'::jsonb,NULL,NOW())
+    ON CONFLICT ("clinicId", "channelId", "contactId") WHERE "deletedAt" IS NULL
+    DO UPDATE SET "waFrom"=EXCLUDED."waFrom", "waTo"=EXCLUDED."waTo", "updatedAt"=NOW()
+    RETURNING id, "clinicId", "channelId", "contactId", "waFrom", "waTo", status, stage, state, context,
+      "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`, [clinicId, channelId, contactId, waFrom, waTo]);
+  return result.rows[0] || null;
+}
+
 async function findInboundMessageByProviderId(waMessageId, client = null) {
   const safeId = String(waMessageId || '').trim();
   if (!safeId) return null;
@@ -1595,6 +1612,7 @@ async function cancelAppointmentById({ appointmentId } = {}, client = null) {
 
 module.exports = {
   upsertConversation,
+  upsertOutboundConversation,
   findInboundMessageByProviderId,
   insertInboundMessage,
   insertOutboundMessage,

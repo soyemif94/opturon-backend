@@ -56,6 +56,15 @@ async function findWhatsAppTemplateByScope(scope, client = null) {
   return result.rows[0] || null;
 }
 
+async function findWhatsAppTemplateByIdAndScope({ id, clinicId, channelId, wabaId }, client = null) {
+  if (!id || !clinicId || !channelId || !wabaId) return null;
+  const result = await dbQuery(client, `SELECT id, "clinicId", "externalTenantId", "channelId", "wabaId", "templateKey", "metaTemplateId", "metaTemplateName",
+      language, category, status, "rejectionReason", definition, "lastSyncedAt", metadata, "createdAt", "updatedAt"
+    FROM whatsapp_templates WHERE id=$1::uuid AND "clinicId"=$2::uuid AND "channelId"=$3::uuid AND "wabaId"=$4 LIMIT 1`,
+  [id, clinicId, channelId, wabaId]);
+  return result.rows[0] || null;
+}
+
 async function findApprovedUtilityOrderSummaryTemplate({
   clinicId,
   channelId,
@@ -260,6 +269,7 @@ async function withWhatsAppTemplatesTransaction(fn) {
 module.exports = {
   listWhatsAppTemplatesByClinicId,
   findWhatsAppTemplateByScope,
+  findWhatsAppTemplateByIdAndScope,
   findApprovedUtilityOrderSummaryTemplate,
   findWhatsAppTemplateByProviderIdentity,
   upsertWhatsAppTemplate,
