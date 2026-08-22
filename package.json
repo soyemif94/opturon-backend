@@ -38,6 +38,7 @@
     "worker": "node src/worker.js",
     "test:phase2": "powershell -ExecutionPolicy Bypass -File scripts/tests/phase2-mini-tests.ps1",
     "test:whatsapp-ownership:phase2": "node scripts/tests/whatsapp-channel-ownership-consolidation-phase2.test.js",
+    "test:whatsapp-system-user-token-rotation": "node scripts/tests/whatsapp-system-user-token-rotation.test.js",
     "whatsapp-ownership:phase2:preflight": "node scripts/ops/whatsapp-channel-ownership-consolidation-phase2-preflight.js --mode=PREFLIGHT",
     "whatsapp-ownership:phase2:apply": "node scripts/ops/whatsapp-channel-ownership-consolidation-phase2-apply.js"
   },
