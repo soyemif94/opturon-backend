@@ -4,7 +4,8 @@ param(
   [string]$WabaId = '27184268844495361',
   [string]$PhoneNumberId = '1070249406167861',
   [string]$BackendBaseUrl = 'https://opturon-api.onrender.com',
-  [string]$GraphVersion = 'v22.0'
+  [string]$GraphVersion = 'v22.0',
+  [switch]$SelfTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,18 +18,54 @@ function ConvertTo-PlainText([Security.SecureString]$SecureValue) {
 
 function Get-SafeFingerprint([string]$Value) {
   $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  $hash = $null
   try {
-    $hash = [Security.Cryptography.SHA256]::HashData($bytes)
-    return ([Convert]::ToHexString($hash)).Substring(0, 12).ToLowerInvariant()
+    $hash = $algorithm.ComputeHash($bytes)
+    return ([BitConverter]::ToString($hash).Replace('-', '').ToLowerInvariant()).Substring(0, 12)
   } finally {
+    if ($hash) { [Array]::Clear($hash, 0, $hash.Length) }
     [Array]::Clear($bytes, 0, $bytes.Length)
+    $algorithm.Dispose()
+  }
+}
+
+function Invoke-CompatibleWebRequest {
+  param(
+    [Parameter(Mandatory = $true)][string]$Uri,
+    [Parameter(Mandatory = $true)][string]$Method,
+    [hashtable]$Headers = @{},
+    [string]$Body = $null
+  )
+
+  $parameters = @{
+    Uri = $Uri
+    Method = $Method
+    Headers = $Headers
+    UseBasicParsing = $true
+    ErrorAction = 'Stop'
+  }
+  if ($null -ne $Body) { $parameters.Body = $Body }
+
+  try {
+    return Invoke-WebRequest @parameters
+  } catch {
+    $statusCode = $null
+    if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+      $statusCode = [int]$_.Exception.Response.StatusCode
+    }
+    if ($statusCode) { throw "HTTP request failed with status $statusCode." }
+    throw 'HTTP request failed before receiving a response.'
+  } finally {
+    $parameters.Headers = $null
+    $parameters.Body = $null
   }
 }
 
 function Invoke-MetaRead([string]$Path, [string]$Token) {
   $headers = @{ Authorization = "Bearer $Token" }
   try {
-    $response = Invoke-WebRequest -Uri "https://graph.facebook.com/$GraphVersion/$Path" -Headers $headers -Method GET -SkipHttpErrorCheck
+    $response = Invoke-CompatibleWebRequest -Uri "https://graph.facebook.com/$GraphVersion/$Path" -Headers $headers -Method GET
     $json = $response.Content | ConvertFrom-Json
     if ([int]$response.StatusCode -ne 200) {
       throw "Meta HTTP $([int]$response.StatusCode): code=$($json.error.code) subcode=$($json.error.error_subcode) type=$($json.error.type)"
@@ -37,6 +74,25 @@ function Invoke-MetaRead([string]$Path, [string]$Token) {
   } finally {
     $headers.Authorization = $null
   }
+}
+
+if ($SelfTest) {
+  $fingerprint = Get-SafeFingerprint 'opturon-powershell-compat-self-test'
+  if ($fingerprint -notmatch '^[0-9a-f]{12}$') { throw 'Fingerprint compatibility self-test failed.' }
+  if (-not (Get-Command Invoke-WebRequest).Parameters.ContainsKey('UseBasicParsing')) {
+    throw 'Invoke-WebRequest compatibility self-test failed.'
+  }
+  [pscustomobject]@{
+    compatibilitySelfTest = 'PASS'
+    powershellVersion = $PSVersionTable.PSVersion.ToString()
+    edition = if ($PSVersionTable.PSEdition) { $PSVersionTable.PSEdition } else { 'Desktop' }
+  } | Format-List
+  return
+}
+
+$originalSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+if (($originalSecurityProtocol -band [Net.SecurityProtocolType]::Tls12) -eq 0) {
+  [Net.ServicePointManager]::SecurityProtocol = $originalSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
 
 $secureToken = Read-Host 'Nuevo System User token (entrada oculta)' -AsSecureString
@@ -83,14 +139,12 @@ try {
     accessToken = $token
     channelName = [string]$phone.verified_name
   } | ConvertTo-Json -Compress
-  $request = @{
-    Uri = "$($BackendBaseUrl.TrimEnd('/'))/portal/tenants/$([Uri]::EscapeDataString($TenantId))/whatsapp/manual-connect"
-    Method = 'POST'
-    Headers = @{ 'x-portal-key' = $portalKey; 'content-type' = 'application/json' }
-    Body = $body
-    SkipHttpErrorCheck = $true
-  }
-  $response = Invoke-WebRequest @request
+  $requestHeaders = @{ 'x-portal-key' = $portalKey; 'content-type' = 'application/json' }
+  $response = Invoke-CompatibleWebRequest `
+    -Uri "$($BackendBaseUrl.TrimEnd('/'))/portal/tenants/$([Uri]::EscapeDataString($TenantId))/whatsapp/manual-connect" `
+    -Method POST `
+    -Headers $requestHeaders `
+    -Body $body
   $result = $response.Content | ConvertFrom-Json
   if ([int]$response.StatusCode -ne 200 -or -not $result.success) {
     throw "Opturon HTTP $([int]$response.StatusCode): $($result.error) $($result.detail)"
@@ -107,8 +161,9 @@ try {
   $token = $null
   $portalKey = $null
   $body = $null
-  $request = $null
+  $requestHeaders = $null
   $secureToken = $null
   $securePortalKey = $null
+  [Net.ServicePointManager]::SecurityProtocol = $originalSecurityProtocol
   [GC]::Collect()
 }
