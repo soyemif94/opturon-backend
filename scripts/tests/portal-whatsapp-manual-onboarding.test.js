@@ -19,7 +19,8 @@ function mockModule(relativePath, exportsValue) {
 
 const state = {
   persistedChannel: null,
-  upsertPayload: null
+  upsertPayload: null,
+  cutoverPayload: null
 };
 
 mockModule('src/services/portal-context.service.js', {
@@ -29,7 +30,13 @@ mockModule('src/services/portal-context.service.js', {
     clinic: {
       id: 'clinic-1',
       name: 'Clinic 1'
-    }
+    },
+    channel: tenantId === 'tenant-cutover' ? {
+      id: 'channel-existing',
+      clinicId: 'clinic-1',
+      phoneNumberId: 'phone-old',
+      wabaId: 'waba-old'
+    } : null
   })
 });
 
@@ -53,6 +60,22 @@ mockModule('src/repositories/whatsapp-onboarding.repository.js', {
       createdAt: '2026-06-12T00:00:00.000Z'
     };
     return state.persistedChannel;
+  },
+  updateWhatsAppChannelAssetCredentials: async (channelId, clinicId, payload) => {
+    state.cutoverPayload = { channelId, clinicId, payload };
+    return {
+      id: channelId,
+      clinicId,
+      provider: 'whatsapp_cloud',
+      phoneNumberId: payload.phoneNumberId,
+      wabaId: payload.wabaId,
+      accessToken: 'decrypted-runtime-token',
+      displayPhoneNumber: payload.displayPhoneNumber,
+      verifiedName: payload.verifiedName,
+      status: payload.status,
+      connectionSource: payload.connectionSource,
+      connectionMetadata: payload.connectionMetadata
+    };
   },
   reassignWhatsAppChannelToClinic: async () => null,
   deactivateOtherClinicWhatsAppChannels: async () => null,
@@ -102,6 +125,27 @@ async function run() {
   assert.strictEqual(result.channel.wabaId, 'waba-1');
   assert.ok(!Object.prototype.hasOwnProperty.call(result.channel, 'accessToken'));
   assert.strictEqual(state.upsertPayload.accessToken, 'plain-meta-token');
+
+  state.upsertPayload = null;
+  const cutover = await connectPortalWhatsAppManual('tenant-cutover', {
+    wabaId: 'waba-1',
+    phoneNumberId: 'phone-1',
+    accessToken: 'rotated-meta-token',
+    channelName: 'Production Channel'
+  });
+  assert.strictEqual(cutover.ok, true);
+  assert.strictEqual(cutover.channelAction, 'cutover');
+  assert.strictEqual(cutover.channel.id, 'channel-existing');
+  assert.strictEqual(state.upsertPayload, null);
+  assert.deepStrictEqual(
+    { channelId: state.cutoverPayload.channelId, clinicId: state.cutoverPayload.clinicId },
+    { channelId: 'channel-existing', clinicId: 'clinic-1' }
+  );
+  assert.strictEqual(state.cutoverPayload.payload.accessToken, 'rotated-meta-token');
+
+  const source = require('fs').readFileSync(modulePath('src/services/portal-whatsapp-manual-onboarding.service.js'), 'utf8');
+  assert.doesNotMatch(source, /slice\(0, 4\).*slice\(-4\)/s);
+  assert.match(source, /fingerprint/);
   console.log('portal-whatsapp-manual-onboarding.test.js: ok');
 }
 

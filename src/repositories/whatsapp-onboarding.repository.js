@@ -348,6 +348,39 @@ async function upsertWhatsAppChannel(input, client = null) {
   return mapChannelRecord(result.rows[0] || null);
 }
 
+async function updateWhatsAppChannelAssetCredentials(channelId, clinicId, input, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE channels
+     SET "phoneNumberId" = $3,
+         "wabaId" = $4,
+         "accessToken" = $5,
+         "displayPhoneNumber" = COALESCE($6, "displayPhoneNumber"),
+         "verifiedName" = COALESCE($7, "verifiedName"),
+         status = $8,
+         "connectionSource" = $9,
+         "connectionMetadata" = COALESCE($10, "connectionMetadata"),
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+       AND provider = 'whatsapp_cloud'
+     RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
+    [
+      channelId,
+      clinicId,
+      input.phoneNumberId,
+      input.wabaId,
+      maybeEncryptSecret(input.accessToken),
+      input.displayPhoneNumber || null,
+      input.verifiedName || null,
+      input.status || 'active',
+      input.connectionSource || 'manual_assisted',
+      input.connectionMetadata || null
+    ]
+  );
+  return mapChannelRecord(result.rows[0] || null);
+}
+
 async function reassignWhatsAppChannelToClinic(channelId, input, client = null) {
   const result = await dbQuery(
     client,
@@ -410,6 +443,7 @@ module.exports = {
   markOnboardingSessionCompleted,
   findWhatsAppChannelByPhoneNumberId,
   upsertWhatsAppChannel,
+  updateWhatsAppChannelAssetCredentials,
   reassignWhatsAppChannelToClinic,
   deactivateOtherClinicWhatsAppChannels,
   withOnboardingTransaction

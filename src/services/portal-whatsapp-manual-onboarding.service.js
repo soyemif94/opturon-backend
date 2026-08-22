@@ -5,6 +5,7 @@ const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   findWhatsAppChannelByPhoneNumberId,
   upsertWhatsAppChannel,
+  updateWhatsAppChannelAssetCredentials,
   reassignWhatsAppChannelToClinic,
   deactivateOtherClinicWhatsAppChannels,
   withOnboardingTransaction
@@ -18,11 +19,13 @@ const {
   listWhatsAppAssetsForWaba
 } = require('./portal-whatsapp-assets.service');
 
-function maskToken(value) {
+function tokenDiagnostic(value) {
   const safe = normalizeString(value);
-  if (!safe) return null;
-  if (safe.length <= 8) return `${safe.slice(0, 2)}***`;
-  return `${safe.slice(0, 4)}***${safe.slice(-4)}`;
+  return {
+    present: Boolean(safe),
+    length: safe.length,
+    fingerprint: safe ? crypto.createHash('sha256').update(safe).digest('hex').slice(0, 12) : null
+  };
 }
 
 function buildSafeChannelPayload(channel) {
@@ -108,7 +111,7 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
     requestId,
     wabaId,
     phoneNumberId,
-    accessToken: maskToken(accessToken)
+    token: tokenDiagnostic(accessToken)
   });
 
   const numbers = await listWhatsAppAssetsForWaba(accessToken, wabaId, requestId, {
@@ -144,8 +147,16 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
   }
 
   let channelAction = 'created';
+  const currentChannel = context.channel && context.channel.id ? context.channel : null;
   const existingChannel = await findWhatsAppChannelByPhoneNumberId(phoneNumberId);
   if (existingChannel) {
+    if (currentChannel && existingChannel.clinicId === context.clinic.id && existingChannel.id !== currentChannel.id) {
+      return buildReason(
+        'whatsapp_channel_duplicate_asset_conflict',
+        'El Phone Number ID ya pertenece a otro channel del mismo workspace. El cutover requiere revisión manual.',
+        { tenantId: safeTenantId }
+      );
+    }
     if (existingChannel.clinicId === context.clinic.id) {
       channelAction = String(existingChannel.status || '').trim().toLowerCase() === 'active' ? 'reconnected' : 'repaired';
     } else if (
@@ -175,6 +186,10 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
         previousTenantId: existingChannel.externalTenantId || null
       });
     }
+  }
+
+  if (!existingChannel && currentChannel) {
+    channelAction = 'cutover';
   }
 
   const subscription = await subscribeCurrentAppToWaba(accessToken, wabaId, requestId);
@@ -229,10 +244,15 @@ async function connectPortalWhatsAppManual(tenantId, payload) {
       }
     };
 
-    const channel =
-      existingChannel && existingChannel.clinicId !== context.clinic.id && channelAction === 'repaired'
+    const channel = channelAction === 'cutover'
+      ? await updateWhatsAppChannelAssetCredentials(currentChannel.id, context.clinic.id, nextChannelData, client)
+      : existingChannel && existingChannel.clinicId !== context.clinic.id && channelAction === 'repaired'
         ? await reassignWhatsAppChannelToClinic(existingChannel.id, nextChannelData, client)
         : await upsertWhatsAppChannel(nextChannelData, client);
+
+    if (!channel) {
+      throw new Error('whatsapp_channel_cutover_target_not_found');
+    }
 
     await deactivateOtherClinicWhatsAppChannels(context.clinic.id, channel.id, client);
     return channel;
