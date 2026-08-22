@@ -65,22 +65,22 @@ if ($subscribedApps -and $subscribedApps.data) {
 }
 
 $appId = [string]$Env:WHATSAPP_APP_ID
+if ([string]::IsNullOrWhiteSpace($appId)) {
+  Write-Error "WHATSAPP_APP_ID is required to verify the WABA subscription."
+  exit 1
+}
+
 $isSubscribed = $false
 if ($appItems.Count -eq 0) {
   $isSubscribed = $false
-} elseif ([string]::IsNullOrWhiteSpace($appId)) {
-  $isSubscribed = $true
 } else {
   foreach ($app in $appItems) {
     $candidateAppId = $null
-    if ($app.id) {
-      $candidateAppId = [string]$app.id
-    } elseif ($app.app_id) {
-      $candidateAppId = [string]$app.app_id
-    } elseif ($app.application -and $app.application.id) {
-      $candidateAppId = [string]$app.application.id
-    } elseif ($app.whatsapp_business_api_data -and $app.whatsapp_business_api_data.app_id) {
-      $candidateAppId = [string]$app.whatsapp_business_api_data.app_id
+    if ($app.whatsapp_business_api_data -and $app.whatsapp_business_api_data.id) {
+      $candidateAppId = [string]$app.whatsapp_business_api_data.id
+    } else {
+      Write-Error "Unexpected subscribed_apps response shape. Refusing to infer subscription state."
+      exit 1
     }
 
     if (-not [string]::IsNullOrWhiteSpace($candidateAppId) -and $candidateAppId -eq $appId) {
@@ -103,7 +103,8 @@ if ($appItems.Count -gt 0) {
 
 if (-not $isSubscribed) {
   Write-Host "App is NOT subscribed to WABA"
-  Write-Host "Subscribing current app to WABA..."
-  [void](Invoke-GraphRequest -Method "POST" -Url "$baseUrl/$wabaId/subscribed_apps")
-  Write-Host "Subscription successful"
+  Write-Error "Read-only diagnostic failed: expected app is not subscribed. No changes were made."
+  exit 2
 }
+
+Write-Host "App is subscribed to WABA"

@@ -27,21 +27,25 @@ function buildGraphError(message, result) {
 }
 
 function getSubscribedAppsArray(payload) {
-  return payload && Array.isArray(payload.data) ? payload.data : [];
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.data)) {
+    throw new Error('subscribed_apps_response_invalid');
+  }
+
+  return payload.data;
 }
 
 function getAppIdentifier(app) {
-  if (!app || typeof app !== 'object') {
+  const whatsappBusinessApiData =
+    app && typeof app === 'object' && app.whatsapp_business_api_data && typeof app.whatsapp_business_api_data === 'object'
+      ? app.whatsapp_business_api_data
+      : null;
+  const appId = whatsappBusinessApiData ? String(whatsappBusinessApiData.id || '').trim() : '';
+
+  if (!appId) {
     return null;
   }
 
-  return (
-    app.id ||
-    app.app_id ||
-    (app.application && app.application.id) ||
-    (app.whatsapp_business_api_data && app.whatsapp_business_api_data.app_id) ||
-    null
-  );
+  return appId;
 }
 
 function isCurrentAppSubscribed(subscribedApps) {
@@ -49,10 +53,15 @@ function isCurrentAppSubscribed(subscribedApps) {
   const items = getSubscribedAppsArray(subscribedApps);
 
   if (!currentAppId) {
-    return items.length > 0;
+    throw new Error('WHATSAPP_APP_ID is required to verify the WABA subscription.');
   }
 
-  return items.some((app) => String(getAppIdentifier(app) || '').trim() === currentAppId);
+  const identifiers = items.map(getAppIdentifier);
+  if (identifiers.some((identifier) => !identifier)) {
+    throw new Error('subscribed_apps_response_shape_unknown');
+  }
+
+  return identifiers.some((identifier) => identifier === currentAppId);
 }
 
 function getRequiredWabaId() {
@@ -151,6 +160,9 @@ async function ensureAppSubscribed(context = {}) {
   } else {
     await subscribeCurrentApp(waba.wabaId, { requestId });
     subscribedApps = await listSubscribedApps(waba.wabaId, { requestId });
+    if (!isCurrentAppSubscribed(subscribedApps)) {
+      throw new Error('waba_subscription_readback_missing');
+    }
     subscribedNow = true;
 
     logInfo('waba_subscribed', {
@@ -174,5 +186,8 @@ module.exports = {
   getWabaFromPhoneNumber,
   listSubscribedApps,
   subscribeCurrentApp,
-  ensureAppSubscribed
+  ensureAppSubscribed,
+  getSubscribedAppsArray,
+  getAppIdentifier,
+  isCurrentAppSubscribed
 };
