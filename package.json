@@ -36,7 +36,10 @@
     "diag:wa:waba": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ps/waba_diagnose.ps1",
     "diag:wa:smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ps/whatsapp_send_smoke.ps1",
     "worker": "node src/worker.js",
-    "test:phase2": "powershell -ExecutionPolicy Bypass -File scripts/tests/phase2-mini-tests.ps1"
+    "test:phase2": "powershell -ExecutionPolicy Bypass -File scripts/tests/phase2-mini-tests.ps1",
+    "test:whatsapp-ownership:phase2": "node scripts/tests/whatsapp-channel-ownership-consolidation-phase2.test.js",
+    "whatsapp-ownership:phase2:preflight": "node scripts/ops/whatsapp-channel-ownership-consolidation-phase2-preflight.js --mode=PREFLIGHT",
+    "whatsapp-ownership:phase2:apply": "node scripts/ops/whatsapp-channel-ownership-consolidation-phase2-apply.js"
   },
   "keywords": [
     "nodejs",
