@@ -87,6 +87,40 @@ function normalizeChannelType(channel) {
   return 'unknown';
 }
 
+function buildInboxChannelScope(context, channelFilter) {
+  if (channelFilter === 'whatsapp') {
+    const channel = context && context.channel ? context.channel : null;
+    const channelStatus = String(channel && channel.status ? channel.status : '').trim().toLowerCase();
+    if (channel && channel.id && normalizeChannelType(channel) === 'whatsapp' && channelStatus === 'active') {
+      return {
+        clause: `AND c."channelId" = $2::uuid`,
+        value: channel.id,
+        channelScopeId: channel.id
+      };
+    }
+
+    return {
+      clause: 'AND FALSE',
+      value: null,
+      channelScopeId: null
+    };
+  }
+
+  if (channelFilter === 'instagram') {
+    return {
+      clause: `AND COALESCE(NULLIF(ch.type, ''), CASE WHEN ch.provider = 'instagram_graph' THEN 'instagram' ELSE 'whatsapp' END) = $2`,
+      value: channelFilter,
+      channelScopeId: null
+    };
+  }
+
+  return {
+    clause: '',
+    value: null,
+    channelScopeId: null
+  };
+}
+
 function buildChannelLabel(channel) {
   const type = normalizeChannelType(channel);
   if (type === 'instagram') {
@@ -651,10 +685,10 @@ async function listPortalConversations(tenantId, options = {}) {
     visibility === 'archived'
       ? `AND NULLIF(c.context->>'portalHiddenAt', '') IS NOT NULL`
       : `AND NULLIF(c.context->>'portalHiddenAt', '') IS NULL`;
-  const channelFilterClause = channelFilter
-    ? `AND COALESCE(NULLIF(ch.type, ''), CASE WHEN ch.provider = 'instagram_graph' THEN 'instagram' ELSE 'whatsapp' END) = $2`
-    : '';
-  const queryParams = channelFilter ? [context.clinic.id, channelFilter] : [context.clinic.id];
+  const channelScope = buildInboxChannelScope(context, channelFilter);
+  const channelFilterClause = channelScope.clause;
+  const queryParams = [context.clinic.id];
+  if (channelScope.value) queryParams.push(channelScope.value);
 
   const result = await query(
     `SELECT
@@ -736,6 +770,7 @@ async function listPortalConversations(tenantId, options = {}) {
     conversations: result.rows.map(mapConversationRow),
     visibility,
     channelFilter,
+    channelScopeId: channelScope.channelScopeId,
     reason: 'resolved'
   };
 }
@@ -1642,6 +1677,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
 }
 
 module.exports = {
+  buildInboxChannelScope,
   listPortalConversations,
   getPortalConversationDetail,
   fetchConversationMessageMedia,
