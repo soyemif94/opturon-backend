@@ -685,6 +685,12 @@ async function listPortalConversations(tenantId, options = {}) {
     visibility === 'archived'
       ? `AND NULLIF(c.context->>'portalHiddenAt', '') IS NOT NULL`
       : `AND NULLIF(c.context->>'portalHiddenAt', '') IS NULL`;
+  // Archived conversations preserve their historical contact even when that
+  // contact was soft-deleted. Active Inbox rows remain fail-closed.
+  const contactVisibilityClause =
+    visibility === 'archived'
+      ? ''
+      : `AND COALESCE(ct.status, 'active') <> 'deleted'`;
   const channelScope = buildInboxChannelScope(context, channelFilter);
   const channelFilterClause = channelScope.clause;
   const queryParams = [context.clinic.id];
@@ -755,7 +761,7 @@ async function listPortalConversations(tenantId, options = {}) {
      ) unread ON TRUE
       WHERE c."clinicId" = $1::uuid
        AND c."deletedAt" IS NULL
-       AND COALESCE(ct.status, 'active') <> 'deleted'
+       ${contactVisibilityClause}
        ${visibilityClause}
        ${channelFilterClause}
       ORDER BY COALESCE(latest."createdAt", c."updatedAt") DESC, c."updatedAt" DESC`,

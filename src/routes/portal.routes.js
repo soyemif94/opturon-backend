@@ -201,9 +201,6 @@ const {
   getOperationalAlertHistoryDetail
 } = require('../controllers/portal-operational-alerts.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
-const {
-  requireWrongTenantMaintenance
-} = require('../services/whatsapp-incident-maintenance.service');
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
 const { requireInventoryReadRole, requireSensitiveInventoryRole, requireInventoryReceiptRole, requireCatalogWriteRole } = require('../middlewares/portal-inventory-authorization.middleware');
@@ -405,14 +402,12 @@ function handleLoyaltyRewardImageUpload(req, res, next) {
 
 router.use('/tenants/:tenantId/operational-alerts', operationalAlertsNoStore);
 router.use('/tenants/:tenantId/whatsapp/templates/sync', whatsappTemplateSyncNoStore);
-// Every tenant-scoped portal route is server-to-server only.  Keeping this at
+// Every tenant-scoped portal route is server-to-server only. Keeping this at
 // the common boundary prevents a newly added route from accidentally bypassing
-// authentication.  The incident gate is deliberately after auth so anonymous
-// callers cannot use its response to probe tenant state.
+// authentication.
 router.use(
   '/tenants/:tenantId',
   requirePortalInternalAuth,
-  requireWrongTenantMaintenance,
   applyPortalActiveTenant
 );
 
