@@ -3,8 +3,8 @@ const { findChannelByIdAndClinicId } = require('../repositories/tenant.repositor
 const { listWhatsAppTemplatesByClinicId, findWhatsAppTemplateByIdAndScope } = require('../repositories/whatsapp-templates.repository');
 const { listOperationalAlertRecipients, findOperationalAlertRecipientById } = require('../repositories/operational-alert-recipients.repository');
 const canaryRepo = require('../repositories/whatsapp-template-canary.repository');
-const { upsertContact } = require('../repositories/contact.repository');
 const conversationRepo = require('../conversations/conversation.repo');
+const { normalizeWhatsAppIdentity, resolveWhatsAppConversation } = require('../conversations/whatsapp-conversation-resolver');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('../whatsapp/normalize-phone');
 const { variableDescriptors, validateVariables, buildTemplatePayload, unsupportedTemplateReason } = require('../whatsapp/whatsapp-template-canary-domain');
@@ -116,12 +116,14 @@ async function sendCanary(tenantId, payload, actor) {
     providerMessageId = normalize(sent && sent.messageId);
     if (!providerMessageId) throw new Error('graph_success_without_provider_message_id');
     attempt = await canaryRepo.withTransaction(async (client) => {
-      const digits = normalizeWhatsAppTo(recipient.phoneE164);
-      const contact = await upsertContact({ clinicId: context.clinic.id, waId: digits, phone: recipient.phoneE164, name: recipient.name }, client);
-      const conversation = await conversationRepo.upsertOutboundConversation({ waFrom: digits, waTo: normalizeWhatsAppTo(context.channel.displayPhoneNumber || context.channel.phoneNumberId),
-        clinicId: context.clinic.id, channelId: context.channel.id, contactId: contact.id }, client);
+      const transportRecipient = normalizeWhatsAppTo(recipient.phoneE164);
+      const resolved = await resolveWhatsAppConversation({ direction: 'outbound', providerIdentity: normalizeWhatsAppIdentity(recipient.phoneE164),
+        phone: recipient.phoneE164, contactName: recipient.name, preserveExistingName: true,
+        waTo: context.channel.displayPhoneNumber || context.channel.phoneNumberId,
+        clinicId: context.clinic.id, channelId: context.channel.id }, client);
+      const conversation = resolved.conversation;
       const inbox = await conversationRepo.insertOutboundMessage({ clinicId: context.clinic.id, channelId: context.channel.id, conversationId: conversation.id,
-        waMessageId: providerMessageId, from: context.channel.phoneNumberId, to: digits, type: 'template',
+        waMessageId: providerMessageId, from: context.channel.phoneNumberId, to: transportRecipient, type: 'template',
         text: built.preview.map((part) => part.text).filter(Boolean).join('\n'), raw: { whatsappTemplateCanary: { attemptId: attempt.id,
           templateId: template.id, templateName: template.metaTemplateName, language: template.language } } }, client);
       return canaryRepo.updateAttempt(attempt.id, context.clinic.id, { status: 'sent', providerMessageId, conversationId: conversation.id,

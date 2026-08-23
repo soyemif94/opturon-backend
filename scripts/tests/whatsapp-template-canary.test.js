@@ -15,7 +15,7 @@ function fixture(overrides = {}) {
   const attempt = { id: '50000000-0000-4000-8000-000000000001', clinicId: template.clinicId, channelId: template.channelId,
     templateId: template.id, recipientId: recipient.id, actorId: '60000000-0000-4000-8000-000000000001', status: 'processing',
     templateName: template.metaTemplateName, language: template.language, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-  const state = { sends: 0, inserts: 0, updates: [] };
+  const state = { sends: 0, inserts: 0, updates: [], resolutions: [] };
   return { template, recipient, attempt, state, ...overrides };
 }
 
@@ -32,7 +32,17 @@ function loadService(fx) {
       listRecent: async () => [],
       withTransaction: async (work) => work({ query: async () => ({ rows: [] }) })
     },
-    'src/repositories/contact.repository.js': { upsertContact: async () => ({ id: '70000000-0000-4000-8000-000000000001' }) },
+    'src/conversations/whatsapp-conversation-resolver.js': {
+      normalizeWhatsAppIdentity: (value) => String(value || '').replace(/\D/g, ''),
+      resolveWhatsAppConversation: async (input) => {
+        fx.state.resolutions.push(input);
+        return {
+          identity: String(input.providerIdentity || '').replace(/\D/g, ''),
+          contact: { id: '70000000-0000-4000-8000-000000000001', name: 'Existing CRM name' },
+          conversation: { id: '80000000-0000-4000-8000-000000000001' }
+        };
+      }
+    },
     'src/conversations/conversation.repo.js': { upsertOutboundConversation: async () => ({ id: '80000000-0000-4000-8000-000000000001' }), insertOutboundMessage: async () => { fx.state.inserts += 1; if (fx.inboxError) throw fx.inboxError; return { row: { id: '90000000-0000-4000-8000-000000000001' } }; } },
     'src/whatsapp/whatsapp.service.js': { sendChannelScopedMessage: async () => { fx.state.sends += 1; if (fx.sendError) throw fx.sendError; return { messageId: 'wamid.canary' }; } },
     'src/services/portal-whatsapp-templates.service.js': { syncPortalWhatsAppTemplates: async () => ({ ok: true, syncedCount: 1, summary: { recognized: 1 } }) },
@@ -80,6 +90,9 @@ test('recipient without consent is rejected', async () => {
 test('valid send calls provider once and persists Inbox once', async () => {
   const fx = fixture(); const result = await loadService(fx).sendCanary('tenant-a', payload(fx), actor);
   assert.equal(result.ok, true); assert.equal(fx.state.sends, 1); assert.equal(fx.state.inserts, 1); assert.equal(result.attempt.providerMessageId, 'wamid.canary');
+  assert.equal(fx.state.resolutions.length, 1);
+  assert.equal(fx.state.resolutions[0].providerIdentity, '5491112345678');
+  assert.equal(fx.state.resolutions[0].preserveExistingName, true);
 });
 test('existing idempotency key never calls provider again', async () => {
   const fx = fixture(); fx.existing = { ...fx.attempt, status: 'sent', providerMessageId: 'wamid.existing' };

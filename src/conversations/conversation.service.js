@@ -5,8 +5,8 @@ const {
   findInstagramChannelByExternalId,
   findInstagramChannelByPageId
 } = require('../repositories/tenant.repository');
-const { upsertContact } = require('../repositories/contact.repository');
 const repo = require('./conversation.repo');
+const { resolveWhatsAppConversation } = require('./whatsapp-conversation-resolver');
 const { extractMetaInboundMessages } = require('../webhooks/meta.webhook');
 const { withTransaction } = require('../db/client');
 
@@ -73,16 +73,16 @@ async function processInboundMessages({ body, headers, requestId }) {
         const existingMessage = await repo.findInboundMessageByProviderId(event.providerMessageId, client);
         if (existingMessage) return { duplicate: true, conversation: null, inboundWrite: { inserted: false } };
 
-        const contact = await upsertContact({
-          clinicId: channel.clinicId, waId: event.fromId, phone: event.fromId, name: event.name || null
-        }, client);
-        const conversation = await repo.upsertConversation({
-          waFrom: event.fromId,
+        const resolved = await resolveWhatsAppConversation({
+          direction: 'inbound',
+          providerIdentity: event.fromId,
+          phone: event.fromId,
+          contactName: event.name || null,
           waTo: event.toId || channel.externalId || channel.phoneNumberId,
           clinicId: channel.clinicId,
-          channelId: channel.id,
-          contactId: contact.id
+          channelId: channel.id
         }, client);
+        const { contact, conversation } = resolved;
         const inboundWrite = await repo.insertInboundMessage({
           conversationId: conversation.id,
           waMessageId: event.providerMessageId,

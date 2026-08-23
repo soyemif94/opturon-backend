@@ -52,8 +52,13 @@ async function findFirstContactByPhone(clinicId, phone, client = null) {
   return result.rows[0] || null;
 }
 
-async function upsertContact({ clinicId, waId, phone, name }, client = null) {
-  const reusableContact = await findFirstContactByPhone(clinicId, phone || waId, client);
+async function upsertContact({ clinicId, waId, phone, name }, client = null, options = {}) {
+  const normalizedWaId = normalizePhoneDigits(waId);
+  const normalizedPhone = normalizePhoneDigits(phone);
+  let reusableContact = await findFirstContactByPhone(clinicId, normalizedWaId || normalizedPhone, client);
+  if (!reusableContact && normalizedPhone && normalizedPhone !== normalizedWaId) {
+    reusableContact = await findFirstContactByPhone(clinicId, normalizedPhone, client);
+  }
   if (reusableContact) {
     const result = await dbQuery(
       client,
@@ -61,7 +66,7 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
        SET
          "waId" = COALESCE($3, "waId"),
          phone = COALESCE($4, phone),
-         name = COALESCE($5, name),
+         name = CASE WHEN $6::boolean THEN name ELSE COALESCE($5, name) END,
          status = 'active',
          "archivedAt" = NULL,
          "deletedAt" = NULL,
@@ -69,7 +74,7 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
        WHERE id = $1
          AND "clinicId" = $2
        RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", status, "archivedAt", "deletedAt", "optedOut"`,
-      [reusableContact.id, clinicId, waId || null, phone || null, name || null]
+      [reusableContact.id, clinicId, waId || null, phone || null, name || null, options.preserveExistingName === true]
     );
 
     return result.rows[0] || null;
@@ -82,13 +87,13 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
      ON CONFLICT ("clinicId", "waId")
      DO UPDATE SET
        phone = EXCLUDED.phone,
-       name = COALESCE(EXCLUDED.name, contacts.name),
+       name = CASE WHEN $5::boolean THEN contacts.name ELSE COALESCE(EXCLUDED.name, contacts.name) END,
        status = 'active',
        "archivedAt" = NULL,
        "deletedAt" = NULL,
        "updatedAt" = NOW()
      RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", status, "archivedAt", "deletedAt", "optedOut"`,
-    [clinicId, waId, phone || null, name || null]
+    [clinicId, waId, phone || null, name || null, options.preserveExistingName === true]
   );
 
   return result.rows[0];
