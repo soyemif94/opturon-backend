@@ -22,6 +22,8 @@ test('reverse command exposes only strict DRY_RUN and APPLY modes', () => {
   assert.match(source, /DRY_RUN_is_strictly_read_only/);
   assert.match(source, /literal_confirmation_mismatch/);
   assert.match(source, /workers_pause_not_confirmed/);
+  assert.match(source, /RENDER_API_KEY_required_for_worker_verification/);
+  assert.match(source, /render_service_not_suspended/);
   assert.match(source, /manifest_checksum_mismatch/);
   assert.match(source, /manifest_not_ready/);
 });

@@ -10,6 +10,18 @@ function flag(name, fallback = '') {
   return item ? item.slice(name.length + 3).trim() : fallback;
 }
 
+async function verifyProductionWorkerSuspended() {
+  const token = String(process.env.RENDER_API_KEY || '').trim();
+  const serviceId = String(process.env.RENDER_SERVICE_ID || 'srv-d6n7i5vgi27c73c954t0').trim();
+  if (!token) throw new Error('RENDER_API_KEY_required_for_worker_verification');
+  const response = await fetch(`https://api.render.com/v1/services/${encodeURIComponent(serviceId)}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+  });
+  if (!response.ok) throw new Error(`worker_verification_http_${response.status}`);
+  const service = await response.json();
+  if (String(service.suspended || '').toLowerCase() !== 'suspended') throw new Error('render_service_not_suspended');
+}
+
 async function run() {
   const mode = flag('mode').toUpperCase();
   const execution = flag('execution', mode === 'DRY_RUN' ? 'READ_ONLY' : '').toUpperCase();
@@ -25,6 +37,7 @@ async function run() {
   const manifest = JSON.parse(raw);
   if (!manifest.readyForTargetedReverseApply || (manifest.blockers || []).length) throw new Error('manifest_not_ready');
   if (reverse.sha256(manifest.identities) !== reverse.sha256(reverse.IDS)) throw new Error('manifest_identity_mismatch');
+  if (mode === 'APPLY' && execution === 'COMMIT') await verifyProductionWorkerSuspended();
   const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
   await client.connect();
   try {
@@ -46,4 +59,4 @@ if (require.main === module) run().then((result) => {
   process.stdout.write(`TARGETED_REVERSE_${result.execution}=PASS\n`);
 }).catch((error) => { process.stderr.write(`TARGETED_REVERSE_FAILED=${error.message}\n`); process.exitCode = 1; });
 
-module.exports = { flag, run };
+module.exports = { flag, verifyProductionWorkerSuspended, run };
