@@ -52,20 +52,51 @@ async function findFirstContactByPhone(clinicId, phone, client = null) {
   return result.rows[0] || null;
 }
 
+async function findFirstContactByIdentityCandidates(clinicId, candidates, client = null) {
+  const normalizedCandidates = [...new Set((Array.isArray(candidates) ? candidates : [])
+    .map(normalizePhoneDigits).filter(Boolean))];
+  if (!normalizedCandidates.length) return null;
+  const result = await dbQuery(
+    client,
+    `SELECT
+       id, "clinicId", "waId", phone, name, email, "profileImageUrl", "whatsappPhone",
+       "taxId", "taxCondition", "companyName", notes, status, "archivedAt", "deletedAt",
+       "optedOut", "createdAt", "updatedAt"
+     FROM contacts
+     WHERE "clinicId" = $1
+       AND EXISTS (
+         SELECT 1 FROM unnest($2::text[]) WITH ORDINALITY candidate(identity, priority)
+         WHERE regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = candidate.identity
+            OR regexp_replace(COALESCE("whatsappPhone", ''), '\\D', '', 'g') = candidate.identity
+            OR regexp_replace(COALESCE("waId", ''), '\\D', '', 'g') = candidate.identity
+       )
+     ORDER BY (
+       SELECT MIN(candidate.priority)
+       FROM unnest($2::text[]) WITH ORDINALITY candidate(identity, priority)
+       WHERE regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = candidate.identity
+          OR regexp_replace(COALESCE("whatsappPhone", ''), '\\D', '', 'g') = candidate.identity
+          OR regexp_replace(COALESCE("waId", ''), '\\D', '', 'g') = candidate.identity
+     ) ASC, "deletedAt" ASC NULLS FIRST, "updatedAt" DESC NULLS LAST, "createdAt" DESC
+     LIMIT 1`,
+    [clinicId, normalizedCandidates]
+  );
+  return result.rows[0] || null;
+}
+
 async function upsertContact({ clinicId, waId, phone, name }, client = null, options = {}) {
   const normalizedWaId = normalizePhoneDigits(waId);
   const normalizedPhone = normalizePhoneDigits(phone);
-  let reusableContact = await findFirstContactByPhone(clinicId, normalizedWaId || normalizedPhone, client);
-  if (!reusableContact && normalizedPhone && normalizedPhone !== normalizedWaId) {
-    reusableContact = await findFirstContactByPhone(clinicId, normalizedPhone, client);
-  }
+  const identityCandidates = Array.isArray(options.identityCandidates) && options.identityCandidates.length
+    ? options.identityCandidates
+    : [normalizedWaId, normalizedPhone];
+  const reusableContact = await findFirstContactByIdentityCandidates(clinicId, identityCandidates, client);
   if (reusableContact) {
     const result = await dbQuery(
       client,
       `UPDATE contacts
        SET
-         "waId" = COALESCE($3, "waId"),
-         phone = COALESCE($4, phone),
+         "waId" = CASE WHEN $7::boolean THEN "waId" ELSE COALESCE($3, "waId") END,
+         phone = CASE WHEN $7::boolean THEN phone ELSE COALESCE($4, phone) END,
          name = CASE WHEN $6::boolean THEN name ELSE COALESCE($5, name) END,
          status = 'active',
          "archivedAt" = NULL,
@@ -74,7 +105,8 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null, opt
        WHERE id = $1
          AND "clinicId" = $2
        RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", status, "archivedAt", "deletedAt", "optedOut"`,
-      [reusableContact.id, clinicId, waId || null, phone || null, name || null, options.preserveExistingName === true]
+      [reusableContact.id, clinicId, waId || null, phone || null, name || null,
+        options.preserveExistingName === true, options.preserveExistingIdentity === true]
     );
 
     return result.rows[0] || null;
@@ -86,14 +118,15 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null, opt
      VALUES ($1, $2, $3, $4, NOW())
      ON CONFLICT ("clinicId", "waId")
      DO UPDATE SET
-       phone = EXCLUDED.phone,
+       phone = CASE WHEN $6::boolean THEN contacts.phone ELSE EXCLUDED.phone END,
        name = CASE WHEN $5::boolean THEN contacts.name ELSE COALESCE(EXCLUDED.name, contacts.name) END,
        status = 'active',
        "archivedAt" = NULL,
        "deletedAt" = NULL,
        "updatedAt" = NOW()
      RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", status, "archivedAt", "deletedAt", "optedOut"`,
-    [clinicId, waId, phone || null, name || null, options.preserveExistingName === true]
+    [clinicId, waId, phone || null, name || null,
+      options.preserveExistingName === true, options.preserveExistingIdentity === true]
   );
 
   return result.rows[0];
@@ -712,6 +745,7 @@ module.exports = {
   // Generic/internal helpers.
   upsertContact,
   findFirstContactByPhone,
+  findFirstContactByIdentityCandidates,
   findContactById,
   findContactByIdAndClinicId,
   listContactsByClinicId,

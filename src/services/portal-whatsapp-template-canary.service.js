@@ -118,7 +118,7 @@ async function sendCanary(tenantId, payload, actor) {
     attempt = await canaryRepo.withTransaction(async (client) => {
       const transportRecipient = normalizeWhatsAppTo(recipient.phoneE164);
       const resolved = await resolveWhatsAppConversation({ direction: 'outbound', providerIdentity: normalizeWhatsAppIdentity(recipient.phoneE164),
-        phone: recipient.phoneE164, contactName: recipient.name, preserveExistingName: true,
+        phone: recipient.phoneE164, contactName: recipient.name, preserveExistingName: true, preserveExistingIdentity: true,
         waTo: context.channel.displayPhoneNumber || context.channel.phoneNumberId,
         clinicId: context.clinic.id, channelId: context.channel.id }, client);
       const conversation = resolved.conversation;

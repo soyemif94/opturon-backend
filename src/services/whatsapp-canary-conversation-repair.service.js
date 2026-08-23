@@ -136,6 +136,13 @@ async function repairCanaryConversation(tenantId, attemptId, payload, actor) {
     const contactReferences = (await client.query(
       `SELECT
         (SELECT count(*)::int FROM conversations WHERE "contactId"=$1::uuid AND id<>$2::uuid) conversations,
+        (SELECT count(*)::int FROM conversations
+         WHERE "contactId"=$1::uuid AND id<>$2::uuid
+           AND (
+             "deletedAt" IS NULL
+             OR COALESCE("deleteReason",'') <> 'canary_duplicate_repaired'
+             OR COALESCE(context->'canaryDuplicateRepair'->>'targetConversationId','') <> $3::text
+           )) "unsafeConversations",
         (SELECT count(*)::int FROM orders WHERE "contactId"=$1::uuid) orders,
         (SELECT count(*)::int FROM invoices WHERE "contactId"=$1::uuid) invoices,
         (SELECT count(*)::int FROM payments WHERE "contactId"=$1::uuid) payments,
@@ -144,9 +151,10 @@ async function repairCanaryConversation(tenantId, attemptId, payload, actor) {
         (SELECT count(*)::int FROM appointments WHERE "contactId"=$1::uuid) appointments,
         (SELECT count(*)::int FROM handoff_requests WHERE "contactId"=$1::uuid) handoffs,
         (SELECT count(*)::int FROM agenda_items WHERE "contactId"=$1::uuid) agenda`,
-      [source.contactId, sourceConversationId]
+      [source.contactId, sourceConversationId, targetConversationId]
     )).rows[0];
-    if (Object.values(contactReferences).some((count) => Number(count) !== 0)) {
+    const unsafeContactReferences = Object.fromEntries(Object.entries(contactReferences).filter(([key]) => key !== 'conversations'));
+    if (Object.values(unsafeContactReferences).some((count) => Number(count) !== 0)) {
       return { ok: false, reason: 'canary_contact_repair_foreign_activity_detected', status: 409, contactReferences };
     }
 

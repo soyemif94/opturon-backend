@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '..', '..');
 const actualCanaryRepo = require(path.join(root, 'src/repositories/whatsapp-template-canary.repository.js'));
+const actualConversationResolver = require(path.join(root, 'src/conversations/whatsapp-conversation-resolver.js'));
 
 function fixture(overrides = {}) {
   const template = { id: '10000000-0000-4000-8000-000000000001', clinicId: '20000000-0000-4000-8000-000000000001',
@@ -15,7 +16,7 @@ function fixture(overrides = {}) {
   const attempt = { id: '50000000-0000-4000-8000-000000000001', clinicId: template.clinicId, channelId: template.channelId,
     templateId: template.id, recipientId: recipient.id, actorId: '60000000-0000-4000-8000-000000000001', status: 'processing',
     templateName: template.metaTemplateName, language: template.language, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-  const state = { sends: 0, inserts: 0, updates: [], resolutions: [] };
+  const state = { sends: 0, inserts: 0, insertRecords: [], updates: [], resolutions: [], resolvedContacts: [] };
   return { template, recipient, attempt, state, ...overrides };
 }
 
@@ -32,7 +33,24 @@ function loadService(fx) {
       listRecent: async () => [],
       withTransaction: async (work) => work({ query: async () => ({ rows: [] }) })
     },
-    'src/conversations/whatsapp-conversation-resolver.js': {
+    'src/conversations/whatsapp-conversation-resolver.js': fx.useActualResolver ? {
+      ...actualConversationResolver,
+      resolveWhatsAppConversation: actualConversationResolver.createWhatsAppConversationResolver({
+        upsertContact: async (input, _client, options) => {
+          fx.state.resolutions.push({ input, options });
+          const canonical = options.identityCandidates.includes('5492915275449');
+          const contact = canonical
+            ? { id: '751ae358-3663-4e6d-a0d3-31e16cd03f08', name: 'Emi Fernandez' }
+            : { id: 'duplicate-contact', name: input.name };
+          fx.state.resolvedContacts.push(contact);
+          return contact;
+        },
+        upsertConversation: async () => ({ id: 'canonical-inbound-conversation' }),
+        upsertOutboundConversation: async (input) => input.contactId === '751ae358-3663-4e6d-a0d3-31e16cd03f08'
+          ? { id: 'c2e6b88e-aaa7-4793-bfc9-df5e682c74b3' }
+          : { id: 'duplicate-conversation' }
+      })
+    } : {
       normalizeWhatsAppIdentity: (value) => String(value || '').replace(/\D/g, ''),
       resolveWhatsAppConversation: async (input) => {
         fx.state.resolutions.push(input);
@@ -43,7 +61,7 @@ function loadService(fx) {
         };
       }
     },
-    'src/conversations/conversation.repo.js': { upsertOutboundConversation: async () => ({ id: '80000000-0000-4000-8000-000000000001' }), insertOutboundMessage: async () => { fx.state.inserts += 1; if (fx.inboxError) throw fx.inboxError; return { row: { id: '90000000-0000-4000-8000-000000000001' } }; } },
+    'src/conversations/conversation.repo.js': { upsertOutboundConversation: async () => ({ id: '80000000-0000-4000-8000-000000000001' }), insertOutboundMessage: async (record) => { fx.state.inserts += 1; fx.state.insertRecords.push(record); if (fx.inboxError) throw fx.inboxError; return { row: { id: '90000000-0000-4000-8000-000000000001' } }; } },
     'src/whatsapp/whatsapp.service.js': { sendChannelScopedMessage: async () => { fx.state.sends += 1; if (fx.sendError) throw fx.sendError; return { messageId: 'wamid.canary' }; } },
     'src/services/portal-whatsapp-templates.service.js': { syncPortalWhatsAppTemplates: async () => ({ ok: true, syncedCount: 1, summary: { recognized: 1 } }) },
     'src/utils/logger.js': { logInfo() {}, logWarn() {} }
@@ -93,6 +111,20 @@ test('valid send calls provider once and persists Inbox once', async () => {
   assert.equal(fx.state.resolutions.length, 1);
   assert.equal(fx.state.resolutions[0].providerIdentity, '5491112345678');
   assert.equal(fx.state.resolutions[0].preserveExistingName, true);
+  assert.equal(fx.state.resolutions[0].preserveExistingIdentity, true);
+});
+test('exact Argentina production fixture resolves 12-digit Meta recipient to canonical CRM thread', async () => {
+  const fx = fixture({ useActualResolver: true });
+  fx.recipient.phoneE164 = '+542915275449';
+  fx.recipient.name = 'Opturon Canary — recipient interno';
+  const result = await loadService(fx).sendCanary('tenant-a', payload(fx), actor);
+  assert.equal(result.ok, true);
+  assert.equal(fx.state.sends, 1);
+  assert.equal(fx.state.resolvedContacts[0].id, '751ae358-3663-4e6d-a0d3-31e16cd03f08');
+  assert.deepEqual(fx.state.resolutions[0].options.identityCandidates, ['5492915275449', '542915275449']);
+  assert.equal(fx.state.resolutions[0].options.preserveExistingIdentity, true);
+  assert.equal(fx.state.insertRecords[0].conversationId, 'c2e6b88e-aaa7-4793-bfc9-df5e682c74b3');
+  assert.equal(fx.state.insertRecords[0].to, '542915275449');
 });
 test('existing idempotency key never calls provider again', async () => {
   const fx = fixture(); fx.existing = { ...fx.attempt, status: 'sent', providerMessageId: 'wamid.existing' };

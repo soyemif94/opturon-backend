@@ -2,10 +2,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { PGlite } = require('@electric-sql/pglite');
 
 const root = path.resolve(__dirname, '..', '..');
 const {
   normalizeWhatsAppIdentity,
+  whatsappIdentityCandidates,
   createWhatsAppConversationResolver
 } = require(path.join(root, 'src/conversations/whatsapp-conversation-resolver.js'));
 const repair = require(path.join(root, 'src/services/whatsapp-canary-conversation-repair.service.js'));
@@ -33,16 +35,20 @@ const base = {
 
 test('provider identity keeps the Argentine mobile 9 and never uses transport normalization', () => {
   assert.equal(normalizeWhatsAppIdentity(base.providerIdentity), '5492915275449');
+  assert.deepEqual(whatsappIdentityCandidates('+542915275449'), ['5492915275449', '542915275449']);
+  assert.deepEqual(whatsappIdentityCandidates('+5492915275449'), ['5492915275449', '542915275449']);
 });
 
 test('outbound reuses the repository canonical conversation and preserves CRM name', async () => {
   const fx = resolverFixture();
-  const result = await fx.resolve({ ...base, direction: 'outbound', contactName: 'Opturon Canary — recipient interno', preserveExistingName: true }, { tx: true });
+  const result = await fx.resolve({ ...base, direction: 'outbound', contactName: 'Opturon Canary — recipient interno', preserveExistingName: true, preserveExistingIdentity: true }, { tx: true });
   assert.equal(result.contact.name, 'Emi Fernandez');
   assert.equal(result.conversation.id, 'conversation-existing');
   assert.equal(fx.state.contacts.length, 1);
   assert.equal(fx.state.contacts[0].input.waId, '5492915275449');
   assert.equal(fx.state.contacts[0].options.preserveExistingName, true);
+  assert.equal(fx.state.contacts[0].options.preserveExistingIdentity, true);
+  assert.deepEqual(fx.state.contacts[0].options.identityCandidates, ['5492915275449', '542915275449']);
   assert.equal(fx.state.outbound.length, 1);
   assert.equal(fx.state.outbound[0].clinicId, 'clinic-a');
   assert.equal(fx.state.outbound[0].channelId, 'channel-a');
@@ -118,16 +124,57 @@ test('contact upsert prioritizes provider identity and cannot overwrite a CRM na
   delete require.cache[contactFilename];
   try {
     const contacts = require(contactFilename);
-    const result = await contacts.upsertContact({ clinicId: 'clinic-a', waId: '5492915275449', phone: '+542915275449', name: 'Operational recipient' }, null, { preserveExistingName: true });
+    const result = await contacts.upsertContact({ clinicId: 'clinic-a', waId: '5492915275449', phone: '+542915275449', name: 'Operational recipient' }, null, {
+      preserveExistingName: true,
+      preserveExistingIdentity: true,
+      identityCandidates: ['5492915275449', '542915275449']
+    });
     assert.equal(result.name, 'Emi Fernandez');
-    assert.equal(calls[0].params[1], '5492915275449');
+    assert.deepEqual(calls[0].params[1], ['5492915275449', '542915275449']);
     assert.equal(calls.length, 2);
     assert.equal(calls[1].params[5], true);
+    assert.equal(calls[1].params[6], true);
     assert.match(calls[1].sql, /CASE WHEN \$6::boolean THEN name/);
+    assert.match(calls[1].sql, /CASE WHEN \$7::boolean THEN "waId"/);
   } finally {
     if (savedDb) require.cache[dbFilename] = savedDb; else delete require.cache[dbFilename];
     if (savedContact) require.cache[contactFilename] = savedContact; else delete require.cache[contactFilename];
   }
+});
+
+test('PGlite exact production rows choose canonical 13-digit contact over retired 12-digit duplicate', async () => {
+  const db = new PGlite();
+  await db.exec(`
+    CREATE TABLE contacts (
+      id text PRIMARY KEY, "clinicId" text NOT NULL, "waId" text, phone text, name text,
+      email text, "profileImageUrl" text, "whatsappPhone" text, "taxId" text,
+      "taxCondition" text, "companyName" text, notes text, status text,
+      "archivedAt" timestamptz, "deletedAt" timestamptz, "optedOut" boolean DEFAULT false,
+      "createdAt" timestamptz DEFAULT now(), "updatedAt" timestamptz DEFAULT now(),
+      UNIQUE ("clinicId", "waId")
+    );
+    INSERT INTO contacts (id,"clinicId","waId",phone,"whatsappPhone",name,status,"deletedAt","updatedAt") VALUES
+      ('canonical','clinic-a','5492915275449','+5492915275449','5492915275449','Emi Fernandez','active',NULL,now()),
+      ('duplicate','clinic-a','542915275449','+542915275449',NULL,'Opturon Canary — recipient interno','deleted',now(),now());
+  `);
+  const contacts = require(path.join(root, 'src/repositories/contact.repository.js'));
+  const result = await contacts.upsertContact({
+    clinicId: 'clinic-a',
+    waId: '5492915275449',
+    phone: '+542915275449',
+    name: 'Opturon Canary — recipient interno'
+  }, db, {
+    preserveExistingName: true,
+    preserveExistingIdentity: true,
+    identityCandidates: ['5492915275449', '542915275449']
+  });
+  assert.equal(result.id, 'canonical');
+  assert.equal(result.name, 'Emi Fernandez');
+  assert.equal(result.waId, '5492915275449');
+  assert.equal(result.phone, '+5492915275449');
+  const rows = await db.query('SELECT id,status,"deletedAt" FROM contacts ORDER BY id');
+  assert.equal(rows.rows.find((row) => row.id === 'duplicate').status, 'deleted');
+  await db.close();
 });
 
 test('repair recognizes equivalent Meta transport and provider identities only after canonicalization', () => {
