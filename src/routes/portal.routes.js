@@ -201,6 +201,9 @@ const {
   getOperationalAlertHistoryDetail
 } = require('../controllers/portal-operational-alerts.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
+const {
+  requireWrongTenantMaintenance
+} = require('../services/whatsapp-incident-maintenance.service');
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
 const { requireInventoryReadRole, requireSensitiveInventoryRole, requireInventoryReceiptRole, requireCatalogWriteRole } = require('../middlewares/portal-inventory-authorization.middleware');
@@ -402,7 +405,16 @@ function handleLoyaltyRewardImageUpload(req, res, next) {
 
 router.use('/tenants/:tenantId/operational-alerts', operationalAlertsNoStore);
 router.use('/tenants/:tenantId/whatsapp/templates/sync', whatsappTemplateSyncNoStore);
-router.use('/tenants/:tenantId', applyPortalActiveTenant);
+// Every tenant-scoped portal route is server-to-server only.  Keeping this at
+// the common boundary prevents a newly added route from accidentally bypassing
+// authentication.  The incident gate is deliberately after auth so anonymous
+// callers cannot use its response to probe tenant state.
+router.use(
+  '/tenants/:tenantId',
+  requirePortalInternalAuth,
+  requireWrongTenantMaintenance,
+  applyPortalActiveTenant
+);
 
 router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
 router.get('/loyalty-reward-images/:tenantId/:fileName', getPortalLoyaltyRewardImagePublic);
@@ -521,12 +533,12 @@ router.get('/tenants/:tenantId/cash-sessions', cashCapability, getPortalCashOver
 router.post('/tenants/:tenantId/cash-sessions', cashCapability, postPortalCashSession);
 router.post('/tenants/:tenantId/cash-sessions/:sessionId/close', cashCapability, postPortalCashSessionClose);
 router.post('/tenants/:tenantId/cash-sessions/:sessionId/movements', cashCapability, postPortalCashSessionMovement);
-router.get('/tenants/:tenantId/agenda', requirePortalInternalAuth, agendaModule, getPortalAgenda);
-router.get('/tenants/:tenantId/agenda/availability', requirePortalInternalAuth, agendaModule, getPortalAgendaAvailabilityController);
-router.post('/tenants/:tenantId/agenda', requirePortalInternalAuth, agendaModule, postPortalAgenda);
-router.post('/tenants/:tenantId/agenda/reservations', requirePortalInternalAuth, agendaModule, postPortalAgendaReservation);
-router.patch('/tenants/:tenantId/agenda/:itemId', requirePortalInternalAuth, agendaModule, patchPortalAgenda);
-router.delete('/tenants/:tenantId/agenda/:itemId', requirePortalInternalAuth, agendaModule, deletePortalAgenda);
+router.get('/tenants/:tenantId/agenda', agendaModule, getPortalAgenda);
+router.get('/tenants/:tenantId/agenda/availability', agendaModule, getPortalAgendaAvailabilityController);
+router.post('/tenants/:tenantId/agenda', agendaModule, postPortalAgenda);
+router.post('/tenants/:tenantId/agenda/reservations', agendaModule, postPortalAgendaReservation);
+router.patch('/tenants/:tenantId/agenda/:itemId', agendaModule, patchPortalAgenda);
+router.delete('/tenants/:tenantId/agenda/:itemId', agendaModule, deletePortalAgenda);
 router.get('/tenants/:tenantId/payments/:paymentId', paymentsModule, getPortalPayment);
 router.get('/tenants/:tenantId/payments/:paymentId/allocations', paymentsModule, getPortalPaymentAllocations);
 router.post('/tenants/:tenantId/payments/:paymentId/allocations', paymentsModule, postPortalPaymentAllocation);

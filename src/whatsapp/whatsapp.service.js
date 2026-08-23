@@ -4,6 +4,10 @@ const path = require('path');
 const { logError, logWarn } = require('../utils/logger');
 const graphClient = require('./whatsapp-graph.client');
 const { normalizeDigits, normalizeWhatsAppTo } = require('./normalize-phone');
+const {
+  isMaintainedChannel,
+  maintenanceError
+} = require('../services/whatsapp-incident-maintenance.service');
 
 function sanitizePhoneNumber(value) {
   return normalizeWhatsAppTo(normalizeDigits(value));
@@ -208,6 +212,14 @@ async function sendGraphMessage({
   const to = sanitizePhoneNumber(toRaw);
   const toLast4 = to ? to.slice(-4) : null;
   const toLen = to ? to.length : 0;
+
+  if (isMaintainedChannel({
+    channelId,
+    phoneNumberId,
+    clinicId: channelValidation && channelValidation.clinicId
+  })) {
+    throw maintenanceError();
+  }
 
   if (!isValidE164WithoutPlus(to)) {
     throw new Error('Invalid WhatsApp recipient. Expected E164 digits without +.');

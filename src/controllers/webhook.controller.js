@@ -22,6 +22,10 @@ const { pushWebhookEvent } = require('../debug/webhook-store');
 const {
   reconcileOrderCustomerNotificationStatuses
 } = require('../services/order-customer-notification-status.service');
+const {
+  payloadTargetsMaintainedPhone,
+  maintenanceError
+} = require('../services/whatsapp-incident-maintenance.service');
 
 function withRequestMeta(req, meta = {}) {
   return {
@@ -573,6 +577,10 @@ async function handleWebhook(req, res) {
       }
 
       if (provider === 'meta_whatsapp') {
+        if (payloadTargetsMaintainedPhone(payload)) {
+          throw maintenanceError();
+        }
+
         try {
           await observeAndAutoReply(req, payload);
         } catch (error) {
@@ -688,6 +696,12 @@ async function handleWebhook(req, res) {
       duplicates
     });
   } catch (error) {
+    if (error && error.code === 'WHATSAPP_OWNERSHIP_MAINTENANCE') {
+      logWarn('whatsapp_ownership_maintenance_rejected', withRequestMeta(req, { provider }));
+      res.set('Retry-After', '300');
+      return res.status(503).json({ success: false, error: 'whatsapp_ownership_maintenance' });
+    }
+
     logWarn(
       'webhook_payload_ignored',
       withRequestMeta(req, {

@@ -158,6 +158,9 @@ async function processInboundMessages({ body, headers, requestId }) {
         waMessageId: event.providerMessageId
       });
     } catch (error) {
+      if (error && error.code === 'WHATSAPP_OWNERSHIP_MAINTENANCE') {
+        throw error;
+      }
       logError('conversation_inbound_process_failed', {
         requestId,
         waMessageId: event.providerMessageId || null,
