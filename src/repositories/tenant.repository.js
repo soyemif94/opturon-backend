@@ -155,7 +155,7 @@ async function findChannelById(channelId, client = null) {
 async function findChannelByIdAndClinicId(channelId, clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", type, provider, "phoneNumberId", "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
+    `SELECT id, "clinicId", type, provider, "phoneNumberId", "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status, "connectionSource", "connectionMetadata"
      FROM channels
      WHERE id = $1
        AND "clinicId" = $2

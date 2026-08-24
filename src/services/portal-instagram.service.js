@@ -113,6 +113,7 @@ async function connectSelectedInstagramAsset({
     status: 'active',
     connectionSource: 'instagram_oauth',
     connectionMetadata: {
+      oauthProvider: providerOverride || null,
       oauthTokenType: tokenType || null,
       oauthExpiresIn: expiresIn || null,
       availableAssets: availableAssets.map((asset) => summarizeInstagramAsset(asset)).filter(Boolean)
