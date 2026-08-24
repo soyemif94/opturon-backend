@@ -221,6 +221,8 @@ async function main() {
   check('tomorrow relative date', parseAppointmentText('mañana a la tarde').hasDayOrDate, true);
   check('afternoon window', parseAppointmentText('mañana a la tarde').parsed.timeWindow, 'afternoon');
   check('party size words', parsePartySize('reserva para dos personas'), 2);
+  check('party size request remains actionable', parseAppointmentText('reserva para dos personas').ok, true);
+  check('party size preserved as context', parseAppointmentText('reserva para dos personas').parsed.partySize, 2);
   check('party size digits', parsePartySize('para 2'), 2);
   check('party size continuation', parsePartySize('somos tres'), 3);
   check('party size not invented', parsePartySize('un par'), null);

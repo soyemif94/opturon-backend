@@ -159,10 +159,13 @@ function parseAppointmentText(text) {
   const hasTimeWindow = !!timeWindow;
 
   if (!hasDayOrDate) {
+    const hasBookingPartyContext = Boolean(
+      partySize && /\b(?:reserva|reservar|reservame|turno|cita|agenda|agendar|somos|para)\b/.test(normalizeText(raw))
+    );
     return {
-      ok: false,
-      parsed: null,
-      displayText: null,
+      ok: hasBookingPartyContext,
+      parsed: hasBookingPartyContext ? { partySize } : null,
+      displayText: hasBookingPartyContext ? raw : null,
       hasDayOrDate: false,
       hasTime: false,
       hasTimeWindow: false,
