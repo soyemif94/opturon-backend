@@ -145,9 +145,10 @@ async function main() {
   check('second tenant product is added without losing first', distConversation.context.commerceCartItems.length === 2);
   const priceReply = await worker.buildSafeCommercialIntentReply({ clinic: distributor, conversation: distConversation, contact, inboundText: 'cuánto sale?' });
   check(`contextual price remains grounded in tenant B: ${priceReply.replyText}`, /1[.,]?800|1[.,]?700|Sprite|Coca Cola/i.test(priceReply.replyText));
-  const distributorPaymentReply = await worker.buildSafeCommercialIntentReply({ clinic: distributor, conversation: distConversation, contact, inboundText: 'cómo lo pago?' });
-  check(`distributor payment truth comes from tenant B: ${distributorPaymentReply.replyText}`, /Transferencia Distribuidora B/i.test(distributorPaymentReply.replyText));
-  check('distributor response excludes tenant A payment data', !/SaaS A|SAAS\.A/i.test(distributorPaymentReply.replyText));
+  result = await turn(distConversation, distributor, 'cómo lo pago?');
+  distConversation = result.next;
+  check(`distributor payment truth comes from tenant B: ${result.decision.replyText}`, /Transferencia Distribuidora B/i.test(result.decision.replyText));
+  check('distributor response excludes tenant A payment data', !/SaaS A|SAAS\.A/i.test(result.decision.replyText));
 
   const samePhraseA = await turn(saasConversation, saas, 'pasame los datos');
   const samePhraseB = await turn(distConversation, distributor, 'pasame los datos');

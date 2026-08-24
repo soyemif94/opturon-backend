@@ -320,12 +320,23 @@ function buildCatalogProductImageCaption(product) {
   const name = String(safeProduct.name || '').trim();
   const price = Number(safeProduct.price || safeProduct.unitPrice || 0);
   const currency = String(safeProduct.currency || 'ARS').trim().toUpperCase() || 'ARS';
-  const description = String(safeProduct.description || '')
+  const description = String(
+    safeProduct.shortDescription ||
+    (safeProduct.metadata && safeProduct.metadata.shortDescription) ||
+    safeProduct.description ||
+    ''
+  )
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
     .join(' ');
-  const shortDescription = description.length > 220 ? `${description.slice(0, 217).trim()}...` : description;
+  const firstSentence = description.match(/^.*?[.!?](?:\s|$)/);
+  const summarySource = firstSentence ? firstSentence[0].trim() : description;
+  const summaryCandidate = summarySource.slice(0, 221);
+  const wordBoundary = summaryCandidate.lastIndexOf(' ');
+  const shortDescription = summarySource.length > 220
+    ? `${(wordBoundary > 132 ? summaryCandidate.slice(0, wordBoundary) : summarySource.slice(0, 219)).trim()}…`
+    : summarySource;
   const lines = [name || 'Producto'];
 
   if (Number.isFinite(price) && price > 0) {
@@ -335,7 +346,11 @@ function buildCatalogProductImageCaption(product) {
     lines.push(shortDescription);
   }
 
-  return lines.join('\n').slice(0, 1024);
+  const caption = lines.join('\n');
+  if (caption.length <= 1024) return caption;
+  const candidate = caption.slice(0, 1024);
+  const boundary = candidate.lastIndexOf(' ');
+  return `${candidate.slice(0, boundary > 614 ? boundary : 1023).trim()}…`;
 }
 
 function buildCatalogProductImageMessage(product) {
@@ -585,9 +600,9 @@ async function maybeResolvePreviewSelection({ clinicId, flowState, normalizedInb
   const description = fullProduct && fullProduct.description ? `\n${fullProduct.description}` : '';
 
   return {
-    replyText: `Perfecto 👌\n\n${name} está disponible por ${formatMoney(price, currency)}.${description}\n\nSi querés, también podés pedirme el precio de otro producto o escribir "3" para hablar con una persona 👇`,
     replyText: `Perfecto 👌\n\n${name} está disponible por ${formatMoney(price, currency)}${description ? `\n${description.trim()}` : ''}\n\n👉 ¿Querés que te lo reserve o te paso más opciones?`,
     outboundMedia: [buildCatalogProductImageMessage(fullProduct || previewItem)].filter(Boolean),
+    sendTextWithMedia: true,
     newState: 'READY',
     contextPatch: {
       menuFlowActive: true,

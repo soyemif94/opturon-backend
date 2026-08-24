@@ -1831,17 +1831,84 @@ function formatCommerceIndex(index) {
   return digits[index - 1] || `${index}.`;
 }
 
+const WHATSAPP_IMAGE_CAPTION_MAX_CHARS = 1024;
+const WHATSAPP_TEXT_MAX_CHARS = 4096;
+
+function normalizeCommercialDetailText(value) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function truncateAtWordBoundary(value, maxLength, suffix = '…') {
+  const text = String(value || '').trim();
+  const safeMaxLength = Math.max(1, Number(maxLength) || 1);
+  if (text.length <= safeMaxLength) return text;
+
+  const suffixText = String(suffix || '');
+  const available = Math.max(1, safeMaxLength - suffixText.length);
+  const candidate = text.slice(0, available + 1);
+  const boundary = Math.max(candidate.lastIndexOf(' '), candidate.lastIndexOf('\n'));
+  const head = (boundary > Math.floor(available * 0.6) ? candidate.slice(0, boundary) : candidate.slice(0, available)).trimEnd();
+  return `${head}${suffixText}`.slice(0, safeMaxLength);
+}
+
+function resolveCatalogProductShortDescription(product, maxLength = 220) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const metadata = safeProduct.metadata && typeof safeProduct.metadata === 'object' ? safeProduct.metadata : {};
+  const catalogMetadata = metadata.catalog && typeof metadata.catalog === 'object' ? metadata.catalog : {};
+  const configured = normalizeCommercialDetailText(
+    safeProduct.shortDescription || metadata.shortDescription || catalogMetadata.shortDescription || ''
+  ).replace(/\n/g, ' ');
+  if (configured) return truncateAtWordBoundary(configured, maxLength);
+
+  const description = normalizeCommercialDetailText(safeProduct.description).replace(/\n/g, ' ');
+  if (!description) return '';
+  const firstSentence = description.match(/^.*?[.!?](?:\s|$)/);
+  return truncateAtWordBoundary(firstSentence ? firstSentence[0].trim() : description, maxLength);
+}
+
+function splitWhatsAppTextChunks(value, maxLength = WHATSAPP_TEXT_MAX_CHARS) {
+  const text = normalizeCommercialDetailText(value);
+  const safeMaxLength = Math.max(1, Number(maxLength) || WHATSAPP_TEXT_MAX_CHARS);
+  if (!text) return [];
+  if (text.length <= safeMaxLength) return [text];
+
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > safeMaxLength) {
+    const window = remaining.slice(0, safeMaxLength + 1);
+    const candidates = [
+      window.lastIndexOf('\n\n'),
+      window.lastIndexOf('\n'),
+      window.lastIndexOf('. '),
+      window.lastIndexOf('? '),
+      window.lastIndexOf('! '),
+      window.lastIndexOf(' ')
+    ];
+    const preferred = candidates.find((index) => index >= Math.floor(safeMaxLength * 0.5));
+    if (preferred === undefined) {
+      const error = new Error('WhatsApp text contains a token longer than the provider message limit');
+      error.code = 'WHATSAPP_TEXT_TOKEN_TOO_LONG';
+      throw error;
+    }
+    const splitAt = preferred + (window.slice(preferred, preferred + 2).match(/^[.!?] /) ? 1 : 0);
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 function buildCatalogProductImageCaption(product) {
   const safeProduct = product && typeof product === 'object' ? product : {};
   const name = String(safeProduct.name || '').trim();
   const price = Number(safeProduct.price || safeProduct.unitPrice || 0);
   const currency = String(safeProduct.currency || 'ARS').trim().toUpperCase() || 'ARS';
-  const description = String(safeProduct.description || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join(' ');
-  const shortDescription = description.length > 220 ? `${description.slice(0, 217).trim()}...` : description;
+  const shortDescription = resolveCatalogProductShortDescription(safeProduct);
   const lines = [name || 'Producto'];
 
   if (Number.isFinite(price) && price > 0) {
@@ -1851,7 +1918,7 @@ function buildCatalogProductImageCaption(product) {
     lines.push(shortDescription);
   }
 
-  return lines.join('\n').slice(0, 1024);
+  return truncateAtWordBoundary(lines.join('\n'), WHATSAPP_IMAGE_CAPTION_MAX_CHARS);
 }
 
 function buildCatalogProductImageMessage(product) {
@@ -6100,6 +6167,24 @@ function getOrderedPlanProducts(products) {
   });
 }
 
+function getActiveCommercialPaymentContext(context) {
+  const safeContext = context && typeof context === 'object' ? context : {};
+  const paymentContext = safeContext.commercialPaymentContext && typeof safeContext.commercialPaymentContext === 'object'
+    ? safeContext.commercialPaymentContext
+    : null;
+  if (!paymentContext) return null;
+  const activeAtMs = Date.parse(String(paymentContext.activeAt || ''));
+  if (!Number.isFinite(activeAtMs) || Date.now() - activeAtMs > COMMERCIAL_SHORT_MEMORY_TTL_MS) return null;
+  const subjectProductId = String(paymentContext.subjectProductId || '').trim();
+  if (!subjectProductId || paymentContext.status !== 'methods_presented') return null;
+  return {
+    activeAt: new Date(activeAtMs).toISOString(),
+    status: 'methods_presented',
+    subjectProductId,
+    subjectName: String(paymentContext.subjectName || '').trim() || null
+  };
+}
+
 function resolveOfferTier(product, products = []) {
   const ordered = getOrderedPlanProducts(products);
   const productId = String(product && (product.id || product.productId) ? (product.id || product.productId) : '').trim();
@@ -9082,6 +9167,15 @@ function buildPlanDefenseLowerFitLine(plan, salesContext = {}) {
   return `${plan.name || 'La opción más liviana'} puede servir si hoy lo principal es ${resolvePlanProfile(plan).problemSolved}.`;
 }
 
+function isContextualTransferDataFollowUp(rawText) {
+  const text = normalizeCommandText(rawText).replace(/[,:;]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  return (
+    /^(?:dale\s+)?(?:pasame|mandame|enviame|compartime)\s+los\s+datos$/.test(text) ||
+    /^(?:dale\s+)?(?:pasamelos|mandamelos|enviamelos|compartimelos)$/.test(text)
+  );
+}
+
 function buildPlanDefenseHigherFitLine(plan, salesContext = {}) {
   return `${plan.name || 'La opción más completa'} conviene más cuando el objetivo ya pasa por ${resolvePlanProfile(plan).result}.`;
 }
@@ -9452,16 +9546,11 @@ function isCatalogItemDetailIntent(rawText) {
 function buildCatalogItemDetailReply(item, comparedItem = null) {
   const safeItem = item && typeof item === 'object' ? item : {};
   const name = String(safeItem.name || '').trim() || 'Este producto';
-  const description = String(safeItem.description || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join(' ');
-  const summary = description.length > 320 ? `${description.slice(0, 317).trim()}...` : description;
+  const description = normalizeCommercialDetailText(safeItem.description);
   const lines = [`${name}${Number(safeItem.price || 0) > 0 ? ` — ${formatMoney(safeItem.price, safeItem.currency)}` : ''}`];
 
-  if (summary) {
-    lines.push('', summary);
+  if (description) {
+    lines.push('', description);
   } else if (isPlanProduct(safeItem)) {
     const profile = resolvePlanProfile(safeItem);
     lines.push('', profile.shortDescription, '', `Te conviene si hoy ${profile.problemSolved}.`);
@@ -11669,7 +11758,8 @@ async function buildSafeCommercialIntentReply({
     !isAgendaLike
   ) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
-    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const orderedPlans = getOrderedPlanProducts(eligibleProducts);
     const contextualPlan =
       resolveExistingPaymentPlan(safeContext, orderedPlans) ||
       findReferencedPlan(orderedPlans, inboundText) ||
@@ -11678,7 +11768,9 @@ async function buildSafeCommercialIntentReply({
       findPlanByStoredId(orderedPlans, activeShortMemory && activeShortMemory.lastSuggestedProductId) ||
       findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText) ||
       resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory) ||
-      findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext);
+      findPlanByBusinessRecommendationContext(orderedPlans, effectiveBusinessContext) ||
+      eligibleProducts.find((product) => String(product.id || product.productId || '').trim() === String(activeShortMemory && activeShortMemory.lastSuggestedProductId || '').trim()) ||
+      null;
 
     logInfo('commercial_purchase_debug', buildCommercialPurchaseDebugSnapshot({
       inboundText,
@@ -11986,7 +12078,7 @@ async function buildSafeCommercialIntentReply({
         type: 'products',
         replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
         outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
-        sendTextWithMedia: false,
+        sendTextWithMedia: true,
         contextPatch: buildCatalogItemDetailContextPatch(matchedItem, comparedItem, eligibleProducts)
       };
       logInfo('commercial_reply_trace', {
@@ -12831,11 +12923,14 @@ async function buildSafeCommercialIntentReply({
 
   if (commercialIntent.type === 'payment' && !transferPaymentIntent) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
-    const orderedPlans = getOrderedPlanProducts(buildCommerceEligibleProducts(clinicProducts));
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const orderedPlans = getOrderedPlanProducts(eligibleProducts);
     const contextualPlan =
       resolveExistingPaymentPlan(safeContext, orderedPlans) ||
       findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText) ||
-      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory);
+      resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory) ||
+      eligibleProducts.find((product) => String(product.id || product.productId || '').trim() === String(activeShortMemory && activeShortMemory.lastSuggestedProductId || '').trim()) ||
+      null;
 
     return {
       type: commercialIntent.type,
@@ -12856,7 +12951,13 @@ async function buildSafeCommercialIntentReply({
             lastDiscussedPlanId: contextualPlan.id || contextualPlan.productId,
             lastComparedPlanId: activePlanContext && activePlanContext.lastComparedPlanId,
             recommendationType: normalizeProductRecommendationType(contextualPlan, orderedPlans)
-          })
+          }),
+          commercialPaymentContext: {
+            activeAt: new Date().toISOString(),
+            status: 'methods_presented',
+            subjectProductId: String(contextualPlan.id || contextualPlan.productId),
+            subjectName: String(contextualPlan.name || '').trim() || null
+          }
         }
         : null
     };
@@ -14430,13 +14531,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const transferIntent = parseTransferPaymentIntent(inboundText);
   const nextStepIntent = detectCommercialNextStepIntent(inboundText);
   const contextualTransferDataFollowUp =
-    detectCommercialActivationContinuationIntent(inboundText) === 'self_service' &&
-    Boolean(
-      getActiveCommercialPlanContext(safeContext) ||
-      getActiveCommercialShortMemory(safeContext) ||
-      (safeContext && safeContext.commerceLastAddedItem) ||
-      (safeContext && Array.isArray(safeContext.commerceCartItems) && safeContext.commerceCartItems.length)
-    );
+    isContextualTransferDataFollowUp(inboundText) &&
+    Boolean(getActiveCommercialPaymentContext(safeContext));
   const contextualPaymentMethodsIntent =
     /\b(?:como\s+hago\s+para\s+pagar(?:lo|la)|como\s+(?:lo|la)\s+pago|como\s+pago)\b/.test(normalizeCommandText(inboundText));
   const transferContext = safeContext.transferPayment && typeof safeContext.transferPayment === 'object'
@@ -14456,8 +14552,17 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     transferStatus !== 'payment_pending_validation';
 
   if (contextualPaymentMethodsIntent && currentState !== 'PAYMENT_TRANSFER') {
-    const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
-    const contextualPlan =
+    const eligibleProducts = buildCommerceEligibleProducts(await loadClinicProducts());
+    const plans = getOrderedPlanProducts(eligibleProducts);
+    const activeMemory = getActiveCommercialShortMemory(safeContext);
+    const storedProductId = String(
+      (activeMemory && activeMemory.lastSuggestedProductId) ||
+      (safeContext && safeContext.commerceSuggestedProductId) ||
+      (safeContext && safeContext.commerceLastAddedItem && (safeContext.commerceLastAddedItem.productId || safeContext.commerceLastAddedItem.id)) ||
+      (safeContext && Array.isArray(safeContext.commerceCartItems) && safeContext.commerceCartItems.length && (safeContext.commerceCartItems[0].productId || safeContext.commerceCartItems[0].id)) ||
+      ''
+    ).trim();
+    const contextualProduct =
       resolveExistingPaymentPlan(safeContext, plans) ||
       findPlanByCommercialPlanContext(plans, safeContext, inboundText) ||
       findPlanByStoredId(plans, safeContext && safeContext.commerceSuggestedProductId) ||
@@ -14466,15 +14571,17 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         getActiveCommercialSalesContext(safeContext),
         getActiveCommercialPlanContext(safeContext),
         getActiveCommercialShortMemory(safeContext)
-      );
+      ) ||
+      eligibleProducts.find((product) => String(product.id || product.productId || '').trim() === storedProductId) ||
+      null;
 
-    if (contextualPlan) {
+    if (contextualProduct) {
       const businessProfile = getClinicBusinessProfile(clinic);
       return {
         replyText: buildPaymentMethodsReply({
           paymentMethods: normalizeBusinessProfileText(businessProfile.paymentMethods),
           transferConfig,
-          activePlanName: contextualPlan.name
+          activePlanName: contextualProduct.name
         }),
         newState: currentState || 'READY',
         newStage: 'payment_methods',
@@ -14482,14 +14589,20 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           activeBotDomain: 'commerce',
           ...buildCommercialShortMemoryPatch({
             topic: 'plans',
-            lastSuggestedProductId: contextualPlan.id || contextualPlan.productId,
-            recommendationType: normalizeProductRecommendationType(contextualPlan, plans)
+            lastSuggestedProductId: contextualProduct.id || contextualProduct.productId,
+            recommendationType: normalizeProductRecommendationType(contextualProduct, eligibleProducts)
           }),
           ...buildCommercialPlanContextPatch({
             topic: 'payment_methods',
-            lastDiscussedPlanId: contextualPlan.id || contextualPlan.productId,
-            recommendationType: normalizeProductRecommendationType(contextualPlan, plans)
-          })
+            lastDiscussedPlanId: contextualProduct.id || contextualProduct.productId,
+            recommendationType: normalizeProductRecommendationType(contextualProduct, eligibleProducts)
+          }),
+          commercialPaymentContext: {
+            activeAt: new Date().toISOString(),
+            status: 'methods_presented',
+            subjectProductId: String(contextualProduct.id || contextualProduct.productId),
+            subjectName: String(contextualProduct.name || '').trim() || null
+          }
         }
       };
     }
@@ -14509,7 +14622,9 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   };
 
   if (nextStepIntent && currentState !== 'PAYMENT_TRANSFER') {
-    const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
+    const eligibleProducts = buildCommerceEligibleProducts(await loadClinicProducts());
+    const plans = getOrderedPlanProducts(eligibleProducts);
+    const activeMemory = getActiveCommercialShortMemory(safeContext);
     const contextualPlan =
       resolveExistingPaymentPlan(safeContext, plans) ||
       parsePaymentPlanSelection(inboundText, plans) ||
@@ -14520,7 +14635,9 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         getActiveCommercialPlanContext(safeContext),
         getActiveCommercialShortMemory(safeContext)
       ) ||
-      findPlanByBusinessRecommendationContext(plans, getActiveBusinessRecommendationContext(safeContext));
+      findPlanByBusinessRecommendationContext(plans, getActiveBusinessRecommendationContext(safeContext)) ||
+      eligibleProducts.find((product) => String(product.id || product.productId || '').trim() === String(activeMemory && activeMemory.lastSuggestedProductId || '').trim()) ||
+      null;
 
     if (contextualPlan) {
       return detectCommercialDirectCheckoutIntent(inboundText)
@@ -15837,7 +15954,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       return {
         replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
         outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
-        sendTextWithMedia: false,
+        sendTextWithMedia: true,
         newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
         contextPatch: buildCommerceResetPatch({
           commerceCatalog: page.items,
@@ -16931,6 +17048,7 @@ async function sendAndPersistReply({
   requestId,
   correlationMessageId,
   outboundMedia = null,
+  sendTextWithMedia = false,
   automation = null
 }) {
   const channelCredentials = normalizeChannelSendContext(channel, {
@@ -16962,49 +17080,6 @@ async function sendAndPersistReply({
   });
   let primarySendResult = null;
   let firstMediaSendResult = null;
-  if (!safeOutboundMedia.length) {
-    sendSequence.push({
-      order: sendSequence.length + 1,
-      payloadType: 'text',
-      textPreview: String(text || '').slice(0, 160)
-    });
-    logInfo('conversation_reply_send_step', {
-      requestId,
-      conversationId: conversationId || null,
-      order: sendSequence.length,
-      payloadType: 'text',
-      hasMedia: false,
-      textPreview: String(text || '').slice(0, 160)
-    });
-    primarySendResult = await sendChannelScopedMessage(
-      { to: contact.waId, text },
-      {
-        requestId,
-        credentials: {
-          channelId: channelCredentials.channelId,
-          accessToken: channelCredentials.accessToken,
-          phoneNumberId: channelCredentials.phoneNumberId,
-          clinicId: channelCredentials.clinicId,
-          provider: channelCredentials.provider,
-          status: channelCredentials.status,
-          wabaId: channelCredentials.wabaId
-        }
-      }
-    );
-
-    await conversationRepo.insertOutboundMessage({
-      conversationId,
-      waMessageId: primarySendResult && primarySendResult.messageId ? primarySendResult.messageId : null,
-      from: channelCredentials.phoneNumberId,
-      to: contact.waId || null,
-      type: 'text',
-      text,
-      raw: {
-        ...(primarySendResult && primarySendResult.raw ? primarySendResult.raw : {}),
-        ...(automationPayload ? { automation: automationPayload } : {})
-      }
-    });
-  }
 
   for (let index = 0; index < safeOutboundMedia.length; index += 1) {
     const mediaMessage = safeOutboundMedia[index];
@@ -17068,6 +17143,54 @@ async function sendAndPersistReply({
         }
       }
     });
+  }
+
+  const shouldSendText = !safeOutboundMedia.length || sendTextWithMedia === true;
+  if (shouldSendText) {
+    const textChunks = splitWhatsAppTextChunks(text);
+    for (const textChunk of textChunks) {
+      sendSequence.push({
+        order: sendSequence.length + 1,
+        payloadType: 'text',
+        textPreview: textChunk.slice(0, 160)
+      });
+      logInfo('conversation_reply_send_step', {
+        requestId,
+        conversationId: conversationId || null,
+        order: sendSequence.length,
+        payloadType: 'text',
+        hasMedia: safeOutboundMedia.length > 0,
+        textPreview: textChunk.slice(0, 160)
+      });
+      const textSendResult = await sendChannelScopedMessage(
+        { to: contact.waId, text: textChunk },
+        {
+          requestId,
+          credentials: {
+            channelId: channelCredentials.channelId,
+            accessToken: channelCredentials.accessToken,
+            phoneNumberId: channelCredentials.phoneNumberId,
+            clinicId: channelCredentials.clinicId,
+            provider: channelCredentials.provider,
+            status: channelCredentials.status,
+            wabaId: channelCredentials.wabaId
+          }
+        }
+      );
+      if (!primarySendResult) primarySendResult = textSendResult;
+      await conversationRepo.insertOutboundMessage({
+        conversationId,
+        waMessageId: textSendResult && textSendResult.messageId ? textSendResult.messageId : null,
+        from: channelCredentials.phoneNumberId,
+        to: contact.waId || null,
+        type: 'text',
+        text: textChunk,
+        raw: {
+          ...(textSendResult && textSendResult.raw ? textSendResult.raw : {}),
+          ...(automationPayload ? { automation: automationPayload } : {})
+        }
+      });
+    }
   }
 
   logInfo('worker_outbound_sent', {
@@ -18015,6 +18138,7 @@ async function processInboundJob(job) {
       contact,
       text: shortMemoryReply.replyText,
       outboundMedia: shortMemoryReply.outboundMedia || null,
+      sendTextWithMedia: shortMemoryReply.sendTextWithMedia === true,
       automation: inboundAutomationMeta
         ? { ...inboundAutomationMeta, source: 'commercial_short_memory' }
         : null,
@@ -18060,6 +18184,7 @@ async function processInboundJob(job) {
       contact,
       text: safeCommercialReply.replyText,
       outboundMedia: safeCommercialReply.outboundMedia || null,
+      sendTextWithMedia: safeCommercialReply.sendTextWithMedia === true,
       automation: inboundAutomationMeta
         ? { ...inboundAutomationMeta, source: 'safe_commercial_reply' }
         : null,
@@ -18589,6 +18714,7 @@ async function processConversationReplyJobUnlocked(job) {
         contact,
         text: safeCommercialReply.replyText,
         outboundMedia: safeCommercialReply.outboundMedia || null,
+        sendTextWithMedia: safeCommercialReply.sendTextWithMedia === true,
         automation: {
           ...replyAutomationMeta,
           source: 'safe_commercial_reply'
@@ -18657,6 +18783,7 @@ async function processConversationReplyJobUnlocked(job) {
             contact,
             text: aiAssistReply.replyText,
             outboundMedia: aiAssistReply.outboundMedia || null,
+            sendTextWithMedia: aiAssistReply.sendTextWithMedia === true,
             automation: {
               ...replyAutomationMeta,
               source: 'ai_assist'
@@ -18696,6 +18823,7 @@ async function processConversationReplyJobUnlocked(job) {
               contact,
               text: weakSignalFallback.replyText,
               outboundMedia: weakSignalFallback.outboundMedia || null,
+              sendTextWithMedia: weakSignalFallback.sendTextWithMedia === true,
               automation: {
                 ...replyAutomationMeta,
                 source: 'ai_assist_weak_signal_fallback'
@@ -19741,50 +19869,53 @@ async function processConversationReplyJobUnlocked(job) {
 
   let sendResult = null;
   if (shouldSendTextWithMedia) {
-    sendResult = await sendChannelScopedMessage(
-      { to: contact.waId, text: replyText },
-      {
-        requestId,
-        credentials: {
-          ...replyChannelCredentials
+    for (const textChunk of splitWhatsAppTextChunks(replyText)) {
+      const chunkSendResult = await sendChannelScopedMessage(
+        { to: contact.waId, text: textChunk },
+        {
+          requestId,
+          credentials: {
+            ...replyChannelCredentials
+          }
         }
-      }
-    );
+      );
+      if (!sendResult) sendResult = chunkSendResult;
 
-    const outboundWrite = await conversationRepo.insertOutboundMessage({
-      conversationId: conversation.id,
-      waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
-      from: replyChannelCredentials.phoneNumberId,
-      to: contact.waId || null,
-      type: 'text',
-      text: replyText,
-      raw: {
-        ...(sendResult && sendResult.raw ? sendResult.raw : {}),
-        automation: {
-          inboundMessageId: inboundMessage.id,
-          inboundWaMessageId: waMessageId,
-          source: decisionSource || null,
-          jobId: job.id
-        },
-        ai: {
-          enabled: aiEnabled && hasAiKey,
-          attempted: aiAttempted,
-          used: aiUsed,
-          model: aiModel,
-          usage: aiUsage,
-          fallbackUsed: aiFallbackUsed,
-          skipReason: aiSkipReason
-        }
-      }
-    });
-
-    if (outboundWrite && outboundWrite.inserted === false) {
-      logWarn('outbound_duplicate_waMessageId_skipped', {
-        requestId,
-        jobId: job.id,
+      const outboundWrite = await conversationRepo.insertOutboundMessage({
         conversationId: conversation.id,
-        waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null
+        waMessageId: chunkSendResult && chunkSendResult.messageId ? chunkSendResult.messageId : null,
+        from: replyChannelCredentials.phoneNumberId,
+        to: contact.waId || null,
+        type: 'text',
+        text: textChunk,
+        raw: {
+          ...(chunkSendResult && chunkSendResult.raw ? chunkSendResult.raw : {}),
+          automation: {
+            inboundMessageId: inboundMessage.id,
+            inboundWaMessageId: waMessageId,
+            source: decisionSource || null,
+            jobId: job.id
+          },
+          ai: {
+            enabled: aiEnabled && hasAiKey,
+            attempted: aiAttempted,
+            used: aiUsed,
+            model: aiModel,
+            usage: aiUsage,
+            fallbackUsed: aiFallbackUsed,
+            skipReason: aiSkipReason
+          }
+        }
       });
+
+      if (outboundWrite && outboundWrite.inserted === false) {
+        logWarn('outbound_duplicate_waMessageId_skipped', {
+          requestId,
+          jobId: job.id,
+          conversationId: conversation.id,
+          waMessageId: chunkSendResult && chunkSendResult.messageId ? chunkSendResult.messageId : null
+        });
+      }
     }
   }
   const effectiveSendResult = sendResult || firstMediaSendResult || null;
@@ -20297,6 +20428,12 @@ module.exports = {
     detectCommercialNextStepIntent,
     detectBusinessRecommendationContext,
     parseTransferPaymentIntent,
+    getActiveCommercialPaymentContext,
+    isContextualTransferDataFollowUp,
+    buildCatalogProductImageCaption,
+    buildCatalogItemDetailReply,
+    splitWhatsAppTextChunks,
+    truncateAtWordBoundary,
     buildCommercialPlanObjectionReply,
     buildSafeCommercialIntentReply,
     buildCommercialShortMemoryReply,
@@ -20355,6 +20492,7 @@ module.exports = {
     buildConfirmedContextPatch,
     formatSlotForHuman,
     processDueAppointmentReminders,
+    sendAndPersistReply,
     buildAutomationDisabledReply,
     resolveBotReplyAuthority,
     processConversationReplyJob,
