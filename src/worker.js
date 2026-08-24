@@ -21,6 +21,16 @@ const { getMessageById } = require('./repositories/message.repository');
 const { sendChannelScopedMessage } = require('./whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('./whatsapp/normalize-phone');
 const { parseCommercePrice, resolveProductPrice } = require('./utils/commerce-price');
+const { normalizeConversationalText } = require('./utils/conversational-language');
+const {
+  extractCommercialProductQuery,
+  findProductsByQuery,
+  normalizeCommerceProductLookupName,
+  parseCommerceNaturalOrder,
+  parseCommerceQuantity,
+  parseContextualCartAction,
+  parseProductDiscoveryRequest
+} = require('./utils/conversational-commerce');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
 const { parseAppointmentText } = require('./conversations/appointment.parser');
@@ -258,56 +268,7 @@ function normalizeText(input) {
 }
 
 function normalizeCommandText(input) {
-  return applyBasicConversationalNormalizations(
-    String(input || '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, ' ')
-    .replace(/[.,!?]+$/g, '')
-    .trim()
-  );
-}
-
-function applyBasicConversationalNormalizations(text) {
-  let normalized = String(text || '').trim().toLowerCase();
-  if (!normalized) return '';
-
-  if (/^hol+a+$/.test(normalized) || /^ola+s*$/.test(normalized) || normalized === 'ols') {
-    return 'hola';
-  }
-
-  if (normalized === 'q tal') return 'que tal';
-
-  normalized = normalized
-    .replace(/\bholis+\b/g, 'hola')
-    .replace(/\bbuenass+\b/g, 'buenas')
-    .replace(/\bgrax\b/g, 'gracias')
-    .replace(/\bgrasias\b/g, 'gracias')
-    .replace(/\bgraxias\b/g, 'gracias')
-    .replace(/\bgraciass+\b/g, 'gracias')
-    .replace(/\bpresio(s)?\b/g, 'precio$1')
-    .replace(/\btransferecnia\b/g, 'transferencia')
-    .replace(/\baseptan\b/g, 'aceptan')
-    .replace(/\bqiero\b/g, 'quiero')
-    .replace(/\bq\s*onda\b/g, 'que onda')
-    .replace(/\bcuant\b/g, 'cuanto')
-    .replace(/\binfoo+\b/g, 'info')
-    .replace(/\bnesecito\b/g, 'necesito')
-    .replace(/\bnesesito\b/g, 'necesito')
-    .replace(/\boki+\b/g, 'ok')
-    .replace(/\bokey\b/g, 'ok')
-    .replace(/\bokei\b/g, 'ok')
-    .replace(/\bokay\b/g, 'ok')
-    .replace(/\bbuenisim[oa]\b/g, 'buenisimo')
-    .replace(/\bbarbaroo+\b/g, 'barbaro')
-    .replace(/\bgenia+l+\b/g, 'genial')
-    .replace(/\bq\s+/g, 'que ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return normalized;
+  return normalizeConversationalText(input);
 }
 
 function normalizeDigitsOnly(value) {
@@ -438,9 +399,9 @@ function detectIntent(rawText) {
   const text = normalizeCommandText(rawText);
   const commercialIntent = detectCommercialIntent(text);
 
-  const appointmentWords = /(turno|cita|agenda|sacar turno|reservar|agendar)/i;
+  const appointmentWords = /(turno|cita|agenda|sacar turno|reserva(?:r|me)?|agendar|agendame)/i;
   const urgentWords = /(dolor|urgencia|sangrado|inflamado|se me sali[oó]|me duele mucho)/i;
-  const pricingWords = /(precio|cuanto|valor|costo|info)/i;
+  const pricingWords = /(precio|cuanto|valor|costo|info|que sale|sale cuanto)/i;
   const humanWords = /(humano|recepcion|llamar|asesor|hablar con una persona|pasame con una persona|quiero una persona)/i;
 
   if (urgentWords.test(text)) return 'urgent';
@@ -673,7 +634,8 @@ const COMMERCIAL_INTENT_MAP = {
       'mostrame cosas',
       'mostrar productos',
       'quiero comprar',
-      'quiero ver opciones'
+      'quiero ver opciones',
+      'que tenes de'
     ],
     includes: [
       'planes',
@@ -695,7 +657,8 @@ const COMMERCIAL_INTENT_MAP = {
       'mostrar opciones',
       'que venden',
       'que tienen',
-      'quiero comprar'
+      'quiero comprar',
+      'que tenes de'
     ],
     patterns: COMMERCIAL_OFFER_PATTERNS
   }),
@@ -749,6 +712,8 @@ const COMMERCIAL_INTENT_MAP = {
       'te puedo transferir',
       'puedo transferirte',
       'como hago para pagarte',
+      'como hago para pagarlo',
+      'como hago para pagarla',
       'como abono',
       'donde te transfiero',
       'pasame alias',
@@ -772,6 +737,7 @@ const COMMERCIAL_INTENT_MAP = {
       /\bte\s+puedo\s+transferir\b/,
       /\bpuedo\s+transferirte\b/,
       /\bcomo\s+hago\s+para\s+pagarte\b/,
+      /\bcomo\s+hago\s+para\s+pagar(?:lo|la)\b/,
       /\bcomo\s+abono\b/,
       /\bdonde\s+te\s+transfier[oa]\b/,
       /\bme\s+pasas\s+(alias|cbu)\b/,
@@ -834,9 +800,9 @@ const COMMERCIAL_INTENT_MAP = {
     ]
   }),
   delivery: buildCommercialIntentSpec({
-    exact: ['hacen envios', 'hacen delivery', 'envian', 'envio', 'mandan', 'reparten'],
-    includes: ['envio', 'envian', 'delivery', 'mandan', 'reparten'],
-    patterns: [/\bhacen\s+(envios|delivery)\b/, /\btienen\s+envios\b/]
+    exact: ['hacen envios', 'hacen delivery', 'tenes delivery', 'tienen delivery', 'envian', 'envio', 'mandan', 'reparten', 'me lo mandan', 'envian a domicilio', 'llega hoy'],
+    includes: ['envio', 'envian', 'delivery', 'mandan', 'reparten', 'a domicilio'],
+    patterns: [/\bhacen\s+(envios|delivery)\b/, /\btienen?\s+(envios|delivery)\b/, /\bme\s+lo\s+mandan\b/, /\bllega\s+hoy\b/]
   }),
   stock: buildCommercialIntentSpec({
     exact: ['stock', 'tienen stock', 'hay stock', 'disponibilidad', 'disponible', 'tienen disponible'],
@@ -976,7 +942,10 @@ function isLoyaltyIntent(rawText) {
     text.includes('cuanto acumule') ||
     text.includes('cuanto acumul') ||
     text.includes('mis beneficios') ||
-    text.includes('programa de beneficios')
+    text.includes('programa de beneficios') ||
+    text.includes('recompensa') ||
+    text.includes('canjear') ||
+    text.includes('canje')
   ) {
     return true;
   }
@@ -988,6 +957,7 @@ function isLoyaltyIntent(rawText) {
   if (
     /\bpremi(os?)?\b/.test(text) ||
     /\bbenefici(os?)?\b/.test(text) ||
+    /\brecompens(as?)?\b/.test(text) ||
     text.includes('mi descuento') ||
     text.includes('tengo descuento') ||
     text.includes('descuento tengo')
@@ -6451,7 +6421,7 @@ function isContextualPlanReferenceIntent(rawText) {
   const text = normalizeCommandText(rawText);
   if (!text) return false;
 
-  return [
+  if ([
     'ese',
     'ese plan',
     'mostrame ese',
@@ -6459,8 +6429,23 @@ function isContextualPlanReferenceIntent(rawText) {
     'quiero ver ese',
     'quiero ver ese plan',
     'ver ese plan',
-    'a ver ese plan'
-  ].includes(text);
+    'a ver ese plan',
+    'pasame mas detalles',
+    'a ver pasame mas detalles',
+    'a ver, pasame mas detalles',
+    'dame mas detalles',
+    'contame mas',
+    'me interesa',
+    'genial me interesa'
+  ].includes(text)) {
+    return true;
+  }
+
+  return (
+    /\b(?:ese|este)\s+plan\b/.test(text) ||
+    /\bmas\s+detalles?\b/.test(text) ||
+    /\b(?:pagarlo|pagarla|contratarlo|contratarla)\b/.test(text)
+  );
 }
 
 function isPlanDirectDetailIntent(rawText) {
@@ -6475,6 +6460,8 @@ function isPlanDirectDetailIntent(rawText) {
     text.includes('ver plan') ||
     text.includes('a ver') ||
     text.includes('detalle') ||
+    text.includes('contame mas') ||
+    text.includes('pasame mas') ||
     text.includes('ese plan')
   );
 }
@@ -8568,7 +8555,7 @@ function buildStockAvailabilityReply(product) {
     return `${safeProduct.name} tiene stock disponible ahora mismo 😊`;
   }
 
-  return `${safeProduct.name} no tiene stock disponible en este momento. Si querés, te muestro otra opción.`;
+  return `El producto ${safeProduct.name} no tiene stock disponible en este momento. Si querés, te muestro otra opción.`;
 }
 
 function describeSalesContextShort(salesContext) {
@@ -9796,93 +9783,6 @@ function parseCommerceCategorySelection(rawText, categories) {
   );
 }
 
-function parseCommerceQuantity(rawText) {
-  const text = normalizeCommandText(rawText);
-  const match = text.match(/^(\d{1,3})$/);
-  if (!match) return null;
-  const value = Number(match[1]);
-  if (!Number.isInteger(value) || value <= 0) {
-    return null;
-  }
-  return value;
-}
-
-function parseCommerceNaturalOrder(rawText) {
-  let text = normalizeCommandText(rawText);
-  if (!text) return null;
-
-  text = text
-    .replace(/^(quiero|quisiera|agrega|agrega me|agregame|agrega un|agrega una|agrega unos|agrega unas|agrega dos|agrega tres|agrega cuatro|agrega cinco|agrega seis|agrega siete|agrega ocho|agrega nueve|agrega diez|agrega \d+|agrega)\b/g, 'agrega')
-    .trim();
-
-  text = text.replace(/^(agrega|agrega|agregame|agregame|agregá|suma|suma me|sumame|sumá|pone|poneme|dame|mandame|manda|llevo|necesito)\s+/g, '');
-  text = text.replace(/^(por favor\s+)/g, '').trim();
-  if (!text) return null;
-
-  const quantityWords = {
-    un: 1,
-    una: 1,
-    uno: 1,
-    dos: 2,
-    tres: 3,
-    cuatro: 4,
-    cinco: 5,
-    seis: 6,
-    siete: 7,
-    ocho: 8,
-    nueve: 9,
-    diez: 10
-  };
-
-  const parts = text.split(' ').filter(Boolean);
-  if (!parts.length) return null;
-
-  let quantity = 1;
-  let nameStartIndex = 0;
-  const firstPart = parts[0];
-
-  if (/^\d{1,3}$/.test(firstPart)) {
-    quantity = Number(firstPart);
-    nameStartIndex = 1;
-  } else if (quantityWords[firstPart]) {
-    quantity = quantityWords[firstPart];
-    nameStartIndex = 1;
-  }
-
-  const nameParts = parts
-    .slice(nameStartIndex)
-    .filter((part) => !['de', 'del'].includes(part) || parts.slice(nameStartIndex).length === 1);
-  const productName = nameParts.join(' ').trim();
-
-  if (!productName || !Number.isInteger(quantity) || quantity <= 0) {
-    return null;
-  }
-
-  return {
-    quantity,
-    productName
-  };
-}
-
-function normalizeCommerceProductLookupName(value) {
-  const normalized = normalizeCommandText(value)
-    .replace(/[()]/g, ' ')
-    .replace(/\b(de|del|la|las|el|los|un|una|unos|unas)\b/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const tokens = normalized
-    .split(' ')
-    .filter(Boolean)
-    .map((token) => {
-      if (token.length > 4 && token.endsWith('es')) return token.slice(0, -2);
-      if (token.length > 3 && token.endsWith('s')) return token.slice(0, -1);
-      return token;
-    });
-
-  return tokens.join(' ').trim();
-}
-
 function findProductByName(products, rawName) {
   const safeProducts = Array.isArray(products) ? products : [];
   const targetName = normalizeCommerceProductLookupName(rawName);
@@ -9916,6 +9816,44 @@ function findProductByName(products, rawName) {
   }
 
   return bestScore >= 40 ? bestMatch : null;
+}
+
+function buildProductDiscoveryReply(matches, query) {
+  const safeMatches = Array.isArray(matches) ? matches : [];
+  if (!safeMatches.length) {
+    return `No encontré productos activos que coincidan con “${String(query || '').trim()}”. Si querés, te muestro el catálogo.`;
+  }
+  if (safeMatches.length === 1) {
+    const product = safeMatches[0];
+    const price = resolveProductPrice(product);
+    return `${product.name}${price.valid ? ` — ${formatMoney(price.value, product.currency)}` : ''}\n\nSi querés, puedo revisar stock o agregarlo al carrito.`;
+  }
+  return [
+    'Encontré estas opciones:',
+    '',
+    ...safeMatches.slice(0, 5).map((product, index) => `${index + 1}. ${product.name}`),
+    '',
+    'Decime cuál querés y seguimos.'
+  ].join('\n');
+}
+
+function buildProductPricingReply(products, rawText) {
+  const matches = findProductsByQuery(products, rawText);
+  if (!matches.length) {
+    return 'No encontré ese producto en el catálogo activo. Decime el nombre y reviso el precio real.';
+  }
+
+  const pricedMatches = matches
+    .map((product) => ({ product, price: resolveProductPrice(product) }))
+    .filter((entry) => entry.price.valid);
+  if (!pricedMatches.length) {
+    return `Encontré ${matches[0].name || 'ese producto'}, pero todavía no tiene un precio válido cargado.`;
+  }
+
+  return pricedMatches
+    .slice(0, 5)
+    .map(({ product, price }) => `${product.name}: ${formatMoney(price.value, product.currency)}`)
+    .join('\n');
 }
 
 function isCommerceCancelIntent(rawText) {
@@ -12003,7 +11941,8 @@ async function buildSafeCommercialIntentReply({
     !isLoyaltyIntent(inboundText) &&
     (!isAgendaLike || isCommercialAppointmentBusinessQuestion) &&
     commercialIntent.type !== 'payment' &&
-    commercialIntent.type !== 'human_handoff'
+    commercialIntent.type !== 'human_handoff' &&
+    !['delivery', 'stock', 'products', 'prices', 'promotions'].includes(commercialIntent.type)
   ) {
     const kbEffectiveSalesContext = buildAiAssistSalesContext({
       businessType: normalizeAiAssistBusinessType(inboundText),
@@ -12928,6 +12867,18 @@ async function buildSafeCommercialIntentReply({
         }
       };
     }
+
+    if (commercialIntent.type === 'prices') {
+      const contextualProduct =
+        findCatalogItemByStoredId(eligibleProducts, safeContext && safeContext.commerceSuggestedProductId) ||
+        resolvePlanFromCommercialShortMemory(eligibleProducts, activeShortMemory);
+      return {
+        type: commercialIntent.type,
+        replyText: contextualProduct && !extractCommercialProductQuery(inboundText)
+          ? buildProductPricingReply([contextualProduct], contextualProduct.name)
+          : buildProductPricingReply(eligibleProducts, inboundText)
+      };
+    }
   }
 
   if (commercialIntent.type === 'payment' && !transferPaymentIntent) {
@@ -13006,6 +12957,7 @@ async function buildSafeCommercialIntentReply({
     const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
     const referencedProduct =
       findReferencedPlan(eligibleProducts, inboundText) ||
+      findProductsByQuery(eligibleProducts, inboundText)[0] ||
       findProductByName(eligibleProducts, inboundText) ||
       findCatalogItemByStoredId(eligibleProducts, safeContext && safeContext.commerceSuggestedProductId) ||
       resolvePlanFromCommercialShortMemory(eligibleProducts, activeShortMemory);
@@ -13186,6 +13138,20 @@ async function buildSafeCommercialIntentReply({
       type: 'recommendation',
       replyText: 'Contame un poco tu negocio y te recomiendo el plan que mejor te puede servir 😊',
       contextPatch: buildBusinessRecommendationContextPatch(effectiveBusinessContext)
+    };
+  }
+
+  if (detectIntent(inboundText) === 'pricing' && commercialIntent.type === 'unknown') {
+    const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const contextualProduct =
+      findCatalogItemByStoredId(eligibleProducts, safeContext && safeContext.commerceSuggestedProductId) ||
+      resolvePlanFromCommercialShortMemory(eligibleProducts, activeShortMemory);
+    return {
+      type: 'prices',
+      replyText: contextualProduct && !extractCommercialProductQuery(inboundText)
+        ? buildProductPricingReply([contextualProduct], contextualProduct.name)
+        : buildProductPricingReply(eligibleProducts, inboundText)
     };
   }
 
@@ -14513,6 +14479,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const transferConfig = getClinicTransferConfig(clinic);
   const transferIntent = parseTransferPaymentIntent(inboundText);
   const nextStepIntent = detectCommercialNextStepIntent(inboundText);
+  const contextualPaymentMethodsIntent =
+    /\b(?:como\s+hago\s+para\s+pagar(?:lo|la)|como\s+pago)\b/.test(normalizeCommandText(inboundText));
   const transferContext = safeContext.transferPayment && typeof safeContext.transferPayment === 'object'
     ? safeContext.transferPayment
     : null;
@@ -14528,6 +14496,46 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     transferStatus !== 'awaiting_plan_selection' &&
     transferStatus !== 'payment_reported' &&
     transferStatus !== 'payment_pending_validation';
+
+  if (contextualPaymentMethodsIntent && currentState !== 'PAYMENT_TRANSFER') {
+    const plans = getOrderedPlanProducts(buildCommerceEligibleProducts(await loadClinicProducts()));
+    const contextualPlan =
+      resolveExistingPaymentPlan(safeContext, plans) ||
+      findPlanByCommercialPlanContext(plans, safeContext, inboundText) ||
+      findPlanByStoredId(plans, safeContext && safeContext.commerceSuggestedProductId) ||
+      resolveRecentCommercialPlan(
+        plans,
+        getActiveCommercialSalesContext(safeContext),
+        getActiveCommercialPlanContext(safeContext),
+        getActiveCommercialShortMemory(safeContext)
+      );
+
+    if (contextualPlan) {
+      const businessProfile = getClinicBusinessProfile(clinic);
+      return {
+        replyText: buildPaymentMethodsReply({
+          paymentMethods: normalizeBusinessProfileText(businessProfile.paymentMethods),
+          transferConfig,
+          activePlanName: contextualPlan.name
+        }),
+        newState: currentState || 'READY',
+        newStage: 'payment_methods',
+        contextPatch: {
+          activeBotDomain: 'commerce',
+          ...buildCommercialShortMemoryPatch({
+            topic: 'plans',
+            lastSuggestedProductId: contextualPlan.id || contextualPlan.productId,
+            recommendationType: normalizeProductRecommendationType(contextualPlan, plans)
+          }),
+          ...buildCommercialPlanContextPatch({
+            topic: 'payment_methods',
+            lastDiscussedPlanId: contextualPlan.id || contextualPlan.productId,
+            recommendationType: normalizeProductRecommendationType(contextualPlan, plans)
+          })
+        }
+      };
+    }
+  }
   const ensureOrderPendingForTransfer = async () => {
     if (!transferOrderId) return null;
     const patchPayload = {
@@ -15572,6 +15580,83 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     };
   }
 
+  const contextualCartAction = parseContextualCartAction(inboundText);
+  if (contextualCartAction && (cartItems.length || safeContext.commerceSuggestedProductId)) {
+    const referencedProductId = String(
+      (lastAddedItem && lastAddedItem.productId) ||
+      (cartItems.length === 1 && cartItems[0].productId) ||
+      safeContext.commerceSuggestedProductId ||
+      ''
+    ).trim();
+
+    if (!referencedProductId) {
+      return {
+        replyText: 'Decime a cuál producto del carrito te referís y ajusto la cantidad.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: { commerceCartItems: cartItems }
+      };
+    }
+
+    if (contextualCartAction.type === 'add') {
+      return resolveCommerceCartAddition({
+        conversation,
+        catalogFromContext,
+        cartItems,
+        quantity: contextualCartAction.quantity,
+        productId: referencedProductId
+      });
+    }
+
+    if (!cartItems.some((item) => String(item.productId) === referencedProductId)) {
+      return {
+        replyText: 'Todavía no hay una cantidad para reemplazar. Decime cuántas unidades querés agregar.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: { commerceCartItems: cartItems.length ? cartItems : null }
+      };
+    }
+
+    const latestProduct = await findProductById(referencedProductId, conversation.clinicId);
+    const latestPrice = resolveProductPrice(latestProduct);
+    if (!latestProduct || String(latestProduct.status || '').toLowerCase() !== 'active' || !latestPrice.valid) {
+      return {
+        replyText: 'No pude actualizar la cantidad porque ese producto ya no está disponible con un precio válido. Tu carrito no cambió.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: { commerceCartItems: cartItems }
+      };
+    }
+    if (Number(latestProduct.stock || 0) < contextualCartAction.quantity) {
+      return {
+        replyText: 'No me alcanza el stock de ese producto para esa cantidad. Tu carrito no cambió.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: { commerceCartItems: cartItems }
+      };
+    }
+
+    const updatedCartItems = cartItems.map((item) => String(item.productId) === referencedProductId
+      ? {
+        ...item,
+        name: latestProduct.name,
+        price: latestPrice.value,
+        currency: String(latestProduct.currency || item.currency || 'ARS').toUpperCase(),
+        quantity: contextualCartAction.quantity
+      }
+      : item);
+
+    return {
+      replyText: `Listo, actualicé la cantidad.\n\n${buildCommerceCartSummaryReply(updatedCartItems)}`,
+      newState: 'WAITING_PRODUCT_SELECTION',
+      contextPatch: {
+        commerceCatalog: catalogFromContext.length ? catalogFromContext : null,
+        commerceCartItems: updatedCartItems,
+        commerceSelectedProduct: null,
+        commerceLastAddedItem: {
+          productId: referencedProductId,
+          quantity: contextualCartAction.quantity
+        }
+      }
+    };
+  }
+
   if (isCommerceConfirmIntent(inboundText)) {
     if (cartHasInvalidPrice) {
       return {
@@ -15878,6 +15963,36 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     if (isPlanPricingIntent(inboundText)) {
       return buildPlanSalesDecision(buildPlanComparisonReply(availablePlanProducts));
     }
+  }
+
+  const productDiscovery = parseProductDiscoveryRequest(inboundText);
+  if (productDiscovery && !planSalesActive) {
+    const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+    const matches = findProductsByQuery(eligibleProducts, productDiscovery.query);
+    const unambiguousProduct = matches.length === 1 ? matches[0] : null;
+    const page = buildCommerceCatalogPage(clinicProducts, { categoryId: activeCategoryId });
+    return {
+      replyText: buildProductDiscoveryReply(matches, productDiscovery.query),
+      newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: buildCommerceResetPatch({
+        commerceCatalog: page.items,
+        commerceCatalogOffset: page.offset,
+        commerceCatalogNextOffset: page.nextOffset,
+        commerceCatalogTotal: page.total,
+        commerceCartItems: cartItems.length ? cartItems : null,
+        commerceLastAddedItem: lastAddedItem,
+        commerceSuggestedProductId: unambiguousProduct && (unambiguousProduct.id || unambiguousProduct.productId),
+        commerceSuggestedProductName: unambiguousProduct && unambiguousProduct.name,
+        ...(unambiguousProduct
+          ? buildCommercialShortMemoryPatch({
+            topic: 'catalog',
+            categoryId: unambiguousProduct.categoryId || null,
+            lastSuggestedProductId: unambiguousProduct.id || unambiguousProduct.productId,
+            recommendationType: 'general'
+          })
+          : null)
+      })
+    };
   }
 
   const naturalOrder = parseCommerceNaturalOrder(inboundText);
@@ -20197,6 +20312,13 @@ module.exports = {
     buildDemoPaymentReply,
     resolveCommerceDecision,
     detectIntent,
+    normalizeCommandText,
+    parseCommerceQuantity,
+    parseCommerceNaturalOrder,
+    parseContextualCartAction,
+    extractCommercialProductQuery,
+    parseProductDiscoveryRequest,
+    findProductsByQuery,
     isAffirmativeIntent,
     isNegativeIntent,
     isClarificationIntent,

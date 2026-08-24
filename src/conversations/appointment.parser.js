@@ -125,12 +125,34 @@ function baseDisplayText({ dateISO, weekdayLabel }) {
   return 'fecha';
 }
 
+function parsePartySize(text) {
+  const normalized = normalizeText(text);
+  const quantityWords = {
+    uno: 1,
+    una: 1,
+    dos: 2,
+    tres: 3,
+    cuatro: 4,
+    cinco: 5,
+    seis: 6,
+    siete: 7,
+    ocho: 8,
+    nueve: 9,
+    diez: 10
+  };
+  const match = normalized.match(/\b(?:para|somos)\s+(\d{1,2}|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)(?:\s+personas?)?\b/);
+  if (!match) return null;
+  const value = /^\d+$/.test(match[1]) ? Number(match[1]) : quantityWords[match[1]];
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
 function parseAppointmentText(text) {
   const raw = String(text || '').trim();
   const time = parseTime(raw);
   const weekday = parseWeekday(raw);
   const dateISO = parseDateISO(raw);
   const timeWindow = time ? null : parseTimeWindow(raw);
+  const partySize = parsePartySize(raw);
 
   const hasDayOrDate = !!(weekday || dateISO);
   const hasTime = !!time;
@@ -143,7 +165,8 @@ function parseAppointmentText(text) {
       displayText: null,
       hasDayOrDate: false,
       hasTime: false,
-      hasTimeWindow: false
+      hasTimeWindow: false,
+      partySize
     };
   }
 
@@ -152,6 +175,7 @@ function parseAppointmentText(text) {
   if (weekday) parsed.weekday = weekday.key;
   if (time) parsed.time = time;
   if (timeWindow) parsed.timeWindow = timeWindow.key;
+  if (partySize) parsed.partySize = partySize;
 
   const base = baseDisplayText({
     dateISO,
@@ -168,10 +192,12 @@ function parseAppointmentText(text) {
     displayText,
     hasDayOrDate,
     hasTime,
-    hasTimeWindow
+    hasTimeWindow,
+    partySize
   };
 }
 
 module.exports = {
-  parseAppointmentText
+  parseAppointmentText,
+  parsePartySize
 };

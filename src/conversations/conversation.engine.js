@@ -1,4 +1,5 @@
 const { parseAppointmentText } = require('./appointment.parser');
+const { normalizeConversationalText } = require('../utils/conversational-language');
 
 function looksLikeName(text) {
   const candidate = String(text || '').trim();
@@ -16,46 +17,7 @@ function normalizeText(text) {
 }
 
 function normalizeCommandText(text) {
-  return applyBasicConversationalNormalizations(
-    normalizeText(text)
-    .replace(/[.,!?]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-  );
-}
-
-function applyBasicConversationalNormalizations(text) {
-  let normalized = String(text || '').trim().toLowerCase();
-  if (!normalized) return '';
-
-  if (/^hol+a+$/.test(normalized) || /^ola+s*$/.test(normalized) || normalized === 'ols') {
-    return 'hola';
-  }
-
-  if (normalized === 'q tal') return 'que tal';
-
-  return normalized
-    .replace(/\bholis+\b/g, 'hola')
-    .replace(/\bbuenass+\b/g, 'buenas')
-    .replace(/\bgrax\b/g, 'gracias')
-    .replace(/\bgrasias\b/g, 'gracias')
-    .replace(/\bgraxias\b/g, 'gracias')
-    .replace(/\bgraciass+\b/g, 'gracias')
-    .replace(/\bpresio(s)?\b/g, 'precio$1')
-    .replace(/\binfoo+\b/g, 'info')
-    .replace(/\bnesecito\b/g, 'necesito')
-    .replace(/\bnesesito\b/g, 'necesito')
-    .replace(/\boki+\b/g, 'ok')
-    .replace(/\bokey\b/g, 'ok')
-    .replace(/\bokei\b/g, 'ok')
-    .replace(/\bokay\b/g, 'ok')
-    .replace(/\bbuenisim[oa]\b/g, 'buenisimo')
-    .replace(/\bbarbaroo+\b/g, 'barbaro')
-    .replace(/\bgenia+l+\b/g, 'genial')
-    .replace(/\bq\s*onda\b/g, 'que onda')
-    .replace(/\bq\s+/g, 'que ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeConversationalText(text);
 }
 
 function isAffirmative(text) {
