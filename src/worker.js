@@ -738,6 +738,7 @@ const COMMERCIAL_INTENT_MAP = {
       /\bpuedo\s+transferirte\b/,
       /\bcomo\s+hago\s+para\s+pagarte\b/,
       /\bcomo\s+hago\s+para\s+pagar(?:lo|la)\b/,
+      /\bcomo\s+(?:lo|la)\s+pago\b/,
       /\bcomo\s+abono\b/,
       /\bdonde\s+te\s+transfier[oa]\b/,
       /\bme\s+pasas\s+(alias|cbu)\b/,
@@ -752,7 +753,7 @@ const COMMERCIAL_INTENT_MAP = {
     exact: [
       'como contrato',
       'como lo contrato',
-      'como contrato plan crecimiento',
+      'como contrato la opcion recomendada',
       'quiero contratar',
       'quiero el plan',
       'quiero ese plan',
@@ -3001,12 +3002,12 @@ function hasPortfolioDiscoveryIntent(rawText) {
 
   return (
     text.includes('vengo desde portfolio') ||
-    text.includes('quiero probar opturon') ||
+    text.includes('quiero probar la plataforma') ||
     text.includes('quiero probar como funciona') ||
     text.includes('quiero probar cómo funciona') ||
     text.includes('quiero probar el sistema') ||
-    text.includes('como funciona el sistema de opturon') ||
-    text.includes('cómo funciona el sistema de opturon') ||
+    text.includes('como funciona la plataforma') ||
+    text.includes('cómo funciona la plataforma') ||
     text.includes('conversacion real por whatsapp') ||
     text.includes('conversación real por whatsapp')
   );
@@ -4052,7 +4053,7 @@ function buildCommercialOrientationLead(salesContext = {}) {
     !safeContext.businessType &&
     !safeContext.offerTypeSignal
   ) {
-    return 'Opturon está pensado para negocios que reciben consultas por WhatsApp y también desde redes como Instagram. Te ayuda a ordenar conversaciones, hacer seguimiento y no perder oportunidades.';
+    return 'La plataforma está pensada para negocios que reciben consultas por WhatsApp y también desde redes como Instagram. Te ayuda a ordenar conversaciones, hacer seguimiento y no perder oportunidades.';
   }
 
   if (branchCount && branchCount.value > 1 && isCommunicableCommercialEvidence(branchCount.source)) {
@@ -4185,7 +4186,7 @@ function getIndustryDiscoveryLabel(salesContext = {}) {
 function buildIndustryDiscoveryReply(salesContext = {}) {
   const label = getIndustryDiscoveryLabel(salesContext);
   return [
-    `Sí, para ${label} Opturon puede servirte, pero antes de recomendarte un plan necesito entender un poco cómo trabajan hoy.`,
+    `Sí, para ${label} la solución puede servirte, pero antes de recomendarte una opción necesito entender un poco cómo trabajan hoy.`,
     '',
     'Te hago 3 preguntas rápidas:',
     '1. ¿Cuántas consultas les entran por WhatsApp por día aproximadamente?',
@@ -4285,9 +4286,9 @@ function buildSoftCommercialPlanRecommendationReply(businessContext = {}, salesC
         ? `Si hoy ${contextLead}, ya aparece necesidad de más control y seguimiento consistentes.`
         : 'Ya aparece necesidad de más control y seguimiento consistentes.',
       '',
-      'Lo que más sentido me hace es mirar una opción tipo Empresa, porque ya aparece necesidad de más control, seguimiento y coordinación entre varias personas o varios frentes.',
+      'Lo que más sentido me hace es mirar la opción más completa, porque ya aparece necesidad de más control, seguimiento y coordinación entre varias personas o varios frentes.',
       '',
-      'Si querés, te cuento en qué casos iría por Empresa y en cuáles todavía alcanzaría algo más liviano.'
+      'Si querés, te cuento en qué casos iría por esa opción y en cuáles todavía alcanzaría algo más liviano.'
     ].join('\n');
   }
 
@@ -4300,8 +4301,8 @@ function buildSoftCommercialPlanRecommendationReply(businessContext = {}, salesC
         : 'Con los datos que compartiste, tiene sentido empezar sin sumar estructura de más.',
       '',
       operationShape === 'small'
-        ? 'La orientación más lógica sería una opción tipo Inicial, porque las señales concretas que compartiste encajan con una operación chica.'
-        : 'La orientación más lógica sería una opción tipo Inicial como punto de partida; no estoy asumiendo un tamaño de operación que todavía no confirmamos.',
+        ? 'La orientación más lógica sería la opción inicial, porque las señales concretas que compartiste encajan con una operación chica.'
+        : 'La orientación más lógica sería la opción inicial como punto de partida; no estoy asumiendo un tamaño de operación que todavía no confirmamos.',
       '',
       'Si querés, después te cuento en qué momento conviene pasar al siguiente plan.'
     ].join('\n');
@@ -4316,7 +4317,7 @@ function buildSoftCommercialPlanRecommendationReply(businessContext = {}, salesC
         ? 'Lo más importante es ordenar seguimiento y respuesta del equipo.'
         : 'Lo más importante es ordenar seguimiento sin asumir todavía el tamaño del equipo.',
     '',
-    `La orientación más lógica sería algo tipo Crecimiento, porque ${buildRecommendationReasonSummary({ name: 'Plan Crecimiento' }, safeSalesContext, [])}.`,
+    `La orientación más lógica sería una opción intermedia, porque ${buildRecommendationReasonSummary({}, safeSalesContext, [])}.`,
     '',
     'Si querés, te explico rápido por qué lo pondría por encima de una opción más básica.'
   ].join('\n');
@@ -5254,7 +5255,7 @@ function isCommercialExplanationContinuationIntent(rawText) {
 function buildCommercialRecommendationExplanationReply(product, salesContext = {}, allPlans = []) {
   const safeProduct = product && typeof product === 'object' ? product : {};
   const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
-  const normalizedName = normalizeCommandText(safeProduct.name || '');
+  const offerTier = resolveOfferTier(safeProduct, allPlans);
   const estimatedDailyConversations = Number.parseInt(String(safeContext.estimatedDailyConversations || ''), 10);
   const peakDailyConversations = Number.parseInt(String(safeContext.peakDailyConversations || ''), 10);
   const trustedConversationCounts = [
@@ -5267,16 +5268,10 @@ function buildCommercialRecommendationExplanationReply(product, salesContext = {
     ? safeContext.currentTools
     : [];
   const comparedPlan = findLowerPlan(allPlans, safeProduct);
-  const planLabel = safeProduct.name || (
-    normalizedName.includes('empresa')
-      ? 'Plan Empresa'
-      : normalizedName.includes('inicial')
-        ? 'Plan Inicial'
-        : 'Plan Crecimiento'
-  );
+  const planLabel = safeProduct.name || 'la opción recomendada';
   const lowerOptionLabel = comparedPlan && comparedPlan.name
     ? comparedPlan.name
-    : (normalizedName.includes('inicial') ? 'una opción más chica' : 'una opción más básica');
+    : (offerTier === 'starter' ? 'una opción más chica' : 'una opción más básica');
 
   const volumeLead = dailyConversationCount >= 30
     ? `con unas ${dailyConversationCount} consultas por día ya no alcanza solo con responder mensajes`
@@ -5300,9 +5295,9 @@ function buildCommercialRecommendationExplanationReply(product, salesContext = {
   const appointmentLead = hasCommunicableCommercialSignal(safeContext, 'handlesAppointments') && safeContext.handlesAppointments === true
     ? 'qué turno o agenda hay que controlar'
     : 'qué seguimiento comercial quedó pendiente';
-  const planScope = normalizedName.includes('empresa')
+  const planScope = offerTier === 'enterprise'
     ? `${planLabel} empieza a justificar mejor una operación con más control, más personalización y más acompañamiento.`
-    : normalizedName.includes('inicial')
+    : offerTier === 'starter'
       ? `${planLabel} te alcanza para ordenar la base sin meterte en una estructura más grande de entrada.`
       : `${planLabel} te ordena el trabajo sin irse a algo enorme: centraliza clientes, pedidos, agenda, pagos y seguimiento en un solo lugar.`;
 
@@ -6094,33 +6089,25 @@ function isPlanCatalog(products) {
 function getOrderedPlanProducts(products) {
   const safeProducts = Array.isArray(products) ? products.filter(isPlanProduct) : [];
   if (!safeProducts.length) return [];
-
-  const ordered = [];
-  const usedIds = new Set();
-  const groups = [
-    ['inicial', 'start', 'starter'],
-    ['crecimiento', 'grow', 'growth'],
-    ['empresa', 'pro', 'enterprise']
-  ];
-
-  for (const group of groups) {
-    const matched = safeProducts.find((product) => {
-      const name = normalizeCommandText(product && product.name ? product.name : '');
-      const sku = normalizeCommandText(product && product.sku ? product.sku : '');
-      return group.some((keyword) => name.includes(keyword) || sku.includes(keyword));
-    });
-
-    if (matched && !usedIds.has(String(matched.id || matched.productId || ''))) {
-      usedIds.add(String(matched.id || matched.productId || ''));
-      ordered.push(matched);
+  return [...safeProducts].sort((left, right) => {
+    const leftPrice = resolveProductPrice(left);
+    const rightPrice = resolveProductPrice(right);
+    if (leftPrice.valid && rightPrice.valid && leftPrice.value !== rightPrice.value) {
+      return leftPrice.value - rightPrice.value;
     }
-  }
+    if (leftPrice.valid !== rightPrice.valid) return leftPrice.valid ? -1 : 1;
+    return String(left.name || '').localeCompare(String(right.name || ''), 'es');
+  });
+}
 
-  const remaining = safeProducts
-    .filter((product) => !usedIds.has(String(product.id || product.productId || '')))
-    .sort((left, right) => Number(left.price || 0) - Number(right.price || 0));
-
-  return [...ordered, ...remaining];
+function resolveOfferTier(product, products = []) {
+  const ordered = getOrderedPlanProducts(products);
+  const productId = String(product && (product.id || product.productId) ? (product.id || product.productId) : '').trim();
+  const index = ordered.findIndex((item) => String(item.id || item.productId || '').trim() === productId);
+  if (index < 0 || ordered.length <= 1) return 'growth';
+  if (index === 0) return 'starter';
+  if (index === ordered.length - 1) return 'enterprise';
+  return 'growth';
 }
 
 function extractPlanDescription(product) {
@@ -6131,17 +6118,17 @@ function extractPlanDescription(product) {
     .filter(Boolean);
 
   return {
-    headline: descriptionLines[0] || 'Es una gran opción para empezar a automatizar ventas con Opturon.',
+    headline: descriptionLines[0] || 'Es una opción disponible para ordenar la operación comercial.',
     featureLines: descriptionLines.slice(1, 4)
   };
 }
 
-function resolvePlanProfile(product) {
+function resolvePlanProfile(product, allPlans = []) {
   const safeProduct = product && typeof product === 'object' ? product : {};
-  const normalizedName = normalizeCommandText(safeProduct.name || '');
   const { headline, featureLines } = extractPlanDescription(safeProduct);
+  const tier = Array.isArray(allPlans) && allPlans.length ? resolveOfferTier(safeProduct, allPlans) : null;
 
-  if (normalizedName.includes('inicial') || normalizedName.includes('starter') || normalizedName.includes('start')) {
+  if (tier === 'starter') {
     return {
       shortDescription: 'Para empezar a ordenar WhatsApp y no perder consultas.',
       problemSolved: 'respondes de forma improvisada y todavia no tienes un sistema comercial claro',
@@ -6157,7 +6144,7 @@ function resolvePlanProfile(product) {
     };
   }
 
-  if (normalizedName.includes('crecimiento') || normalizedName.includes('growth') || normalizedName.includes('grow')) {
+  if (tier === 'growth') {
     return {
       shortDescription: 'Para vender con seguimiento real y operacion diaria mas ordenada.',
       problemSolved: 'ya tienes consultas y ventas por WhatsApp, pero falta seguimiento comercial serio',
@@ -6173,7 +6160,7 @@ function resolvePlanProfile(product) {
     };
   }
 
-  if (normalizedName.includes('empresa') || normalizedName.includes('pro') || normalizedName.includes('enterprise')) {
+  if (tier === 'enterprise') {
     return {
       shortDescription: 'Para equipos con mas volumen, supervision y necesidad de personalizacion.',
       problemSolved: 'ya necesitas mas control, mas soporte y una operacion mejor acompañada',
@@ -6227,7 +6214,7 @@ function buildPlanSalesCta(text = 'Si querés, te recomiendo uno según lo que b
 function buildPlanOfferReply(products) {
   const orderedPlans = getOrderedPlanProducts(products);
   if (!orderedPlans.length) {
-    return 'Puedo ayudarte con los planes de Opturon, pero ahora mismo no encuentro planes activos para mostrarte.';
+    return 'Puedo ayudarte con las opciones disponibles, pero ahora mismo no encuentro ofertas activas para mostrarte.';
   }
 
   return [
@@ -6271,7 +6258,7 @@ function resolvePlanNeedHint(rawText) {
     text.includes('recien empiezo') ||
     text.includes('recién empiezo') ||
     text.includes('empezar simple') ||
-    text.includes('plan inicial') ||
+    text.includes('opcion inicial') ||
     text.includes('econom') ||
     text.includes('barato') ||
     text.includes('accesible') ||
@@ -6296,7 +6283,6 @@ function resolvePlanNeedHint(rawText) {
 
   if (
     text.includes('premium') ||
-    text.includes('empresa') ||
     text.includes('personalizado') ||
     text.includes('integraciones') ||
     text.includes('soporte prioritario') ||
@@ -6360,15 +6346,15 @@ function findPlanByNeedHint(products, needHint) {
   if (!orderedPlans.length) return null;
 
   if (needHint === 'starter') {
-    return orderedPlans.find((product) => normalizeCommandText(product.name || '').includes('inicial')) || orderedPlans[0];
+    return orderedPlans[0];
   }
 
   if (needHint === 'growth') {
-    return orderedPlans.find((product) => normalizeCommandText(product.name || '').includes('crecimiento')) || orderedPlans[1] || orderedPlans[0];
+    return orderedPlans.length >= 3 ? orderedPlans[Math.floor((orderedPlans.length - 1) / 2)] : orderedPlans[0];
   }
 
   if (needHint === 'enterprise') {
-    return orderedPlans.find((product) => normalizeCommandText(product.name || '').includes('empresa')) || orderedPlans[orderedPlans.length - 1];
+    return orderedPlans[orderedPlans.length - 1];
   }
 
   return null;
@@ -6743,7 +6729,7 @@ function findPlanByContext(products, safeContext) {
 function buildPlanComparisonReply(products) {
   const orderedPlans = getOrderedPlanProducts(products);
   if (!orderedPlans.length) {
-    return 'Puedo ayudarte a comparar los planes de Opturon, pero ahora mismo no encuentro planes activos para mostrarte.';
+    return 'Puedo ayudarte a comparar las opciones, pero ahora mismo no encuentro ofertas activas para mostrarte.';
   }
 
   const starterPlan = findPlanByNeedHint(orderedPlans, 'starter');
@@ -7098,7 +7084,7 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
 
   if (safeContext.recommendationLevel === 'enterprise') {
     return [
-      `Con el contexto operativo disponible, probablemente te convenga más el ${safeProduct.name || 'Plan Empresa'} 😊`,
+      `Con el contexto operativo disponible, probablemente te convenga más ${safeProduct.name || 'la opción más completa'} 😊`,
       '',
       'Está pensado para equipos, supervisión y operación más intensa.',
       '',
@@ -7108,7 +7094,7 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
 
   if (safeContext.recommendationLevel === 'starter') {
     return [
-      `Si querés arrancar simple y económico, el ${safeProduct.name || 'Plan Inicial'} puede ser una buena opción 😊`,
+      `Si querés arrancar simple y económico, ${safeProduct.name || 'la opción inicial'} puede ser una buena opción 😊`,
       '',
       'Te deja ordenar WhatsApp y empezar con una base prolija sin irte a algo más grande de entrada.',
       '',
@@ -7117,7 +7103,7 @@ function buildBusinessContextPlanRecommendationReply(product, businessContext, a
   }
 
   return [
-    `Por lo que me contás, creo que el ${safeProduct.name || 'Plan Crecimiento'} puede irte muy bien 😊`,
+    `Por lo que me contás, creo que ${safeProduct.name || 'la opción intermedia'} puede irte muy bien 😊`,
     '',
     'Te ayuda a ordenar WhatsApp, responder más rápido y hacer seguimiento de clientes sin perder consultas.',
     '',
@@ -7160,7 +7146,7 @@ function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
 
   if (category === 'multi_service') {
     return [
-      'Sí, podés usar Opturon para organizar más de una actividad.',
+      'Sí, podés usar la plataforma para organizar más de una actividad.',
       '',
       'En ese caso te ayudaría a centralizar mensajes, contactos, turnos y seguimiento en un solo lugar, separando la atención por tipo de servicio cuando lo necesites.'
     ].join('\n');
@@ -7168,7 +7154,7 @@ function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
 
   if (category === 'multi_business') {
     return [
-      'Sí, podés centralizar más de un negocio o frente comercial en Opturon.',
+      'Sí, podés centralizar más de un negocio o frente comercial en la plataforma.',
       '',
       'La idea es ordenar mensajes, contactos, pedidos, turnos o seguimiento en un solo lugar, y separar la atención por actividad cuando haga falta.',
       '',
@@ -7180,7 +7166,7 @@ function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
     return [
       'Sí, te sirve.',
       '',
-      'Opturon está pensado para negocios que atienden consultas por WhatsApp, venden productos o servicios y necesitan ordenar conversaciones, clientes, pedidos y seguimiento comercial.',
+      'La plataforma está pensada para negocios que atienden consultas por WhatsApp, venden productos o servicios y necesitan ordenar conversaciones, clientes, pedidos y seguimiento comercial.',
       '',
       'También puede acompañar consultas que llegan desde Instagram, sin prometer una integración profunda si no está configurada.'
     ].join('\n');
@@ -7198,7 +7184,7 @@ function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
     return [
       'No necesariamente. No, no busca reemplazar a tu equipo.',
       '',
-      'Opturon no está pensado para sacar vendedores, sino para ayudarlos a trabajar mejor: ordenar consultas, no perder clientes, responder más rápido y hacer seguimiento.',
+      'La plataforma no está pensada para sacar vendedores, sino para ayudarlos a trabajar mejor: ordenar consultas, no perder clientes, responder más rápido y hacer seguimiento.',
       '',
       'La atención humana puede intervenir cuando haga falta.'
     ].join('\n');
@@ -7224,7 +7210,7 @@ function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
     return [
       'El bot no debería responder cualquier cosa ni prometer de más.',
       '',
-      'Opturon trabaja con flujos y respuestas controladas. Si algo requiere revisión o no se entiende bien, se puede guiar la conversación o derivar a una persona.'
+      'La plataforma trabaja con flujos y respuestas controladas. Si algo requiere revisión o no se entiende bien, se puede guiar la conversación o derivar a una persona.'
     ].join('\n');
   }
 
@@ -7246,7 +7232,7 @@ function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
 
   if (category === 'scaling_business_fit' || category === 'crm_and_follow_up') {
     return [
-      'Sí, ahí Opturon suele aportar bastante.',
+      'Sí, ahí la plataforma suele aportar bastante.',
       '',
       'Cuando hay muchos mensajes, clientes o seguimiento pendiente, ayuda a ordenar conversaciones, registrar oportunidades y no dejar consultas perdidas.',
       '',
@@ -7276,7 +7262,7 @@ function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
     return [
       'Sí, para negocios con turnos o agenda puede servir.',
       '',
-      'Opturon puede ayudar a ordenar consultas, solicitudes de turno y seguimiento por WhatsApp. La disponibilidad y reglas de agenda se configuran según cómo trabaje cada negocio.'
+      'La plataforma puede ayudar a ordenar consultas, solicitudes de turno y seguimiento por WhatsApp. La disponibilidad y reglas de agenda se configuran según cómo trabaje cada negocio.'
     ].join('\n');
   }
 
@@ -7284,7 +7270,7 @@ function buildCommercialKbControlledReply(kbMatch, effectiveSalesContext = {}) {
     return [
       'Sí, te sirve.',
       '',
-      `Opturon puede ayudar${rawBusinessType ? ` en ${rawBusinessType}` : ''} a ordenar consultas, clientes, catálogo, productos, registrar pedidos y seguimiento comercial, especialmente cuando entran mensajes por WhatsApp y hay operación diaria para coordinar.`
+      `La plataforma puede ayudar${rawBusinessType ? ` en ${rawBusinessType}` : ''} a ordenar consultas, clientes, catálogo, productos, registrar pedidos y seguimiento comercial, especialmente cuando entran mensajes por WhatsApp y hay operación diaria para coordinar.`
     ].join('\n');
   }
 
@@ -7402,7 +7388,7 @@ function buildChannelCompatibilityReply(effectiveSalesContext = {}, derivedBusin
   return [
     'Sí, te puede servir 😊',
     '',
-    'Si hoy recibís consultas por WhatsApp y también por Instagram, Opturon te ayuda a ordenar conversaciones, hacer seguimiento y responder con más claridad.',
+    'Si hoy recibís consultas por WhatsApp y también por Instagram, la plataforma te ayuda a ordenar conversaciones, hacer seguimiento y responder con más claridad.',
     '',
     businessLine,
     '',
@@ -7479,7 +7465,7 @@ function buildOpenIndustryFallbackReply(salesContext = {}) {
       return [
         'Sí, puede servir 😊',
         '',
-        'En un consultorio suele ser clave ordenar consultas, turnos y seguimiento. Opturon puede ayudarte a centralizar esas conversaciones por WhatsApp y responder con más claridad.',
+        'En un consultorio suele ser clave ordenar consultas, turnos y seguimiento. La plataforma puede ayudarte a centralizar esas conversaciones por WhatsApp y responder con más claridad.',
         '',
         discoveryQuestion
       ].join('\n');
@@ -7488,7 +7474,7 @@ function buildOpenIndustryFallbackReply(salesContext = {}) {
     return [
       'Sí, te puede servir 😊',
       '',
-      `Para ${rawBusinessType}, Opturon puede ayudarte a centralizar las consultas que llegan por WhatsApp, mostrar productos o catálogo, registrar pedidos y hacer seguimiento de cada cliente sin perder conversaciones.`,
+      `Para ${rawBusinessType}, la plataforma puede ayudarte a centralizar las consultas que llegan por WhatsApp, mostrar productos o catálogo, registrar pedidos y hacer seguimiento de cada cliente sin perder conversaciones.`,
       '',
       `Si hoy te escriben para consultar ${likelyNeedsText}, este tipo de sistema encaja bien.`,
       '',
@@ -7499,7 +7485,7 @@ function buildOpenIndustryFallbackReply(salesContext = {}) {
   return [
     'Sí, puede servir para distintos tipos de negocios que atienden por WhatsApp 😊',
     '',
-    'Opturon ayuda a ordenar mensajes, hacer seguimiento y responder más parejo cuando empiezan a juntarse conversaciones comerciales.',
+    'La plataforma ayuda a ordenar mensajes, hacer seguimiento y responder más parejo cuando empiezan a juntarse conversaciones comerciales.',
     '',
     'Para orientarte mejor, contame qué tipo de consultas recibís más seguido.'
   ].join('\n');
@@ -8630,7 +8616,7 @@ function buildSalesContextMomentLine(salesContext) {
 
 function buildRecommendationReasonSummary(product, salesContext, allPlans = []) {
   const safeProduct = product && typeof product === 'object' ? product : {};
-  const normalizedName = normalizeCommandText(safeProduct.name || '');
+  const offerTier = resolveOfferTier(safeProduct, allPlans);
   const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
   const painPoints = getCommunicableCommercialPainPoints(safeContext);
   const estimatedDailyConversations = Number.parseInt(String(safeContext.estimatedDailyConversations || ''), 10);
@@ -8642,11 +8628,11 @@ function buildRecommendationReasonSummary(product, salesContext, allPlans = []) 
   const dailyConversationCount = trustedConversationCounts.length ? Math.max(...trustedConversationCounts) : null;
   const enterprisePlan = findPlanByNeedHint(allPlans, 'enterprise');
 
-  if (normalizedName.includes('inicial')) {
+  if (offerTier === 'starter') {
     return 'te alcanza para empezar a ordenar WhatsApp sin irte a una operación más grande de entrada';
   }
 
-  if (normalizedName.includes('empresa')) {
+  if (offerTier === 'enterprise') {
     if (dailyConversationCount >= 100) {
       return 'con ese volumen ya conviene mirar una configuración más completa, con más control y acompañamiento';
     }
@@ -8682,14 +8668,14 @@ function buildHumanSalesRecommendationReply(product, salesContext, allPlans = []
   const safeProduct = product && typeof product === 'object' ? product : {};
   const safeContext = salesContext && typeof salesContext === 'object' ? salesContext : {};
   const contextLead = buildSalesContextMomentLine(safeContext);
-  const normalizedName = normalizeCommandText(safeProduct.name || '');
+  const offerTier = resolveOfferTier(safeProduct, allPlans);
   const enterprisePlan = findPlanByNeedHint(allPlans, 'enterprise');
   const starterPlan = findPlanByNeedHint(allPlans, 'starter');
   const reason = buildRecommendationReasonSummary(safeProduct, safeContext, allPlans);
 
-  if (normalizedName.includes('inicial')) {
+  if (offerTier === 'starter') {
     return [
-      `Por lo que me contás, yo arrancaría por ${safeProduct.name || 'Plan Inicial'}.`,
+      `Por lo que me contás, yo arrancaría por ${safeProduct.name || 'la opción inicial'}.`,
       '',
       `Hoy me cierra más eso porque ${reason}.`,
       'Te deja ordenar WhatsApp sin meter estructura de más de entrada.',
@@ -8698,9 +8684,9 @@ function buildHumanSalesRecommendationReply(product, salesContext, allPlans = []
     ].join('\n');
   }
 
-  if (normalizedName.includes('empresa')) {
+  if (offerTier === 'enterprise') {
     return [
-      `Por lo que me contás, yo miraría ${safeProduct.name || 'Plan Empresa'}.`,
+      `Por lo que me contás, yo miraría ${safeProduct.name || 'la opción más completa'}.`,
       '',
       contextLead
         ? `Si hoy ${contextLead}, ya empieza a pesar más tener control y seguimiento consistentes.`
@@ -8716,7 +8702,7 @@ function buildHumanSalesRecommendationReply(product, salesContext, allPlans = []
   }
 
   return [
-    `Por lo que me contás, yo miraría ${safeProduct.name || 'Plan Crecimiento'}.`,
+    `Por lo que me contás, yo miraría ${safeProduct.name || 'la opción intermedia'}.`,
     '',
     contextLead
       ? `Si hoy ${contextLead}, lo que más pesa es no perder seguimiento.`
@@ -8799,7 +8785,7 @@ function resolveCommercialObjectionTargetPlan(objectionType, recommendedPlan, al
   const lowerPlan = findLowerPlan(orderedPlans, safePlan);
   const starterPlan = findPlanByNeedHint(orderedPlans, 'starter');
   const growthPlan = findPlanByNeedHint(orderedPlans, 'growth');
-  const normalizedName = normalizeCommandText(safePlan.name || '');
+  const offerTier = resolveOfferTier(safePlan, orderedPlans);
 
   if (objectionType === 'cheaper_option' || objectionType === 'budget_limit') {
     return lowerPlan || starterPlan || safePlan;
@@ -8809,7 +8795,7 @@ function resolveCommercialObjectionTargetPlan(objectionType, recommendedPlan, al
     return starterPlan || lowerPlan || safePlan;
   }
 
-  if (objectionType === 'price_high' && normalizedName.includes('empresa')) {
+  if (objectionType === 'price_high' && offerTier === 'enterprise') {
     return growthPlan || starterPlan || lowerPlan || safePlan;
   }
 
@@ -8831,7 +8817,7 @@ function buildCommercialPlanObjectionReply(
   const lowerPlan = findLowerPlan(orderedPlans, safePlan);
   const starterPlan = findPlanByNeedHint(orderedPlans, 'starter');
   const growthPlan = findPlanByNeedHint(orderedPlans, 'growth');
-  const normalizedName = normalizeCommandText(safePlan.name || '');
+  const offerTier = resolveOfferTier(safePlan, orderedPlans);
   const targetPlan = resolveCommercialObjectionTargetPlan(objectionType, safePlan, orderedPlans) || safePlan;
   const isRepeated = options && options.isRepeated === true;
   const priceLead = pickTextVariant(`commercial_price_objection:${safePlan.name || 'plan'}:${normalizeCommandText(rawText)}`, [
@@ -8900,23 +8886,23 @@ function buildCommercialPlanObjectionReply(
   }
 
   if (objectionType === 'price_high') {
-    if (normalizedName.includes('empresa')) {
+    if (offerTier === 'enterprise') {
       return {
         replyKey,
         targetPlan,
         replyText: [
           lead,
           '',
-          'Empresa es para cuando ya necesitás más equipo, control o personalización.',
+          'La opción más completa es para cuando ya necesitás más equipo, control o personalización.',
           '',
           growthPlan
-            ? `Si querés algo más equilibrado, miraría ${growthPlan.name}; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
-            : `Si querés algo más equilibrado, miraría un plan intermedio; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'Inicial'}.`
+            ? `Si querés algo más equilibrado, miraría ${growthPlan.name}; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'la opción inicial'}.`
+            : `Si querés algo más equilibrado, miraría una opción intermedia; y si querés cuidar inversión al máximo, ${starterPlan ? starterPlan.name : 'la opción inicial'}.`
         ].join('\n')
       };
     }
 
-    if (normalizedName.includes('crecimiento')) {
+    if (offerTier === 'growth') {
       return {
         replyKey,
         targetPlan,
@@ -8928,7 +8914,7 @@ function buildCommercialPlanObjectionReply(
             : 'Si hoy querés cuidar inversión, arrancaría por el plan más simple.',
           'Te ordena WhatsApp sin irte a un plan más grande.',
           '',
-          'Después, si empezás a perder consultas o necesitás seguimiento, ahí sí subís a Crecimiento.'
+          'Después, si empezás a perder consultas o necesitás seguimiento, ahí sí subís a la opción siguiente.'
         ].join('\n')
       };
     }
@@ -8955,7 +8941,7 @@ function buildCommercialPlanObjectionReply(
         lead,
         '',
         lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
-          ? `Si hoy querés cuidar inversión, arrancaría con ${lowerPlan.name || 'Plan Inicial'}.`
+          ? `Si hoy querés cuidar inversión, arrancaría con ${lowerPlan.name || 'la opción inicial'}.`
           : `Si hoy querés cuidar inversión, podés bajar a ${lowerPlan ? (lowerPlan.name || 'un plan más chico') : 'un plan más simple'}.`,
         lowerPlan && starterPlan && String(lowerPlan.id || lowerPlan.productId || '').trim() === String(starterPlan.id || starterPlan.productId || '').trim()
           ? 'Te ordena WhatsApp sin irte a un plan más grande.'
@@ -8975,7 +8961,7 @@ function buildCommercialPlanObjectionReply(
       replyText: [
         contextLead,
         '',
-        `Si hoy la idea es ${objectionType === 'order_whatsapp' ? 'ordenar WhatsApp' : 'arrancar simple'}, miraría primero ${targetPlan.name || 'el plan inicial'}.`,
+        `Si hoy la idea es ${objectionType === 'order_whatsapp' ? 'ordenar WhatsApp' : 'arrancar simple'}, miraría primero ${targetPlan.name || 'la opción inicial'}.`,
         'Después, cuando ya necesites más seguimiento o más volumen, ahí sí pasaría al plan siguiente.'
       ].join('\n')
     };
@@ -9093,46 +9079,14 @@ function joinPlanDefenseFragments(fragments = []) {
 }
 
 function buildPlanDefenseLowerFitLine(plan, salesContext = {}) {
-  const normalizedName = normalizeCommandText(plan && plan.name ? plan.name : '');
-  if (normalizedName.includes('inicial')) {
-    return `${plan.name || 'Plan Inicial'} alcanza cuando el foco está en ordenar lo básico de WhatsApp sin sumar estructura de más.`;
-  }
-  if (normalizedName.includes('crecimiento')) {
-    return `${plan.name || 'Plan Crecimiento'} te puede servir si lo principal es ordenar conversaciones y seguimiento sin irte todavía al plan más grande.`;
-  }
-  if (normalizedName.includes('empresa')) {
-    return `${plan.name || 'Plan Empresa'} tiene sentido cuando ya necesitás más control, coordinación o personalización.`;
-  }
-  return `${plan.name || 'Ese plan'} puede servir si hoy lo principal es ${resolvePlanProfile(plan).problemSolved}.`;
+  return `${plan.name || 'La opción más liviana'} puede servir si hoy lo principal es ${resolvePlanProfile(plan).problemSolved}.`;
 }
 
 function buildPlanDefenseHigherFitLine(plan, salesContext = {}) {
-  const normalizedName = normalizeCommandText(plan && plan.name ? plan.name : '');
-  if (normalizedName.includes('empresa')) {
-    return `${plan.name || 'Plan Empresa'} empieza a justificar la diferencia cuando ya necesitás más control, seguimiento y una operación más acompañada.`;
-  }
-  if (normalizedName.includes('crecimiento')) {
-    return `${plan.name || 'Plan Crecimiento'} empieza a rendir más cuando ya necesitás seguimiento real y una operación comercial más ordenada.`;
-  }
-  return `${plan.name || 'Ese plan'} conviene más cuando el objetivo ya pasa por ${resolvePlanProfile(plan).result}.`;
+  return `${plan.name || 'La opción más completa'} conviene más cuando el objetivo ya pasa por ${resolvePlanProfile(plan).result}.`;
 }
 
 function buildPlanDefenseRiskLine(recommendedPlan, comparedPlan, salesContext = {}) {
-  const recommendedName = normalizeCommandText(recommendedPlan && recommendedPlan.name ? recommendedPlan.name : '');
-  const comparedName = normalizeCommandText(comparedPlan && comparedPlan.name ? comparedPlan.name : '');
-
-  if (recommendedName.includes('empresa') && comparedName.includes('crecimiento')) {
-    return 'Ahí el problema no suele ser solo responder más rápido, sino coordinar mejor al equipo, tener más control y evitar que se pierdan oportunidades entre varias personas.';
-  }
-
-  if (recommendedName.includes('crecimiento') && comparedName.includes('inicial')) {
-    return 'Ahí el salto ya no pasa solo por ordenar WhatsApp, sino por hacer seguimiento real y no depender de acordarte todo a mano.';
-  }
-
-  if (recommendedName.includes('empresa') && comparedName.includes('inicial')) {
-    return 'Ahí el salto no pasa solo por ordenar conversaciones, sino por tener control, seguimiento y una base más firme para el equipo.';
-  }
-
   return `La diferencia principal es que ${recommendedPlan && recommendedPlan.name ? recommendedPlan.name : 'ese plan'} apunta a ${resolvePlanProfile(recommendedPlan).result}, mientras que ${comparedPlan && comparedPlan.name ? comparedPlan.name : 'el otro'} se queda más en ${resolvePlanProfile(comparedPlan).problemSolved}.`;
 }
 
@@ -9398,14 +9352,14 @@ function chooseLogicalComparisonItem(items, currentItem, preferredItemId = null)
 
   if (isPlanProduct(currentItem)) {
     const orderedPlans = getOrderedPlanProducts(safeItems);
-    const currentName = normalizeCommandText(currentItem.name || '');
-    if (currentName.includes('inicial')) {
+    const currentTier = resolveOfferTier(currentItem, orderedPlans);
+    if (currentTier === 'starter') {
       return findPlanByNeedHint(orderedPlans, 'growth');
     }
-    if (currentName.includes('empresa')) {
+    if (currentTier === 'enterprise') {
       return findPlanByNeedHint(orderedPlans, 'growth') || findPlanByNeedHint(orderedPlans, 'starter');
     }
-    if (currentName.includes('crecimiento')) {
+    if (currentTier === 'growth') {
       return findPlanByNeedHint(orderedPlans, 'enterprise') || findPlanByNeedHint(orderedPlans, 'starter');
     }
   }
@@ -9431,7 +9385,7 @@ function buildRecommendedPlanComparisonReply(recommendedPlan, comparedPlan, busi
   const contextLead = buildSalesContextMomentLine(salesContext);
 
   const closingLine = recommendationLevel === 'growth'
-    ? `Yo hoy iría con ${recommended.name || 'Plan Crecimiento'}. ${compared.name || 'El otro plan'} lo dejaría para cuando ya pida más control o más equipo.`
+    ? `Yo hoy iría con ${recommended.name || 'la opción recomendada'}. ${compared.name || 'La otra opción'} la dejaría para cuando ya pida más control o más equipo.`
     : `Hoy veo más lógico ${recommended.name || 'este plan'} para lo que me contaste.`;
 
   return [
@@ -9455,19 +9409,9 @@ function buildContextualPlanComparisonReply(primaryPlan, secondaryPlan, business
   const recommendationLevel = String(businessContext && businessContext.recommendationLevel ? businessContext.recommendationLevel : '').trim().toLowerCase();
   const contextLead = buildSalesContextMomentLine(salesContext);
 
-  const closingLine = (
-    recommendationLevel === 'growth' &&
-    normalizeCommandText(primary.name || '').includes('crecimiento') &&
-    normalizeCommandText(secondary.name || '').includes('inicial')
-  )
-    ? `Si ya hay movimiento por WhatsApp, yo sí pondría antes ${primary.name || 'Crecimiento'} que ${secondary.name || 'Inicial'}.`
-    : (
-      recommendationLevel === 'growth' &&
-      normalizeCommandText(primary.name || '').includes('empresa') &&
-      normalizeCommandText(secondary.name || '').includes('crecimiento')
-    )
-      ? `${primary.name || 'Empresa'} tiene más sentido cuando ya necesitás más equipo, más control o una operación bastante más personalizada. ${secondary.name || 'Crecimiento'} está muy bien si todavía querés ordenar la operación sin irte directo al plan más grande.`
-      : `Hoy veo más alineado ${primary.name || 'este plan'} si tu foco principal es ${primaryProfile.result}.`;
+  const closingLine = recommendationLevel === 'growth'
+    ? `Si ya hay movimiento por WhatsApp, hoy veo más alineado ${primary.name || 'esta opción'} que ${secondary.name || 'la alternativa'}.`
+    : `Hoy veo más alineado ${primary.name || 'esta opción'} si tu foco principal es ${primaryProfile.result}.`;
 
   return [
     buildComparisonLead(primary, secondary),
@@ -9625,7 +9569,7 @@ function buildPlanDetailReply(product, { includePrice = true, includeFeatures = 
         ]
       : []),
     'Si queres avanzar, escribi "confirmar" y seguimos con la contratacion.',
-    'Si quieres comparar, escribi Plan Inicial, Plan Crecimiento o Plan Empresa.'
+    'Si querés comparar, escribí el nombre de otra opción disponible.'
   ].join('\n');
 }
 
@@ -9652,7 +9596,7 @@ function buildCommerceCatalogReply(page) {
   const planCatalog = isPlanCatalog(products);
   if (!products.length) {
     return planCatalog
-      ? 'Hola 👋\n\nTe ayudo a elegir el plan ideal de Opturon.\n\nEn este momento no tenemos planes disponibles para mostrarte por WhatsApp.'
+      ? 'Hola 👋\n\nTe ayudo a elegir la opción ideal.\n\nEn este momento no tenemos planes disponibles para mostrarte por WhatsApp.'
       : 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos productos disponibles para pedir por WhatsApp.';
   }
 
@@ -9660,7 +9604,7 @@ function buildCommerceCatalogReply(page) {
     'Hola 👋',
     '',
     planCatalog
-      ? 'Te ayudo a elegir el plan ideal de Opturon.'
+      ? 'Te ayudo a elegir la opción ideal.'
       : '¡Bienvenido! Te ayudo a armar tu pedido por aca.',
     '',
     page && page.categoryName
@@ -10129,7 +10073,7 @@ function buildCommerceOrderConfirmation(order, cartItems) {
       '',
       `Valor: ${formatMoney(Number(order && order.total ? order.total : 0), currency)}`,
       '',
-      'Ahora vamos a activarlo para que empieces a usar Opturon.',
+      'Ahora vamos a activarlo para que empieces a usar el servicio.',
       '',
       'Podemos seguir de estas formas:',
       '',
@@ -10294,7 +10238,7 @@ function buildDemoExperienceReply(step) {
     return [
       'Perfecto 🙌',
       '',
-      'Hagamos una mini demo guiada de Opturon por WhatsApp.',
+      'Hagamos una mini demo guiada por WhatsApp.',
       '',
       'Problema real: entran consultas, nadie sabe quién responde y muchas oportunidades se enfrían.',
       '',
@@ -10307,7 +10251,7 @@ function buildDemoExperienceReply(step) {
 
   if (safeStep === 2) {
     return [
-      'Opturon responde al instante y ordena la conversacion 👇',
+      'El bot responde al instante y ordena la conversación 👇',
       '',
       'Bot:',
       '"Hola 👋 Te ayudo rapido.',
@@ -10327,7 +10271,7 @@ function buildDemoExperienceReply(step) {
       'Cliente:',
       '"Quiero precios y que me contacten mañana"',
       '',
-      'Opturon no solo responde: también deja anotado el siguiente paso para que la consulta no se pierda.',
+      'El bot no solo responde: también deja anotado el siguiente paso para que la consulta no se pierda.',
       '',
       'Escribí solo "seguir" y te muestro qué ve tu equipo.'
     ].join('\n');
@@ -10335,7 +10279,7 @@ function buildDemoExperienceReply(step) {
 
   if (safeStep === 4) {
     return [
-      'Esto ve tu equipo adentro de Opturon:',
+      'Esto ve tu equipo dentro de la plataforma:',
       '',
       '- consulta asignada a una persona del equipo',
       '- estado del seguimiento visible',
@@ -10349,7 +10293,7 @@ function buildDemoExperienceReply(step) {
   }
 
   return [
-    'En resumen, Opturon te ayuda a:',
+    'En resumen, la plataforma te ayuda a:',
     '- responder mas rapido',
     '- ordenar respuestas y seguimientos',
     '- evitar consultas frias',
@@ -10731,7 +10675,7 @@ function buildOnboardingReply(step) {
     return [
       'Perfecto 🙌',
       '',
-      'Vamos a configurar lo básico para que empieces a usar Opturon.',
+      'Vamos a configurar lo básico para que empieces a usar la plataforma.',
       '',
       'Es rápido, en 1 minuto lo dejamos listo.',
       '',
@@ -11372,7 +11316,7 @@ function buildRuntimeConfigAdminRequiredReply({ clinicId, conversationId, action
     action: action || null
   });
 
-  return 'Por seguridad, la activacion y los cambios del bot se realizan desde el portal de Opturon. Esta conversacion no modifico la configuracion.';
+  return 'Por seguridad, la activación y los cambios del bot se realizan desde el portal de administración. Esta conversación no modificó la configuración.';
 }
 
 function getActiveGeneratedBotConfig(clinic) {
@@ -12871,6 +12815,10 @@ async function buildSafeCommercialIntentReply({
     if (commercialIntent.type === 'prices') {
       const contextualProduct =
         findCatalogItemByStoredId(eligibleProducts, safeContext && safeContext.commerceSuggestedProductId) ||
+        findCatalogItemByStoredId(
+          eligibleProducts,
+          safeContext && safeContext.commerceLastAddedItem && safeContext.commerceLastAddedItem.productId
+        ) ||
         resolvePlanFromCommercialShortMemory(eligibleProducts, activeShortMemory);
       return {
         type: commercialIntent.type,
@@ -13714,8 +13662,10 @@ function isConfiguredBotRecommendationIntent(input) {
   return text.includes('econom') || text.includes('barato') || text.includes('accesible');
 }
 
-function buildBotWelcomeReply(config) {
-  return `${config.welcomeMessage}\n\n${config.offerDescription}\n\n${config.closingCta}`;
+function buildBotWelcomeReply(config, botConfig = DEFAULT_BOT_CONFIG) {
+  const configuredGreeting = buildConfiguredGreetingCopy(botConfig);
+  const greeting = configuredGreeting || config.welcomeMessage;
+  return `${greeting}\n\n${config.offerDescription}\n\n${config.closingCta}`;
 }
 
 function buildBotOfferReply(config) {
@@ -13750,7 +13700,7 @@ function resolveConfiguredSalesBotReply({ clinic, inboundText, currentState, saf
       branch: 'configured_bot_greeting'
     }));
     return {
-      replyText: buildBotWelcomeReply(config),
+      replyText: buildBotWelcomeReply(config, getClinicBotConfig(clinic)),
       newState: 'READY',
       newStage: 'offering',
       contextPatch: { activeBotDomain: 'commerce' }
@@ -14479,8 +14429,16 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const transferConfig = getClinicTransferConfig(clinic);
   const transferIntent = parseTransferPaymentIntent(inboundText);
   const nextStepIntent = detectCommercialNextStepIntent(inboundText);
+  const contextualTransferDataFollowUp =
+    detectCommercialActivationContinuationIntent(inboundText) === 'self_service' &&
+    Boolean(
+      getActiveCommercialPlanContext(safeContext) ||
+      getActiveCommercialShortMemory(safeContext) ||
+      (safeContext && safeContext.commerceLastAddedItem) ||
+      (safeContext && Array.isArray(safeContext.commerceCartItems) && safeContext.commerceCartItems.length)
+    );
   const contextualPaymentMethodsIntent =
-    /\b(?:como\s+hago\s+para\s+pagar(?:lo|la)|como\s+pago)\b/.test(normalizeCommandText(inboundText));
+    /\b(?:como\s+hago\s+para\s+pagar(?:lo|la)|como\s+(?:lo|la)\s+pago|como\s+pago)\b/.test(normalizeCommandText(inboundText));
   const transferContext = safeContext.transferPayment && typeof safeContext.transferPayment === 'object'
     ? safeContext.transferPayment
     : null;
@@ -14646,7 +14604,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     };
   }
 
-  if (transferIntent === 'request' || transferIntent === 'proof_notice') {
+  if (transferIntent === 'request' || transferIntent === 'proof_notice' || contextualTransferDataFollowUp) {
     if (transferIntent === 'proof_notice') {
       const isAlreadyPendingValidation =
         transferContext &&
@@ -14701,7 +14659,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         });
       }
 
-      if (isTransferInstructionsRequestIntent(inboundText)) {
+      if (isTransferInstructionsRequestIntent(inboundText) || contextualTransferDataFollowUp) {
         return buildPaymentInstructionsDecision({
           selectedPlan: null,
           source: 'whatsapp_payment'
@@ -20362,6 +20320,8 @@ module.exports = {
     hasEnoughCommercialSignalsForSoftRecommendation,
     buildIntelligentFallbackReply,
     buildCommercialGreetingReply,
+    buildBotWelcomeReply,
+    resolveConfiguredSalesBotReply,
     buildCommercialIndecisionReply,
     getClinicBotConfig,
     resolveConfiguredOutOfHoursReply,

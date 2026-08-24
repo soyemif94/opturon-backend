@@ -541,7 +541,7 @@ async function run() {
     contact: state.contact,
     inboundText: 'm\u00e1s formal'
   });
-  assert.match(runtimeEditDecision.replyText, /portal de Opturon/i);
+  assert.match(runtimeEditDecision.replyText, /portal de administraci[oó]n/i);
   assert.doesNotMatch(runtimeEditDecision.replyText, /ya actualice|ya actualic\u00e9/i);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeEditDecision.contextPatch, 'botRuntimeConfig'), false);
   assert.strictEqual(state.runtimeMutationCalls, 0);

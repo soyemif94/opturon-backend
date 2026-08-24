@@ -982,7 +982,7 @@ async function run() {
     sourceIntent: 'seller_replacement'
   });
   assert.strictEqual(hasEnoughCommercialSignalsForSoftRecommendation(starterRecommendationContext), true);
-  assert.match(starterRecommendation.replyText, /tipo Inicial/i);
+  assert.match(starterRecommendation.replyText, /opci[oó]n inicial/i);
 
   const growthRecommendationContext = {
     businessType: 'services',
@@ -996,7 +996,7 @@ async function run() {
     businessContext: deriveBusinessRecommendationContextFromSalesContext(growthRecommendationContext),
     sourceIntent: 'seller_replacement'
   });
-  assert.match(growthRecommendation.replyText, /tipo Crecimiento/i);
+  assert.match(growthRecommendation.replyText, /opci[oó]n intermedia/i);
 
   const enterpriseRecommendationContext = {
     businessType: 'distribution',
@@ -1011,7 +1011,7 @@ async function run() {
     businessContext: deriveBusinessRecommendationContextFromSalesContext(enterpriseRecommendationContext),
     sourceIntent: 'seller_replacement'
   });
-  assert.match(enterpriseRecommendation.replyText, /tipo Empresa/i);
+  assert.match(enterpriseRecommendation.replyText, /opci[oó]n m[aá]s completa/i);
 
   const discoveryAuditConversation = {
     ...conversation,
@@ -1092,7 +1092,7 @@ async function run() {
   const tryOpturonDiscoveryReply = await buildSafeCommercialIntentReply({
     clinic,
     conversation: discoveryAuditConversation,
-    inboundText: 'Quiero probar Opturon'
+    inboundText: 'Quiero probar la plataforma'
   });
   assert.doesNotMatch(tryOpturonDiscoveryReply.replyText, /Plan Inicial|Plan Crecimiento|Plan Empresa/i);
   assert.match(tryOpturonDiscoveryReply.replyText, /Rubro|Tipo de consultas que recibo|Objetivo principal/i);
@@ -1141,7 +1141,7 @@ async function run() {
     inboundText: 'Somos 3 vendedores y recibimos unas 80 consultas por día'
   });
   assert.doesNotMatch(finalRecommendationReply.replyText, /est[eé]tica/i);
-  assert.match(finalRecommendationReply.replyText, /tipo Empresa|Empresa/i);
+  assert.match(finalRecommendationReply.replyText, /opci[oó]n m[aá]s completa|m[aá]s control/i);
   assert.match(finalRecommendationReply.replyText, /3 personas|3 vendedores|equipo atendiendo/i);
   assert.match(finalRecommendationReply.replyText, /bastante movimiento|seguimiento|control/i);
   assert.strictEqual(finalRecommendationReply.contextPatch.commercialSalesContext.businessType, 'distribution');
@@ -1362,7 +1362,7 @@ async function run() {
     inboundText: 'A ver contame por que Plan Empresa y no Plan Crecimiento'
   });
   assert.match(enterpriseDefenseReply.replyText, /Buena pregunta/i);
-  assert.match(enterpriseDefenseReply.replyText, /Plan Crecimiento te puede servir/i);
+  assert.match(enterpriseDefenseReply.replyText, /Plan Crecimiento.*puede servir/i);
   assert.match(enterpriseDefenseReply.replyText, /3 personas|mas de una persona|m[aá]s de una persona/i);
   assert.match(enterpriseDefenseReply.replyText, /bastante movimiento|seguimiento|control/i);
   assert.doesNotMatch(enterpriseDefenseReply.replyText, /^Por lo que me contas, yo miraria Plan Empresa/im);
@@ -1386,7 +1386,7 @@ async function run() {
     },
     inboundText: 'Me alcanza con Crecimiento'
   });
-  assert.match(growthDefenseReply.replyText, /Plan Crecimiento te puede servir/i);
+  assert.match(growthDefenseReply.replyText, /Plan Crecimiento.*puede servir/i);
   assert.match(growthDefenseReply.replyText, /podria alcanzar|podría alcanzar/i);
   assert.match(growthDefenseReply.replyText, /Plan Empresa/i);
 
@@ -1610,7 +1610,7 @@ async function run() {
   const expectedControlledReplies = [
     ['soy podologa a la manana y masajista a la tarde', /m.s de una actividad/i],
     ['tengo una distribuidora y tambien vendo por instagram', /consultas que llegan desde Instagram/i],
-    ['esto reemplaza a mis vendedores?', /no est. pensado para sacar vendedores/i],
+    ['esto reemplaza a mis vendedores?', /no est. pensad[oa] para sacar vendedores/i],
     ['ya tengo mi numero de whatsapp, lo puedo usar?', /compatible con la conexi.n de WhatsApp Business\/API/i],
     ['ya uso excel', /no te lo vender.a como algo 100% autom.tico/i]
   ];

@@ -33,7 +33,7 @@ const COMMERCIAL_KB = [
     examples: [
       'me sirve para mi negocio?',
       'esto sirve para vender mas?',
-      'que puede hacer Opturon por mi empresa?',
+      'que puede hacer la plataforma por mi empresa?',
       'tengo un comercio, me sirve?',
       'trabajo por whatsapp, sirve?',
       'atiendo consultas de clientes, me puede ayudar?',
@@ -42,7 +42,7 @@ const COMMERCIAL_KB = [
     patterns: [
       /\b(me|nos)\s+sirve\b/,
       /\bsirve\s+para\s+mi\s+(negocio|empresa|emprendimiento|comercio)\b/,
-      /\bque\s+(puede|hace|ofrece)\s+opturon\b/,
+      /\bque\s+(puede|hace|ofrece)\s+(?:la\s+)?(?:plataforma|sistema|solucion)\b/,
       /\btrabajo\s+por\s+whatsapp\b/,
       /\bconteste?\s+cuando\s+yo\s+no\s+estoy\b/,
       /\bcontestar\s+fuera\s+de\s+horario\b/
