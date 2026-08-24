@@ -20,6 +20,7 @@ const {
 const { getMessageById } = require('./repositories/message.repository');
 const { sendChannelScopedMessage } = require('./whatsapp/whatsapp.service');
 const { normalizeWhatsAppTo } = require('./whatsapp/normalize-phone');
+const { parseCommercePrice, resolveProductPrice } = require('./utils/commerce-price');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
 const { parseAppointmentText } = require('./conversations/appointment.parser');
@@ -1816,19 +1817,22 @@ function buildCommerceCatalogPage(products, { offset = 0, categoryId = null, lim
   });
   const safeOffset = Math.max(0, Number(offset || 0));
   const safeLimit = Math.max(1, Math.min(20, Number(limit || COMMERCE_PRODUCTS_PAGE_SIZE)));
-  const items = eligibleProducts.slice(safeOffset, safeOffset + safeLimit).map((product, index) => ({
-    index: safeOffset + index + 1,
-    productId: product.id,
-    name: product.name,
-    price: Number(product.price || 0),
-    currency: String(product.currency || 'ARS').toUpperCase() || 'ARS',
-    stock: Number(product.stock || 0),
-    sku: product.sku || null,
-    description: product.description || null,
-    image: product.image || null,
-    categoryId: product.categoryId || null,
-    categoryName: product.categoryName || null
-  }));
+  const items = eligibleProducts.slice(safeOffset, safeOffset + safeLimit).map((product, index) => {
+    const resolvedPrice = resolveProductPrice(product);
+    return {
+      index: safeOffset + index + 1,
+      productId: product.id,
+      name: product.name,
+      price: resolvedPrice.valid ? resolvedPrice.value : null,
+      currency: String(product.currency || 'ARS').toUpperCase() || 'ARS',
+      stock: Number(product.stock || 0),
+      sku: product.sku || null,
+      description: product.description || null,
+      image: product.image || null,
+      categoryId: product.categoryId || null,
+      categoryName: product.categoryName || null
+    };
+  });
 
   const nextOffset = safeOffset + items.length;
   const hasMore = nextOffset < eligibleProducts.length;
@@ -5459,7 +5463,10 @@ function normalizeProductRecommendationType(product, orderedProducts = []) {
 
 function buildCommercialShortMemoryProductReply(product, followUpType) {
   const safeProduct = product && typeof product === 'object' ? product : {};
-  const priceLine = formatMoney(safeProduct.price, safeProduct.currency);
+  const resolvedPrice = resolveProductPrice(safeProduct);
+  const priceLine = resolvedPrice.valid
+    ? formatMoney(resolvedPrice.value, safeProduct.currency)
+    : 'precio no disponible';
   const description = String(safeProduct.description || '').trim();
   const shortDescription = description.length > 140 ? `${description.slice(0, 137).trim()}...` : description;
 
@@ -6761,7 +6768,9 @@ function buildPlanComparisonReply(products) {
     '',
     ...orderedPlans.slice(0, 3).map((product) => {
       const profile = resolvePlanProfile(product);
-      return `• ${product.name} — ${formatMoney(product.price, product.currency)}: ${profile.shortDescription}`;
+      const resolvedPrice = resolveProductPrice(product);
+      const priceLabel = resolvedPrice.valid ? formatMoney(resolvedPrice.value, product.currency) : 'precio no disponible';
+      return `• ${product.name} — ${priceLabel}: ${profile.shortDescription}`;
     }),
     '',
     starterPlan ? `${starterPlan.name}: si querés arrancar simple y ordenar WhatsApp.` : null,
@@ -9607,9 +9616,13 @@ function buildCatalogItemDetailContextPatch(item, comparedItem, eligibleProducts
 function buildPlanDetailReply(product, { includePrice = true, includeFeatures = true } = {}) {
   const safeProduct = product && typeof product === 'object' ? product : {};
   const profile = resolvePlanProfile(safeProduct);
+  const resolvedPrice = resolveProductPrice(safeProduct);
+  const priceDescription = resolvedPrice.valid
+    ? ` cuesta ${formatMoney(resolvedPrice.value, safeProduct.currency)}`
+    : ' tiene el precio no disponible';
 
   return [
-    `${safeProduct.name || 'Este plan'}${includePrice ? ` cuesta ${formatMoney(safeProduct.price, safeProduct.currency)}` : ''}.`,
+    `${safeProduct.name || 'Este plan'}${includePrice ? priceDescription : ''}.`,
     '',
     `Te conviene si hoy ${profile.problemSolved}.`,
     '',
@@ -9671,9 +9684,12 @@ function buildCommerceCatalogReply(page) {
         ? 'Estos son nuestros planes disponibles:'
         : 'Estos son algunos de nuestros productos disponibles:',
     '',
-    ...products.map((product) => planCatalog
-      ? buildPlanCatalogLine(product)
-      : `${formatCommerceIndex(product.index)} ${product.name} — ${formatMoney(product.price, product.currency)}`),
+    ...products.map((product) => {
+      if (planCatalog) return buildPlanCatalogLine(product);
+      const resolvedPrice = resolveProductPrice(product);
+      const priceLabel = resolvedPrice.valid ? formatMoney(resolvedPrice.value, product.currency) : 'precio no disponible';
+      return `${formatCommerceIndex(product.index)} ${product.name} — ${priceLabel}`;
+    }),
     '',
     'Podes:',
     planCatalog
@@ -9998,21 +10014,37 @@ function normalizeCommerceCartItems(context) {
   const rawItems = Array.isArray(safeContext.commerceCartItems) ? safeContext.commerceCartItems : [];
 
   return rawItems
-    .map((item) => ({
-      productId: String(item && item.productId ? item.productId : '').trim() || null,
-      name: String(item && item.name ? item.name : '').trim(),
-      price: Number(item && item.price ? item.price : 0),
-      currency: String(item && item.currency ? item.currency : 'ARS').trim().toUpperCase() || 'ARS',
-      quantity: Number.parseInt(String(item && item.quantity ? item.quantity : 0), 10)
-    }))
-    .filter((item) => item.productId && item.name && Number.isInteger(item.quantity) && item.quantity > 0);
+    .map((item) => {
+      const resolvedPrice = parseCommercePrice(item && item.price);
+      return {
+        productId: String(item && item.productId ? item.productId : '').trim() || null,
+        name: String(item && item.name ? item.name : '').trim(),
+        price: resolvedPrice.valid ? resolvedPrice.value : null,
+        priceValid: resolvedPrice.valid,
+        currency: String(item && item.currency ? item.currency : 'ARS').trim().toUpperCase() || 'ARS',
+        quantity: Number.parseInt(String(item && item.quantity ? item.quantity : 0), 10)
+      };
+    })
+    .filter((item) => item.productId && item.name && item.priceValid && Number.isInteger(item.quantity) && item.quantity > 0)
+    .map(({ priceValid, ...item }) => item);
+}
+
+function hasInvalidCommerceCartPrice(context) {
+  const safeContext = context && typeof context === 'object' ? context : {};
+  const rawItems = Array.isArray(safeContext.commerceCartItems) ? safeContext.commerceCartItems : [];
+  return rawItems.some((item) => {
+    const productId = String(item && item.productId ? item.productId : '').trim();
+    const quantity = Number.parseInt(String(item && item.quantity ? item.quantity : 0), 10);
+    return productId && Number.isInteger(quantity) && quantity > 0 && !parseCommercePrice(item && item.price).valid;
+  });
 }
 
 function mergeCommerceCartItem(cartItems, product, quantity) {
   const safeCart = Array.isArray(cartItems) ? cartItems : [];
   const normalizedQuantity = Number.parseInt(String(quantity || 0), 10);
   const productId = String(product && (product.productId || product.id) ? (product.productId || product.id) : '').trim();
-  if (!productId || !Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0) {
+  const resolvedPrice = parseCommercePrice(product && product.price);
+  if (!productId || !resolvedPrice.valid || !Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0) {
     return safeCart;
   }
 
@@ -10021,7 +10053,7 @@ function mergeCommerceCartItem(cartItems, product, quantity) {
   const nextItem = {
     productId,
     name: String(product.name || '').trim(),
-    price: Number(product.price || 0),
+    price: resolvedPrice.value,
     currency: String(product.currency || 'ARS').trim().toUpperCase() || 'ARS',
     quantity: normalizedQuantity
   };
@@ -11578,6 +11610,15 @@ async function buildSafeCommercialIntentReply({
   });
   const isCommercialAppointmentBusinessQuestion = kbMatch && kbMatch.category === 'appointment_business';
   const explicitPricingRequest = isExplicitPlanCatalogOrPricingRequest(inboundText);
+
+  if (transferPaymentIntent === 'request') {
+    return {
+      type: 'payment_transfer',
+      replyText: hasConfiguredTransferData(transferConfig)
+        ? buildTransferInstructionsReply(transferConfig)
+        : buildTransferMissingConfigReply()
+    };
+  }
 
   if (
     isExternalCommerceIntegrationQuestion(inboundText) &&
@@ -13360,13 +13401,16 @@ function parseTransferPaymentIntent(input) {
     /\bcontratar\b/,
     /\bquiero\s+contratar\b/,
     /\bcomo\s+te\s+transfier[oa]\b/,
+    /\bcomo\s+hago\s+para\s+transferir(?:te)?\b/,
+    /\bte\s+quiero\s+transferir\b/,
     /\bte\s+puedo\s+transferir\b/,
     /\bpuedo\s+transferirte\b/,
     /\bcomo\s+hago\s+para\s+pagarte\b/,
     /\bcomo\s+abono\b/,
-    /\bdonde\s+te\s+transfier[oa]\b/,
-    /\bme\s+pasas\s+(cbu|alias)\b/,
-    /\bpasame\s+(cbu|alias)\b/,
+    /\b(?:a\s+)?donde\s+(?:te\s+)?transfier[oa]\b/,
+    /\b(?:me\s+)?pasa(?:me|s)?\s+(?:el\s+|los\s+datos\s+(?:para|de)\s+)?(?:cbu|cvu|alias|datos?\s+(?:bancarios?|de\s+transferencia)|para\s+transferir(?:te)?)\b/,
+    /\b(?:cual|cuales)\s+(?:es|son)\s+(?:el\s+|los\s+)?(?:cbu|cvu|alias|datos?\s+bancarios?)\b/,
+    /\b(?:necesito|quiero|dame|decime|mandame|enviame)\s+(?:el\s+|los\s+)?(?:cbu|cvu|alias|datos?\s+(?:bancarios?|de\s+transferencia))\b/,
     /\bcomo\s+hago\s+el\s+pago\b/,
     /\bcomo\s+pago\b/,
     /\bformas?\s+de\s+pago\b/,
@@ -13376,7 +13420,12 @@ function parseTransferPaymentIntent(input) {
     /\blo\s+puedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
     /\bpagar\s+(?:por|en)\s+transf(?:erencia|erecnia)\b/,
     /\btransferencia\b/,
-    /\btransferecnia\b/
+    /\btransferecnia\b/,
+    /\btranferencia\b/,
+    /\btrasfer(?:encia|ir|irte)\b/,
+    /\b(?:transfiero|transfiere|transferime)\b/,
+    /\bdatos?\s+(?:para|de)\s+transferir(?:te)?\b/,
+    /\b(?:cbu|cvu|alias)\b/
   ];
   if (transferRequestPatterns.some((pattern) => pattern.test(text))) {
     return 'request';
@@ -13386,25 +13435,7 @@ function parseTransferPaymentIntent(input) {
 }
 
 function isTransferInstructionsRequestIntent(input) {
-  const text = normalizeCommandText(input);
-  if (!text) return false;
-
-  return [
-    /\bcomo\s+te\s+transfier[oa]\b/,
-    /\bte\s+puedo\s+transferir\b/,
-    /\bpuedo\s+transferirte\b/,
-    /\bcomo\s+hago\s+para\s+pagarte\b/,
-    /\bcomo\s+abono\b/,
-    /\bdonde\s+te\s+transfier[oa]\b/,
-    /\bme\s+pasas\s+(cbu|alias)\b/,
-    /\bpasame\s+(cbu|alias)\b/,
-    /\bacepta(?:n|s)\s+transf(?:erencia|erecnia)\b/,
-    /\bpuedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
-    /\blo\s+puedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
-    /\bcomo\s+pago\b/,
-    /\bformas?\s+de\s+pago\b/,
-    /\bmedios?\s+de\s+pago\b/
-  ].some((pattern) => pattern.test(text));
+  return parseTransferPaymentIntent(input) === 'request';
 }
 
 function buildPaymentPlanCatalogReply(planProducts) {
@@ -13431,11 +13462,12 @@ function normalizePaymentPlan(product) {
   if (!product || typeof product !== 'object') return null;
   const productId = String(product.id || product.productId || '').trim();
   const name = String(product.name || '').trim();
-  if (!productId || !name) return null;
+  const resolvedPrice = resolveProductPrice(product);
+  if (!productId || !name || !resolvedPrice.valid) return null;
   return {
     productId,
     name,
-    price: Number(product.price || 0),
+    price: resolvedPrice.value,
     currency: String(product.currency || 'ARS').trim().toUpperCase() || 'ARS',
     sku: product.sku || null
   };
@@ -13826,6 +13858,24 @@ async function resolveCommerceCartAddition({
     };
   }
 
+  const resolvedProductPrice = resolveProductPrice(latestProduct);
+  if (!resolvedProductPrice.valid) {
+    logWarn('commerce_cart_item_rejected_invalid_price', {
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      productId: latestProduct.id
+    });
+    return {
+      replyText: `No pude agregar ${latestProduct.name || 'ese producto'} porque falta un precio válido. El resto de tu carrito se mantiene sin cambios.`,
+      newState: onStockFailureState,
+      contextPatch: {
+        commerceCatalog: catalogFromContext,
+        commerceCartItems: cartItems.length ? cartItems : null,
+        commerceSelectedProduct: null
+      }
+    };
+  }
+
   if (Number(latestProduct.stock || 0) < quantity) {
     logInfo('commerce_order_create_failed_stock', {
       conversationId: conversation.id,
@@ -13841,7 +13891,7 @@ async function resolveCommerceCartAddition({
           ? {
             ...onStockFailureContextPatch.commerceSelectedProduct,
             name: latestProduct.name,
-            price: Number(latestProduct.price || 0),
+            price: resolvedProductPrice.value,
             currency: String(latestProduct.currency || onStockFailureContextPatch.commerceSelectedProduct.currency || 'ARS').toUpperCase(),
             stock: Number(latestProduct.stock || 0),
             sku: latestProduct.sku || null
@@ -13878,7 +13928,7 @@ async function resolveCommerceCartAddition({
           ? {
             ...onStockFailureContextPatch.commerceSelectedProduct,
             name: latestProduct.name,
-            price: Number(latestProduct.price || 0),
+            price: resolvedProductPrice.value,
             currency: String(latestProduct.currency || onStockFailureContextPatch.commerceSelectedProduct.currency || 'ARS').toUpperCase(),
             stock: Number(latestProduct.stock || 0),
             sku: latestProduct.sku || null
@@ -13900,7 +13950,7 @@ async function resolveCommerceCartAddition({
   const baseItem = {
     productId: latestProduct.id,
     name: latestProduct.name,
-    price: Number(latestProduct.price || 0),
+    price: resolvedProductPrice.value,
     currency: String(latestProduct.currency || 'ARS').toUpperCase(),
     sku: latestProduct.sku || null
   };
@@ -13967,6 +14017,7 @@ async function resolveCommerceMultiCartAddition({
   let updatedCartItems = Array.isArray(cartItems) ? cartItems : [];
   const addedItems = [];
   const ignoredSelections = [];
+  const invalidPriceSelections = [];
 
   for (const selection of safeSelections) {
     const selectedProduct = safeCatalog[selection - 1] || null;
@@ -13978,6 +14029,12 @@ async function resolveCommerceMultiCartAddition({
     const latestProduct = await findProductById(selectedProduct.productId, conversation.clinicId);
     if (!latestProduct || String(latestProduct.status || '').toLowerCase() !== 'active') {
       ignoredSelections.push(selection);
+      continue;
+    }
+
+    const resolvedPrice = resolveProductPrice(latestProduct);
+    if (!resolvedPrice.valid) {
+      invalidPriceSelections.push(selection);
       continue;
     }
 
@@ -13993,7 +14050,7 @@ async function resolveCommerceMultiCartAddition({
       {
         productId: latestProduct.id,
         name: latestProduct.name,
-        price: Number(latestProduct.price || 0),
+        price: resolvedPrice.value,
         currency: String(latestProduct.currency || 'ARS').toUpperCase()
       },
       1
@@ -14016,9 +14073,11 @@ async function resolveCommerceMultiCartAddition({
 
   if (!addedItems.length) {
     return {
-      replyText: safeCatalog.length
-          ? 'No pude agregar esos productos así como me los mandaste 🤔 Elegí números válidos de la lista o escribí "ayuda" y te guío.'
-          : 'Ahora mismo no veo productos disponibles para mostrarte. Si querés, probá con "productos" de nuevo en un rato.',
+      replyText: invalidPriceSelections.length
+        ? 'No pude agregar uno o más productos porque les falta un precio válido. Tu carrito anterior se mantiene sin cambios.'
+        : safeCatalog.length
+        ? 'No pude agregar esos productos así como me los mandaste 🤔 Elegí números válidos de la lista o escribí "ayuda" y te guío.'
+        : 'Ahora mismo no veo productos disponibles para mostrarte. Si querés, probá con "productos" de nuevo en un rato.',
       newState: safeCatalog.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
       contextPatch: buildCommerceResetPatch({
         commerceCatalog: safeCatalog.length ? safeCatalog : null,
@@ -14034,6 +14093,9 @@ async function resolveCommerceMultiCartAddition({
 
   if (ignoredSelections.length) {
     lines.push('', `Ignore estos numeros porque no estaban disponibles o no eran validos: ${ignoredSelections.join(', ')}`);
+  }
+  if (invalidPriceSelections.length) {
+    lines.push('', `No agregué estos números porque les falta un precio válido: ${invalidPriceSelections.join(', ')}`);
   }
 
   lines.push(
@@ -14160,6 +14222,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   const catalogNextOffset = Number.isFinite(Number(safeContext.commerceCatalogNextOffset)) ? Number(safeContext.commerceCatalogNextOffset) : null;
   const catalogTotal = Number.isFinite(Number(safeContext.commerceCatalogTotal)) ? Number(safeContext.commerceCatalogTotal) : 0;
   const cartItems = normalizeCommerceCartItems(safeContext);
+  const cartHasInvalidPrice = hasInvalidCommerceCartPrice(safeContext);
   const lastAddedItem = safeContext.commerceLastAddedItem && typeof safeContext.commerceLastAddedItem === 'object'
     ? {
       productId: String(safeContext.commerceLastAddedItem.productId || '').trim() || null,
@@ -15491,6 +15554,17 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
   }
 
   if (isCommerceConfirmIntent(inboundText)) {
+    if (cartHasInvalidPrice) {
+      return {
+        replyText: 'No pude confirmar tu pedido porque a uno o más productos les falta un precio válido. Los productos válidos de tu carrito se mantienen sin cambios.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: buildCommerceResetPatch({
+          commerceCatalog: catalogFromContext.length ? catalogFromContext : buildCommerceCatalogPage(await loadClinicProducts()).items,
+          commerceCartItems: cartItems.length ? cartItems : null
+        })
+      };
+    }
+
     const lastOrderId = String(safeContext && safeContext.commerceLastOrderId ? safeContext.commerceLastOrderId : '').trim();
     const lastOrderAt = safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : null;
     let confirmCartItems = cartItems;
@@ -15498,12 +15572,13 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       const suggestedProductId = String(safeContext && safeContext.commerceSuggestedProductId ? safeContext.commerceSuggestedProductId : '').trim();
       if (suggestedProductId) {
         const suggestedProduct = await findProductById(suggestedProductId, conversation.clinicId);
-        if (suggestedProduct && String(suggestedProduct.status || '').toLowerCase() === 'active' && isPlanProduct(suggestedProduct)) {
+        const suggestedProductPrice = resolveProductPrice(suggestedProduct);
+        if (suggestedProduct && String(suggestedProduct.status || '').toLowerCase() === 'active' && isPlanProduct(suggestedProduct) && suggestedProductPrice.valid) {
           confirmCartItems = [
             {
               productId: suggestedProduct.id,
               name: suggestedProduct.name,
-              price: Number(suggestedProduct.price || 0),
+              price: suggestedProductPrice.value,
               currency: String(suggestedProduct.currency || 'ARS').toUpperCase(),
               quantity: 1,
               sku: suggestedProduct.sku || null
@@ -15577,7 +15652,8 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       if (
         orderResult.reason === 'order_item_insufficient_stock' ||
         orderResult.reason === 'order_item_product_not_found' ||
-        orderResult.reason === 'order_item_product_inactive'
+        orderResult.reason === 'order_item_product_inactive' ||
+        orderResult.reason === 'order_item_product_price_invalid'
       ) {
         const products = buildCommerceCatalogPage(await loadClinicProducts());
         logInfo('commerce_order_create_failed_stock', {
@@ -15588,8 +15664,9 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
           details: orderResult.details || null
         });
         return {
-          replyText:
-            'No pude confirmar tu pedido porque uno o más productos ya no tienen stock suficiente.\n\nSi querés, escribí "productos" y te muestro el catálogo actualizado.',
+          replyText: orderResult.reason === 'order_item_product_price_invalid'
+            ? 'No pude confirmar tu pedido porque a uno o más productos les falta un precio válido. Tu carrito se mantiene sin cambios para que podamos corregirlo.'
+            : 'No pude confirmar tu pedido porque uno o más productos ya no tienen stock suficiente.\n\nSi querés, escribí "productos" y te muestro el catálogo actualizado.',
           newState: 'WAITING_PRODUCT_SELECTION',
           contextPatch: buildCommerceResetPatch({
             commerceCatalog: products.items,

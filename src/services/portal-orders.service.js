@@ -45,6 +45,7 @@ const {
   prepareOrderCustomerNotification
 } = require('./order-customer-notifications.service');
 const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
+const { resolveProductPrice } = require('../utils/commerce-price');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 const { resolveLotStatusAfterRestore } = require('../utils/inventory-lot-state');
 
@@ -1127,7 +1128,16 @@ async function createOrderForContext(context, payload) {
             );
           }
 
-          const unitPrice = quantizeDecimal(product.unitPrice ?? product.price ?? 0, 2, 0);
+          const resolvedPrice = resolveProductPrice(product);
+          if (!resolvedPrice.valid) {
+            return buildError(
+              context.tenantId,
+              'order_item_product_price_invalid',
+              `Product ${product.id} does not have a valid price.`
+            );
+          }
+
+          const unitPrice = quantizeDecimal(resolvedPrice.value, 2, resolvedPrice.value);
           const taxRate = quantizeDecimal(product.vatRate ?? product.taxRate ?? 0, 2, 0);
           const amounts = calculateLineAmounts({ unitPrice, quantity: item.quantity, taxRate, quantityScale: 0 });
 
