@@ -13411,6 +13411,10 @@ function classifyTransferPaymentIntent(input) {
     /\b(?:me\s+)?pasa(?:me|s)?\s+(?:el\s+|los\s+datos\s+(?:para|de)\s+)?(?:cbu|cvu|alias|datos?\s+(?:bancarios?|de\s+transferencia)|para\s+transferir(?:te)?)\b/,
     /\b(?:cual|cuales)\s+(?:es|son)\s+(?:el\s+|los\s+)?(?:cbu|cvu|alias|datos?\s+bancarios?)\b/,
     /\b(?:necesito|quiero|dame|decime|mandame|enviame)\s+(?:el\s+|los\s+)?(?:cbu|cvu|alias|datos?\s+(?:bancarios?|de\s+transferencia))\b/,
+    /\bcomo\s+hago\s+el\s+pago\b/,
+    /\bcomo\s+pago\b/,
+    /\bformas?\s+de\s+pago\b/,
+    /\bmedios?\s+de\s+pago\b/,
     /\bacepta(?:n|s)\s+transf(?:erencia|erecnia)\b/,
     /\bpuedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
     /\blo\s+puedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
@@ -13433,11 +13437,7 @@ function classifyTransferPaymentIntent(input) {
     /\bpasar\s+al\s+pago\b/,
     /\bseguir\s+con\s+el\s+pago\b/,
     /\bcontratar\b/,
-    /\bquiero\s+contratar\b/,
-    /\bcomo\s+hago\s+el\s+pago\b/,
-    /\bcomo\s+pago\b/,
-    /\bformas?\s+de\s+pago\b/,
-    /\bmedios?\s+de\s+pago\b/
+    /\bquiero\s+contratar\b/
   ];
   if (paymentFlowRequestPatterns.some((pattern) => pattern.test(text))) {
     return TRANSFER_PAYMENT_INTENT_TYPES.PAYMENT_FLOW_REQUEST;
