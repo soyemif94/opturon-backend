@@ -560,7 +560,7 @@ async function run() {
     conversation: state.conversation,
     clinic: baseClinic,
     contact: state.contact,
-    inboundText: 'Formas de pago'
+    inboundText: 'Cómo te transfiero?'
   });
   assert.match(catalogDecision.replyText, /Plan Inicial|Plan Crecimiento/);
   assert.match(stockDecision.replyText, /stock/i);
@@ -586,9 +586,6 @@ async function run() {
     'como abono',
     'te puedo transferir',
     'puedo transferirte',
-    'como pago',
-    'formas de pago',
-    'medio de pago',
     'aceptan transferencia',
     'puedo pagar por transferencia',
     'lo puedo pagar por transferencia',
@@ -617,6 +614,10 @@ async function run() {
     });
     assert.match(decision.replyText, /OPTURON\.PAGOS/, phrase);
     assert.match(decision.replyText, /0000003100000000000001/, phrase);
+  }
+
+  for (const phrase of ['quiero pagar', 'avanzar con el pago', 'contratar', 'formas de pago', 'medio de pago']) {
+    assert.strictEqual(parseTransferPaymentIntent(phrase), 'request', phrase);
   }
 
   for (const phrase of ['ya pagué', 'ya transferí', 'hice la transferencia', 'listo pagado', 'listo transferido', 'te mando el comprobante']) {

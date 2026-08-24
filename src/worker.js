@@ -11611,7 +11611,7 @@ async function buildSafeCommercialIntentReply({
   const isCommercialAppointmentBusinessQuestion = kbMatch && kbMatch.category === 'appointment_business';
   const explicitPricingRequest = isExplicitPlanCatalogOrPricingRequest(inboundText);
 
-  if (transferPaymentIntent === 'request') {
+  if (isTransferInstructionsRequestIntent(inboundText)) {
     return {
       type: 'payment_transfer',
       replyText: hasConfiguredTransferData(transferConfig)
@@ -13376,7 +13376,13 @@ async function buildCommercialShortMemoryReply({ clinic, conversation, inboundTe
   };
 }
 
-function parseTransferPaymentIntent(input) {
+const TRANSFER_PAYMENT_INTENT_TYPES = Object.freeze({
+  REQUEST_TRANSFER_DATA: 'REQUEST_TRANSFER_DATA',
+  PAYMENT_FLOW_REQUEST: 'PAYMENT_FLOW_REQUEST',
+  PAYMENT_REPORTED: 'PAYMENT_REPORTED'
+});
+
+function classifyTransferPaymentIntent(input) {
   const text = normalizeCommandText(input);
   if (!text) return null;
 
@@ -13390,16 +13396,10 @@ function parseTransferPaymentIntent(input) {
     /\b(?:te\s+)?(?:mando|mande|envio|envie)\s+(?:el\s+)?comprobante\b/
   ];
   if (proofNoticePatterns.some((pattern) => pattern.test(text))) {
-    return 'proof_notice';
+    return TRANSFER_PAYMENT_INTENT_TYPES.PAYMENT_REPORTED;
   }
 
-  const transferRequestPatterns = [
-    /\bquiero\s+pagar\b/,
-    /\bavanzar\s+con\s+el\s+pago\b/,
-    /\bpasar\s+al\s+pago\b/,
-    /\bseguir\s+con\s+el\s+pago\b/,
-    /\bcontratar\b/,
-    /\bquiero\s+contratar\b/,
+  const transferDataRequestPatterns = [
     /\bcomo\s+te\s+transfier[oa]\b/,
     /\bcomo\s+hago\s+para\s+transferir(?:te)?\b/,
     /\bte\s+quiero\s+transferir\b/,
@@ -13411,10 +13411,6 @@ function parseTransferPaymentIntent(input) {
     /\b(?:me\s+)?pasa(?:me|s)?\s+(?:el\s+|los\s+datos\s+(?:para|de)\s+)?(?:cbu|cvu|alias|datos?\s+(?:bancarios?|de\s+transferencia)|para\s+transferir(?:te)?)\b/,
     /\b(?:cual|cuales)\s+(?:es|son)\s+(?:el\s+|los\s+)?(?:cbu|cvu|alias|datos?\s+bancarios?)\b/,
     /\b(?:necesito|quiero|dame|decime|mandame|enviame)\s+(?:el\s+|los\s+)?(?:cbu|cvu|alias|datos?\s+(?:bancarios?|de\s+transferencia))\b/,
-    /\bcomo\s+hago\s+el\s+pago\b/,
-    /\bcomo\s+pago\b/,
-    /\bformas?\s+de\s+pago\b/,
-    /\bmedios?\s+de\s+pago\b/,
     /\bacepta(?:n|s)\s+transf(?:erencia|erecnia)\b/,
     /\bpuedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
     /\blo\s+puedo\s+pagar\s+por\s+transf(?:erencia|erecnia)\b/,
@@ -13427,15 +13423,38 @@ function parseTransferPaymentIntent(input) {
     /\bdatos?\s+(?:para|de)\s+transferir(?:te)?\b/,
     /\b(?:cbu|cvu|alias)\b/
   ];
-  if (transferRequestPatterns.some((pattern) => pattern.test(text))) {
-    return 'request';
+  if (transferDataRequestPatterns.some((pattern) => pattern.test(text))) {
+    return TRANSFER_PAYMENT_INTENT_TYPES.REQUEST_TRANSFER_DATA;
+  }
+
+  const paymentFlowRequestPatterns = [
+    /\bquiero\s+pagar\b/,
+    /\bavanzar\s+con\s+el\s+pago\b/,
+    /\bpasar\s+al\s+pago\b/,
+    /\bseguir\s+con\s+el\s+pago\b/,
+    /\bcontratar\b/,
+    /\bquiero\s+contratar\b/,
+    /\bcomo\s+hago\s+el\s+pago\b/,
+    /\bcomo\s+pago\b/,
+    /\bformas?\s+de\s+pago\b/,
+    /\bmedios?\s+de\s+pago\b/
+  ];
+  if (paymentFlowRequestPatterns.some((pattern) => pattern.test(text))) {
+    return TRANSFER_PAYMENT_INTENT_TYPES.PAYMENT_FLOW_REQUEST;
   }
 
   return null;
 }
 
+function parseTransferPaymentIntent(input) {
+  const intent = classifyTransferPaymentIntent(input);
+  if (intent === TRANSFER_PAYMENT_INTENT_TYPES.PAYMENT_REPORTED) return 'proof_notice';
+  if (intent === TRANSFER_PAYMENT_INTENT_TYPES.REQUEST_TRANSFER_DATA || intent === TRANSFER_PAYMENT_INTENT_TYPES.PAYMENT_FLOW_REQUEST) return 'request';
+  return null;
+}
+
 function isTransferInstructionsRequestIntent(input) {
-  return parseTransferPaymentIntent(input) === 'request';
+  return classifyTransferPaymentIntent(input) === TRANSFER_PAYMENT_INTENT_TYPES.REQUEST_TRANSFER_DATA;
 }
 
 function buildPaymentPlanCatalogReply(planProducts) {
