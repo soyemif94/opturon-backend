@@ -5,7 +5,10 @@ const planDescription = 'Plan ideal para negocios que ya venden de forma constan
 const distributorDescription = 'Caja mayorista pensada para comercios con rotación diaria. Incluye unidades surtidas, identificación de lote, fecha de vencimiento visible, recomendaciones de exhibición y condiciones de conservación. La entrega se coordina por zona y la disponibilidad siempre se confirma contra el stock activo del tenant.';
 const products = {
   saas: [{ id: 'growth', name: 'Plan Crecimiento', description: planDescription, shortDescription: 'Automatización y seguimiento para negocios en crecimiento.', price: 68600, currency: 'ARS', stock: 20, status: 'active', image: { url: 'https://example.com/growth.jpg' } }],
-  distributor: [{ id: 'box', name: 'Caja Mayorista Surtida', description: distributorDescription, price: 24500, currency: 'ARS', stock: 8, status: 'active', image: { url: 'https://example.com/box.jpg' } }]
+  distributor: [
+    { id: 'box', name: 'Caja Mayorista Surtida', description: distributorDescription, price: 24500, currency: 'ARS', stock: 8, status: 'active', image: { url: 'https://example.com/box.jpg' } },
+    { id: 'jorgito', name: 'Caja de Jorgito', description: 'Caja mayorista de alfajores Jorgito con detalle de presentación y conservación.', price: 31200, currency: 'ARS', stock: 6, status: 'active', image: { url: 'https://example.com/jorgito.jpg' } }
+  ]
 };
 const sentPayloads = [];
 const persistedOutbound = [];
@@ -427,6 +430,128 @@ async function main() {
   check('payment reported invalidates short-lived banking disclosure context', reported.next.context.commercialPaymentContext === null);
   const cancelled = await persistedTurn(saasResult.paymentStored, saasClinic, 'cancelar');
   check('explicit commerce cancellation invalidates payment context', cancelled.next.context.commercialPaymentContext === null);
+
+  const exactCompound = await worker.buildSafeCommercialIntentReply({
+    clinic: saasClinic,
+    conversation: persistedConversation('compound-exact', 'saas', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa Crecimiento, ¿me das más detalles?'
+  });
+  check('exact compound smoke resolves Plan Crecimiento detail', exactCompound.replyText.includes(planDescription));
+  check('exact compound smoke prioritizes detail over activation', !/activar|avanzar con la activaci[oó]n|completar el pago/i.test(exactCompound.replyText));
+  check('compound detail persists interest signal', exactCompound.contextPatch.commercialInterest === true);
+  check('compound detail persists selected referent', exactCompound.contextPatch.commercialInterestProductId === 'growth');
+  check('compound detail preserves media contract', exactCompound.outboundMedia.length === 1 && exactCompound.sendTextWithMedia === true);
+
+  const exactCompoundRuntime = await fullRuntimeTurn(
+    persistedConversation('compound-exact-runtime', 'saas', 'READY', {}),
+    saasClinic,
+    'Me interesa Crecimiento, ¿me das más detalles?',
+    'compound-exact-runtime'
+  );
+  check('exact compound traverses full worker runtime', exactCompoundRuntime.source === 'safe_commercial_reply');
+  check('full runtime compound returns full detail', exactCompoundRuntime.replyText.includes(planDescription));
+  check('full runtime compound persists interest and referent', exactCompoundRuntime.next.context.commercialInterest === true && exactCompoundRuntime.next.context.commercialInterestProductId === 'growth');
+
+  const compoundStored = persistedConversation('compound-next-turn', 'saas', 'READY', exactCompound.contextPatch);
+  const compoundAdvance = await persistedTurn(compoundStored, saasClinic, 'dale, avancemos');
+  check('compound detail allows natural next-turn advance', compoundAdvance.decision.replyText.includes('Plan Crecimiento'));
+  const compoundPayment = await persistedTurn(compoundStored, saasClinic, '¿cómo lo pago?');
+  check('compound referent survives into next-turn payment', compoundPayment.decision.replyText.includes('Plan Crecimiento'));
+  check('compound next-turn payment opens same referent context', compoundPayment.next.context.commercialPaymentContext.subjectProductId === 'growth');
+  for (const contextualDetailText of [
+    'me interesa, contame más',
+    'me gusta, dame más detalles',
+    'quiero ese, pero explicame mejor',
+    'me interesa, ¿cómo funciona?'
+  ]) {
+    const contextualDetail = await worker.buildSafeCommercialIntentReply({
+      clinic: saasClinic,
+      conversation: compoundStored,
+      contact,
+      inboundText: contextualDetailText
+    });
+    assert.ok(contextualDetail, `missing contextual compound decision: ${contextualDetailText}`);
+    check(`contextual compound detail resolves: ${contextualDetailText}`, contextualDetail.replyText.includes(planDescription));
+    check(`contextual compound detail keeps interest: ${contextualDetailText}`, contextualDetail.contextPatch.commercialInterest === true);
+  }
+
+  const compoundPrice = await worker.buildSafeCommercialIntentReply({
+    clinic: saasClinic,
+    conversation: persistedConversation('compound-price', 'saas', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa Crecimiento, ¿cuánto sale?'
+  });
+  check('interest + price answers grounded selected price', compoundPrice.replyText.includes('68.600'));
+  check('interest + price persists selected referent', compoundPrice.contextPatch.commercialInterestProductId === 'growth');
+
+  const compoundStock = await worker.buildSafeCommercialIntentReply({
+    clinic: saasClinic,
+    conversation: persistedConversation('compound-stock', 'saas', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa Crecimiento, ¿hay stock?'
+  });
+  check('interest + stock answers stock instead of activation', /stock|disponib/i.test(compoundStock.replyText) && !/activar/i.test(compoundStock.replyText));
+  check('interest + stock persists selected referent', compoundStock.contextPatch.commercialInterestProductId === 'growth');
+
+  const compoundDelivery = await worker.buildSafeCommercialIntentReply({
+    clinic: distClinic,
+    conversation: persistedConversation('compound-delivery', 'distributor', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa la Caja de Jorgito, ¿hacen envíos?'
+  });
+  check('interest + delivery prioritizes delivery answer', /env[ií]os|confirmado/i.test(compoundDelivery.replyText) && !/activar/i.test(compoundDelivery.replyText));
+  check('interest + delivery persists tenant referent', compoundDelivery.contextPatch.commercialInterestProductId === 'jorgito');
+
+  const compoundPaymentDirect = await worker.buildSafeCommercialIntentReply({
+    clinic: saasClinic,
+    conversation: persistedConversation('compound-payment', 'saas', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa Crecimiento, ¿cómo lo pago?'
+  });
+  check('interest + payment resolves enabled methods', compoundPaymentDirect.replyText.includes('Transferencia SaaS'));
+  check('interest + payment preserves referent', compoundPaymentDirect.contextPatch.commercialPaymentContext.subjectProductId === 'growth');
+
+  const interestOnly = await worker.buildSafeCommercialIntentReply({
+    clinic: saasClinic,
+    conversation: persistedConversation('interest-only', 'saas', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa Crecimiento'
+  });
+  check('interest-only keeps existing activation behavior', /activar|avanzar|pago/i.test(interestOnly.replyText));
+
+  const ambiguousCompound = await worker.buildSafeCommercialIntentReply({
+    clinic: saasClinic,
+    conversation: persistedConversation('compound-ambiguous', 'saas', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa uno, dame más detalles'
+  });
+  check('ambiguous compound referent asks clarification', /de qu[eé] plan o producto/i.test(ambiguousCompound.replyText));
+  check('ambiguous compound does not invent referent', ambiguousCompound.contextPatch.commercialInterestProductId === null);
+  products['multi-plan'] = [
+    { id: 'initial', name: 'Plan Inicial', description: 'Plan inicial de prueba.', price: 25000, currency: 'ARS', stock: 10, status: 'active' },
+    products.saas[0]
+  ];
+  const multiMatchCompound = await worker.buildSafeCommercialIntentReply({
+    clinic: {
+      ...saasClinic,
+      id: 'multi-plan'
+    },
+    conversation: persistedConversation('compound-multi-match', 'multi-plan', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa Inicial o Crecimiento, dame más detalles'
+  });
+  check('multiple named referents ask clarification', /de cu[aá]l/i.test(multiMatchCompound.replyText));
+
+  const distributorCompound = await worker.buildSafeCommercialIntentReply({
+    clinic: distClinic,
+    conversation: persistedConversation('compound-distributor', 'distributor', 'READY', {}),
+    contact,
+    inboundText: 'Me interesa la caja de Jorgito, contame más'
+  });
+  check('distributor compound resolves its tenant entity', distributorCompound.replyText.includes('Caja mayorista de alfajores Jorgito'));
+  check('distributor compound persists its tenant referent', distributorCompound.contextPatch.commercialInterestProductId === 'jorgito');
+  check('compound cross-tenant detail has zero SaaS leakage', !distributorCompound.replyText.includes('Plan Crecimiento') && !exactCompound.replyText.includes('Jorgito'));
 
   const mediaDecision = await worker.buildSafeCommercialIntentReply({ clinic: saasClinic, conversation: persistedConversation('media', 'saas'), contact, inboundText: 'más detalles de Plan Crecimiento' });
   check('media detail sends image before full text contract', mediaDecision.outboundMedia.length === 1 && mediaDecision.sendTextWithMedia === true);

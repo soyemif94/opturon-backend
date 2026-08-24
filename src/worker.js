@@ -7044,6 +7044,36 @@ function detectCommercialNextStepIntent(rawText) {
   return null;
 }
 
+function detectCompoundCommercialIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+
+  const hasInterestSignal =
+    detectCommercialNextStepIntent(rawText) === 'advance' ||
+    /\b(?:me\s+interesa|me\s+gusta|me\s+sirve|quiero\s+(?:ese|esa|esto|esta)(?:\s+plan|\s+producto)?)\b/.test(text);
+  if (!hasInterestSignal) return null;
+
+  let primaryIntent = null;
+  if (parseTransferPaymentIntent(rawText) || matchesCommercialIntent(text, COMMERCIAL_INTENT_MAP.payment)) {
+    primaryIntent = 'payment';
+  } else if (matchesCommercialIntent(text, COMMERCIAL_INTENT_MAP.prices)) {
+    primaryIntent = 'prices';
+  } else if (matchesCommercialIntent(text, COMMERCIAL_INTENT_MAP.stock)) {
+    primaryIntent = 'stock';
+  } else if (matchesCommercialIntent(text, COMMERCIAL_INTENT_MAP.delivery)) {
+    primaryIntent = 'delivery';
+  } else if (
+    isCatalogItemDetailIntent(rawText) ||
+    /\b(?:contame\s+mas|explicame(?:\s+mejor)?|como\s+funciona)\b/.test(text)
+  ) {
+    primaryIntent = 'detail';
+  }
+
+  return primaryIntent
+    ? { primaryIntent, secondaryIntent: 'interest' }
+    : null;
+}
+
 function isStrongCommercialPurchaseIntent(rawText) {
   return detectCommercialNextStepIntent(rawText) === 'advance';
 }
@@ -9638,6 +9668,35 @@ function buildCatalogItemDetailContextPatch(item, comparedItem, eligibleProducts
   };
 }
 
+function buildCompoundCommercialInterestContextPatch(item, eligibleProducts, topic) {
+  const safeItem = item && typeof item === 'object' ? item : null;
+  const safeEligibleProducts = Array.isArray(eligibleProducts) ? eligibleProducts.filter(Boolean) : [];
+  const itemId = safeItem && (safeItem.id || safeItem.productId) ? (safeItem.id || safeItem.productId) : null;
+  const isPlan = Boolean(safeItem && isPlanProduct(safeItem));
+  const orderedPlans = isPlan ? getOrderedPlanProducts(safeEligibleProducts) : [];
+
+  return {
+    commercialInterest: true,
+    commercialInterestAt: new Date().toISOString(),
+    commercialInterestProductId: itemId,
+    ...(safeItem
+      ? buildCommercialShortMemoryPatch({
+        topic: isPlan ? 'plans' : 'catalog',
+        categoryId: safeItem.categoryId || null,
+        lastSuggestedProductId: itemId,
+        recommendationType: isPlan ? normalizeProductRecommendationType(safeItem, orderedPlans) : 'general'
+      })
+      : null),
+    ...(isPlan
+      ? buildCommercialPlanContextPatch({
+        topic: String(topic || 'plan_detail'),
+        lastDiscussedPlanId: itemId,
+        recommendationType: normalizeProductRecommendationType(safeItem, orderedPlans)
+      })
+      : null)
+  };
+}
+
 function buildPlanDetailReply(product, { includePrice = true, includeFeatures = true } = {}) {
   const safeProduct = product && typeof product === 'object' ? product : {};
   const profile = resolvePlanProfile(safeProduct);
@@ -11440,7 +11499,11 @@ async function buildSafeCommercialIntentReply({
   channel = null,
   inboundText
 }) {
-  const commercialIntent = detectCommercialIntent(inboundText);
+  const detectedCommercialIntent = detectCommercialIntent(inboundText);
+  const compoundCommercialIntent = detectCompoundCommercialIntent(inboundText);
+  const commercialIntent = compoundCommercialIntent
+    ? { type: compoundCommercialIntent.primaryIntent }
+    : detectedCommercialIntent;
   const normalizedText = normalizeCommandText(inboundText);
   const kbMatch = findCommercialKnowledgeMatch(inboundText);
   const portfolioTemplate = parsePortfolioDiscoveryTemplate(inboundText);
@@ -11751,6 +11814,7 @@ async function buildSafeCommercialIntentReply({
 
   if (
     nextStepIntent === 'advance' &&
+    !compoundCommercialIntent &&
     !(
       activeShortMemory &&
       activeShortMemory.pendingCommercialExplanation === true &&
@@ -12070,10 +12134,22 @@ async function buildSafeCommercialIntentReply({
     };
   }
 
-  if (isCatalogItemDetailIntent(inboundText)) {
+  if (isCatalogItemDetailIntent(inboundText) || (compoundCommercialIntent && compoundCommercialIntent.primaryIntent === 'detail')) {
     const clinicProducts = await listProductsByClinicId(conversation.clinicId);
     const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
-    const matchedItem = findReferencedPlan(eligibleProducts, inboundText) || findProductByName(eligibleProducts, inboundText);
+    const referencedPlans = findReferencedPlans(eligibleProducts, inboundText);
+    if (compoundCommercialIntent && referencedPlans.length > 1) {
+      return {
+        type: 'clarification',
+        replyText: `¿De cuál querés más detalles: ${referencedPlans.map((item) => item.name).join(' o ')}?`,
+        contextPatch: buildCompoundCommercialInterestContextPatch(null, eligibleProducts, 'plan_detail')
+      };
+    }
+    const matchedItem =
+      findReferencedPlan(eligibleProducts, inboundText) ||
+      findProductByName(eligibleProducts, inboundText) ||
+      findPlanByCommercialPlanContext(eligibleProducts, safeContext, inboundText) ||
+      resolvePlanFromCommercialShortMemory(eligibleProducts, activeShortMemory);
 
     if (matchedItem) {
       const preferredComparedItemId = activePlanContext && activePlanContext.lastComparedPlanId
@@ -12085,7 +12161,12 @@ async function buildSafeCommercialIntentReply({
         replyText: buildCatalogItemDetailReply(matchedItem, comparedItem),
         outboundMedia: [buildCatalogProductImageMessage(matchedItem)].filter(Boolean),
         sendTextWithMedia: true,
-        contextPatch: buildCatalogItemDetailContextPatch(matchedItem, comparedItem, eligibleProducts)
+        contextPatch: mergeContextPatches(
+          buildCatalogItemDetailContextPatch(matchedItem, comparedItem, eligibleProducts),
+          compoundCommercialIntent
+            ? buildCompoundCommercialInterestContextPatch(matchedItem, eligibleProducts, 'plan_detail')
+            : null
+        )
       };
       logInfo('commercial_reply_trace', {
         stage: 'catalog_item_detail',
@@ -12097,6 +12178,14 @@ async function buildSafeCommercialIntentReply({
         ...summarizeVisibleReplyForLog(result)
       });
       return result;
+    }
+
+    if (compoundCommercialIntent) {
+      return {
+        type: 'clarification',
+        replyText: '¿De qué plan o producto querés que te pase más detalles?',
+        contextPatch: buildCompoundCommercialInterestContextPatch(null, eligibleProducts, 'plan_detail')
+      };
     }
   }
 
@@ -12877,6 +12966,22 @@ async function buildSafeCommercialIntentReply({
     const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
     const orderedPlans = getOrderedPlanProducts(eligibleProducts);
 
+    if (compoundCommercialIntent && commercialIntent.type === 'prices') {
+      const referencedProduct =
+        findReferencedPlan(eligibleProducts, inboundText) ||
+        findProductsByQuery(eligibleProducts, inboundText)[0] ||
+        findProductByName(eligibleProducts, inboundText) ||
+        findCatalogItemByStoredId(eligibleProducts, safeContext && safeContext.commerceSuggestedProductId) ||
+        resolvePlanFromCommercialShortMemory(eligibleProducts, activeShortMemory);
+      if (referencedProduct) {
+        return {
+          type: 'prices',
+          replyText: buildProductPricingReply([referencedProduct], referencedProduct.name),
+          contextPatch: buildCompoundCommercialInterestContextPatch(referencedProduct, eligibleProducts, 'plan_pricing')
+        };
+      }
+    }
+
     if (isPlanCatalog(eligibleProducts) && orderedPlans.length) {
       const suggestedPlan = findPlanByNeedHint(orderedPlans, 'growth') || orderedPlans[0];
       const comparedPlan = findPlanByNeedHint(orderedPlans, 'enterprise');
@@ -12933,6 +13038,7 @@ async function buildSafeCommercialIntentReply({
     const orderedPlans = getOrderedPlanProducts(eligibleProducts);
     const contextualPlan =
       resolveExistingPaymentPlan(safeContext, orderedPlans) ||
+      findReferencedPlan(orderedPlans, inboundText) ||
       findPlanByCommercialPlanContext(orderedPlans, safeContext, inboundText) ||
       resolveRecentCommercialPlan(orderedPlans, effectiveSalesContext, activePlanContext, activeShortMemory) ||
       eligibleProducts.find((product) => String(product.id || product.productId || '').trim() === String(activeShortMemory && activeShortMemory.lastSuggestedProductId || '').trim()) ||
@@ -12963,7 +13069,10 @@ async function buildSafeCommercialIntentReply({
             status: 'methods_presented',
             subjectProductId: String(contextualPlan.id || contextualPlan.productId),
             subjectName: String(contextualPlan.name || '').trim() || null
-          }
+          },
+          ...(compoundCommercialIntent
+            ? buildCompoundCommercialInterestContextPatch(contextualPlan, eligibleProducts, 'payment_methods')
+            : null)
         }
         : null
     };
@@ -12999,11 +13108,23 @@ async function buildSafeCommercialIntentReply({
   }
 
   if (commercialIntent.type === 'delivery') {
+    let compoundDeliveryContextPatch = null;
+    if (compoundCommercialIntent) {
+      const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+      const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+      const referencedProduct =
+        findReferencedPlan(eligibleProducts, inboundText) ||
+        findProductsByQuery(eligibleProducts, inboundText)[0] ||
+        findProductByName(eligibleProducts, inboundText) ||
+        resolvePlanFromCommercialShortMemory(eligibleProducts, activeShortMemory);
+      compoundDeliveryContextPatch = buildCompoundCommercialInterestContextPatch(referencedProduct, eligibleProducts, 'delivery');
+    }
     return {
       type: commercialIntent.type,
       replyText: deliveryZones
         ? `Sí 😊 Hacemos envíos.\n\n${deliveryZones}\n\nSi querés, también puedo mostrarte productos o ayudarte a elegir.`
-        : 'No tengo confirmado si este comercio hace envíos. Si querés, te paso con alguien del equipo.'
+        : 'No tengo confirmado si este comercio hace envíos. Si querés, te paso con alguien del equipo.',
+      contextPatch: compoundDeliveryContextPatch
     };
   }
 
@@ -13019,7 +13140,10 @@ async function buildSafeCommercialIntentReply({
 
     return {
       type: commercialIntent.type,
-      replyText: buildStockAvailabilityReply(referencedProduct)
+      replyText: buildStockAvailabilityReply(referencedProduct),
+      contextPatch: compoundCommercialIntent
+        ? buildCompoundCommercialInterestContextPatch(referencedProduct, eligibleProducts, 'stock')
+        : null
     };
   }
 
