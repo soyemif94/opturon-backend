@@ -9177,7 +9177,7 @@ function isContextualTransferDataFollowUp(rawText) {
   if (!text) return false;
   return (
     /^(?:dale\s+)?(?:pasame|mandame|enviame|compartime)\s+los\s+datos$/.test(text) ||
-    /^(?:dale\s+)?(?:pasamelos|mandamelos|enviamelos|compartimelos)$/.test(text)
+    /^(?:dale\s+)?(?:pasamelos|mandamelos|enviamelos|compartimelos)(?:\s+de\s+nuevo)?$/.test(text)
   );
 }
 
@@ -14728,7 +14728,22 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
     };
   }
 
-  if (transferIntent === 'request' || transferIntent === 'proof_notice' || contextualTransferDataFollowUp) {
+  if (contextualTransferDataFollowUp) {
+    const activePaymentContext = getActiveCommercialPaymentContext(safeContext);
+    return {
+      action: 'REPEAT_TRANSFER_DATA_REQUEST',
+      replyText: hasConfiguredTransferData(transferConfig)
+        ? buildTransferInstructionsReply(transferConfig)
+        : buildTransferMissingConfigReply(),
+      newState: currentState || 'READY',
+      newStage: 'payment_methods',
+      contextPatch: {
+        commercialPaymentContext: activePaymentContext
+      }
+    };
+  }
+
+  if (transferIntent === 'request' || transferIntent === 'proof_notice') {
     if (transferIntent === 'proof_notice') {
       const isAlreadyPendingValidation =
         transferContext &&
@@ -14783,7 +14798,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         });
       }
 
-      if (isTransferInstructionsRequestIntent(inboundText) || contextualTransferDataFollowUp) {
+      if (isTransferInstructionsRequestIntent(inboundText)) {
         return buildPaymentInstructionsDecision({
           selectedPlan: null,
           source: 'whatsapp_payment'
@@ -18858,6 +18873,11 @@ async function processConversationReplyJobUnlocked(job) {
       commercialIntent.type === 'unknown' &&
       !inboundLooksLikeCommerce &&
       !transferPaymentIntent &&
+      !(
+        botRoute.allowCommerce &&
+        isContextualTransferDataFollowUp(inboundText) &&
+        getActiveCommercialPaymentContext(safeContext)
+      ) &&
       !isGreetingIntent(inboundText)
     ) {
       const intelligentFallback = buildIntelligentFallbackReply(safeContext, inboundText, clinic);

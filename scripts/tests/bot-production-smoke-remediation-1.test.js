@@ -9,6 +9,9 @@ const products = {
 };
 const sentPayloads = [];
 const persistedOutbound = [];
+const runtimeConversations = new Map();
+const runtimeMessages = new Map();
+const runtimeClinics = new Map();
 
 function stub(relativePath, value) {
   const resolved = path.resolve(__dirname, '..', '..', relativePath);
@@ -22,6 +25,61 @@ stub('src/repositories/products.repository.js', {
     const productId = products[first] ? second : first;
     return (products[clinicId] || []).find((product) => product.id === productId) || null;
   }
+});
+stub('src/db/client.js', {
+  pool: {
+    connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} })
+  },
+  withTransaction: async (callback) => callback({ query: async () => ({ rows: [] }) })
+});
+stub('src/repositories/tenant.repository.js', {
+  findChannelById: async (channelId) => ({
+    id: channelId,
+    clinicId: channelId.replace(/^channel-/, ''),
+    provider: 'whatsapp_cloud',
+    status: 'active',
+    phoneNumberId: `phone-${channelId}`,
+    accessToken: 'runtime-test-token'
+  }),
+  findPreferredWhatsAppChannelByClinicId: async () => null,
+  BOT_RUNTIME_CONFIG_MUTATION_SOURCES: {}
+});
+stub('src/repositories/contact.repository.js', {
+  findContactById: async (contactId) => ({ id: contactId, waId: '5491100000000' }),
+  findContactByIdAndClinicId: async (contactId) => ({ id: contactId, waId: '5491100000000', optedOut: false }),
+  updateContact: async () => null
+});
+stub('src/repositories/conversation.repository.js', {
+  findConversationById: async (conversationId) => runtimeConversations.get(conversationId) || null,
+  updateConversationStatus: async () => null,
+  updateConversationStage: async (conversationId, stage) => {
+    const stored = runtimeConversations.get(conversationId);
+    if (stored) stored.stage = stage;
+    return stored || null;
+  }
+});
+stub('src/repositories/calendar.repository.js', {
+  getOrCreateCalendarRules: async () => null,
+  holdSlot: async () => null,
+  bookHeldSlot: async () => null,
+  releaseExpiredHolds: async () => null,
+  getClinic: async (clinicId) => runtimeClinics.get(clinicId) || null,
+  findBookedAppointmentByConversation: async () => null,
+  cancelAppointment: async () => null
+});
+stub('src/repositories/handoff.repository.js', {
+  openHandoff: async () => null,
+  assignHandoff: async () => null,
+  getOpenHandoff: async () => null
+});
+stub('src/repositories/lead.repository.js', {
+  upsertLeadForConversation: async ({ conversationId }) => ({ id: `lead-${conversationId}` }),
+  updateLeadStatus: async () => null,
+  findLeadByConversation: async () => null,
+  assignLead: async () => null
+});
+stub('src/services/ai-assist.service.js', {
+  classifyCommerceAiAssist: async () => ({ ok: false, reason: 'runtime_test_low_confidence', decision: null })
 });
 stub('src/services/portal-orders.service.js', {
   createOrderForClinic: async () => { throw new Error('test must not create orders'); },
@@ -46,7 +104,26 @@ stub('src/whatsapp/whatsapp.service.js', {
   }
 });
 stub('src/conversations/conversation.repo.js', {
-  insertOutboundMessage: async (message) => { persistedOutbound.push(JSON.parse(JSON.stringify(message))); return { inserted: true }; }
+  getConversationById: async (conversationId) => {
+    const stored = runtimeConversations.get(conversationId);
+    return stored ? JSON.parse(JSON.stringify(stored)) : null;
+  },
+  getMessageById: async (messageId) => runtimeMessages.get(messageId) || null,
+  hasNewerInboundMessage: async () => false,
+  listConversationMessagesByClinicId: async () => [],
+  findAutomationOutboundByInboundMessageId: async () => null,
+  updateConversationState: async ({ conversationId, state, contextPatch }) => {
+    const stored = runtimeConversations.get(conversationId);
+    assert.ok(stored, `runtime conversation ${conversationId} missing`);
+    stored.state = state || stored.state;
+    stored.context = { ...(stored.context || {}), ...(contextPatch || {}) };
+    return JSON.parse(JSON.stringify(stored));
+  },
+  insertOutboundMessage: async (message) => {
+    persistedOutbound.push(JSON.parse(JSON.stringify(message)));
+    return { inserted: true };
+  },
+  resolveCandidateTiming: () => null
 });
 stub('src/utils/logger.js', { logInfo: () => {}, logWarn: () => {}, logError: () => {} });
 
@@ -114,6 +191,46 @@ async function withFakeNow(iso, callback) {
   }
 }
 
+async function fullRuntimeTurn(stored, targetClinic, inboundText, sequence) {
+  const conversationId = stored.id;
+  const messageId = `${conversationId}-inbound-${sequence}`;
+  const channelId = `channel-${targetClinic.id}`;
+  runtimeClinics.set(targetClinic.id, targetClinic);
+  runtimeConversations.set(conversationId, JSON.parse(JSON.stringify({
+    ...stored,
+    contactId: `contact-${targetClinic.id}`,
+    channelId,
+    status: 'open'
+  })));
+  runtimeMessages.set(messageId, { id: messageId, conversationId, type: 'text', text: inboundText });
+  const outboundStart = persistedOutbound.length;
+
+  await worker.processConversationReplyJob({
+    id: `job-${sequence}`,
+    clinicId: targetClinic.id,
+    channelId,
+    attempts: 0,
+    payload: {
+      conversationId,
+      inboundMessageId: messageId,
+      channelId,
+      contactId: `contact-${targetClinic.id}`,
+      waMessageId: `wamid-inbound-${sequence}`
+    }
+  });
+
+  const outbound = persistedOutbound.slice(outboundStart);
+  assert.ok(outbound.length, `full runtime produced no outbound for ${inboundText}`);
+  return {
+    next: JSON.parse(JSON.stringify(runtimeConversations.get(conversationId))),
+    outbound,
+    replyText: outbound.map((message) => message.text || '').join('\n'),
+    source: outbound[outbound.length - 1].raw && outbound[outbound.length - 1].raw.automation
+      ? outbound[outbound.length - 1].raw.automation.source
+      : null
+  };
+}
+
 async function runPaymentSequence(targetClinic, entityName, expectedMethod, expectedAlias) {
   let stored = persistedConversation(`conv-${targetClinic.id}`, targetClinic.id);
   let turn = await persistedTurn(stored, targetClinic, `dame más detalles de ${entityName}`);
@@ -175,6 +292,15 @@ async function main() {
       check(`payment follow-up routes to commerce at +${offsetMs}ms`, route.domain === 'commerce' && route.allowCommerce === true);
     });
   }
+  await withFakeNow(new Date(boundaryBaseMs + 5 * 60 * 1000).toISOString(), async () => {
+    const changedDomainContext = { ...boundaryContext, botDomainOverride: 'agenda' };
+    const changedDomainRoute = resolveRoute(
+      persistedConversation('changed-domain', 'saas', 'READY', changedDomainContext),
+      saasClinic,
+      'Pasame los datos'
+    );
+    check('explicit agenda domain change blocks transfer-data continuation', changedDomainRoute.domain === 'agenda' && changedDomainRoute.allowCommerce === false);
+  });
   await withFakeNow(new Date(boundaryBaseMs + paymentTtlMs + 1).toISOString(), async () => {
     check('payment context expires just after boundary', worker.getActiveCommercialPaymentContext(boundaryContext) === null);
     const expiredStored = persistedConversation('expired', 'saas', 'READY', boundaryContext);
@@ -201,6 +327,83 @@ async function main() {
     const delayedFollowUp = await routedPersistedTurn(delayedStored, saasClinic, 'Pasame los datos');
     check('real persisted/reloaded +5m follow-up returns tenant data', delayedFollowUp.decision.replyText.includes('SAAS.A'));
     check('real persisted/reloaded +5m follow-up avoids fallback', !/No llegué a entenderte|planes, pagos/i.test(delayedFollowUp.decision.replyText));
+  });
+
+  let exactRuntimeStored = persistedConversation('exact-full-runtime-saas', 'saas', 'NEW', {});
+  await withFakeNow(new Date(realSequenceBaseMs).toISOString(), async () => {
+    const selected = await fullRuntimeTurn(exactRuntimeStored, saasClinic, 'Dame más detalles del Plan Crecimiento', 'exact-select');
+    exactRuntimeStored = selected.next;
+    check('exact runtime turn 1 selects Plan Crecimiento', Boolean(
+      exactRuntimeStored.context.commercialShortMemory || exactRuntimeStored.context.commercialPlanContext
+    ));
+  });
+  const exactPaymentTurnMs = realSequenceBaseMs + 60 * 1000;
+  await withFakeNow(new Date(exactPaymentTurnMs).toISOString(), async () => {
+    const payment = await fullRuntimeTurn(exactRuntimeStored, saasClinic, '¿Cómo lo pago?', 'exact-payment');
+    exactRuntimeStored = payment.next;
+    check('exact runtime turn 2 delivers tenant payment data', payment.replyText.includes('SAAS.A'));
+    check('exact runtime turn 2 persists payment context', Boolean(exactRuntimeStored.context.commercialPaymentContext));
+    check('exact runtime payment context anchors at turn 2', exactRuntimeStored.context.commercialPaymentContext.activeAt === new Date(exactPaymentTurnMs).toISOString());
+  });
+  await withFakeNow(new Date(exactPaymentTurnMs + 5 * 60 * 1000).toISOString(), async () => {
+    const repeated = await fullRuntimeTurn(exactRuntimeStored, saasClinic, 'Pasame los datos', 'exact-repeat-plus-5m');
+    exactRuntimeStored = repeated.next;
+    check('exact runtime reload +5m repeats payment data', repeated.replyText.includes('SAAS.A'));
+    check('exact runtime reload +5m has zero fallback', repeated.source === 'commerce');
+  });
+  await withFakeNow(new Date(exactPaymentTurnMs + 7 * 60 * 1000).toISOString(), async () => {
+    const repeatedAgain = await fullRuntimeTurn(exactRuntimeStored, saasClinic, 'Mandamelos de nuevo', 'exact-repeat-plus-7m');
+    exactRuntimeStored = repeatedAgain.next;
+    check('exact runtime second repeat +2m returns data', repeatedAgain.replyText.includes('SAAS.A'));
+    check('exact runtime second repeat keeps original expiry anchor', exactRuntimeStored.context.commercialPaymentContext.activeAt === new Date(exactPaymentTurnMs).toISOString());
+  });
+
+  const runtimePaymentContext = {
+    commercialPaymentContext: {
+      activeAt: new Date(paymentTurnMs).toISOString(),
+      status: 'methods_presented',
+      subjectProductId: 'growth',
+      subjectName: 'Plan Crecimiento'
+    },
+    activeBotDomain: null
+  };
+  let runtimeStored = persistedConversation('full-runtime-saas', 'saas', 'NEW', runtimePaymentContext);
+  await withFakeNow(new Date(paymentTurnMs + 5 * 60 * 1000).toISOString(), async () => {
+    const result = await fullRuntimeTurn(runtimeStored, saasClinic, 'Pasame los datos', 'saas-plus-5m');
+    runtimeStored = result.next;
+    check('full runtime +5m reaches commerce instead of intelligent fallback', result.source === 'commerce');
+    check('full runtime +5m returns tenant transfer data', result.replyText.includes('SAAS.A'));
+    check('full runtime repeat keeps NEW/READY state', ['NEW', 'READY'].includes(runtimeStored.state));
+    check('full runtime repeat does not create transferPayment', !runtimeStored.context.transferPayment);
+    check('full runtime repeat preserves original TTL anchor', runtimeStored.context.commercialPaymentContext.activeAt === new Date(paymentTurnMs).toISOString());
+  });
+  await withFakeNow(new Date(paymentTurnMs + 7 * 60 * 1000).toISOString(), async () => {
+    const result = await fullRuntimeTurn(runtimeStored, saasClinic, 'Mandamelos de nuevo', 'saas-plus-7m');
+    runtimeStored = result.next;
+    check('full runtime second repeat +2m reaches commerce', result.source === 'commerce');
+    check('full runtime second repeat returns data again', result.replyText.includes('SAAS.A'));
+    check('second repeat still does not create payment state', !runtimeStored.context.transferPayment && ['NEW', 'READY'].includes(runtimeStored.state));
+    check('second repeat does not refresh TTL', runtimeStored.context.commercialPaymentContext.activeAt === new Date(paymentTurnMs).toISOString());
+  });
+  await withFakeNow(new Date(paymentTurnMs + paymentTtlMs + 1).toISOString(), async () => {
+    const result = await fullRuntimeTurn(runtimeStored, saasClinic, 'Pasame los datos', 'saas-expired');
+    check('full runtime expired repeat fails closed', !result.replyText.includes('SAAS.A'));
+    check('full runtime expired repeat uses clarification fallback', result.source === 'intelligent_fallback');
+  });
+
+  const distributorRuntimeStored = persistedConversation('full-runtime-distributor', 'distributor', 'READY', {
+    commercialPaymentContext: {
+      activeAt: new Date(paymentTurnMs).toISOString(),
+      status: 'methods_presented',
+      subjectProductId: 'box',
+      subjectName: 'Caja Mayorista Surtida'
+    },
+    activeBotDomain: null
+  });
+  await withFakeNow(new Date(paymentTurnMs + 5 * 60 * 1000).toISOString(), async () => {
+    const result = await fullRuntimeTurn(distributorRuntimeStored, distClinic, 'Pasame los datos', 'dist-plus-5m');
+    check('full runtime distributor uses tenant B data', result.replyText.includes('DIST.B'));
+    check('full runtime distributor does not leak tenant A data', !result.replyText.includes('SAAS.A'));
   });
   for (const followUp of ['mandame los datos', 'pasamelos', 'dale, pasamelos', 'mandamelos', 'por transferencia', 'transferencia', 'el alias', 'el cbu']) {
     const resolved = await persistedTurn(saasResult.paymentStored, saasClinic, followUp);
