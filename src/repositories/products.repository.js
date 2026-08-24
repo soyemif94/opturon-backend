@@ -1,5 +1,6 @@
 const { query } = require('../db/client');
 const { quantizeDecimal } = require('../utils/money');
+const { resolveProductPrice } = require('../utils/commerce-price');
 
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') {
@@ -186,7 +187,8 @@ function buildStoredMetadata(inputMetadata, input) {
 }
 
 function normalizeProduct(row) {
-  const unitPrice = quantizeDecimal(row.unitPrice ?? row.price ?? 0, 2, 0);
+  const resolvedPrice = resolveProductPrice(row);
+  const unitPrice = resolvedPrice.valid ? quantizeDecimal(resolvedPrice.value, 2, resolvedPrice.value) : null;
   const vatRate = quantizeDecimal(row.vatRate ?? 0, 2, 0);
   const discountPercentage = row.discountPercentage == null ? null : quantizeDecimal(row.discountPercentage, 2, 0);
   const status = row.status || 'active';

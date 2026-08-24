@@ -87,7 +87,8 @@ const state = {
   finalLlmCalls: 0,
   finalContextBuilds: 0,
   automationCalls: 0,
-  runtimeMutationCalls: 0
+  runtimeMutationCalls: 0,
+  products: sampleProducts
 };
 
 function resetScenario(overrides = {}) {
@@ -144,6 +145,7 @@ function resetScenario(overrides = {}) {
   state.finalContextBuilds = 0;
   state.automationCalls = 0;
   state.runtimeMutationCalls = 0;
+  state.products = sampleProducts;
 }
 
 stubModule('src/config/env.js', {
@@ -187,6 +189,12 @@ stubModule('src/utils/logger.js', {
 });
 
 stubModule('src/db/client.js', {
+  pool: {
+    connect: async () => ({
+      query: async () => ({ rows: [{ locked: true }] }),
+      release: () => {}
+    })
+  },
   withTransaction: async (callback) => callback({ query: async () => ({ rows: [] }) })
 });
 
@@ -248,8 +256,8 @@ stubModule('src/conversations/conversation.repo.js', {
 });
 
 stubModule('src/repositories/products.repository.js', {
-  listProductsByClinicId: async () => sampleProducts,
-  findProductById: async (clinicId, productId) => sampleProducts.find((item) => item.id === productId) || null
+  listProductsByClinicId: async () => state.products,
+  findProductById: async (productId) => state.products.find((item) => item.id === productId) || null
 });
 
 stubModule('src/services/portal-orders.service.js', {
@@ -557,6 +565,229 @@ async function run() {
   assert.match(catalogDecision.replyText, /Plan Inicial|Plan Crecimiento/);
   assert.match(stockDecision.replyText, /stock/i);
   assert.match(transferDecision.replyText, /OPTURON\.PAGOS/);
+
+  const transferRequestPhrases = [
+    'cómo te transfiero?',
+    'a dónde transfiero?',
+    'pasame los datos para transferirte',
+    'te pago por transferencia',
+    'quiero pagar por transferencia',
+    'cuál es el alias?',
+    'pasame el CBU',
+    'pasame el CVU',
+    'me pasás el alias',
+    'dame el alias',
+    'decime el CBU',
+    'mandame el CVU',
+    'enviame los datos bancarios',
+    'necesito los datos de transferencia',
+    'dónde te transfiero',
+    'como hago para pagarte',
+    'como abono',
+    'te puedo transferir',
+    'puedo transferirte',
+    'como pago',
+    'formas de pago',
+    'medio de pago',
+    'aceptan transferencia',
+    'puedo pagar por transferencia',
+    'lo puedo pagar por transferencia',
+    'pagar en transferencia',
+    'transferencia',
+    'transferecnia',
+    'tranferencia',
+    'trasferir',
+    'datos para transferir',
+    'datos de transferencia',
+    'cómo hago para transferirte',
+    'te quiero transferir',
+    'transfiere',
+    'transferime',
+    'PASAME EL ALIAS',
+    '¿CUÁL ES EL CBU?',
+    'pasame alias',
+    'pasame CBU'
+  ];
+  for (const phrase of transferRequestPhrases) {
+    assert.strictEqual(parseTransferPaymentIntent(phrase), 'request', phrase);
+    const decision = await buildSafeCommercialIntentReply({
+      clinic: baseClinic,
+      conversation: state.conversation,
+      inboundText: phrase
+    });
+    assert.match(decision.replyText, /OPTURON\.PAGOS/, phrase);
+    assert.match(decision.replyText, /0000003100000000000001/, phrase);
+  }
+
+  for (const phrase of ['ya pagué', 'ya transferí', 'hice la transferencia', 'listo pagado', 'listo transferido', 'te mando el comprobante']) {
+    assert.strictEqual(parseTransferPaymentIntent(phrase), 'proof_notice', phrase);
+  }
+
+  const tenantBClinic = {
+    ...baseClinic,
+    id: 'clinic-2',
+    settings: {
+      ...baseClinic.settings,
+      bot: {
+        ...baseClinic.settings.bot,
+        transferConfig: { enabled: true, alias: 'TENANT.B', cbu: '9999999999999999999999' }
+      }
+    }
+  };
+  const tenantBDecision = await buildSafeCommercialIntentReply({
+    clinic: tenantBClinic,
+    conversation: { ...state.conversation, clinicId: 'clinic-2' },
+    inboundText: 'pasame el alias'
+  });
+  assert.match(tenantBDecision.replyText, /TENANT\.B/);
+  assert.doesNotMatch(tenantBDecision.replyText, /OPTURON\.PAGOS|0000003100000000000001/);
+
+  const missingTransferDecision = await buildSafeCommercialIntentReply({
+    clinic: { ...baseClinic, settings: { ...baseClinic.settings, bot: {} } },
+    conversation: state.conversation,
+    inboundText: 'pasame el CBU'
+  });
+  assert.match(missingTransferDecision.replyText, /no tengo datos|no tengo.*configurad|equipo/i);
+  assert.doesNotMatch(missingTransferDecision.replyText, /OPTURON\.PAGOS|0000003100000000000001|TENANT\.B/);
+
+  const existingCart = [{
+    productId: 'valid-product',
+    name: 'Producto válido',
+    price: 1250,
+    currency: 'ARS',
+    quantity: 1
+  }];
+  let rejectedPriceDecision = null;
+  for (const [label, invalidPrice] of [
+    ['null', null],
+    ['undefined', undefined],
+    ['empty', ''],
+    ['whitespace', '   '],
+    ['nan', Number.NaN],
+    ['text', 'abc'],
+    ['infinity', Number.POSITIVE_INFINITY],
+    ['negative', -1]
+  ]) {
+    state.products = [{
+      id: `invalid-${label}`,
+      name: `Producto ${label}`,
+      price: invalidPrice,
+      currency: 'ARS',
+      stock: 5,
+      status: 'active'
+    }];
+    const decision = await resolveCommerceDecision({
+      conversation: {
+        ...state.conversation,
+        state: 'WAITING_QUANTITY',
+        context: {
+          activeBotDomain: 'commerce',
+          commerceCartItems: existingCart,
+          commerceCatalog: state.products,
+          commerceSelectedProduct: { productId: `invalid-${label}`, name: `Producto ${label}` }
+        }
+      },
+      clinic: baseClinic,
+      contact: state.contact,
+      inboundText: '1'
+    });
+    assert.match(decision.replyText, /falta un precio válido/i, label);
+    assert.deepStrictEqual(decision.contextPatch.commerceCartItems, existingCart, label);
+    assert.doesNotMatch(decision.replyText, /\$\s*0/, label);
+    rejectedPriceDecision = decision;
+  }
+
+  const preservedCartDecision = await resolveCommerceDecision({
+    conversation: {
+      ...state.conversation,
+      state: rejectedPriceDecision.newState,
+      context: { activeBotDomain: 'commerce', ...rejectedPriceDecision.contextPatch }
+    },
+    clinic: baseClinic,
+    contact: state.contact,
+    inboundText: 'ver carrito'
+  });
+  assert.match(preservedCartDecision.replyText, /Producto válido/);
+  assert.match(preservedCartDecision.replyText, /1[\.,]?250/);
+  assert.doesNotMatch(preservedCartDecision.replyText, /total parcial:\s*\$\s*0/i);
+
+  state.products = [{
+    id: 'catalog-missing-price',
+    name: 'Producto sin cotización',
+    price: null,
+    currency: 'ARS',
+    stock: 5,
+    status: 'active'
+  }];
+  const catalogEntryDecision = await resolveCommerceDecision({
+    conversation: { ...state.conversation, state: 'READY', context: { activeBotDomain: 'commerce' } },
+    clinic: baseClinic,
+    contact: state.contact,
+    inboundText: 'productos'
+  });
+  const catalogDisplayDecision = await resolveCommerceDecision({
+    conversation: {
+      ...state.conversation,
+      state: catalogEntryDecision.newState,
+      context: { activeBotDomain: 'commerce', ...catalogEntryDecision.contextPatch }
+    },
+    clinic: baseClinic,
+    contact: state.contact,
+    inboundText: '1'
+  });
+  assert.match(catalogDisplayDecision.replyText, /Producto sin cotización/);
+  assert.match(catalogDisplayDecision.replyText, /precio no disponible/i);
+  assert.doesNotMatch(catalogDisplayDecision.replyText, /\$\s*0/);
+
+  const invalidCartConfirmation = await resolveCommerceDecision({
+    conversation: {
+      ...state.conversation,
+      state: 'WAITING_PRODUCT_SELECTION',
+      context: {
+        activeBotDomain: 'commerce',
+        commerceCartItems: [
+          ...existingCart,
+          { productId: 'catalog-missing-price', name: 'Producto sin cotización', price: null, currency: 'ARS', quantity: 1 }
+        ]
+      }
+    },
+    clinic: baseClinic,
+    contact: state.contact,
+    inboundText: 'confirmar'
+  });
+  assert.match(invalidCartConfirmation.replyText, /falta un precio válido/i);
+  assert.deepStrictEqual(invalidCartConfirmation.contextPatch.commerceCartItems, existingCart);
+
+  for (const explicitZero of [0, '0', '0.00']) {
+    state.products = [{
+      id: 'free-product',
+      name: 'Producto bonificado',
+      price: explicitZero,
+      currency: 'ARS',
+      stock: 5,
+      status: 'active'
+    }];
+    const decision = await resolveCommerceDecision({
+      conversation: {
+        ...state.conversation,
+        state: 'WAITING_QUANTITY',
+        context: {
+          activeBotDomain: 'commerce',
+          commerceCartItems: existingCart,
+          commerceCatalog: state.products,
+          commerceSelectedProduct: { productId: 'free-product', name: 'Producto bonificado' }
+        }
+      },
+      clinic: baseClinic,
+      contact: state.contact,
+      inboundText: '1'
+    });
+    const freeItem = decision.contextPatch.commerceCartItems.find((item) => item.productId === 'free-product');
+    assert.ok(freeItem, String(explicitZero));
+    assert.strictEqual(freeItem.price, 0, String(explicitZero));
+    assert.ok(decision.contextPatch.commerceCartItems.some((item) => item.productId === 'valid-product'));
+  }
+  state.products = sampleProducts;
 
   const workerSource = fs.readFileSync(modulePath('src/worker.js'), 'utf8');
   const webhookSource = fs.readFileSync(modulePath('src/controllers/webhook.controller.js'), 'utf8');

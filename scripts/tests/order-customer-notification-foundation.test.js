@@ -168,6 +168,7 @@ async function testTransactionalFinalizationScenarios() {
   let orderSequence = 10;
   let notificationSequence = 10;
   let failNotificationInsert = false;
+  let productLookup = null;
   let lockTail = Promise.resolve();
   let lockCount = 0;
 
@@ -322,7 +323,7 @@ async function testTransactionalFinalizationScenarios() {
         sumRecordedAllocatedAmountsByInvoiceIds: async () => new Map()
       }),
       mockModule('src/repositories/products.repository.js', {
-        findProductById: async () => null,
+        findProductById: async () => productLookup,
         updateProduct: async () => null
       }),
       mockModule('src/repositories/inventory.repository.js', {}),
@@ -343,6 +344,28 @@ async function testTransactionalFinalizationScenarios() {
     clearModule('src/services/portal-orders.service.js');
     const finalizationService = require(path.join(root, 'src/services/order-customer-notifications.service.js'));
     const ordersService = require(path.join(root, 'src/services/portal-orders.service.js'));
+
+    productLookup = {
+      id: '33333333-3333-3333-3333-333333333333',
+      clinicId,
+      name: 'Producto sin precio',
+      unitPrice: null,
+      price: null,
+      currency: 'ARS',
+      vatRate: 0,
+      stock: 5,
+      status: 'active',
+      inventoryTrackingMode: 'legacy'
+    };
+    const invalidPriceOrder = await ordersService.createOrderForClinic(clinicId, {
+      contactId,
+      source: 'automation',
+      status: 'draft',
+      items: [{ productId: productLookup.id, quantity: 1 }]
+    });
+    assert.strictEqual(invalidPriceOrder.ok, false);
+    assert.strictEqual(invalidPriceOrder.reason, 'order_item_product_price_invalid');
+    productLookup = null;
 
     const firstOrderId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     database.orders.set(firstOrderId, buildOrder(firstOrderId));
