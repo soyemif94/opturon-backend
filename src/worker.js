@@ -1355,6 +1355,10 @@ function resolveBotDomainRoute({
     getActiveBusinessRecommendationContext(safeContext) ||
     getActiveCommercialSalesContext(safeContext)
   );
+  const contextualPaymentDataFollowUp = Boolean(
+    getActiveCommercialPaymentContext(safeContext) &&
+    isContextualTransferDataFollowUp(inboundText)
+  );
   const followUpCommerceIntent =
     commercialContextContinuation &&
     (
@@ -1376,6 +1380,7 @@ function resolveBotDomainRoute({
     inboundLooksLikeCommerceCancel ||
     paymentCommerceIntent ||
     Boolean(transferPaymentIntent) ||
+    contextualPaymentDataFollowUp ||
     followUpCommerceIntent ||
     intent === 'pricing' ||
     isExplicitCommerceTrigger(inboundText) ||
@@ -1682,6 +1687,7 @@ const COMMERCE_PRODUCTS_PAGE_SIZE = 10;
 const COMMERCE_MORE_KEYWORDS = new Set(['mas', 'más', 'ver mas', 'ver más', 'mostrar mas', 'mostrar más', 'siguiente']);
 const COMMERCE_UNCATEGORIZED_CATEGORY_ID = '__uncategorized__';
 const COMMERCIAL_SHORT_MEMORY_TTL_MS = 10 * 60 * 1000;
+const COMMERCIAL_PAYMENT_CONTEXT_TTL_MS = 30 * 60 * 1000;
 const COMMERCIAL_UNKNOWN = 'unknown';
 const COMMERCIAL_EVIDENCE_SOURCES = Object.freeze({
   EXPLICIT: 'EXPLICIT',
@@ -6167,14 +6173,14 @@ function getOrderedPlanProducts(products) {
   });
 }
 
-function getActiveCommercialPaymentContext(context) {
+function getActiveCommercialPaymentContext(context, nowMs = Date.now()) {
   const safeContext = context && typeof context === 'object' ? context : {};
   const paymentContext = safeContext.commercialPaymentContext && typeof safeContext.commercialPaymentContext === 'object'
     ? safeContext.commercialPaymentContext
     : null;
   if (!paymentContext) return null;
   const activeAtMs = Date.parse(String(paymentContext.activeAt || ''));
-  if (!Number.isFinite(activeAtMs) || Date.now() - activeAtMs > COMMERCIAL_SHORT_MEMORY_TTL_MS) return null;
+  if (!Number.isFinite(activeAtMs) || nowMs - activeAtMs > COMMERCIAL_PAYMENT_CONTEXT_TTL_MS) return null;
   const subjectProductId = String(paymentContext.subjectProductId || '').trim();
   if (!subjectProductId || paymentContext.status !== 'methods_presented') return null;
   return {
@@ -8601,11 +8607,10 @@ function buildPaymentMethodsReply({ paymentMethods, transferConfig, activePlanNa
   }
 
   if (hasConfiguredTransferData(transferConfig)) {
-    lines.push(
-      activePlanName
-        ? `Si querés avanzar con ${activePlanName}, también te puedo pasar los datos de transferencia por acá.`
-        : 'Si querés avanzar, también te puedo pasar los datos de transferencia por acá.'
-    );
+    const transferInstructions = buildTransferInstructionsText(transferConfig);
+    lines.push(activePlanName
+      ? `Para avanzar con ${activePlanName}:\n${transferInstructions}`
+      : transferInstructions);
   }
 
   if (!lines.length) {
@@ -9976,6 +9981,7 @@ function buildCommerceResetPatch(extra = {}) {
     commerceActivationOfferState: null,
     commerceActivationChoice: null,
     commerceDemoStep: null,
+    commercialPaymentContext: null,
     ...extra
   };
 }
@@ -14699,6 +14705,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
       newState: 'PAYMENT_TRANSFER',
       newStage: 'payment_pending_validation',
       contextPatch: {
+        commercialPaymentContext: null,
         commerceLastOrderId: transferOrderId,
         commerceLastOrderAt: safeContext && safeContext.commerceLastOrderAt ? safeContext.commerceLastOrderAt : new Date().toISOString(),
         transferPayment: {
@@ -20389,6 +20396,7 @@ if (require.main === module) {
 module.exports = {
   startWorker,
   __private__: {
+    COMMERCIAL_PAYMENT_CONTEXT_TTL_MS,
     hasAgendaContext,
     hasDemoContext,
     isPublicDemoExperienceIntent,

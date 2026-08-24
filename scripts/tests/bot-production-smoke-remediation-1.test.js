@@ -71,6 +71,49 @@ async function persistedTurn(stored, targetClinic, inboundText) {
   return { decision, next };
 }
 
+function resolveRoute(stored, targetClinic, inboundText) {
+  const commercialIntent = worker.detectCommercialIntent(inboundText);
+  return worker.resolveBotDomainRoute({
+    clinic: targetClinic,
+    currentState: String(stored.state || '').toUpperCase(),
+    safeContext: stored.context || {},
+    inboundText,
+    intent: worker.detectIntent(inboundText),
+    commercialIntentType: commercialIntent.type,
+    transferPaymentIntent: worker.parseTransferPaymentIntent(inboundText),
+    managementIntent: null,
+    inboundLooksLikeCommerce: worker.isCommerceEntryIntent(inboundText),
+    inboundLooksLikeCommerceCancel: false
+  });
+}
+
+async function routedPersistedTurn(stored, targetClinic, inboundText) {
+  const route = resolveRoute(stored, targetClinic, inboundText);
+  assert.strictEqual(route.domain, 'commerce', `router did not preserve commerce for ${inboundText}`);
+  assert.strictEqual(route.allowCommerce, true, `router blocked commerce for ${inboundText}`);
+  return persistedTurn(stored, targetClinic, inboundText);
+}
+
+async function withFakeNow(iso, callback) {
+  const RealDate = global.Date;
+  class FakeDate extends RealDate {
+    constructor(...args) {
+      super(...(args.length ? args : [iso]));
+    }
+
+    static now() {
+      return RealDate.parse(iso);
+    }
+  }
+
+  global.Date = FakeDate;
+  try {
+    return await callback();
+  } finally {
+    global.Date = RealDate;
+  }
+}
+
 async function runPaymentSequence(targetClinic, entityName, expectedMethod, expectedAlias) {
   let stored = persistedConversation(`conv-${targetClinic.id}`, targetClinic.id);
   let turn = await persistedTurn(stored, targetClinic, `dame más detalles de ${entityName}`);
@@ -81,9 +124,10 @@ async function runPaymentSequence(targetClinic, entityName, expectedMethod, expe
   turn = await persistedTurn(stored, targetClinic, '¿cómo lo pago?');
   stored = turn.next;
   check(`${targetClinic.id} methods are direct and tenant scoped`, turn.decision.replyText.includes(expectedMethod));
+  check(`${targetClinic.id} configured transfer data is direct`, turn.decision.replyText.includes(expectedAlias));
   check(`${targetClinic.id} payment context persisted`, Boolean(stored.context.commercialPaymentContext && stored.context.commercialPaymentContext.subjectProductId));
   const paymentStored = persistedConversation(stored.id, stored.clinicId, stored.state, stored.context);
-  turn = await persistedTurn(stored, targetClinic, 'Pasame los datos');
+  turn = await routedPersistedTurn(stored, targetClinic, 'Pasame los datos');
   check(`${targetClinic.id} contextual data resolves after reload`, turn.decision.replyText.includes(expectedAlias));
   return { replyText: turn.decision.replyText, paymentStored };
 }
@@ -111,6 +155,53 @@ async function main() {
   const saasResult = await runPaymentSequence(saasClinic, 'Plan Crecimiento', 'Transferencia SaaS', 'SAAS.A');
   const distResult = await runPaymentSequence(distClinic, 'Caja Mayorista Surtida', 'Transferencia Distribuidora', 'DIST.B');
   check('tenant A/B banking data does not leak', !saasResult.replyText.includes('DIST.B') && !distResult.replyText.includes('SAAS.A'));
+
+  const paymentTtlMs = worker.COMMERCIAL_PAYMENT_CONTEXT_TTL_MS;
+  check('payment context TTL is 30 minutes', paymentTtlMs === 30 * 60 * 1000);
+  const boundaryBaseMs = Date.parse('2026-08-24T05:04:43.681Z');
+  const boundaryContext = {
+    commercialPaymentContext: {
+      activeAt: new Date(boundaryBaseMs).toISOString(),
+      status: 'methods_presented',
+      subjectProductId: 'growth',
+      subjectName: 'Plan Crecimiento'
+    }
+  };
+  const activeOffsets = [30 * 1000, 2 * 60 * 1000, 5 * 60 * 1000, 10 * 60 * 1000, 30 * 60 * 1000, paymentTtlMs - 1];
+  for (const offsetMs of activeOffsets) {
+    await withFakeNow(new Date(boundaryBaseMs + offsetMs).toISOString(), async () => {
+      check(`payment context active at +${offsetMs}ms`, Boolean(worker.getActiveCommercialPaymentContext(boundaryContext)));
+      const route = resolveRoute(persistedConversation(`boundary-${offsetMs}`, 'saas', 'READY', boundaryContext), saasClinic, 'Pasame los datos');
+      check(`payment follow-up routes to commerce at +${offsetMs}ms`, route.domain === 'commerce' && route.allowCommerce === true);
+    });
+  }
+  await withFakeNow(new Date(boundaryBaseMs + paymentTtlMs + 1).toISOString(), async () => {
+    check('payment context expires just after boundary', worker.getActiveCommercialPaymentContext(boundaryContext) === null);
+    const expiredStored = persistedConversation('expired', 'saas', 'READY', boundaryContext);
+    check('expired vague follow-up fails closed at router', resolveRoute(expiredStored, saasClinic, 'Pasame los datos').domain === 'neutral');
+    const expiredDecision = await persistedTurn(expiredStored, saasClinic, 'Pasame los datos');
+    check('expired vague follow-up does not reveal banking data', !expiredDecision.decision.replyText.includes('SAAS.A'));
+  });
+
+  const realSequenceBaseMs = Date.parse('2026-08-24T06:00:00.000Z');
+  let delayedStored = persistedConversation('five-minute-real-sequence', 'saas');
+  await withFakeNow(new Date(realSequenceBaseMs).toISOString(), async () => {
+    delayedStored = (await persistedTurn(delayedStored, saasClinic, 'dame más detalles de Plan Crecimiento')).next;
+  });
+  await withFakeNow(new Date(realSequenceBaseMs + 5 * 60 * 1000).toISOString(), async () => {
+    delayedStored = (await persistedTurn(delayedStored, saasClinic, 'me interesa')).next;
+  });
+  const paymentTurnMs = realSequenceBaseMs + 10 * 60 * 1000;
+  await withFakeNow(new Date(paymentTurnMs).toISOString(), async () => {
+    const paymentTurn = await persistedTurn(delayedStored, saasClinic, '¿cómo lo pago?');
+    delayedStored = paymentTurn.next;
+    check('payment turn refreshes timestamp at T2', delayedStored.context.commercialPaymentContext.activeAt === new Date(paymentTurnMs).toISOString());
+  });
+  await withFakeNow(new Date(paymentTurnMs + 5 * 60 * 1000).toISOString(), async () => {
+    const delayedFollowUp = await routedPersistedTurn(delayedStored, saasClinic, 'Pasame los datos');
+    check('real persisted/reloaded +5m follow-up returns tenant data', delayedFollowUp.decision.replyText.includes('SAAS.A'));
+    check('real persisted/reloaded +5m follow-up avoids fallback', !/No llegué a entenderte|planes, pagos/i.test(delayedFollowUp.decision.replyText));
+  });
   for (const followUp of ['mandame los datos', 'pasamelos', 'dale, pasamelos', 'mandamelos', 'por transferencia', 'transferencia', 'el alias', 'el cbu']) {
     const resolved = await persistedTurn(saasResult.paymentStored, saasClinic, followUp);
     check(`payment follow-up resolves: ${followUp}`, resolved.decision.replyText.includes('SAAS.A'));
@@ -125,8 +216,14 @@ async function main() {
   }
   const missing = await persistedTurn(missingStored, missingConfigClinic, 'pasame los datos');
   check('missing bank config fails closed', !/SAAS\.A|1{22}/.test(missing.decision.replyText));
-  const reported = await persistedTurn(persistedConversation('reported', 'saas', 'PAYMENT_TRANSFER', { transferPayment: { status: 'payment_requested', requestedAt: new Date().toISOString() } }), saasClinic, 'ya transferí');
+  const reported = await persistedTurn(persistedConversation('reported', 'saas', 'PAYMENT_TRANSFER', {
+    transferPayment: { status: 'payment_requested', requestedAt: new Date().toISOString() },
+    commercialPaymentContext: saasResult.paymentStored.context.commercialPaymentContext
+  }), saasClinic, 'ya transferí');
   check(`payment reported requires proof/human validation: ${reported.decision.replyText}`, /comprobante|valid|revis/i.test(reported.decision.replyText));
+  check('payment reported invalidates short-lived banking disclosure context', reported.next.context.commercialPaymentContext === null);
+  const cancelled = await persistedTurn(saasResult.paymentStored, saasClinic, 'cancelar');
+  check('explicit commerce cancellation invalidates payment context', cancelled.next.context.commercialPaymentContext === null);
 
   const mediaDecision = await worker.buildSafeCommercialIntentReply({ clinic: saasClinic, conversation: persistedConversation('media', 'saas'), contact, inboundText: 'más detalles de Plan Crecimiento' });
   check('media detail sends image before full text contract', mediaDecision.outboundMedia.length === 1 && mediaDecision.sendTextWithMedia === true);
