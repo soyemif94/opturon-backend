@@ -379,7 +379,7 @@ async function cancelPreapproval(preapprovalId) {
 }
 
 async function reactivatePreapproval(preapprovalId) {
-  return updatePreapproval(preapprovalId, { status: 'pending' });
+  return updatePreapproval(preapprovalId, { status: 'authorized' });
 }
 
 async function getPayment(paymentId) {

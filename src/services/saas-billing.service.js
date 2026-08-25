@@ -33,6 +33,13 @@ const TENANT_PLAN_MAP = Object.freeze({
   crecimiento: 'growth',
   empresa: 'enterprise'
 });
+const TERMINAL_REMOTE_STATUSES = new Set(['canceled', 'cancelled', 'expired', 'ended', 'finished']);
+const REMOTE_ACTIONS = Object.freeze({
+  pending: ['cancel'],
+  authorized: ['pause', 'cancel'],
+  active: ['pause', 'cancel'],
+  paused: ['reactivate', 'cancel']
+});
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -178,6 +185,128 @@ function mapPreapprovalToSubscriptionPatch(preapproval) {
   };
 }
 
+function normalizeRemoteStatus(value) {
+  return normalizeString(value).toLowerCase() || 'unknown';
+}
+
+function availableSubscriptionActions(remoteStatus, localStatus) {
+  const normalizedLocal = normalizeString(localStatus).toLowerCase();
+  if (normalizedLocal === 'canceled' || normalizedLocal === 'suspended') return [];
+  return [...(REMOTE_ACTIONS[normalizeRemoteStatus(remoteStatus)] || [])];
+}
+
+function providerAvailableActions(remoteStatus) {
+  return [...(REMOTE_ACTIONS[normalizeRemoteStatus(remoteStatus)] || [])];
+}
+
+function subscriptionStatusMessage(remoteStatus, localStatus, metadata = {}) {
+  const reconciliation = metadata.billingReconciliation && typeof metadata.billingReconciliation === 'object'
+    ? metadata.billingReconciliation
+    : {};
+  if (reconciliation.disposition === 'pending_authorization_closed_locally') {
+    return 'Esta solicitud nunca fue activada y quedo cerrada en Opturon.';
+  }
+  const normalizedRemote = normalizeRemoteStatus(remoteStatus);
+  if (normalizedRemote === 'unavailable' || normalizeString(localStatus).toLowerCase() === 'suspended') {
+    return 'Esta suscripcion ya no esta disponible en Mercado Pago.';
+  }
+  if (TERMINAL_REMOTE_STATUSES.has(normalizedRemote)) {
+    return 'Esta suscripcion ya no esta activa en Mercado Pago.';
+  }
+  return null;
+}
+
+function decorateSubscription(subscription) {
+  if (!subscription) return subscription;
+  return {
+    ...subscription,
+    availableActions: availableSubscriptionActions(subscription.mercadoPagoStatus, subscription.localStatus),
+    statusMessage: subscriptionStatusMessage(
+      subscription.mercadoPagoStatus,
+      subscription.localStatus,
+      subscription.metadata || {}
+    )
+  };
+}
+
+function buildReconciliationMetadata(subscription, input) {
+  const metadata = subscription.metadata && typeof subscription.metadata === 'object' ? subscription.metadata : {};
+  return {
+    ...metadata,
+    billingReconciliation: {
+      disposition: input.disposition,
+      remoteStatus: input.remoteStatus || null,
+      action: input.action || null,
+      providerActionApplied: Boolean(input.providerActionApplied),
+      upstreamStatus: input.upstreamStatus || null,
+      reconciledAt: new Date().toISOString()
+    }
+  };
+}
+
+function mergeProviderAndReconciliationMetadata(subscription, providerMetadata, input) {
+  const reconciled = buildReconciliationMetadata(subscription, input);
+  return {
+    ...reconciled,
+    ...(providerMetadata && typeof providerMetadata === 'object' ? providerMetadata : {}),
+    billingReconciliation: reconciled.billingReconciliation
+  };
+}
+
+function remoteResourceMatches(subscription, remote) {
+  const remoteId = normalizeString(remote && remote.id);
+  const localId = normalizeString(subscription && subscription.mercadoPagoPreapprovalId);
+  if (!remoteId || !localId || remoteId !== localId) return false;
+  const remoteReference = normalizeString(remote && remote.external_reference);
+  const localReference = normalizeString(subscription && subscription.externalReference);
+  return !remoteReference || !localReference || remoteReference === localReference;
+}
+
+function isRemoteUnavailableError(error) {
+  const status = Number(error && error.status);
+  if (status === 404) return true;
+  if (status !== 400) return false;
+  const detail = `${normalizeString(error && error.message)} ${JSON.stringify(error && error.body || {})}`.toLowerCase();
+  return detail.includes('not found') || detail.includes('invalid preapproval') || detail.includes('invalid id');
+}
+
+function isKnownProviderActionRejection(error) {
+  return [400, 409, 422].includes(Number(error && error.status));
+}
+
+async function persistSubscriptionReconciliation(subscription, clinic, patch, audit, dependencies = {}) {
+  const runTransaction = dependencies.withTransaction || withTransaction;
+  const updateSubscription = dependencies.updateSaasSubscriptionById || updateSaasSubscriptionById;
+  const syncBilling = dependencies.syncTenantBillingState || syncTenantBillingState;
+  const insertAudit = dependencies.insertSubscriptionEvent || insertSubscriptionEvent;
+  return runTransaction(async (client) => {
+    const next = await updateSubscription(subscription.id, patch, client);
+    await syncBilling(client, clinic, next);
+    await insertAudit({
+      subscriptionId: subscription.id,
+      provider: 'mercado_pago',
+      topic: 'admin_subscription_action',
+      action: audit.action || 'reconcile',
+      resourceId: subscription.mercadoPagoPreapprovalId,
+      notificationId: null,
+      requestId: null,
+      dedupeKey: `admin-billing:${subscription.id}:${audit.action || 'reconcile'}:${randomUUID()}`,
+      signatureValid: null,
+      raw: {
+        localStatusBefore: subscription.localStatus,
+        localStatusAfter: next.localStatus,
+        remoteStatus: audit.remoteStatus || null,
+        disposition: audit.disposition,
+        providerActionApplied: Boolean(audit.providerActionApplied),
+        upstreamStatus: audit.upstreamStatus || null
+      },
+      processingStatus: 'processed',
+      processingError: null
+    }, client);
+    return next;
+  });
+}
+
 function buildPreapprovalReason(planCode, tenantId) {
   return `Opturon ${planCode} - ${tenantId}`;
 }
@@ -212,6 +341,16 @@ async function createSaasSubscriptionForTenant(input) {
 
   const clinic = await findClinicByExternalTenantId(tenantId);
   if (!clinic) return { ok: false, reason: 'tenant_not_found', status: 404 };
+
+  const existingSubscription = await findLatestSaasSubscriptionByTenantId(tenantId);
+  if (existingSubscription && ['pending', 'active', 'paused'].includes(existingSubscription.localStatus)) {
+    return {
+      ok: false,
+      reason: 'billing_subscription_already_exists',
+      status: 409,
+      subscription: decorateSubscription(existingSubscription)
+    };
+  }
 
   const subscriptionId = randomUUID();
   const externalReference = buildExternalReference(tenantId, subscriptionId);
@@ -285,13 +424,13 @@ async function createSaasSubscriptionForTenant(input) {
 async function getSaasSubscriptionDetails(subscriptionId) {
   const subscription = await findSaasSubscriptionById(subscriptionId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
-  return { ok: true, subscription };
+  return { ok: true, subscription: decorateSubscription(subscription) };
 }
 
 async function listSaasSubscriptionsForAdmin(filters = {}) {
   const tenantId = normalizeString(filters.tenantId);
   const items = await listSaasSubscriptions({ externalTenantId: tenantId || null });
-  return { ok: true, subscriptions: items };
+  return { ok: true, subscriptions: items.map(decorateSubscription) };
 }
 
 async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
@@ -385,37 +524,189 @@ async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
   }
 }
 
-async function executeSubscriptionAction(subscriptionId, action) {
-  const subscription = await findSaasSubscriptionById(subscriptionId);
+async function executeSubscriptionAction(subscriptionId, action, dependencies = {}) {
+  const findSubscription = dependencies.findSaasSubscriptionById || findSaasSubscriptionById;
+  const findClinic = dependencies.findClinicByExternalTenantId || findClinicByExternalTenantId;
+  const readRemote = dependencies.getPreapproval || getPreapproval;
+  const cancelRemote = dependencies.cancelPreapproval || cancelPreapproval;
+  const pauseRemote = dependencies.pausePreapproval || pausePreapproval;
+  const reactivateRemote = dependencies.reactivatePreapproval || reactivatePreapproval;
+  const subscription = await findSubscription(subscriptionId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
 
-  const clinic = await findClinicByExternalTenantId(subscription.externalTenantId);
+  const clinic = await findClinic(subscription.externalTenantId);
   if (!clinic) return { ok: false, reason: 'tenant_not_found', status: 404 };
-
-  let remote = null;
   if (!subscription.mercadoPagoPreapprovalId) {
     return { ok: false, reason: 'missing_preapproval_id', status: 409 };
   }
 
-  if (action === 'cancel') {
-    remote = await cancelPreapproval(subscription.mercadoPagoPreapprovalId);
-  } else if (action === 'pause') {
-    remote = await pausePreapproval(subscription.mercadoPagoPreapprovalId);
-  } else if (action === 'reactivate') {
-    remote = await reactivatePreapproval(subscription.mercadoPagoPreapprovalId);
-  } else {
-    return { ok: false, reason: 'unsupported_action', status: 400 };
+  const persist = (patch, audit) => persistSubscriptionReconciliation(
+    subscription,
+    clinic,
+    patch,
+    audit,
+    dependencies
+  );
+
+  let currentRemote = null;
+  try {
+    currentRemote = await readRemote(subscription.mercadoPagoPreapprovalId);
+  } catch (error) {
+    if (!isRemoteUnavailableError(error)) {
+      logError('billing_subscription_reconciliation_read_failed', {
+        subscriptionId: subscription.id,
+        action,
+        upstreamStatus: Number(error && error.status) || null,
+        cause: normalizeString(error && error.code) || 'provider_read_failed'
+      });
+      return {
+        ok: false,
+        reason: 'billing_provider_unavailable',
+        status: 502,
+        message: 'No se pudo confirmar el estado de la suscripcion en Mercado Pago.'
+      };
+    }
+    const metadata = buildReconciliationMetadata(subscription, {
+      disposition: 'remote_unavailable',
+      remoteStatus: 'unavailable',
+      action,
+      providerActionApplied: false,
+      upstreamStatus: Number(error && error.status) || null
+    });
+    const updated = await persist(
+      { localStatus: 'suspended', mercadoPagoStatus: 'unavailable', metadata },
+      { action, remoteStatus: 'unavailable', disposition: 'remote_unavailable', upstreamStatus: error.status }
+    );
+    return {
+      ok: true,
+      reconciled: true,
+      providerActionApplied: false,
+      message: 'Esta suscripcion ya no esta disponible en Mercado Pago.',
+      subscription: decorateSubscription(updated)
+    };
+  }
+
+  if (!remoteResourceMatches(subscription, currentRemote)) {
+    return {
+      ok: false,
+      reason: 'billing_subscription_remote_mismatch',
+      status: 409,
+      message: 'La suscripcion no coincide con el registro de Mercado Pago.'
+    };
+  }
+
+  const remoteStatus = normalizeRemoteStatus(currentRemote.status);
+  if (TERMINAL_REMOTE_STATUSES.has(remoteStatus)) {
+    const patch = mapPreapprovalToSubscriptionPatch(currentRemote);
+    patch.localStatus = 'canceled';
+    patch.metadata = mergeProviderAndReconciliationMetadata(subscription, patch.metadata, {
+      disposition: 'remote_terminal', remoteStatus, action, providerActionApplied: false
+    });
+    const updated = await persist(patch, {
+      action, remoteStatus, disposition: 'remote_terminal', providerActionApplied: false
+    });
+    return {
+      ok: true,
+      reconciled: true,
+      providerActionApplied: false,
+      message: 'Esta suscripcion ya no esta activa en Mercado Pago.',
+      subscription: decorateSubscription(updated)
+    };
+  }
+
+  if (!providerAvailableActions(remoteStatus).includes(action)) {
+    const patch = mapPreapprovalToSubscriptionPatch(currentRemote);
+    if (remoteStatus === 'unknown') patch.localStatus = 'suspended';
+    patch.metadata = mergeProviderAndReconciliationMetadata(subscription, patch.metadata, {
+      disposition: 'action_not_available', remoteStatus, action, providerActionApplied: false
+    });
+    const updated = await persist(patch, {
+      action, remoteStatus, disposition: 'action_not_available', providerActionApplied: false
+    });
+    return {
+      ok: false,
+      reason: 'billing_subscription_action_not_available',
+      status: 409,
+      message: 'La accion no esta disponible para el estado actual de la suscripcion.',
+      subscription: decorateSubscription(updated)
+    };
+  }
+
+  let remote = null;
+  try {
+    if (action === 'cancel') remote = await cancelRemote(subscription.mercadoPagoPreapprovalId);
+    else if (action === 'pause') remote = await pauseRemote(subscription.mercadoPagoPreapprovalId);
+    else if (action === 'reactivate') remote = await reactivateRemote(subscription.mercadoPagoPreapprovalId);
+    else return { ok: false, reason: 'unsupported_action', status: 400 };
+  } catch (error) {
+    if (action === 'cancel' && remoteStatus === 'pending' && isKnownProviderActionRejection(error)) {
+      const metadata = buildReconciliationMetadata(subscription, {
+        disposition: 'pending_authorization_closed_locally',
+        remoteStatus,
+        action,
+        providerActionApplied: false,
+        upstreamStatus: Number(error && error.status) || null
+      });
+      const updated = await persist(
+        { localStatus: 'canceled', mercadoPagoStatus: remoteStatus, metadata },
+        {
+          action,
+          remoteStatus,
+          disposition: 'pending_authorization_closed_locally',
+          providerActionApplied: false,
+          upstreamStatus: error.status
+        }
+      );
+      logInfo('billing_pending_authorization_closed_locally', {
+        subscriptionId: subscription.id,
+        externalTenantId: subscription.externalTenantId,
+        upstreamStatus: Number(error && error.status) || null
+      });
+      return {
+        ok: true,
+        reconciled: true,
+        providerActionApplied: false,
+        message: 'Esta solicitud nunca fue activada y quedo cerrada en Opturon.',
+        subscription: decorateSubscription(updated)
+      };
+    }
+    logError('billing_subscription_provider_action_failed', {
+      subscriptionId: subscription.id,
+      action,
+      remoteStatus,
+      upstreamStatus: Number(error && error.status) || null,
+      cause: normalizeString(error && error.code) || 'provider_action_failed'
+    });
+    return {
+      ok: false,
+      reason: 'billing_subscription_action_not_available',
+      status: isKnownProviderActionRejection(error) ? 409 : 502,
+      message: isKnownProviderActionRejection(error)
+        ? 'Mercado Pago no permite esta accion para el estado actual de la suscripcion.'
+        : 'No se pudo confirmar la accion en Mercado Pago.'
+    };
   }
 
   const patch = mapPreapprovalToSubscriptionPatch(remote);
-
-  const updated = await withTransaction(async (client) => {
-    const next = await updateSaasSubscriptionById(subscription.id, patch, client);
-    await syncTenantBillingState(client, clinic, next);
-    return next;
+  patch.metadata = mergeProviderAndReconciliationMetadata(subscription, patch.metadata, {
+    disposition: 'provider_action_applied',
+    remoteStatus: normalizeRemoteStatus(remote && remote.status),
+    action,
+    providerActionApplied: true
   });
-
-  return { ok: true, subscription: updated };
+  const updated = await persist(patch, {
+    action,
+    remoteStatus: normalizeRemoteStatus(remote && remote.status),
+    disposition: 'provider_action_applied',
+    providerActionApplied: true
+  });
+  return {
+    ok: true,
+    reconciled: true,
+    providerActionApplied: true,
+    message: 'Suscripcion actualizada y reconciliada con Mercado Pago.',
+    subscription: decorateSubscription(updated)
+  };
 }
 
 async function refreshSubscriptionFromMercadoPagoByPreapprovalId(preapprovalId) {
@@ -728,6 +1019,14 @@ module.exports = {
     buildPreapprovalWebhookMetadata,
     buildPaymentWebhookMetadata,
     resolveSubscriptionIdFromPayment,
-    resolveExternalReferenceFromPayment
+    resolveExternalReferenceFromPayment,
+    normalizeRemoteStatus,
+    availableSubscriptionActions,
+    providerAvailableActions,
+    subscriptionStatusMessage,
+    decorateSubscription,
+    remoteResourceMatches,
+    isRemoteUnavailableError,
+    isKnownProviderActionRejection
   }
 };

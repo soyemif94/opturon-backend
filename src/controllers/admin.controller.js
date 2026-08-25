@@ -314,7 +314,9 @@ async function postAdminBillingSubscription(req, res) {
     if (!result.ok) {
       return res.status(result.status || 400).json({
         success: false,
-        error: result.reason
+        error: result.reason,
+        message: result.message || undefined,
+        data: result.subscription ? { subscription: result.subscription } : undefined
       });
     }
 
@@ -368,15 +370,23 @@ async function postAdminBillingSubscriptionAction(req, res) {
     if (!result.ok) {
       return res.status(result.status || 400).json({
         success: false,
-        error: result.reason
+        error: result.reason,
+        message: result.message || undefined,
+        data: result.subscription ? { subscription: result.subscription } : undefined
       });
     }
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
-    return res.status(500).json({
+    logError('billing_subscription_action_failed', {
+      subscriptionId,
+      action,
+      upstreamStatus: Number(error && error.status) || null,
+      cause: normalizeErrorCode(error && error.code) || 'unexpected_error'
+    });
+    return res.status(502).json({
       success: false,
       error: 'billing_subscription_action_failed',
-      details: error.message
+      message: 'No se pudo confirmar el estado de la suscripcion en Mercado Pago.'
     });
   }
 }
