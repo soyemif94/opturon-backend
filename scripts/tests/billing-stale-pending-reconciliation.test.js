@@ -90,6 +90,19 @@ test('pending remote + cancel success reconciles to canceled', async () => {
   assert.equal(harness.calls.read, 1);
   assert.equal(harness.calls.cancel, 1);
   assert.equal(harness.calls.audit, 1);
+  assert.equal(harness.calls.lastAudit.raw.eventType, 'BILLING_SUBSCRIPTION_CANCELED');
+  assert.notEqual(harness.calls.lastAudit.raw.eventType, 'CLIENT_SUSPENDED');
+});
+
+test('billing reconciliation emits a billing event, never a client lifecycle event', async () => {
+  const harness = buildHarness({
+    subscription: { localStatus: 'active', mercadoPagoStatus: 'authorized' },
+    remote: buildRemote('authorized'),
+    actionRemote: buildRemote('paused')
+  });
+  await executeSubscriptionAction(SUBSCRIPTION_ID, 'pause', harness.dependencies);
+  assert.equal(harness.calls.lastAudit.raw.eventType, 'BILLING_RECONCILED');
+  assert.doesNotMatch(harness.calls.lastAudit.raw.eventType, /^CLIENT_/);
 });
 
 test('authorized + cancel is allowed', async () => {

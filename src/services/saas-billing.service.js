@@ -94,14 +94,6 @@ function toIsoDate(value) {
   return text || null;
 }
 
-function deriveTenantLifecycleStatus(localStatus) {
-  if (localStatus === 'active') return 'active';
-  if (localStatus === 'pending') return 'trial';
-  if (localStatus === 'suspended' || localStatus === 'canceled') return 'suspended';
-  if (localStatus === 'paused' || localStatus === 'payment_failed') return 'at_risk';
-  return 'trial';
-}
-
 function buildTenantBillingSnapshot(subscription) {
   return {
     provider: 'mercado_pago',
@@ -126,15 +118,21 @@ function buildTenantBillingSnapshot(subscription) {
 }
 
 async function syncTenantBillingState(client, clinic, subscription) {
+  if (
+    normalizeString(clinic && clinic.externalTenantId) &&
+    normalizeString(subscription && subscription.externalTenantId) &&
+    normalizeString(clinic.externalTenantId) !== normalizeString(subscription.externalTenantId)
+  ) {
+    throw new Error('billing_tenant_mismatch');
+  }
+
   const settings = parseSettings(clinic.settings);
   const portal = settings.portal && typeof settings.portal === 'object' ? { ...settings.portal } : {};
   const policy = portal.policy && typeof portal.policy === 'object' ? { ...portal.policy } : {};
-  const lifecycle = portal.lifecycle && typeof portal.lifecycle === 'object' ? { ...portal.lifecycle } : {};
   const billing = portal.billing && typeof portal.billing === 'object' ? { ...portal.billing } : {};
 
   const mappedPlanCode = TENANT_PLAN_MAP[subscription.planCode] || policy.planCode || 'basic';
   policy.planCode = mappedPlanCode;
-  lifecycle.status = deriveTenantLifecycleStatus(subscription.localStatus);
   billing.status = subscription.localStatus;
   billing.subscription = buildTenantBillingSnapshot(subscription);
 
@@ -143,7 +141,6 @@ async function syncTenantBillingState(client, clinic, subscription) {
     portal: {
       ...portal,
       policy,
-      lifecycle,
       billing
     }
   };
@@ -155,6 +152,13 @@ async function syncTenantBillingState(client, clinic, subscription) {
      WHERE id = $1::uuid`,
     [clinic.id, JSON.stringify(nextSettings)]
   );
+}
+
+function resolveBillingAuditEventType(action, localStatusAfter) {
+  if (normalizeString(action).toLowerCase() === 'cancel' && normalizeString(localStatusAfter).toLowerCase() === 'canceled') {
+    return 'BILLING_SUBSCRIPTION_CANCELED';
+  }
+  return 'BILLING_RECONCILED';
 }
 
 function mapPreapprovalToSubscriptionPatch(preapproval) {
@@ -293,6 +297,7 @@ async function persistSubscriptionReconciliation(subscription, clinic, patch, au
       dedupeKey: `admin-billing:${subscription.id}:${audit.action || 'reconcile'}:${randomUUID()}`,
       signatureValid: null,
       raw: {
+        eventType: resolveBillingAuditEventType(audit.action, next.localStatus),
         localStatusBefore: subscription.localStatus,
         localStatusAfter: next.localStatus,
         remoteStatus: audit.remoteStatus || null,
@@ -1027,6 +1032,8 @@ module.exports = {
     decorateSubscription,
     remoteResourceMatches,
     isRemoteUnavailableError,
-    isKnownProviderActionRejection
+    isKnownProviderActionRejection,
+    syncTenantBillingState,
+    resolveBillingAuditEventType
   }
 };
