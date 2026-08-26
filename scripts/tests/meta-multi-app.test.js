@@ -160,6 +160,61 @@ async function testInstagramLoginExchangeCredentials() {
   }
 }
 
+async function testInstagramLoginExchangeFailureObservability() {
+  const previousEnv = {
+    instagramOauthProvider: env.instagramOauthProvider,
+    instagramBusinessAppId: env.instagramBusinessAppId,
+    instagramBusinessAppSecret: env.instagramBusinessAppSecret
+  };
+  const previousFetch = global.fetch;
+  const previousWarn = console.warn;
+  const warnings = [];
+  env.instagramOauthProvider = 'instagram_login';
+  env.instagramBusinessAppId = '1349038906605969';
+  env.instagramBusinessAppSecret = 'instagram-login-secret-never-log';
+  global.fetch = async () => ({
+    ok: false,
+    status: 400,
+    headers: { get: (name) => name.toLowerCase() === 'content-type' ? 'application/json; charset=UTF-8' : null },
+    text: async () => JSON.stringify({
+      error: {
+        type: 'OAuthException',
+        code: 190,
+        error_subcode: 463,
+        message: 'Token exchange rejected by Meta authorization_code=authorization-code-never-log'
+      }
+    })
+  });
+  console.warn = (value) => warnings.push(String(value));
+
+  try {
+    await assert.rejects(
+      () => exchangeOAuthCodeForAccessToken({
+        code: 'authorization-code-never-log',
+        redirectUri: 'https://www.opturon.com/api/app/integrations/instagram/callback',
+        requestId: 'request-safe'
+      }),
+      (error) => error && error.reason === 'instagram_oauth_exchange_failed' && error.status === 400
+    );
+    assert.equal(warnings.length, 1);
+    const warning = JSON.parse(warnings[0]);
+    assert.equal(warning.message, 'instagram_oauth_token_exchange_failed');
+    assert.equal(warning.stage, 'instagram_oauth_token_exchange');
+    assert.equal(warning.providerHttpStatus, 400);
+    assert.equal(warning.providerErrorType, 'OAuthException');
+    assert.equal(warning.providerErrorCode, '190');
+    assert.equal(warning.providerErrorSubcode, '463');
+    assert.equal(warning.providerErrorMessage, 'Token exchange rejected by Meta [REDACTED]');
+    assert.equal(warning.responseContentType, 'application/json; charset=UTF-8');
+    assert.equal(warnings.join(' ').includes('authorization-code-never-log'), false);
+    assert.equal(warnings.join(' ').includes('instagram-login-secret-never-log'), false);
+  } finally {
+    global.fetch = previousFetch;
+    console.warn = previousWarn;
+    Object.assign(env, previousEnv);
+  }
+}
+
 async function testInstagramExchangeRejectsUnknownProviderOverride() {
   const previousEnv = {
     instagramOauthProvider: env.instagramOauthProvider
@@ -217,6 +272,7 @@ async function run() {
   await testInstagramExchangeCredentials();
   await testInstagramExchangeProviderOverride();
   await testInstagramLoginExchangeCredentials();
+  await testInstagramLoginExchangeFailureObservability();
   await testInstagramExchangeRejectsUnknownProviderOverride();
   await testInstagramLoginDiscoveryRequestsIdField();
   console.log('meta-multi-app.test.js: ok');

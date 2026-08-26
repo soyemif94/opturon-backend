@@ -36,6 +36,44 @@ function buildOAuthError(result, fallbackReason) {
   return error;
 }
 
+function normalizeProviderErrorValue(value, maxLength = 1000) {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value).trim();
+  return normalized ? normalized.slice(0, maxLength) : null;
+}
+
+function sanitizeProviderErrorMessage(value) {
+  const normalized = normalizeProviderErrorValue(value);
+  if (!normalized) return null;
+  return normalized.replace(
+    /\b(?:authorization[_ -]?code|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|state)\s*[=:]\s*[^\s&,]+/gi,
+    '[REDACTED]'
+  );
+}
+
+function summarizeInstagramOAuthExchangeFailure({ response, json, requestId = null }) {
+  const nestedError = json && typeof json === 'object' && json.error && typeof json.error === 'object'
+    ? json.error
+    : null;
+  const providerError = nestedError || (json && typeof json === 'object' ? json : {});
+  const contentType = response && response.headers && typeof response.headers.get === 'function'
+    ? normalizeProviderErrorValue(response.headers.get('content-type'), 200)
+    : null;
+
+  return {
+    stage: 'instagram_oauth_token_exchange',
+    requestId: requestId || null,
+    providerHttpStatus: response && Number.isFinite(Number(response.status)) ? Number(response.status) : null,
+    providerErrorType: normalizeProviderErrorValue(providerError.type || providerError.error_type, 200),
+    providerErrorCode: normalizeProviderErrorValue(providerError.code || providerError.error_code, 100),
+    providerErrorSubcode: normalizeProviderErrorValue(providerError.error_subcode || providerError.subcode, 100),
+    providerErrorMessage: sanitizeProviderErrorMessage(
+      providerError.message || providerError.error_message || (typeof json === 'string' ? json : null)
+    ),
+    responseContentType: contentType
+  };
+}
+
 async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOverride = null, requestId = null }) {
   const provider = getInstagramOauthProvider(providerOverride);
   const appId = String(provider === 'instagram_login'
@@ -80,6 +118,11 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
   }
 
   if (!response.ok || !json || !json.access_token) {
+    logWarn('instagram_oauth_token_exchange_failed', summarizeInstagramOAuthExchangeFailure({
+      response,
+      json,
+      requestId
+    }));
     const error = new Error((json && json.error && json.error.message) || 'instagram_oauth_exchange_failed');
     error.reason = 'instagram_oauth_exchange_failed';
     error.status = response.status;
