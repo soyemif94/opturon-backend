@@ -161,11 +161,42 @@ async function markPortalInvitationAccepted(invitationId, client = null) {
   return result.rows[0] || null;
 }
 
+async function findLatestPortalOwnerInvitationByTenantId(tenantId, client = null, options = {}) {
+  const lockClause = options.forUpdate ? ' FOR UPDATE OF inv' : '';
+  const result = await dbQuery(
+    client,
+    `SELECT inv.id,
+            inv."clinicId",
+            inv."tenantId",
+            inv."userId",
+            inv.email,
+            inv.role,
+            inv."expiresAt",
+            inv."acceptedAt",
+            inv."revokedAt",
+            inv."createdByUserId",
+            inv."createdAt",
+            inv."updatedAt",
+            su.name AS "userName",
+            c.name AS "clinicName"
+     FROM portal_user_invitations inv
+     INNER JOIN staff_users su ON su.id = inv."userId"
+     INNER JOIN clinics c ON c.id = inv."clinicId"
+     WHERE inv."tenantId" = $1
+       AND inv.role = 'owner'
+     ORDER BY inv."createdAt" DESC
+     LIMIT 1${lockClause}`,
+    [tenantId]
+  );
+  return result.rows[0] || null;
+}
+
 module.exports = {
   createPortalUserInvitation,
   revokePendingPortalUserInvitationsByUserId,
   revokePendingPortalUserInvitationsByEmail,
   listLatestPortalUserInvitationsByClinicId,
+  findLatestPortalOwnerInvitationByTenantId,
   findPortalInvitationByTokenHash,
   markPortalInvitationAccepted
 };

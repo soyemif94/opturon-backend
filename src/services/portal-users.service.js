@@ -28,6 +28,7 @@ const {
   createPortalUserInvitation,
   revokePendingPortalUserInvitationsByUserId,
   listLatestPortalUserInvitationsByClinicId,
+  findLatestPortalOwnerInvitationByTenantId,
   findPortalInvitationByTokenHash,
   markPortalInvitationAccepted
 } = require('../repositories/portal-user-invitations.repository');
@@ -36,6 +37,7 @@ const {
   listPortalUserAuditEventsByClinicId
 } = require('../repositories/portal-user-audit.repository');
 const { updateTenantPolicyByExternalTenantId } = require('./tenant-policy.service');
+const { resolveTenantLifecycle } = require('./tenant-lifecycle-gate.service');
 const {
   normalizePortalUserRole,
   isOperationalPortalAssigneeRole
@@ -45,6 +47,7 @@ const ALLOWED_ROLES = new Set(['owner', 'manager', 'seller', 'viewer']);
 const PORTAL_USERS_LIMIT_KEY = 'tenant_portal_users';
 const INVITATION_TOKEN_BYTES = 32;
 const INVITATION_EXPIRES_IN_HOURS = 168;
+const ADMIN_INVITATION_ROTATION_COOLDOWN_MS = 60 * 1000;
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -1214,6 +1217,96 @@ async function acceptPortalInvitation(token, password) {
   };
 }
 
+async function rotateClientOwnerInvitation(tenantId, options = {}) {
+  const safeTenantId = normalizeString(tenantId);
+  const actorUserId = normalizeAuditActorId(options.actorUserId);
+  const action = options.action === 'copy' ? 'INVITATION_LINK_ROTATED' : 'INVITATION_RESENT';
+  if (!safeTenantId) return { ok: false, reason: 'missing_tenant_id', status: 400 };
+
+  const token = generateInvitationToken();
+  const tokenHash = hashInvitationToken(token);
+  const expiresAt = buildInvitationExpiryDate();
+  const result = await withTransaction(async (client) => {
+    const latest = await findLatestPortalOwnerInvitationByTenantId(safeTenantId, client, { forUpdate: true });
+    if (!latest) return { error: 'pending_invitation_not_found', status: 404 };
+    if (latest.acceptedAt || latest.revokedAt || new Date(latest.expiresAt).getTime() <= Date.now()) {
+      return { error: 'pending_invitation_not_active', status: 409 };
+    }
+    const elapsed = Date.now() - new Date(latest.createdAt).getTime();
+    if (action === 'INVITATION_RESENT' && Number.isFinite(elapsed) && elapsed < ADMIN_INVITATION_ROTATION_COOLDOWN_MS) {
+      return {
+        error: 'invitation_rotation_cooldown',
+        status: 429,
+        retryAfterSeconds: Math.ceil((ADMIN_INVITATION_ROTATION_COOLDOWN_MS - elapsed) / 1000)
+      };
+    }
+
+    await revokePendingPortalUserInvitationsByUserId(latest.userId, client);
+    const invitation = await createPortalUserInvitation({
+      clinicId: latest.clinicId,
+      tenantId: safeTenantId,
+      userId: latest.userId,
+      email: latest.email,
+      role: latest.role,
+      tokenHash,
+      expiresAt: expiresAt.toISOString(),
+      createdByUserId: actorUserId
+    }, client);
+    await createPortalUserAuditEvent({
+      tenantId: safeTenantId,
+      clinicId: latest.clinicId,
+      actorUserId,
+      targetUserId: latest.userId,
+      action,
+      payload: {
+        previousInvitationId: latest.id,
+        invitationId: invitation.id,
+        expiresAt: invitation.expiresAt,
+        deliveryRequested: options.action !== 'copy'
+      }
+    }, client);
+    return { invitation, latest };
+  });
+
+  if (result.error) return { ok: false, reason: result.error, status: result.status, retryAfterSeconds: result.retryAfterSeconds };
+  return {
+    ok: true,
+    tenantId: safeTenantId,
+    invitation: {
+      token,
+      expiresAt: result.invitation.expiresAt,
+      sentAt: result.invitation.createdAt,
+      email: result.latest.email,
+      name: result.latest.userName || null,
+      tenantName: result.latest.clinicName || null,
+      role: result.latest.role
+    }
+  };
+}
+
+async function cancelClientOwnerInvitation(tenantId, options = {}) {
+  const safeTenantId = normalizeString(tenantId);
+  const actorUserId = normalizeAuditActorId(options.actorUserId);
+  if (!safeTenantId) return { ok: false, reason: 'missing_tenant_id', status: 400 };
+  const result = await withTransaction(async (client) => {
+    const latest = await findLatestPortalOwnerInvitationByTenantId(safeTenantId, client, { forUpdate: true });
+    if (!latest) return { error: 'pending_invitation_not_found', status: 404 };
+    if (latest.acceptedAt || latest.revokedAt) return { error: 'pending_invitation_not_active', status: 409 };
+    await revokePendingPortalUserInvitationsByUserId(latest.userId, client);
+    await createPortalUserAuditEvent({
+      tenantId: safeTenantId,
+      clinicId: latest.clinicId,
+      actorUserId,
+      targetUserId: latest.userId,
+      action: 'INVITATION_CANCELLED',
+      payload: { invitationId: latest.id, reason: normalizeString(options.reason) || 'cancelled_by_opturon_admin' }
+    }, client);
+    return { latest };
+  });
+  if (result.error) return { ok: false, reason: result.error, status: result.status };
+  return { ok: true, tenantId: safeTenantId, invitationStatus: 'cancelled' };
+}
+
 async function authenticatePortalUser(email, password) {
   const safeEmail = normalizeEmail(email);
   const safePassword = String(password || '');
@@ -1237,6 +1330,10 @@ async function authenticatePortalUser(email, password) {
   if (!valid) {
     return { ok: false, reason: 'invalid_credentials' };
   }
+
+  const lifecycle = await resolveTenantLifecycle({ tenantId: user.tenantId });
+  if (!lifecycle.ok) return { ok: false, reason: 'tenant_lifecycle_unavailable' };
+  if (lifecycle.suspended) return { ok: false, reason: 'tenant_suspended' };
 
   if (normalizeAccountScope(user.accountScope) === 'opturon_admin') {
     return { ok: false, reason: 'portal_admin_scope_requires_staff' };
@@ -1295,6 +1392,8 @@ module.exports = {
   deletePortalUser,
   resolvePortalInvitation,
   acceptPortalInvitation,
+  rotateClientOwnerInvitation,
+  cancelClientOwnerInvitation,
   authenticatePortalUser,
   getPortalAuthUserByEmail,
   isOperationalPortalAssigneeRole

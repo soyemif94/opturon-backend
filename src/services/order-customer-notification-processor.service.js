@@ -15,6 +15,7 @@ const { buildTenantPolicyFromSettings } = require('./tenant-policy.service');
 const { evaluateCustomerServiceWindow } = require('./whatsapp-customer-service-window.service');
 const { formatOrderCustomerSummary } = require('./order-customer-summary-formatter.service');
 const { logInfo, logWarn } = require('../utils/logger');
+const { lifecycleStatusFromSettings } = require('./tenant-lifecycle-gate.service');
 
 const ORDER_SUMMARY_TEMPLATE_KEY = 'order_summary';
 const DEFAULT_TEMPLATE_LANGUAGE = 'es_AR';
@@ -407,6 +408,16 @@ async function processOrderCustomerNotification(notification, options = {}) {
     }
 
     const clinic = await dependencies.getClinicById(notification.clinicId);
+    if (!clinic || lifecycleStatusFromSettings(clinic.settings) === 'suspended') {
+      const reason = clinic ? 'tenant_suspended' : 'tenant_lifecycle_unavailable';
+      const updated = await finishNotification(notification, {
+        status: 'skipped',
+        resultCode: reason,
+        lastError: reason,
+        errorMetadata: { reason, retriable: false }
+      }, dependencies);
+      return { outcome: 'skipped', reason, notification: updated };
+    }
     const policy = evaluateTenantNotificationPolicy(clinic);
     if (!policy.allowed) {
       const updated = await finishNotification(notification, {

@@ -24,6 +24,7 @@ const {
   MAX_ATTEMPTS
 } = require('./order-customer-notification-processor.service');
 const { logInfo, logWarn } = require('../utils/logger');
+const { lifecycleStatusFromSettings } = require('./tenant-lifecycle-gate.service');
 
 const DEFAULT_DEPENDENCIES = Object.freeze({
   recoverLeases: deliveryRepository.recoverOperationalAlertDeliveryLeases,
@@ -153,6 +154,16 @@ async function processOperationalAlertDelivery(claimedDelivery, options = {}) {
     }
 
     const clinic = await dependencies.getClinicById(delivery.clinicId);
+    if (!clinic || lifecycleStatusFromSettings(clinic.settings) === 'suspended') {
+      const reason = clinic ? 'tenant_suspended' : 'tenant_lifecycle_unavailable';
+      const updated = await finishDelivery(delivery, {
+        status: 'skipped',
+        resultCode: reason,
+        lastError: reason,
+        errorMetadata: { reason, retriable: false }
+      }, dependencies);
+      return { outcome: 'skipped', reason, delivery: updated };
+    }
     const currentRule = await dependencies.findRule(instance.ruleId, delivery.clinicId);
     const recipient = await dependencies.findRecipient(delivery.recipientId, delivery.clinicId);
     const staff = recipient && recipient.staffUserId

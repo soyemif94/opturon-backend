@@ -201,6 +201,7 @@ const {
   getOperationalAlertHistoryDetail
 } = require('../controllers/portal-operational-alerts.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
+const { requireOperationalTenant } = require('../middlewares/portal-tenant-lifecycle.middleware');
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
 const { requireInventoryReadRole, requireSensitiveInventoryRole, requireInventoryReceiptRole, requireCatalogWriteRole } = require('../middlewares/portal-inventory-authorization.middleware');
@@ -414,6 +415,7 @@ router.use(
 
 router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
 router.get('/loyalty-reward-images/:tenantId/:fileName', getPortalLoyaltyRewardImagePublic);
+router.use('/tenants/:tenantId', requireOperationalTenant);
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
 router.get('/tenants/:tenantId/policy', requirePortalInternalAuth, getPortalTenantPolicy);
 router.post('/tenants/:tenantId/provision', requirePortalInternalAuth, postPortalTenantProvision);

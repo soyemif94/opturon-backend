@@ -61,6 +61,7 @@ const {
 } = require('./repositories/conversation-events.repository');
 const { claimJobs, markJobDone, requeueOrFailJob } = require('./repositories/job.repository');
 const { resolveAutomationReplyForInbound } = require('./services/automation-runtime.service');
+const { resolveTenantLifecycle } = require('./services/tenant-lifecycle-gate.service');
 const { getAutomationEnablementState } = require('./services/automation-enablement.service');
 const { classifyCommerceAiAssist } = require('./services/ai-assist.service');
 const {
@@ -18442,6 +18443,18 @@ async function processConversationReplyJobUnlocked(job) {
   const clinic = await getClinic(conversation.clinicId);
   if (!clinic) {
     throw new Error('Clinic not found for conversation_reply job');
+  }
+  const lifecycle = await resolveTenantLifecycle({ clinicId: conversation.clinicId });
+  if (!lifecycle.ok || lifecycle.suspended) {
+    logInfo('conversation_reply_tenant_lifecycle_blocked', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      conversationId: conversation.id,
+      inboundMessageId,
+      reason: lifecycle.ok ? 'tenant_suspended' : 'tenant_lifecycle_unavailable'
+    });
+    return;
   }
 
   const openHandoff = await getOpenHandoff(conversation.clinicId, conversation.id);

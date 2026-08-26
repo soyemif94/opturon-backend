@@ -164,7 +164,7 @@ function normalizeEmail(value) {
   return email && email.includes('@') ? email : null;
 }
 
-function buildTenantLifecycle(settings, membership = {}) {
+function buildTenantLifecycle(settings, membership = {}, invitation = null) {
   const safeSettings = parseSettings(settings);
   const portal = safeSettings.portal && typeof safeSettings.portal === 'object' ? safeSettings.portal : {};
   const lifecycle = portal.lifecycle && typeof portal.lifecycle === 'object' ? portal.lifecycle : {};
@@ -175,7 +175,7 @@ function buildTenantLifecycle(settings, membership = {}) {
     portal.status,
     safeSettings.status
   ];
-  const status = statusCandidates
+  let status = statusCandidates
     .map((value) => normalizeString(value).toLowerCase())
     .find(Boolean) || 'active';
   const archivedAt = normalizeString(lifecycle.archivedAt || portal.archivedAt || safeSettings.archivedAt) || null;
@@ -186,12 +186,18 @@ function buildTenantLifecycle(settings, membership = {}) {
   const activeOwners = Number.isInteger(Number(membership.activeOwners))
     ? Number(membership.activeOwners)
     : 0;
+  const invitationPending = Boolean(
+    invitation &&
+    !invitation.acceptedAt &&
+    !invitation.revokedAt &&
+    new Date(invitation.expiresAt).getTime() > Date.now()
+  );
+  if (status === 'active' && activeOwners === 0 && invitationPending) status = 'pending';
   const visible =
     !['archived', 'deleted', 'inactive', 'cancelled'].includes(status) &&
     !archivedAt &&
     !deletedAt &&
-    activePortalUsers > 0 &&
-    activeOwners > 0;
+    ((activePortalUsers > 0 && activeOwners > 0) || invitationPending || status === 'suspended');
 
   return {
     status,
@@ -199,7 +205,21 @@ function buildTenantLifecycle(settings, membership = {}) {
     deletedAt,
     activePortalUsers,
     activeOwners,
-    visible
+    visible,
+    invitation: invitation ? {
+      id: invitation.id,
+      status: invitation.acceptedAt
+        ? 'accepted'
+        : invitation.revokedAt
+          ? 'cancelled'
+          : invitationPending
+            ? 'pending'
+            : 'expired',
+      sentAt: invitation.createdAt || null,
+      lastSentAt: invitation.createdAt || null,
+      expiresAt: invitation.expiresAt || null,
+      resendCount: Math.max(Number(invitation.invitationCount || 1) - 1, 0)
+    } : null
   };
 }
 
@@ -244,7 +264,6 @@ async function resolveTenantPolicyByExternalTenantId(externalTenantId, client = 
        WHERE su."clinicId" = c.id
          AND su."accountType" = 'client_portal'
          AND su.email IS NOT NULL
-         AND su.active = TRUE
        ORDER BY
          CASE
            WHEN NULLIF(c.settings->'portal'->>'primaryPortalUserId', '') IS NOT NULL
@@ -290,7 +309,13 @@ async function listTenantPolicies() {
             c."updatedAt",
             membership."activePortalUsers",
             membership."activeOwners",
-            primary_user.email AS "primaryEmail"
+            primary_user.email AS "primaryEmail",
+            latest_invitation.id AS "invitationId",
+            latest_invitation."expiresAt" AS "invitationExpiresAt",
+            latest_invitation."acceptedAt" AS "invitationAcceptedAt",
+            latest_invitation."revokedAt" AS "invitationRevokedAt",
+            latest_invitation."createdAt" AS "invitationCreatedAt",
+            latest_invitation."invitationCount"
      FROM clinics c
      LEFT JOIN LATERAL (
        SELECT COUNT(*)::INT AS "activePortalUsers",
@@ -319,6 +344,19 @@ async function listTenantPolicies() {
          su."createdAt" ASC
        LIMIT 1
      ) primary_user ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT inv.id,
+              inv."expiresAt",
+              inv."acceptedAt",
+              inv."revokedAt",
+              inv."createdAt",
+              COUNT(*) OVER ()::INT AS "invitationCount"
+       FROM portal_user_invitations inv
+       WHERE inv."clinicId" = c.id
+         AND inv.role = 'owner'
+       ORDER BY inv."createdAt" DESC
+       LIMIT 1
+     ) latest_invitation ON TRUE
      WHERE NULLIF(TRIM(COALESCE(c."externalTenantId", '')), '') IS NOT NULL
        AND COALESCE(c.settings->'portal'->>'accountScope', '') <> 'opturon_admin'
      ORDER BY c.name ASC NULLS LAST, c."createdAt" DESC`
@@ -332,7 +370,14 @@ async function listTenantPolicies() {
         const lifecycle = buildTenantLifecycle(clinic.settings, {
           activePortalUsers: clinic.activePortalUsers,
           activeOwners: clinic.activeOwners
-        });
+        }, clinic.invitationId ? {
+          id: clinic.invitationId,
+          expiresAt: clinic.invitationExpiresAt,
+          acceptedAt: clinic.invitationAcceptedAt,
+          revokedAt: clinic.invitationRevokedAt,
+          createdAt: clinic.invitationCreatedAt,
+          invitationCount: clinic.invitationCount
+        } : null);
         return {
           id: clinic.id,
           name: clinic.name || clinic.externalTenantId,

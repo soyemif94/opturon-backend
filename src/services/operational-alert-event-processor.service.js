@@ -16,6 +16,7 @@ const {
 } = require('../operational-alerts/operational-alert-idempotency');
 const { isOperationalAlertsEnabled } = require('../operational-alerts/internal-operational-alert-authority');
 const { logInfo, logWarn } = require('../utils/logger');
+const { lifecycleStatusFromSettings } = require('./tenant-lifecycle-gate.service');
 
 const MAX_EVENT_ATTEMPTS = 5;
 
@@ -119,6 +120,14 @@ async function processClaimedOperationalAlertEvent(claimedEvent, options = {}) {
     }
 
     const clinic = await dependencies.getClinicById(event.clinicId, client);
+    if (!clinic || lifecycleStatusFromSettings(clinic.settings) === 'suspended') {
+      const updated = await dependencies.updateEventStatus(event.id, event.clinicId, {
+        status: 'processed',
+        expectedLockedBy: workerId,
+        errorMetadata: { reason: clinic ? 'tenant_suspended' : 'tenant_lifecycle_unavailable', rulesEvaluated: 0 }
+      }, client);
+      return { outcome: 'skipped', event: updated, matchedRules: 0, instances: 0, deliveries: 0 };
+    }
     if (!isOperationalAlertsEnabled(clinic)) {
       const updated = await dependencies.updateEventStatus(event.id, event.clinicId, {
         status: 'processed',

@@ -47,6 +47,11 @@ const {
   sendRecruitmentInvitationAsAdmin
 } = require('../services/partner-recruitment-applications.service');
 const { logError } = require('../utils/logger');
+const {
+  rotateClientOwnerInvitation,
+  cancelClientOwnerInvitation
+} = require('../services/portal-users.service');
+const { updateTenantLifecycleStatus } = require('../services/tenant-lifecycle.service');
 
 function sanitizeBillingPayload(payload) {
   const safePayload = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
@@ -388,6 +393,49 @@ async function postAdminBillingSubscriptionAction(req, res) {
       error: 'billing_subscription_action_failed',
       message: 'No se pudo confirmar el estado de la suscripcion en Mercado Pago.'
     });
+  }
+}
+
+async function postAdminClientInvitationAction(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const action = String(req.params.action || '').trim().toLowerCase();
+  const actor = getAdminActor(req);
+  try {
+    const result = action === 'cancel'
+      ? await cancelClientOwnerInvitation(tenantId, { ...actor, reason: req.body && req.body.reason })
+      : await rotateClientOwnerInvitation(tenantId, { ...actor, action });
+    if (!result.ok) {
+      if (result.retryAfterSeconds) res.set('Retry-After', String(result.retryAfterSeconds));
+      return res.status(result.status || 400).json({ success: false, error: result.reason });
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'client_invitation_action_failed', details: error.message });
+  }
+}
+
+async function postAdminClientLifecycleAction(req, res) {
+  const tenantId = String(req.params.tenantId || '').trim();
+  const action = String(req.params.action || '').trim().toLowerCase();
+  const status = action === 'suspend' ? 'suspended' : 'active';
+  const expectedCurrentStatus = action === 'suspend' ? 'active' : 'suspended';
+  const actor = getAdminActor(req);
+  try {
+    const result = await updateTenantLifecycleStatus({
+      tenantId,
+      status,
+      expectedCurrentStatus,
+      reason: req.body && req.body.reason,
+      actorUserId: actor.actorUserId,
+      actorRole: actor.actorRole,
+      actorScope: actor.actorScope,
+      actorLabel: actor.actorUserId,
+      source: 'admin_client_management'
+    });
+    if (!result.ok) return res.status(result.status || 400).json({ success: false, error: result.reason, currentStatus: result.currentStatus });
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'client_lifecycle_action_failed', details: error.message });
   }
 }
 
@@ -841,6 +889,8 @@ module.exports = {
   getTenants,
   getTenantPolicy,
   patchTenantPolicy,
+  postAdminClientInvitationAction,
+  postAdminClientLifecycleAction,
   postTransferPaymentValidation,
   getAdminBillingSubscriptions,
   postAdminBillingSubscription,

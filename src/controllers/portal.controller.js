@@ -4121,7 +4121,14 @@ async function postPortalAuthLogin(req, res) {
   try {
     const result = await authenticatePortalUser(email, password);
     if (!result.ok) {
-      return res.status(401).json({ success: false, error: result.reason });
+      const status = result.reason === 'tenant_suspended' ? 423 : result.reason === 'tenant_lifecycle_unavailable' ? 503 : 401;
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        message: result.reason === 'tenant_suspended'
+          ? 'Tu cuenta está temporalmente suspendida. Contactá al administrador de Opturon.'
+          : undefined
+      });
     }
 
     return res.status(200).json({

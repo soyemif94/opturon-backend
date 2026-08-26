@@ -4,6 +4,8 @@ const {
   getTenants,
   getTenantPolicy,
   patchTenantPolicy,
+  postAdminClientInvitationAction,
+  postAdminClientLifecycleAction,
   postTransferPaymentValidation,
   getAdminBillingSubscriptions,
   postAdminBillingSubscription,
@@ -46,9 +48,11 @@ const { requireAdminInternalActor } = require('../middlewares/partner-auth.middl
 const router = express.Router();
 
 router.post('/set-active-tenant', requirePortalInternalAuth, postSetActiveTenant);
-router.get('/tenants', requirePortalInternalAuth, getTenants);
+router.get('/tenants', requireAdminInternalActor, getTenants);
 router.get('/tenants/:tenantId/policy', requirePortalInternalAuth, getTenantPolicy);
 router.patch('/tenants/:tenantId/policy', requirePortalInternalAuth, patchTenantPolicy);
+router.post('/tenants/:tenantId/invitations/:action(resend|copy|cancel)', requireAdminInternalActor, postAdminClientInvitationAction);
+router.post('/tenants/:tenantId/lifecycle/:action(suspend|reactivate)', requireAdminInternalActor, postAdminClientLifecycleAction);
 router.post('/tenants/:tenantId/transfer-payments/validation', requirePortalInternalAuth, postTransferPaymentValidation);
 router.get('/billing/subscriptions', requirePortalInternalAuth, getAdminBillingSubscriptions);
 router.post('/billing/subscriptions', requirePortalInternalAuth, postAdminBillingSubscription);
