@@ -93,8 +93,16 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
     ? 'https://api.instagram.com/oauth/access_token'
     : `https://graph.facebook.com/${DEFAULT_GRAPH_VERSION}/oauth/access_token`);
   const params = new URLSearchParams({ client_id: appId, client_secret: appSecret, redirect_uri: redirectUri, code });
-  if (provider === 'instagram_login') params.set('grant_type', 'authorization_code');
-  else for (const [key, value] of params) url.searchParams.set(key, value);
+  const formData = new FormData();
+  if (provider === 'instagram_login') {
+    formData.set('client_id', appId);
+    formData.set('client_secret', appSecret);
+    formData.set('grant_type', 'authorization_code');
+    formData.set('redirect_uri', redirectUri);
+    formData.set('code', code);
+  } else {
+    for (const [key, value] of params) url.searchParams.set(key, value);
+  }
 
   logInfo('instagram_oauth_exchange_started', {
     requestId,
@@ -104,10 +112,9 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
   const response = await fetch(url.toString(), {
     method: provider === 'instagram_login' ? 'POST' : 'GET',
     headers: {
-      Accept: 'application/json',
-      ...(provider === 'instagram_login' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {})
+      Accept: 'application/json'
     },
-    ...(provider === 'instagram_login' ? { body: params } : {})
+    ...(provider === 'instagram_login' ? { body: formData } : {})
   });
   const text = await response.text();
   let json = null;

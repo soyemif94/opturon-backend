@@ -108,9 +108,12 @@ async function testInstagramExchangeProviderOverride() {
       redirectUri: 'https://example.com/callback',
       providerOverride: 'instagram_login'
     });
-    const body = new URLSearchParams(request.options.body);
+    const body = request.options.body;
     assert.equal(request.url.origin, 'https://api.instagram.com');
+    assert.ok(body instanceof FormData);
     assert.equal(body.get('client_id'), 'instagram-business-app-id');
+    assert.equal(body.get('redirect_uri'), 'https://example.com/callback');
+    assert.equal(body.get('code'), 'oauth-code');
     assert.equal(token.provider, 'instagram_login');
   } finally {
     global.fetch = previousFetch;
@@ -145,13 +148,17 @@ async function testInstagramLoginExchangeCredentials() {
       code: 'oauth-code',
       redirectUri: 'https://example.com/callback'
     });
-    const body = new URLSearchParams(request.options.body);
+    const body = request.options.body;
     assert.equal(request.url.origin, 'https://api.instagram.com');
     assert.equal(request.url.pathname, '/oauth/access_token');
     assert.equal(request.options.method, 'POST');
+    assert.ok(body instanceof FormData);
+    assert.equal(request.options.headers['Content-Type'], undefined);
     assert.equal(body.get('client_id'), 'instagram-business-app-id');
     assert.equal(body.get('client_secret'), 'instagram-business-app-secret');
     assert.equal(body.get('grant_type'), 'authorization_code');
+    assert.equal(body.get('redirect_uri'), 'https://example.com/callback');
+    assert.equal(body.get('code'), 'oauth-code');
     assert.equal(token.userId, 'ig-user-id');
     assert.equal(token.provider, 'instagram_login');
   } finally {
