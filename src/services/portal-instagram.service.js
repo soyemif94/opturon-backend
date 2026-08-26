@@ -6,6 +6,7 @@ const {
 } = require('../repositories/tenant.repository');
 const {
   exchangeOAuthCodeForAccessToken,
+  logInstagramOAuthCodeTelemetry,
   fetchInstagramBusinessAssets,
   subscribePageToWebhook
 } = require('../integrations/instagram/instagram.service');
@@ -170,7 +171,13 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok) return context;
 
-  const code = String(input.code || '').trim();
+  const rawCode = input.code;
+  const codeTelemetryId = String(input.codeTelemetryId || '').trim() || null;
+  logInstagramOAuthCodeTelemetry('BACKEND_RECEIVED', rawCode, {
+    requestId: input.requestId || null,
+    correlationId: codeTelemetryId
+  });
+  const code = String(rawCode || '').trim();
   const redirectUri = String(input.redirectUri || '').trim();
   const oauthProvider = String(input.oauthProvider || '').trim().toLowerCase() || null;
   const selectionToken = String(input.selectionToken || '').trim();
@@ -241,7 +248,8 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     code,
     redirectUri,
     providerOverride: oauthProvider,
-    requestId: input.requestId || null
+    requestId: input.requestId || null,
+    codeTelemetryId
   });
   const assets = await fetchInstagramBusinessAssets({
     accessToken: token.accessToken,

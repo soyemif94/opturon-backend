@@ -1,4 +1,6 @@
 const assert = require('assert');
+const { readFileSync } = require('fs');
+const { join } = require('path');
 
 const env = require('../../src/config/env');
 const {
@@ -222,6 +224,19 @@ async function testInstagramLoginExchangeFailureObservability() {
   }
 }
 
+async function testInstagramCodeTelemetryDoesNotLeakCode() {
+  const source = readFileSync(
+    join(__dirname, '../../src/integrations/instagram/instagram.service.js'),
+    'utf8',
+  );
+
+  assert.match(source, /instagram_oauth_code_telemetry/);
+  assert.match(source, /length:\s*Buffer\.byteLength\(safeCode, 'utf8'\)/);
+  assert.match(source, /sha256:\s*crypto\.createHash\('sha256'\)/);
+  assert.doesNotMatch(source, /code:\s*safeCode/);
+  assert.doesNotMatch(source, /code:\s*code[,}\s]/);
+}
+
 async function testInstagramExchangeRejectsUnknownProviderOverride() {
   const previousEnv = {
     instagramOauthProvider: env.instagramOauthProvider
@@ -280,6 +295,7 @@ async function run() {
   await testInstagramExchangeProviderOverride();
   await testInstagramLoginExchangeCredentials();
   await testInstagramLoginExchangeFailureObservability();
+  await testInstagramCodeTelemetryDoesNotLeakCode();
   await testInstagramExchangeRejectsUnknownProviderOverride();
   await testInstagramLoginDiscoveryRequestsIdField();
   console.log('meta-multi-app.test.js: ok');

@@ -5446,6 +5446,7 @@ async function postPortalWhatsAppEmbeddedSignupFinalize(req, res) {
       expectedTenantId: tenantId,
       stateToken: req.body && req.body.stateToken,
       code: req.body && req.body.code,
+      codeTelemetryId: req.body && req.body.codeTelemetryId,
       redirectUri: req.body && req.body.redirectUri,
       metaPayload: req.body && req.body.metaPayload ? req.body.metaPayload : null,
       requestId: req.body && req.body.requestId ? String(req.body.requestId) : null,

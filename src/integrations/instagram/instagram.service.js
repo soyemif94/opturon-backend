@@ -1,6 +1,7 @@
 const env = require('../../config/env');
 const graphClient = require('../../whatsapp/whatsapp-graph.client');
 const { logInfo, logWarn } = require('../../utils/logger');
+const crypto = require('crypto');
 
 const DEFAULT_GRAPH_VERSION = String(env.getWhatsAppGraphVersion()).trim();
 
@@ -74,7 +75,18 @@ function summarizeInstagramOAuthExchangeFailure({ response, json, requestId = nu
   };
 }
 
-async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOverride = null, requestId = null }) {
+function logInstagramOAuthCodeTelemetry(stage, code, { requestId = null, correlationId = null } = {}) {
+  const safeCode = String(code || '');
+  logInfo('instagram_oauth_code_telemetry', {
+    stage,
+    requestId: requestId || null,
+    correlationId: correlationId || null,
+    length: Buffer.byteLength(safeCode, 'utf8'),
+    sha256: crypto.createHash('sha256').update(safeCode, 'utf8').digest('hex')
+  });
+}
+
+async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOverride = null, requestId = null, codeTelemetryId = null }) {
   const provider = getInstagramOauthProvider(providerOverride);
   const appId = String(provider === 'instagram_login'
     ? env.instagramBusinessAppId
@@ -103,6 +115,11 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
   } else {
     for (const [key, value] of params) url.searchParams.set(key, value);
   }
+
+  logInstagramOAuthCodeTelemetry('TOKEN_EXCHANGE', code, {
+    requestId,
+    correlationId: codeTelemetryId
+  });
 
   logInfo('instagram_oauth_exchange_started', {
     requestId,
@@ -325,6 +342,7 @@ async function sendInstagramTextMessage({ channel, recipientId, text, requestId 
 
 module.exports = {
   getInstagramOauthProvider,
+  logInstagramOAuthCodeTelemetry,
   exchangeOAuthCodeForAccessToken,
   fetchInstagramBusinessAssets,
   subscribePageToWebhook,
