@@ -28,11 +28,6 @@ const { logError, logInfo } = require('../utils/logger');
 
 const ALLOWED_PLAN_CODES = new Set(['inicial', 'crecimiento', 'empresa']);
 const ALLOWED_LOCAL_STATUSES = new Set(['pending', 'active', 'paused', 'canceled', 'payment_failed', 'suspended']);
-const TENANT_PLAN_MAP = Object.freeze({
-  inicial: 'basic',
-  crecimiento: 'growth',
-  empresa: 'enterprise'
-});
 const TERMINAL_REMOTE_STATUSES = new Set(['canceled', 'cancelled', 'expired', 'ended', 'finished']);
 const REMOTE_ACTIONS = Object.freeze({
   pending: ['cancel'],
@@ -128,11 +123,8 @@ async function syncTenantBillingState(client, clinic, subscription) {
 
   const settings = parseSettings(clinic.settings);
   const portal = settings.portal && typeof settings.portal === 'object' ? { ...settings.portal } : {};
-  const policy = portal.policy && typeof portal.policy === 'object' ? { ...portal.policy } : {};
   const billing = portal.billing && typeof portal.billing === 'object' ? { ...portal.billing } : {};
 
-  const mappedPlanCode = TENANT_PLAN_MAP[subscription.planCode] || policy.planCode || 'basic';
-  policy.planCode = mappedPlanCode;
   billing.status = subscription.localStatus;
   billing.subscription = buildTenantBillingSnapshot(subscription);
 
@@ -140,7 +132,6 @@ async function syncTenantBillingState(client, clinic, subscription) {
     ...settings,
     portal: {
       ...portal,
-      policy,
       billing
     }
   };

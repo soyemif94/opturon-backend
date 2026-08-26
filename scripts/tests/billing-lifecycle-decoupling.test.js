@@ -52,6 +52,7 @@ for (const billingStatus of ['pending', 'active', 'paused', 'canceled', 'expired
     assert.equal(settings.portal.lifecycle.status, 'active');
     assert.equal(settings.portal.lifecycle.source, 'explicit_lifecycle_operation');
     assert.equal(settings.portal.billing.status, billingStatus);
+    assert.equal(settings.portal.policy.planCode, 'basic');
     assert.equal(settings.bot.mode, 'automatic');
   });
 }
