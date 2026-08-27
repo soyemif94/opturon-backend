@@ -3,10 +3,12 @@ const path = require('path');
 
 const env = require(path.resolve(__dirname, '..', '..', 'src/config/env.js'));
 const modulePath = path.resolve(__dirname, '..', '..', 'src/services/instagram-direct-exchange-diagnostic.service.js');
+const instagramServicePath = path.resolve(__dirname, '..', '..', 'src/integrations/instagram/instagram.service.js');
 
 const originalFetch = global.fetch;
 const originalClientId = env.instagramBusinessAppId;
 const originalClientSecret = env.instagramBusinessAppSecret;
+const originalInstagramAppSecret = env.instagramAppSecret;
 
 async function run() {
   env.instagramBusinessAppId = '1349038906605969';
@@ -39,6 +41,14 @@ async function run() {
   assert.equal(request.init.body.get('redirect_uri'), diagnostic.DIAGNOSTIC_REDIRECT_URI);
   assert.equal(request.init.body.get('code'), 'fresh-test-code');
 
+  const instagramService = require(instagramServicePath);
+  const savedBusinessSecret = env.instagramBusinessAppSecret;
+  env.instagramBusinessAppSecret = '';
+  env.instagramAppSecret = 'production-fallback-test-secret';
+  assert.equal(instagramService.resolveInstagramBusinessLoginCredentials().clientSecret, 'production-fallback-test-secret');
+  env.instagramBusinessAppSecret = savedBusinessSecret;
+  env.instagramAppSecret = '';
+
   global.fetch = async () => ({
     ok: false,
     status: 400,
@@ -56,7 +66,10 @@ async function run() {
   assert.equal(noCode.providerErrorMessage, 'missing_authorization_code');
 
   const source = require('fs').readFileSync(modulePath, 'utf8');
+  const instagramSource = require('fs').readFileSync(instagramServicePath, 'utf8');
   const routeSource = require('fs').readFileSync(path.resolve(__dirname, '..', '..', 'src/routes/portal.routes.js'), 'utf8');
+  assert.match(source, /resolveInstagramBusinessLoginCredentials/);
+  assert.match(instagramSource, /instagramBusinessAppSecret \|\| env\.instagramAppSecret/);
   assert.doesNotMatch(source, /exchangeOAuthCodeForAccessToken|require\(['"].*repository|logInfo|logWarn|INSERT|UPDATE|DELETE/);
   assert.match(routeSource, /router\.post\('\/instagram\/debug-direct-exchange', requirePortalInternalAuth, postPortalInstagramDirectExchangeDiagnostic\)/);
   console.log('instagram-direct-exchange-diagnostic.test.js: ok');
@@ -66,6 +79,7 @@ run().finally(() => {
   global.fetch = originalFetch;
   env.instagramBusinessAppId = originalClientId;
   env.instagramBusinessAppSecret = originalClientSecret;
+  env.instagramAppSecret = originalInstagramAppSecret;
 }).catch((error) => {
   console.error(error);
   process.exitCode = 1;

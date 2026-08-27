@@ -86,13 +86,21 @@ function logInstagramOAuthCodeTelemetry(stage, code, { requestId = null, correla
   });
 }
 
+function resolveInstagramBusinessLoginCredentials() {
+  return {
+    clientId: String(env.instagramBusinessAppId || '').trim(),
+    clientSecret: String(env.instagramBusinessAppSecret || env.instagramAppSecret || '').trim()
+  };
+}
+
 async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOverride = null, requestId = null, codeTelemetryId = null }) {
   const provider = getInstagramOauthProvider(providerOverride);
+  const businessCredentials = resolveInstagramBusinessLoginCredentials();
   const appId = String(provider === 'instagram_login'
-    ? env.instagramBusinessAppId
+    ? businessCredentials.clientId
     : env.instagramOauthAppId || env.instagramAppId || env.metaAppId || env.whatsappAppId || '').trim();
   const appSecret = String(provider === 'instagram_login'
-    ? env.instagramBusinessAppSecret || env.instagramAppSecret
+    ? businessCredentials.clientSecret
     : env.instagramAppSecret || env.metaAppSecret || '').trim();
 
   if (!appId || !appSecret) {
@@ -342,6 +350,7 @@ async function sendInstagramTextMessage({ channel, recipientId, text, requestId 
 
 module.exports = {
   getInstagramOauthProvider,
+  resolveInstagramBusinessLoginCredentials,
   logInstagramOAuthCodeTelemetry,
   exchangeOAuthCodeForAccessToken,
   fetchInstagramBusinessAssets,

@@ -1,4 +1,4 @@
-const env = require('../config/env');
+const { resolveInstagramBusinessLoginCredentials } = require('../integrations/instagram/instagram.service');
 
 const EXPECTED_INSTAGRAM_CLIENT_ID = '1349038906605969';
 const DIAGNOSTIC_REDIRECT_URI = 'https://www.opturon.com/api/app/integrations/instagram/debug-callback';
@@ -34,8 +34,7 @@ function localFailure(message) {
  */
 async function runInstagramDirectExchangeDiagnostic({ code } = {}) {
   const authorizationCode = String(code || '');
-  const clientId = String(env.instagramBusinessAppId || '').trim();
-  const clientSecret = String(env.instagramBusinessAppSecret || '').trim();
+  const { clientId, clientSecret } = resolveInstagramBusinessLoginCredentials();
 
   if (!authorizationCode) return localFailure('missing_authorization_code');
   if (clientId !== EXPECTED_INSTAGRAM_CLIENT_ID || !clientSecret) {
