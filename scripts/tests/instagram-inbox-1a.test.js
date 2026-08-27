@@ -33,6 +33,7 @@ const state = {
     externalPageId: 'page-1',
     instagramUserId: 'ig-business-1',
     instagramUsername: 'opturon.qa',
+    aliases: ['17841430256503922'],
     status: 'active'
   },
   whatsappChannel: {
@@ -63,10 +64,12 @@ function clone(value) {
 }
 
 mockModule('src/repositories/tenant.repository.js', {
-  findInstagramChannelByExternalId: async (externalId) =>
-    externalId === state.instagramChannel.externalId ? clone(state.instagramChannel) : null,
-  findInstagramChannelByPageId: async (pageId) =>
-    pageId === state.instagramChannel.externalPageId ? clone(state.instagramChannel) : null,
+  findInstagramChannelByRecipientId: async (recipientId) =>
+    recipientId === state.instagramChannel.externalId ||
+    recipientId === state.instagramChannel.externalPageId ||
+    state.instagramChannel.aliases.includes(recipientId)
+      ? clone(state.instagramChannel)
+      : null,
   findChannelByPhoneNumberId: async (phoneNumberId) =>
     phoneNumberId === state.whatsappChannel.phoneNumberId ? clone(state.whatsappChannel) : null
 });
@@ -145,7 +148,7 @@ mockModule('src/utils/logger.js', {
 clearModule('src/conversations/conversation.service.js');
 const { processInboundMessages } = require(modulePath('src/conversations/conversation.service.js'));
 
-function buildInstagramPayload(mid = 'ig-mid-1') {
+function buildInstagramPayload(mid = 'ig-mid-1', recipientId = 'ig-business-1') {
   return {
     object: 'instagram',
     entry: [
@@ -154,7 +157,7 @@ function buildInstagramPayload(mid = 'ig-mid-1') {
         messaging: [
           {
             sender: { id: 'ig-user-1' },
-            recipient: { id: 'ig-business-1' },
+            recipient: { id: recipientId },
             timestamp: Date.now(),
             message: {
               mid,
@@ -220,6 +223,20 @@ async function testInstagramInboundDedupeByMid() {
   assert.strictEqual(state.jobs.length, 0);
 }
 
+async function testInstagramAliasInboundCreatesMessage() {
+  resetState();
+  const result = await processInboundMessages({
+    body: buildInstagramPayload('ig-mid-alias', '17841430256503922'),
+    headers: {},
+    requestId: 'test-instagram-alias'
+  });
+
+  assert.strictEqual(result.unrouted, 0);
+  assert.strictEqual(state.inboundMessages.length, 1);
+  assert.strictEqual(state.inboundMessages[0].to, '17841430256503922');
+  assert.strictEqual(state.conversations.size, 1);
+}
+
 async function testWhatsAppInboundStillEnqueuesReply() {
   resetState();
   const result = await processInboundMessages({
@@ -250,6 +267,7 @@ function testInboxSourceExposesChannelFilteringAndReadOnlyGuard() {
 async function run() {
   await testInstagramInboundCreatesMessageAndDoesNotEnqueueReply();
   await testInstagramInboundDedupeByMid();
+  await testInstagramAliasInboundCreatesMessage();
   await testWhatsAppInboundStillEnqueuesReply();
   testInboxSourceExposesChannelFilteringAndReadOnlyGuard();
   console.log('instagram-inbox-1a.test.js: ok');

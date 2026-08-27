@@ -401,10 +401,7 @@ async function findInstagramChannelByExternalId(externalId, client = null) {
      FROM channels
      WHERE type = 'instagram'
        AND provider = 'instagram_graph'
-       AND (
-         "externalId" = $1
-         OR "instagramUserId" = $1
-       )
+       AND "externalId" = $1
        AND LOWER(COALESCE(status, '')) = 'active'
      ORDER BY "updatedAt" DESC, "createdAt" DESC
      LIMIT 1`,
@@ -432,6 +429,60 @@ async function findInstagramChannelByPageId(pageId, client = null) {
   );
 
   return mapChannelTokenRecord(result.rows[0] || null);
+}
+
+async function findInstagramChannelByUserId(instagramUserId, client = null) {
+  const safeInstagramUserId = String(instagramUserId || '').trim();
+  if (!safeInstagramUserId) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", type, provider, "phoneNumberId", "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
+     FROM channels
+     WHERE type = 'instagram'
+       AND provider = 'instagram_graph'
+       AND "instagramUserId" = $1
+       AND LOWER(COALESCE(status, '')) = 'active'
+     ORDER BY "updatedAt" DESC, "createdAt" DESC
+     LIMIT 1`,
+    [safeInstagramUserId]
+  );
+
+  return mapChannelTokenRecord(result.rows[0] || null);
+}
+
+async function findInstagramChannelByAccountAlias(accountAlias, client = null) {
+  const safeAccountAlias = String(accountAlias || '').trim();
+  if (!safeAccountAlias) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", type, provider, "phoneNumberId", "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
+     FROM channels
+     WHERE type = 'instagram'
+       AND provider = 'instagram_graph'
+       AND LOWER(COALESCE(status, '')) = 'active'
+       AND COALESCE("connectionMetadata" -> 'instagramAccountAliases', '[]'::jsonb) @> jsonb_build_array($1::text)
+     ORDER BY "updatedAt" DESC, "createdAt" DESC
+     LIMIT 2`,
+    [safeAccountAlias]
+  );
+
+  if (result.rows.length !== 1) return null;
+  return mapChannelTokenRecord(result.rows[0]);
+}
+
+async function findInstagramChannelByRecipientId(recipientId, client = null) {
+  const safeRecipientId = String(recipientId || '').trim();
+  if (!safeRecipientId) return null;
+
+  return (
+    await findInstagramChannelByExternalId(safeRecipientId, client) ||
+    await findInstagramChannelByPageId(safeRecipientId, client) ||
+    await findInstagramChannelByUserId(safeRecipientId, client) ||
+    await findInstagramChannelByAccountAlias(safeRecipientId, client) ||
+    null
+  );
 }
 
 async function listInstagramChannelsByClinicId(clinicId, client = null) {
@@ -886,6 +937,9 @@ module.exports = {
   listWhatsAppChannelsByClinicId,
   findInstagramChannelByExternalId,
   findInstagramChannelByPageId,
+  findInstagramChannelByUserId,
+  findInstagramChannelByAccountAlias,
+  findInstagramChannelByRecipientId,
   listInstagramChannelsByClinicId,
   upsertInstagramChannel,
   getClinicWhatsAppSettingsById,
