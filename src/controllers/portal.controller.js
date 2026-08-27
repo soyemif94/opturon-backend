@@ -207,7 +207,8 @@ const {
 } = require('../services/portal-whatsapp-embedded-signup.service');
 const {
   getPortalInstagramConnectionStatus,
-  connectPortalInstagramChannel
+  connectPortalInstagramChannel,
+  disconnectPortalInstagramChannel
 } = require('../services/portal-instagram.service');
 const { connectPortalWhatsAppManual } = require('../services/portal-whatsapp-manual-onboarding.service');
 const { discoverTenantWhatsAppAssets } = require('../services/portal-whatsapp-discovery.service');
@@ -5903,6 +5904,39 @@ async function postPortalInstagramConnect(req, res) {
   }
 }
 
+async function postPortalInstagramDisconnect(req, res) {
+  const tenantId = getRequestTenantId(req);
+
+  try {
+    const result = await disconnectPortalInstagramChannel(tenantId, {
+      channelId: req.body && req.body.channelId,
+      requestId: req.requestId || null
+    });
+
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_tenant_id' || result.reason === 'missing_instagram_channel_id'
+          ? 400
+          : result.reason === 'tenant_mapping_not_found'
+            ? 404
+            : 409;
+      return res.status(status).json({
+        success: false,
+        error: result.reason,
+        tenantId: result.tenantId || tenantId
+      });
+    }
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'portal_instagram_disconnect_failed',
+      details: error.message
+    });
+  }
+}
+
 async function getPortalBotSettingsController(req, res) {
   const tenantId = getRequestTenantId(req);
 
@@ -6206,6 +6240,7 @@ module.exports = {
   postPortalWhatsAppDiscoverAssets,
   getPortalInstagramStatus,
   postPortalInstagramConnect,
+  postPortalInstagramDisconnect,
   getPortalWhatsAppStatusController,
   getPortalBotSettingsController,
   patchPortalBotSettingsController,

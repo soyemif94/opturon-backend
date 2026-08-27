@@ -556,7 +556,10 @@ async function upsertInstagramChannel(input, client = null) {
            "accessToken" = COALESCE($7, "accessToken"),
            status = $8,
            "connectionSource" = COALESCE($9, "connectionSource"),
-           "connectionMetadata" = COALESCE($10, "connectionMetadata"),
+           "connectionMetadata" = CASE
+             WHEN $10::jsonb IS NULL THEN "connectionMetadata"
+             ELSE COALESCE("connectionMetadata", '{}'::jsonb) || $10::jsonb
+           END,
            "updatedAt" = NOW()
        WHERE id = $1
        RETURNING id, "clinicId", type, provider, "phoneNumberId", "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status, "updatedAt", "createdAt"`,
@@ -612,6 +615,33 @@ async function upsertInstagramChannel(input, client = null) {
   );
 
   return mapChannelTokenRecord(result.rows[0] || null);
+}
+
+async function disconnectInstagramChannelByIdAndClinicId(channelId, clinicId, client = null) {
+  const safeChannelId = String(channelId || '').trim();
+  const safeClinicId = String(clinicId || '').trim();
+  if (!safeChannelId || !safeClinicId) return null;
+
+  const result = await dbQuery(
+    client,
+    `UPDATE channels
+     SET status = 'inactive',
+         "accessToken" = NULL,
+         "connectionMetadata" = COALESCE("connectionMetadata", '{}'::jsonb) || jsonb_build_object(
+           'disconnectedAt', NOW(),
+           'credentialRetired', TRUE
+         ),
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+       AND type = 'instagram'
+       AND provider = 'instagram_graph'
+       AND LOWER(COALESCE(status, '')) = 'active'
+     RETURNING id, "clinicId", type, provider, "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
+    [safeChannelId, safeClinicId]
+  );
+
+  return result.rows.length === 1 ? result.rows[0] : null;
 }
 
 async function getClinicBusinessProfileById(clinicId, client = null) {
@@ -942,6 +972,7 @@ module.exports = {
   findInstagramChannelByRecipientId,
   listInstagramChannelsByClinicId,
   upsertInstagramChannel,
+  disconnectInstagramChannelByIdAndClinicId,
   getClinicWhatsAppSettingsById,
   updateClinicWhatsAppDefaultChannelId,
   getClinicBusinessProfileById,

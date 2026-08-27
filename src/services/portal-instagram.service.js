@@ -2,7 +2,8 @@ const crypto = require('crypto');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   listInstagramChannelsByClinicId,
-  upsertInstagramChannel
+  upsertInstagramChannel,
+  disconnectInstagramChannelByIdAndClinicId
 } = require('../repositories/tenant.repository');
 const {
   exchangeOAuthCodeForAccessToken,
@@ -142,12 +143,7 @@ async function connectSelectedInstagramAsset({
 function pickPrimaryInstagramChannel(channels) {
   const items = Array.isArray(channels) ? channels : [];
   if (!items.length) return null;
-
-  return (
-    items.find((channel) => String(channel.status || '').trim().toLowerCase() === 'active') ||
-    items[0] ||
-    null
-  );
+  return items.find((channel) => String(channel.status || '').trim().toLowerCase() === 'active') || null;
 }
 
 async function getPortalInstagramConnectionStatus(tenantId) {
@@ -301,7 +297,49 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
   });
 }
 
+async function disconnectPortalInstagramChannel(tenantId, input = {}) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok) return context;
+
+  const channelId = String(input.channelId || '').trim();
+  if (!channelId) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      reason: 'missing_instagram_channel_id'
+    };
+  }
+
+  const channel = await disconnectInstagramChannelByIdAndClinicId(channelId, context.clinic.id);
+  if (!channel) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      reason: 'instagram_channel_not_found_or_forbidden'
+    };
+  }
+
+  logInfo('portal_instagram_disconnect_succeeded', {
+    tenantId: context.tenantId,
+    clinicId: context.clinic.id,
+    requestId: input.requestId || null,
+    channelId: channel.id
+  });
+
+  return {
+    ok: true,
+    tenantId: context.tenantId,
+    clinicId: context.clinic.id,
+    state: 'not_connected',
+    channel: null,
+    channels: [summarizeInstagramChannel(channel)]
+  };
+}
+
 module.exports = {
   getPortalInstagramConnectionStatus,
-  connectPortalInstagramChannel
+  connectPortalInstagramChannel,
+  disconnectPortalInstagramChannel
 };

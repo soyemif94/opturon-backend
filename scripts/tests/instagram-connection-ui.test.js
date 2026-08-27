@@ -84,6 +84,7 @@ mockModule('src/repositories/tenant.repository.js', {
 });
 
 mockModule('src/integrations/instagram/instagram.service.js', {
+  logInstagramOAuthCodeTelemetry: () => {},
   exchangeOAuthCodeForAccessToken: async ({ providerOverride }) => ({
     providerOverride,
     accessToken: 'USER_TOKEN_SECRET',
