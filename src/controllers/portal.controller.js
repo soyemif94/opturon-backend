@@ -210,6 +210,7 @@ const {
   connectPortalInstagramChannel,
   disconnectPortalInstagramChannel
 } = require('../services/portal-instagram.service');
+const { runInstagramDirectExchangeDiagnostic } = require('../services/instagram-direct-exchange-diagnostic.service');
 const { connectPortalWhatsAppManual } = require('../services/portal-whatsapp-manual-onboarding.service');
 const { discoverTenantWhatsAppAssets } = require('../services/portal-whatsapp-discovery.service');
 const {
@@ -5937,6 +5938,15 @@ async function postPortalInstagramDisconnect(req, res) {
   }
 }
 
+async function postPortalInstagramDirectExchangeDiagnostic(req, res) {
+  const result = await runInstagramDirectExchangeDiagnostic({
+    code: req.body && req.body.code
+  });
+  // Provider failures remain a successful diagnostic response so the BFF can
+  // render only the sanitized result, without leaking the provider body.
+  return res.status(200).json({ success: true, data: result });
+}
+
 async function getPortalBotSettingsController(req, res) {
   const tenantId = getRequestTenantId(req);
 
@@ -6241,6 +6251,7 @@ module.exports = {
   getPortalInstagramStatus,
   postPortalInstagramConnect,
   postPortalInstagramDisconnect,
+  postPortalInstagramDirectExchangeDiagnostic,
   getPortalWhatsAppStatusController,
   getPortalBotSettingsController,
   patchPortalBotSettingsController,
