@@ -75,6 +75,34 @@ function summarizeInstagramOAuthExchangeFailure({ response, json, requestId = nu
   };
 }
 
+function summarizeInstagramMessageSendFailure({
+  response,
+  json,
+  requestId = null,
+  channelId = null,
+  recipientId = null,
+  providerEndpoint = null
+}) {
+  const providerError = json && typeof json === 'object' && json.error && typeof json.error === 'object'
+    ? json.error
+    : {};
+
+  return {
+    requestId: requestId || null,
+    correlationId: requestId || null,
+    channelId: channelId || null,
+    provider: 'instagram',
+    recipientIgsid: recipientId || null,
+    providerEndpoint: providerEndpoint || null,
+    providerHttpStatus: response && Number.isFinite(Number(response.status)) ? Number(response.status) : null,
+    providerErrorType: normalizeProviderErrorValue(providerError.type, 200),
+    providerErrorCode: normalizeProviderErrorValue(providerError.code, 100),
+    providerErrorSubcode: normalizeProviderErrorValue(providerError.error_subcode, 100),
+    providerErrorMessage: sanitizeProviderErrorMessage(providerError.message),
+    providerFbtraceId: normalizeProviderErrorValue(providerError.fbtrace_id, 200)
+  };
+}
+
 function logInstagramOAuthCodeTelemetry(stage, code, { requestId = null, correlationId = null } = {}) {
   const safeCode = String(code || '');
   logInfo('instagram_oauth_code_telemetry', {
@@ -309,6 +337,7 @@ async function sendInstagramTextMessage({ channel, recipientId, text, requestId 
 
   const host = resolveInstagramMessagingHost(channel);
   const url = new URL(`https://${host}/${DEFAULT_GRAPH_VERSION}/${senderId}/messages`);
+  const providerEndpoint = `https://${host}/${DEFAULT_GRAPH_VERSION}/:instagramAccountId/messages`;
   url.searchParams.set('access_token', accessToken);
   const body = JSON.stringify({ recipient: { id: safeRecipientId }, message: { text: safeText } });
   let lastError = null;
@@ -323,6 +352,17 @@ async function sendInstagramTextMessage({ channel, recipientId, text, requestId 
       const json = await response.json().catch(() => null);
       const messageId = String(json && (json.message_id || json.id) || '').trim();
       if (response.ok && messageId) return { messageId, raw: json };
+
+      if (!response.ok) {
+        logWarn('instagram_message_send_provider_error', summarizeInstagramMessageSendFailure({
+          response,
+          json,
+          requestId,
+          channelId: channel && channel.id ? channel.id : null,
+          recipientId: safeRecipientId,
+          providerEndpoint
+        }));
+      }
 
       const reason = String(json && json.error && json.error.message || 'instagram_message_send_failed');
       const error = Object.assign(new Error(reason), {
