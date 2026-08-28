@@ -69,12 +69,16 @@ mockModule('src/repositories/tenant.repository.js', {
 });
 
 mockModule('src/integrations/instagram/instagram.service.js', {
-  exchangeOAuthCodeForAccessToken: async () => ({ accessToken: 'NEW_USER_TOKEN', tokenType: 'bearer', expiresIn: 3600 }),
+  exchangeOAuthCodeForAccessToken: async () => ({ accessToken: 'NEW_SHORT_TOKEN', tokenType: 'bearer', expiresIn: 3600, provider: 'instagram_login' }),
+  exchangeInstagramLongLivedToken: async () => ({
+    accessToken: 'NEW_LONG_LIVED_TOKEN', tokenType: 'long_lived', providerTokenType: 'bearer', expiresIn: 5184000,
+    obtainedAt: '2026-08-28T04:00:00.000Z', expiresAt: '2026-10-27T04:00:00.000Z', provider: 'instagram_login'
+  }),
   logInstagramOAuthCodeTelemetry: () => {},
   fetchInstagramBusinessAssets: async () => [{
     pageId: '17841430256503922',
     pageName: 'Opturon Ads',
-    pageAccessToken: 'NEW_ENCRYPTED_CREDENTIAL',
+    pageAccessToken: 'NEW_LONG_LIVED_TOKEN',
     instagramBusinessAccountId: target.instagramUserId,
     instagramUsername: 'opturonads'
   }],
@@ -121,7 +125,8 @@ async function run() {
   assert.equal(reconnected.ok, true);
   assert.equal(reconnected.channel.id, target.channelId);
   assert.equal(channel.status, 'active');
-  assert.equal(channel.accessToken, 'NEW_ENCRYPTED_CREDENTIAL');
+  assert.equal(channel.accessToken, 'NEW_LONG_LIVED_TOKEN');
+  assert.equal(channel.connectionMetadata.oauthTokenType, 'long_lived');
   assert.equal(JSON.stringify(history), historyBefore);
 
   const repositorySource = fs.readFileSync(modulePath('src/repositories/tenant.repository.js'), 'utf8');

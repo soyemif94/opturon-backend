@@ -7,6 +7,7 @@ const {
 } = require('../repositories/tenant.repository');
 const {
   exchangeOAuthCodeForAccessToken,
+  exchangeInstagramLongLivedToken,
   logInstagramOAuthCodeTelemetry,
   fetchInstagramBusinessAssets,
   subscribePageToWebhook
@@ -35,13 +36,15 @@ function summarizeInstagramAsset(asset) {
   };
 }
 
-function createAssetSelection({ tenantId, clinicId, assets }) {
+function createAssetSelection({ tenantId, clinicId, assets, tokenMetadata = {}, providerOverride = null }) {
   pruneExpiredAssetSelections();
   const selectionToken = crypto.randomUUID();
   pendingAssetSelections.set(selectionToken, {
     tenantId,
     clinicId,
     assets,
+    tokenMetadata,
+    providerOverride,
     expiresAt: Date.now() + ASSET_SELECTION_TTL_MS
   });
   return selectionToken;
@@ -68,7 +71,12 @@ function consumeAssetSelection({ selectionToken, tenantId, clinicId, selectedPag
   }
 
   pendingAssetSelections.delete(safeToken);
-  return { ok: true, asset };
+  return {
+    ok: true,
+    asset,
+    tokenMetadata: record.tokenMetadata || {},
+    providerOverride: record.providerOverride || null
+  };
 }
 
 function summarizeInstagramChannel(channel) {
@@ -92,7 +100,10 @@ async function connectSelectedInstagramAsset({
   context,
   selectedAsset,
   tokenType = null,
+  providerTokenType = null,
   expiresIn = null,
+  tokenObtainedAt = null,
+  tokenExpiresAt = null,
   availableAssets = [],
   providerOverride = null,
   requestId = null
@@ -117,7 +128,10 @@ async function connectSelectedInstagramAsset({
     connectionMetadata: {
       oauthProvider: providerOverride || null,
       oauthTokenType: tokenType || null,
+      oauthProviderTokenType: providerTokenType || null,
       oauthExpiresIn: expiresIn || null,
+      oauthTokenObtainedAt: tokenObtainedAt || null,
+      oauthTokenExpiresAt: tokenExpiresAt || null,
       availableAssets: availableAssets.map((asset) => summarizeInstagramAsset(asset)).filter(Boolean)
     }
   });
@@ -201,7 +215,13 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     return connectSelectedInstagramAsset({
       context,
       selectedAsset: selection.asset,
+      tokenType: selection.tokenMetadata.tokenType || null,
+      providerTokenType: selection.tokenMetadata.providerTokenType || null,
+      expiresIn: selection.tokenMetadata.expiresIn || null,
+      tokenObtainedAt: selection.tokenMetadata.obtainedAt || null,
+      tokenExpiresAt: selection.tokenMetadata.expiresAt || null,
       availableAssets: [selection.asset],
+      providerOverride: selection.providerOverride,
       requestId: input.requestId || null
     });
   }
@@ -240,17 +260,24 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     requestId: input.requestId || null
   });
 
-  const token = await exchangeOAuthCodeForAccessToken({
+  const shortLivedToken = await exchangeOAuthCodeForAccessToken({
     code,
     redirectUri,
     providerOverride: oauthProvider,
     requestId: input.requestId || null,
     codeTelemetryId
   });
+  const resolvedOauthProvider = shortLivedToken.provider || oauthProvider;
+  const token = resolvedOauthProvider === 'instagram_login'
+    ? await exchangeInstagramLongLivedToken({
+        shortLivedAccessToken: shortLivedToken.accessToken,
+        requestId: input.requestId || null
+      })
+    : shortLivedToken;
   const assets = await fetchInstagramBusinessAssets({
     accessToken: token.accessToken,
     userId: token.userId,
-    providerOverride: oauthProvider,
+    providerOverride: resolvedOauthProvider,
     requestId: input.requestId || null
   });
 
@@ -258,7 +285,9 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     const selectionToken = createAssetSelection({
       tenantId: context.tenantId,
       clinicId: context.clinic.id,
-      assets
+      assets,
+      tokenMetadata: token,
+      providerOverride: resolvedOauthProvider
     });
 
     logWarn('portal_instagram_connect_ambiguous_assets', {
@@ -290,9 +319,12 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     context,
     selectedAsset,
     tokenType: token.tokenType || null,
+    providerTokenType: token.providerTokenType || null,
     expiresIn: token.expiresIn || null,
+    tokenObtainedAt: token.obtainedAt || null,
+    tokenExpiresAt: token.expiresAt || null,
     availableAssets: assets,
-    providerOverride: oauthProvider,
+    providerOverride: resolvedOauthProvider,
     requestId: input.requestId || null
   });
 }

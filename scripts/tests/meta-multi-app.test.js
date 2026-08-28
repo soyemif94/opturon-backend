@@ -10,6 +10,8 @@ const {
 } = require('../../src/middlewares/verify-meta-signature.middleware');
 const {
   exchangeOAuthCodeForAccessToken,
+  exchangeInstagramLongLivedToken,
+  refreshInstagramLongLivedToken,
   fetchInstagramBusinessAssets
 } = require('../../src/integrations/instagram/instagram.service');
 
@@ -224,6 +226,119 @@ async function testInstagramLoginExchangeFailureObservability() {
   }
 }
 
+async function testInstagramLongLivedExchangeContractAndMetadata() {
+  const previousSecret = env.instagramBusinessAppSecret;
+  const previousFetch = global.fetch;
+  const previousLog = console.log;
+  const logs = [];
+  let request = null;
+  env.instagramBusinessAppSecret = 'child-secret-never-log';
+  global.fetch = async (url, options) => {
+    request = { url: new URL(url), options };
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ access_token: 'long-token-never-log', token_type: 'bearer', expires_in: 5184000 })
+    };
+  };
+  console.log = (value) => logs.push(String(value));
+
+  try {
+    const token = await exchangeInstagramLongLivedToken({
+      shortLivedAccessToken: 'short-token-never-log',
+      requestId: 'request-long-lived'
+    });
+    assert.equal(request.url.origin, 'https://graph.instagram.com');
+    assert.equal(request.url.pathname, '/access_token');
+    assert.equal(request.url.searchParams.get('grant_type'), 'ig_exchange_token');
+    assert.equal(request.url.searchParams.get('client_secret'), 'child-secret-never-log');
+    assert.equal(request.url.searchParams.get('access_token'), 'short-token-never-log');
+    assert.equal(request.options.method, 'GET');
+    assert.equal(token.accessToken, 'long-token-never-log');
+    assert.equal(token.tokenType, 'long_lived');
+    assert.equal(token.providerTokenType, 'bearer');
+    assert.equal(token.expiresIn, 5184000);
+    assert.equal(new Date(token.expiresAt).getTime() - new Date(token.obtainedAt).getTime(), 5184000 * 1000);
+    const successLog = JSON.parse(logs[0]);
+    assert.equal(successLog.stage, 'LONG_LIVED_EXCHANGE');
+    assert.equal(successLog.outcome, 'PASS');
+    assert.equal(successLog.tokenType, 'long_lived');
+    assert.equal(successLog.expiresInSeconds, 5184000);
+    assert.doesNotMatch(logs.join(' '), /short-token-never-log|long-token-never-log|child-secret-never-log/);
+  } finally {
+    global.fetch = previousFetch;
+    console.log = previousLog;
+    env.instagramBusinessAppSecret = previousSecret;
+  }
+}
+
+async function testInstagramLongLivedExchangeFailureIsSanitized() {
+  const previousSecret = env.instagramBusinessAppSecret;
+  const previousFetch = global.fetch;
+  const previousWarn = console.warn;
+  const warnings = [];
+  env.instagramBusinessAppSecret = 'child-secret-never-log';
+  global.fetch = async () => ({
+    ok: false,
+    status: 400,
+    headers: { get: () => 'application/json' },
+    text: async () => JSON.stringify({
+      error: { type: 'OAuthException', code: 190, error_subcode: 463, message: 'Rejected access_token=short-token-never-log' }
+    })
+  });
+  console.warn = (value) => warnings.push(String(value));
+
+  try {
+    await assert.rejects(
+      () => exchangeInstagramLongLivedToken({ shortLivedAccessToken: 'short-token-never-log', requestId: 'request-failure' }),
+      (error) => error && error.reason === 'instagram_long_lived_exchange_failed' && error.status === 400
+    );
+    const warning = JSON.parse(warnings[0]);
+    assert.equal(warning.message, 'instagram_oauth_long_lived_exchange_failed');
+    assert.equal(warning.stage, 'LONG_LIVED_EXCHANGE');
+    assert.equal(warning.outcome, 'FAIL');
+    assert.equal(warning.providerHttpStatus, 400);
+    assert.equal(warning.providerErrorCode, '190');
+    assert.equal(warning.providerErrorMessage, 'Rejected [REDACTED]');
+    assert.doesNotMatch(warnings.join(' '), /short-token-never-log|child-secret-never-log/);
+  } finally {
+    global.fetch = previousFetch;
+    console.warn = previousWarn;
+    env.instagramBusinessAppSecret = previousSecret;
+  }
+}
+
+async function testInstagramLongLivedRefreshHelperContract() {
+  const previousFetch = global.fetch;
+  const previousLog = console.log;
+  const logs = [];
+  let request = null;
+  global.fetch = async (url, options) => {
+    request = { url: new URL(url), options };
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ access_token: 'refreshed-token-never-log', token_type: 'bearer', expires_in: 5184000 })
+    };
+  };
+  console.log = (value) => logs.push(String(value));
+
+  try {
+    const token = await refreshInstagramLongLivedToken({ accessToken: 'current-token-never-log', requestId: 'request-refresh' });
+    assert.equal(request.url.origin, 'https://graph.instagram.com');
+    assert.equal(request.url.pathname, '/refresh_access_token');
+    assert.equal(request.url.searchParams.get('grant_type'), 'ig_refresh_token');
+    assert.equal(request.url.searchParams.get('access_token'), 'current-token-never-log');
+    assert.equal(request.options.method, 'GET');
+    assert.equal(token.tokenType, 'long_lived');
+    assert.equal(token.accessToken, 'refreshed-token-never-log');
+    assert.doesNotMatch(logs.join(' '), /current-token-never-log|refreshed-token-never-log/);
+  } finally {
+    global.fetch = previousFetch;
+    console.log = previousLog;
+  }
+}
+
 async function testInstagramCodeTelemetryDoesNotLeakCode() {
   const source = readFileSync(
     join(__dirname, '../../src/integrations/instagram/instagram.service.js'),
@@ -295,6 +410,9 @@ async function run() {
   await testInstagramExchangeProviderOverride();
   await testInstagramLoginExchangeCredentials();
   await testInstagramLoginExchangeFailureObservability();
+  await testInstagramLongLivedExchangeContractAndMetadata();
+  await testInstagramLongLivedExchangeFailureIsSanitized();
+  await testInstagramLongLivedRefreshHelperContract();
   await testInstagramCodeTelemetryDoesNotLeakCode();
   await testInstagramExchangeRejectsUnknownProviderOverride();
   await testInstagramLoginDiscoveryRequestsIdField();

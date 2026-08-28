@@ -75,6 +75,35 @@ function summarizeInstagramOAuthExchangeFailure({ response, json, requestId = nu
   };
 }
 
+function buildInstagramTokenMetadata(json, { semanticTokenType, obtainedAt = new Date() } = {}) {
+  const expiresIn = Number.isFinite(Number(json && json.expires_in))
+    ? Number(json.expires_in)
+    : null;
+  const obtainedAtIso = obtainedAt.toISOString();
+  const expiresAt = expiresIn !== null && expiresIn >= 0
+    ? new Date(obtainedAt.getTime() + (expiresIn * 1000)).toISOString()
+    : null;
+
+  return {
+    accessToken: String(json && json.access_token || '').trim(),
+    tokenType: semanticTokenType || String(json && json.token_type || '').trim() || null,
+    providerTokenType: String(json && json.token_type || '').trim() || null,
+    expiresIn,
+    obtainedAt: obtainedAtIso,
+    expiresAt,
+    provider: 'instagram_login'
+  };
+}
+
+function hasUsableLongLivedTokenResponse(json) {
+  return Boolean(
+    json &&
+    String(json.access_token || '').trim() &&
+    Number.isFinite(Number(json.expires_in)) &&
+    Number(json.expires_in) > 0
+  );
+}
+
 function summarizeInstagramMessageSendFailure({
   response,
   json,
@@ -178,17 +207,25 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
   }
 
   if (!response.ok || !json || !json.access_token) {
-    logWarn('instagram_oauth_token_exchange_failed', summarizeInstagramOAuthExchangeFailure({
-      response,
-      json,
-      requestId
-    }));
+    logWarn('instagram_oauth_token_exchange_failed', {
+      ...summarizeInstagramOAuthExchangeFailure({ response, json, requestId }),
+      tokenLifecycleStage: 'SHORT_LIVED_EXCHANGE',
+      outcome: 'FAIL'
+    });
     const error = new Error((json && json.error && json.error.message) || 'instagram_oauth_exchange_failed');
     error.reason = 'instagram_oauth_exchange_failed';
     error.status = response.status;
     error.body = json;
     throw error;
   }
+
+  logInfo('instagram_oauth_short_lived_exchange_succeeded', {
+    stage: 'SHORT_LIVED_EXCHANGE',
+    outcome: 'PASS',
+    requestId: requestId || null,
+    tokenType: String(json.token_type || '').trim() || null,
+    expiresInSeconds: Number.isFinite(Number(json.expires_in)) ? Number(json.expires_in) : null
+  });
 
   return {
     accessToken: String(json.access_token).trim(),
@@ -198,6 +235,97 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
     provider,
     raw: json
   };
+}
+
+async function exchangeInstagramLongLivedToken({ shortLivedAccessToken, requestId = null, fetchImpl = fetch }) {
+  const shortToken = String(shortLivedAccessToken || '').trim();
+  const { clientSecret } = resolveInstagramBusinessLoginCredentials();
+  if (!shortToken || !clientSecret) {
+    const error = new Error('instagram_long_lived_exchange_prerequisites_missing');
+    error.reason = 'instagram_long_lived_exchange_prerequisites_missing';
+    throw error;
+  }
+
+  const url = new URL('https://graph.instagram.com/access_token');
+  url.searchParams.set('grant_type', 'ig_exchange_token');
+  url.searchParams.set('client_secret', clientSecret);
+  url.searchParams.set('access_token', shortToken);
+
+  const response = await fetchImpl(url.toString(), { method: 'GET', headers: { Accept: 'application/json' } });
+  const text = await response.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!response.ok || !hasUsableLongLivedTokenResponse(json)) {
+    logWarn('instagram_oauth_long_lived_exchange_failed', {
+      ...summarizeInstagramOAuthExchangeFailure({ response, json, requestId }),
+      stage: 'LONG_LIVED_EXCHANGE',
+      outcome: 'FAIL'
+    });
+    const error = new Error((json && json.error && json.error.message) || 'instagram_long_lived_exchange_failed');
+    error.reason = 'instagram_long_lived_exchange_failed';
+    error.status = response.status;
+    throw error;
+  }
+
+  const token = buildInstagramTokenMetadata(json, { semanticTokenType: 'long_lived' });
+  logInfo('instagram_oauth_long_lived_exchange_succeeded', {
+    stage: 'LONG_LIVED_EXCHANGE',
+    outcome: 'PASS',
+    requestId: requestId || null,
+    tokenType: token.tokenType,
+    expiresInSeconds: token.expiresIn,
+    tokenExpiresAt: token.expiresAt
+  });
+  return token;
+}
+
+async function refreshInstagramLongLivedToken({ accessToken, requestId = null, fetchImpl = fetch }) {
+  const currentToken = String(accessToken || '').trim();
+  if (!currentToken) {
+    const error = new Error('instagram_long_lived_refresh_token_missing');
+    error.reason = 'instagram_long_lived_refresh_token_missing';
+    throw error;
+  }
+
+  const url = new URL('https://graph.instagram.com/refresh_access_token');
+  url.searchParams.set('grant_type', 'ig_refresh_token');
+  url.searchParams.set('access_token', currentToken);
+  const response = await fetchImpl(url.toString(), { method: 'GET', headers: { Accept: 'application/json' } });
+  const text = await response.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!response.ok || !hasUsableLongLivedTokenResponse(json)) {
+    logWarn('instagram_oauth_long_lived_refresh_failed', {
+      ...summarizeInstagramOAuthExchangeFailure({ response, json, requestId }),
+      stage: 'LONG_LIVED_REFRESH',
+      outcome: 'FAIL'
+    });
+    const error = new Error((json && json.error && json.error.message) || 'instagram_long_lived_refresh_failed');
+    error.reason = 'instagram_long_lived_refresh_failed';
+    error.status = response.status;
+    throw error;
+  }
+
+  const token = buildInstagramTokenMetadata(json, { semanticTokenType: 'long_lived' });
+  logInfo('instagram_oauth_long_lived_refresh_succeeded', {
+    stage: 'LONG_LIVED_REFRESH',
+    outcome: 'PASS',
+    requestId: requestId || null,
+    tokenType: token.tokenType,
+    expiresInSeconds: token.expiresIn,
+    tokenExpiresAt: token.expiresAt
+  });
+  return token;
 }
 
 async function fetchInstagramBusinessAssets({ accessToken, userId = null, providerOverride = null, requestId = null }) {
@@ -393,6 +521,8 @@ module.exports = {
   resolveInstagramBusinessLoginCredentials,
   logInstagramOAuthCodeTelemetry,
   exchangeOAuthCodeForAccessToken,
+  exchangeInstagramLongLivedToken,
+  refreshInstagramLongLivedToken,
   fetchInstagramBusinessAssets,
   subscribePageToWebhook,
   resolveInstagramMessagingHost,
