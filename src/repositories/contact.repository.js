@@ -12,6 +12,48 @@ function normalizePhoneDigits(value) {
   return digits || null;
 }
 
+function normalizeMetadataObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+async function findContactByWaId(clinicId, waId, client = null) {
+  const safeWaId = String(waId || '').trim();
+  if (!safeWaId) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT
+       id,
+       "clinicId",
+       "waId",
+       phone,
+       name,
+       email,
+       "profileImageUrl",
+       metadata,
+       "whatsappPhone",
+       "taxId",
+       "taxCondition",
+       "companyName",
+       notes,
+       status,
+       "archivedAt",
+       "deletedAt",
+       "optedOut",
+       "createdAt",
+       "updatedAt"
+     FROM contacts
+     WHERE "clinicId" = $1
+       AND "waId" = $2
+     ORDER BY "updatedAt" DESC NULLS LAST, "createdAt" DESC
+     LIMIT 1`,
+    [clinicId, safeWaId]
+  );
+
+  const row = result.rows[0] || null;
+  return row ? { ...row, metadata: normalizeMetadataObject(row.metadata) } : null;
+}
+
 async function findFirstContactByPhone(clinicId, phone, client = null) {
   const normalizedPhone = normalizePhoneDigits(phone);
   if (!normalizedPhone) return null;
@@ -26,6 +68,7 @@ async function findFirstContactByPhone(clinicId, phone, client = null) {
        name,
        email,
        "profileImageUrl",
+       metadata,
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -49,11 +92,17 @@ async function findFirstContactByPhone(clinicId, phone, client = null) {
     [clinicId, normalizedPhone]
   );
 
-  return result.rows[0] || null;
+  const row = result.rows[0] || null;
+  return row ? { ...row, metadata: normalizeMetadataObject(row.metadata) } : null;
 }
 
-async function upsertContact({ clinicId, waId, phone, name }, client = null) {
-  const reusableContact = await findFirstContactByPhone(clinicId, phone || waId, client);
+async function upsertContact({ clinicId, waId, phone, name, channelType = 'whatsapp', profileImageUrl = null, metadata = null }, client = null) {
+  const safeChannelType = String(channelType || 'whatsapp').trim().toLowerCase();
+  const reusableContact =
+    safeChannelType === 'instagram'
+      ? await findContactByWaId(clinicId, waId, client)
+      : await findFirstContactByPhone(clinicId, phone || waId, client);
+
   if (reusableContact) {
     const result = await dbQuery(
       client,
@@ -62,36 +111,60 @@ async function upsertContact({ clinicId, waId, phone, name }, client = null) {
          "waId" = COALESCE($3, "waId"),
          phone = COALESCE($4, phone),
          name = COALESCE($5, name),
+         "profileImageUrl" = COALESCE($6, "profileImageUrl"),
+         metadata = CASE
+           WHEN $7::jsonb IS NULL THEN COALESCE(metadata, '{}'::jsonb)
+           ELSE COALESCE(metadata, '{}'::jsonb) || $7::jsonb
+         END,
          status = 'active',
          "archivedAt" = NULL,
          "deletedAt" = NULL,
          "updatedAt" = NOW()
        WHERE id = $1
          AND "clinicId" = $2
-       RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", status, "archivedAt", "deletedAt", "optedOut"`,
-      [reusableContact.id, clinicId, waId || null, phone || null, name || null]
+       RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", metadata, status, "archivedAt", "deletedAt", "optedOut"`,
+      [
+        reusableContact.id,
+        clinicId,
+        waId || null,
+        phone || null,
+        name || null,
+        profileImageUrl || null,
+        metadata === undefined ? null : JSON.stringify(normalizeMetadataObject(metadata))
+      ]
     );
 
-    return result.rows[0] || null;
+    const row = result.rows[0] || null;
+    return row ? { ...row, metadata: normalizeMetadataObject(row.metadata) } : null;
   }
 
   const result = await dbQuery(
     client,
-    `INSERT INTO contacts ("clinicId", "waId", phone, name, "updatedAt")
-     VALUES ($1, $2, $3, $4, NOW())
+    `INSERT INTO contacts ("clinicId", "waId", phone, name, "profileImageUrl", metadata, "updatedAt")
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6::jsonb, '{}'::jsonb), NOW())
      ON CONFLICT ("clinicId", "waId")
      DO UPDATE SET
        phone = EXCLUDED.phone,
        name = COALESCE(EXCLUDED.name, contacts.name),
+       "profileImageUrl" = COALESCE(EXCLUDED."profileImageUrl", contacts."profileImageUrl"),
+       metadata = COALESCE(contacts.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
        status = 'active',
        "archivedAt" = NULL,
        "deletedAt" = NULL,
        "updatedAt" = NOW()
-     RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", status, "archivedAt", "deletedAt", "optedOut"`,
-    [clinicId, waId, phone || null, name || null]
+     RETURNING id, "clinicId", "waId", phone, name, email, "profileImageUrl", metadata, status, "archivedAt", "deletedAt", "optedOut"`,
+    [
+      clinicId,
+      waId,
+      phone || null,
+      name || null,
+      profileImageUrl || null,
+      metadata === undefined ? null : JSON.stringify(normalizeMetadataObject(metadata))
+    ]
   );
 
-  return result.rows[0];
+  const row = result.rows[0] || null;
+  return row ? { ...row, metadata: normalizeMetadataObject(row.metadata) } : null;
 }
 
 // Generic/internal lookup. Do not use this in portal/client-facing flows unless
@@ -107,6 +180,7 @@ async function findContactById(contactId, client = null) {
        name,
        email,
        "profileImageUrl",
+       metadata,
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -122,7 +196,8 @@ async function findContactById(contactId, client = null) {
     [contactId]
   );
 
-  return result.rows[0] || null;
+  const row = result.rows[0] || null;
+  return row ? { ...row, metadata: normalizeMetadataObject(row.metadata) } : null;
 }
 
 // Safe scoped lookup for runtime flows that already know the clinic boundary.
@@ -137,6 +212,7 @@ async function findContactByIdAndClinicId(contactId, clinicId, client = null) {
        name,
        email,
        "profileImageUrl",
+       metadata,
        "whatsappPhone",
        "taxId",
        "taxCondition",
@@ -155,7 +231,8 @@ async function findContactByIdAndClinicId(contactId, clinicId, client = null) {
     [contactId, clinicId]
   );
 
-  return result.rows[0] || null;
+  const row = result.rows[0] || null;
+  return row ? { ...row, metadata: normalizeMetadataObject(row.metadata) } : null;
 }
 
 // Portal/client-facing lookup. Keep tenant scope explicit at the repository boundary.
@@ -189,7 +266,8 @@ async function findPortalContactById(clinicId, contactId, client = null) {
     [clinicId, contactId]
   );
 
-  return result.rows[0] || null;
+  const row = result.rows[0] || null;
+  return row ? { ...row, metadata: normalizeMetadataObject(row.metadata) } : null;
 }
 
 async function listContactsByClinicId(clinicId, options = {}, client = null) {
@@ -209,6 +287,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
        c.name,
        c.email,
        c."profileImageUrl",
+       c.metadata,
        c."whatsappPhone",
        c."taxId",
        c."taxCondition",
@@ -236,6 +315,7 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
        c.name,
        c.email,
        c."profileImageUrl",
+       c.metadata,
        c."whatsappPhone",
        c."taxId",
        c."taxCondition",
@@ -251,7 +331,10 @@ async function listContactsByClinicId(clinicId, options = {}, client = null) {
     [clinicId]
   );
 
-  return result.rows;
+  return result.rows.map((row) => ({
+    ...row,
+    metadata: normalizeMetadataObject(row.metadata)
+  }));
 }
 
 async function countActiveContactsByClinicId(clinicId, client = null) {
@@ -707,6 +790,7 @@ module.exports = {
   // Generic/internal helpers.
   upsertContact,
   findFirstContactByPhone,
+  findContactByWaId,
   findContactById,
   findContactByIdAndClinicId,
   listContactsByClinicId,

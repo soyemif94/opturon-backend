@@ -18,9 +18,50 @@ const env = require('../config/env');
 const { logInfo, logWarn } = require('../utils/logger');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 const { getOwnedHandoffSummary } = require('./handoff-summary.service');
+const { formatInstagramUsername, normalizeInstagramProfileSnapshot } = require('../integrations/instagram/instagram-profile.service');
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeMetadataObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function buildContactIdentity(contact, channelLike = null) {
+  const safeContact = contact && typeof contact === 'object' ? contact : {};
+  const safeChannel = channelLike && typeof channelLike === 'object' ? channelLike : {};
+  const channelType = normalizeChannelType(safeChannel);
+  const manualName = normalizeString(safeContact.name);
+  const technicalIdentifier = normalizeString(safeContact.waId);
+  const instagramProfile = normalizeInstagramProfileSnapshot({
+    metadata: normalizeMetadataObject(safeContact.metadata)
+  });
+  const username = formatInstagramUsername(instagramProfile.username);
+  const providerName = normalizeString(instagramProfile.name);
+  const avatarUrl =
+    normalizeString(safeContact.profileImageUrl) ||
+    normalizeString(instagramProfile.providerProfilePicUrl) ||
+    null;
+
+  if (channelType === 'instagram') {
+    const displayName = manualName || providerName || username || technicalIdentifier || 'Instagram';
+    return {
+      displayName,
+      username,
+      avatarUrl,
+      technicalIdentifier: technicalIdentifier || null,
+      secondaryText: username || technicalIdentifier || null
+    };
+  }
+
+  return {
+    displayName: manualName || technicalIdentifier || 'Contacto',
+    username: null,
+    avatarUrl,
+    technicalIdentifier: technicalIdentifier || null,
+    secondaryText: normalizeString(safeContact.phone) || technicalIdentifier || null
+  };
 }
 
 function extractImageMediaFromRaw(raw) {
@@ -444,6 +485,14 @@ function mapConversationRow(row) {
     instagramUsername: row.channelInstagramUsername
   };
   const channelType = normalizeChannelType(channelLike);
+  const identity = buildContactIdentity({
+    id: row.contactId,
+    name: row.contactName,
+    phone: row.contactPhone,
+    waId: row.waFrom,
+    profileImageUrl: row.contactProfileImageUrl,
+    metadata: row.contactMetadata
+  }, channelLike);
   return {
     id: row.id,
     channelId: row.channelId || null,
@@ -470,9 +519,13 @@ function mapConversationRow(row) {
     nextActionNote: normalizeNextActionNote(row.nextActionNote),
     contact: {
       id: row.contactId,
-      name: row.contactName || row.waFrom || 'Contacto',
-      phone: row.contactPhone || row.waFrom || undefined,
-      profileImageUrl: row.contactProfileImageUrl || undefined,
+      name: identity.displayName,
+      displayName: identity.displayName,
+      username: identity.username || undefined,
+      phone: channelType === 'instagram' ? undefined : row.contactPhone || row.waFrom || undefined,
+      secondaryText: identity.secondaryText || undefined,
+      technicalIdentifier: identity.technicalIdentifier || undefined,
+      profileImageUrl: identity.avatarUrl || undefined,
       tags: []
     },
     deal: mapDeal(context, row.contactId),
@@ -721,6 +774,7 @@ async function listPortalConversations(tenantId, options = {}) {
        ct.phone AS "contactPhone",
        ct."waId" AS "waFrom",
        ct."profileImageUrl" AS "contactProfileImageUrl",
+       ct.metadata AS "contactMetadata",
        su.name AS "assignedSellerName",
        CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS "assignedSellerRole",
        latest.text AS "lastMessagePreview",
@@ -818,6 +872,8 @@ async function getPortalConversationDetail(tenantId, conversationId) {
     contactName: contact ? contact.name : null,
     contactPhone: contact ? contact.phone : null,
     waFrom: contact ? contact.waId : null,
+    contactMetadata: contact ? contact.metadata : null,
+    contactProfileImageUrl: contact ? contact.profileImageUrl : null,
     channelType: conversationChannel ? conversationChannel.type : null,
     channelProvider: conversationChannel ? conversationChannel.provider : null,
     channelLabel: conversationChannel ? buildChannelLabel(conversationChannel) : null,
@@ -856,15 +912,22 @@ async function getPortalConversationDetail(tenantId, conversationId) {
       readOnly: false,
       conversation: detailRow,
       contact: contact
-        ? {
-          id: contact.id,
-          name: contact.name || contact.waId,
-          phone: contact.phone || contact.waId || undefined,
-          email: undefined,
-          profileImageUrl: contact.profileImageUrl || undefined,
-          industry: undefined,
-          tags: []
-        }
+        ? (() => {
+          const identity = buildContactIdentity(contact, conversationChannel || context.channel);
+          return {
+            id: contact.id,
+            name: identity.displayName,
+            displayName: identity.displayName,
+            username: identity.username || undefined,
+            phone: contact.phone || undefined,
+            secondaryText: identity.secondaryText || undefined,
+            technicalIdentifier: identity.technicalIdentifier || undefined,
+            email: undefined,
+            profileImageUrl: identity.avatarUrl || undefined,
+            industry: undefined,
+            tags: []
+          };
+        })()
         : undefined,
       deal: mapDeal(contextData, conversation.contactId),
       messages: messages.map((message) => mapPortalConversationMessage(message)),

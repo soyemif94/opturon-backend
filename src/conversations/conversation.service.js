@@ -5,10 +5,11 @@ const {
   findInstagramChannelByExternalId,
   findInstagramChannelByPageId
 } = require('../repositories/tenant.repository');
-const { upsertContact } = require('../repositories/contact.repository');
+const { findContactByWaId, upsertContact } = require('../repositories/contact.repository');
 const repo = require('./conversation.repo');
 const { extractMetaInboundMessages } = require('../webhooks/meta.webhook');
 const { withTransaction } = require('../db/client');
+const { maybeEnrichInstagramContactProfile } = require('../integrations/instagram/instagram-profile.service');
 
 function normalizeWaNumber(value) {
   return String(value || '').replace(/[^\d]/g, '');
@@ -67,6 +68,24 @@ async function processInboundMessages({ body, headers, requestId }) {
         continue;
       }
 
+      const existingInstagramContact =
+        event.channelType === 'instagram' && event.fromId
+          ? await findContactByWaId(channel.clinicId, event.fromId)
+          : null;
+      const instagramEnrichment =
+        event.channelType === 'instagram'
+          ? await maybeEnrichInstagramContactProfile({
+              contact: existingInstagramContact || {
+                waId: event.fromId,
+                name: event.name || null,
+                profileImageUrl: null,
+                metadata: {}
+              },
+              channel,
+              igsid: event.fromId
+            })
+          : null;
+
       const persisted = await withTransaction(async (client) => {
         // Dedup precedes generation creation: a provider retry belonging to a
         // tombstoned thread must not manufacture an empty replacement thread.
@@ -74,7 +93,22 @@ async function processInboundMessages({ body, headers, requestId }) {
         if (existingMessage) return { duplicate: true, conversation: null, inboundWrite: { inserted: false } };
 
         const contact = await upsertContact({
-          clinicId: channel.clinicId, waId: event.fromId, phone: event.fromId, name: event.name || null
+          clinicId: channel.clinicId,
+          waId: event.fromId,
+          phone: event.channelType === 'instagram' ? null : event.fromId,
+          name:
+            instagramEnrichment && instagramEnrichment.contactPatch
+              ? instagramEnrichment.contactPatch.name
+              : event.name || null,
+          channelType: event.channelType || 'whatsapp',
+          profileImageUrl:
+            instagramEnrichment && instagramEnrichment.contactPatch
+              ? instagramEnrichment.contactPatch.profileImageUrl
+              : null,
+          metadata:
+            instagramEnrichment && instagramEnrichment.contactPatch
+              ? instagramEnrichment.contactPatch.metadata
+              : null
         }, client);
         const conversation = await repo.upsertConversation({
           waFrom: event.fromId,
