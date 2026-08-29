@@ -5,10 +5,12 @@ const {
   findInstagramChannelByExternalId,
   findInstagramChannelByPageId
 } = require('../repositories/tenant.repository');
+const { findContactByWaId, upsertContact } = require('../repositories/contact.repository');
 const repo = require('./conversation.repo');
 const { resolveWhatsAppConversation } = require('./whatsapp-conversation-resolver');
 const { extractMetaInboundMessages } = require('../webhooks/meta.webhook');
 const { withTransaction } = require('../db/client');
+const { maybeEnrichInstagramContactProfile } = require('../integrations/instagram/instagram-profile.service');
 
 function normalizeWaNumber(value) {
   return String(value || '').replace(/[^\d]/g, '');
@@ -67,21 +69,69 @@ async function processInboundMessages({ body, headers, requestId }) {
         continue;
       }
 
+      const existingInstagramContact =
+        event.channelType === 'instagram' && event.fromId
+          ? await findContactByWaId(channel.clinicId, event.fromId)
+          : null;
+      const instagramEnrichment =
+        event.channelType === 'instagram'
+          ? await maybeEnrichInstagramContactProfile({
+              contact: existingInstagramContact || {
+                waId: event.fromId,
+                name: event.name || null,
+                profileImageUrl: null,
+                metadata: {}
+              },
+              channel,
+              igsid: event.fromId
+            })
+          : null;
+
       const persisted = await withTransaction(async (client) => {
         // Dedup precedes generation creation: a provider retry belonging to a
         // tombstoned thread must not manufacture an empty replacement thread.
         const existingMessage = await repo.findInboundMessageByProviderId(event.providerMessageId, client);
         if (existingMessage) return { duplicate: true, conversation: null, inboundWrite: { inserted: false } };
 
-        const resolved = await resolveWhatsAppConversation({
-          direction: 'inbound',
-          providerIdentity: event.fromId,
-          phone: event.fromId,
-          contactName: event.name || null,
-          waTo: event.toId || channel.externalId || channel.phoneNumberId,
-          clinicId: channel.clinicId,
-          channelId: channel.id
-        }, client);
+        const resolved =
+          event.channelType === 'instagram'
+            ? await (async () => {
+                const contact = await upsertContact({
+                  clinicId: channel.clinicId,
+                  waId: event.fromId,
+                  phone: null,
+                  name:
+                    instagramEnrichment && instagramEnrichment.contactPatch
+                      ? instagramEnrichment.contactPatch.name
+                      : event.name || null,
+                  channelType: 'instagram',
+                  profileImageUrl:
+                    instagramEnrichment && instagramEnrichment.contactPatch
+                      ? instagramEnrichment.contactPatch.profileImageUrl
+                      : null,
+                  metadata:
+                    instagramEnrichment && instagramEnrichment.contactPatch
+                      ? instagramEnrichment.contactPatch.metadata
+                      : null
+                }, client);
+                const conversation = await repo.upsertConversation({
+                  waFrom: event.fromId,
+                  waTo: event.toId || channel.externalId || channel.phoneNumberId,
+                  clinicId: channel.clinicId,
+                  channelId: channel.id,
+                  contactId: contact.id
+                }, client);
+                return { contact, conversation };
+              })()
+            : await resolveWhatsAppConversation({
+                direction: 'inbound',
+                providerIdentity: event.fromId,
+                phone: event.fromId,
+                contactName: event.name || null,
+                waTo: event.toId || channel.externalId || channel.phoneNumberId,
+                clinicId: channel.clinicId,
+                channelId: channel.id
+              }, client);
         const { contact, conversation } = resolved;
         const inboundWrite = await repo.insertInboundMessage({
           conversationId: conversation.id,

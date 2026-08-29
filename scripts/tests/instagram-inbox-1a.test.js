@@ -72,6 +72,10 @@ mockModule('src/repositories/tenant.repository.js', {
 });
 
 mockModule('src/repositories/contact.repository.js', {
+  findContactByWaId: async (clinicId, waId) => {
+    const key = `${clinicId}:${waId}`;
+    return state.contacts.has(key) ? clone(state.contacts.get(key)) : null;
+  },
   upsertContact: async ({ clinicId, waId, phone, name }) => {
     const key = `${clinicId}:${waId}`;
     if (!state.contacts.has(key)) {
@@ -140,6 +144,14 @@ mockModule('src/utils/logger.js', {
   logInfo: () => {},
   logWarn: () => {},
   logError: () => {}
+});
+
+mockModule('src/integrations/instagram/instagram-profile.service.js', {
+  maybeEnrichInstagramContactProfile: async () => ({
+    changed: false,
+    status: 'skipped_in_test',
+    contactPatch: null
+  })
 });
 
 clearModule('src/conversations/conversation.service.js');
