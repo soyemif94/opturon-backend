@@ -3,7 +3,8 @@ const { sanitizeString } = require('../utils/validators');
 const {
   findChannelByPhoneNumberId,
   findInstagramChannelByExternalId,
-  findInstagramChannelByPageId
+  findInstagramChannelByPageId,
+  findInstagramChannelByRecipientId
 } = require('../repositories/tenant.repository');
 const { findContactByWaId, upsertContact } = require('../repositories/contact.repository');
 const repo = require('./conversation.repo');
@@ -24,9 +25,17 @@ async function findInboundChannel(event) {
   if (!event) return null;
 
   if (event.channelType === 'instagram') {
+    const findInstagramChannel =
+      typeof findInstagramChannelByRecipientId === 'function'
+        ? findInstagramChannelByRecipientId
+        : async (recipientId) =>
+            (await findInstagramChannelByExternalId(recipientId)) ||
+            (await findInstagramChannelByPageId(recipientId)) ||
+            null;
+
     return (
-      (event.externalChannelId ? await findInstagramChannelByExternalId(event.externalChannelId) : null) ||
-      (event.pageId ? await findInstagramChannelByPageId(event.pageId) : null) ||
+      (event.externalChannelId ? await findInstagramChannel(event.externalChannelId) : null) ||
+      (event.pageId && event.pageId !== event.externalChannelId ? await findInstagramChannel(event.pageId) : null) ||
       null
     );
   }
