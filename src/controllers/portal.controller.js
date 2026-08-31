@@ -421,8 +421,9 @@ async function postPortalMessage(req, res) {
         result.reason === 'missing_tenant_id' || result.reason === 'missing_text' ? 400
           : result.reason === 'mapped_clinic_without_whatsapp_channel' ? 409
             : result.reason === 'conversation_channel_inactive' ? 409
+              : result.reason === 'conversation_channel_missing_credentials' ? 409
               : result.reason === 'conversation_channel_read_only' ? 409
-            : result.reason === 'contact_without_waid' ? 422
+            : result.reason === 'contact_without_waid' || result.reason === 'contact_without_provider_identity' ? 422
               : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
     }

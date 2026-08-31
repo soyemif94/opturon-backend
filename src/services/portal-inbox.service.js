@@ -11,6 +11,7 @@ const { findLatestOrderByConversationId, findOrderById } = require('../repositor
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const { getOpenHandoff, resolveOpenHandoffByConversation } = require('../repositories/handoff.repository');
 const conversationRepo = require('../conversations/conversation.repo');
+const { sendInstagramTextMessage } = require('../integrations/instagram/instagram.service');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const graphClient = require('../whatsapp/whatsapp-graph.client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
@@ -604,6 +605,26 @@ function buildConversationChannelBinding({ context, conversationChannel }) {
   };
 }
 
+function buildComposerCapability(channel) {
+  const provider = normalizeString(channel && channel.provider).toLowerCase();
+  const active = normalizeString(channel && channel.status).toLowerCase() === 'active';
+  const hasCredential = Boolean(normalizeString(channel && channel.accessToken));
+
+  if (provider !== 'whatsapp_cloud' && provider !== 'instagram_graph') {
+    return { enabled: false, reason: 'unsupported_provider' };
+  }
+
+  if (!active) {
+    return { enabled: false, reason: 'conversation_channel_inactive' };
+  }
+
+  if (!hasCredential) {
+    return { enabled: false, reason: 'conversation_channel_missing_credentials' };
+  }
+
+  return { enabled: true, reason: 'ready' };
+}
+
 async function resolveRuntimeContext(tenantId) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok) return context;
@@ -629,7 +650,8 @@ async function resolveRuntimeContext(tenantId) {
           verifiedName: channel.verifiedName || null,
           wabaId: channel.wabaId || null,
           status: channel.status || null,
-          accessToken: channel.accessToken || null
+          accessToken: channel.accessToken || null,
+          connectionMetadata: channel.connectionMetadata || null
         }
       : null,
     reason: channel ? context.reason || 'resolved' : context.reason || 'mapped_clinic_without_whatsapp_channel'
@@ -954,6 +976,7 @@ async function getPortalConversationDetail(tenantId, conversationId) {
       })),
       handoffSummary,
       channelBinding,
+      composerCapability: buildComposerCapability(conversationChannel),
       relatedOrder: buildRelatedOrderSummary(relatedOrder)
     }
   };
@@ -1602,7 +1625,8 @@ async function sendPortalMessage(tenantId, conversationId, text) {
     };
   }
 
-  if (String(runtimeChannel.provider || '').trim().toLowerCase() !== 'whatsapp_cloud') {
+  const runtimeProvider = String(runtimeChannel.provider || '').trim().toLowerCase();
+  if (runtimeProvider !== 'whatsapp_cloud' && runtimeProvider !== 'instagram_graph') {
     return {
       ok: false,
       tenantId: context.tenantId,
@@ -1615,6 +1639,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
   const runtimeChannelStatus = String(runtimeChannel.status || '').trim().toLowerCase();
   const preferredChannelStatus = String(context.channel && context.channel.status ? context.channel.status : '').trim().toLowerCase();
   const canRepairConversationChannel =
+    runtimeProvider === 'whatsapp_cloud' &&
     runtimeChannelStatus !== 'active' &&
     context.channel &&
     context.channel.id &&
@@ -1666,7 +1691,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       tenantId: context.tenantId,
       clinic: context.clinic,
       channel: toPortalChannel(context.channel),
-      reason: 'contact_without_waid'
+      reason: runtimeProvider === 'instagram_graph' ? 'contact_without_provider_identity' : 'contact_without_waid'
     };
   }
 
@@ -1681,20 +1706,29 @@ async function sendPortalMessage(tenantId, conversationId, text) {
     };
   }
 
-  console.log('WA_CHANNEL_VALIDATION', {
-    tenantId: context.tenantId,
-    clinicId: context.clinic.id,
-    conversationId: conversation.id,
-    channelId: runtimeChannel.id,
-    provider: runtimeChannel.provider || null,
-    status: runtimeChannel.status || null,
-    phoneNumberId: runtimeChannel.phoneNumberId || null,
-    wabaId: runtimeChannel.wabaId || null,
-    graphVersion: env.getWhatsAppGraphVersion()
-  });
+  if (runtimeProvider === 'whatsapp_cloud') {
+    console.log('WA_CHANNEL_VALIDATION', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      channelId: runtimeChannel.id,
+      provider: runtimeChannel.provider || null,
+      status: runtimeChannel.status || null,
+      phoneNumberId: runtimeChannel.phoneNumberId || null,
+      wabaId: runtimeChannel.wabaId || null,
+      graphVersion: env.getWhatsAppGraphVersion()
+    });
+  }
 
-  const sendResult = await sendChannelScopedMessage(
-    { to: contact.waId, text: safeText },
+  const sendResult = runtimeProvider === 'instagram_graph'
+    ? await sendInstagramTextMessage({
+        channel: runtimeChannel,
+        recipientId: contact.waId,
+        text: safeText,
+        requestId: `portal:${conversation.id}`
+      })
+    : await sendChannelScopedMessage(
+      { to: contact.waId, text: safeText },
       {
         requestId: `portal:${conversation.id}`,
         credentials: {
@@ -1714,7 +1748,9 @@ async function sendPortalMessage(tenantId, conversationId, text) {
   const outboundWrite = await conversationRepo.insertOutboundMessage({
     conversationId: conversation.id,
     waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
-    from: runtimeChannel.phoneNumberId || null,
+    from: runtimeProvider === 'instagram_graph'
+      ? runtimeChannel.instagramUserId || runtimeChannel.externalId || null
+      : runtimeChannel.phoneNumberId || null,
     to: contact.waId || null,
     type: 'text',
     text: safeText,

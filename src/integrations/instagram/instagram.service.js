@@ -208,9 +208,126 @@ async function subscribePageToWebhook({ pageId, accessToken, providerOverride = 
   };
 }
 
+function resolveInstagramMessagingHost(channel) {
+  const metadata = channel && channel.connectionMetadata && typeof channel.connectionMetadata === 'object'
+    ? channel.connectionMetadata
+    : {};
+
+  if (metadata.oauthProvider === 'instagram_login') return 'graph.instagram.com';
+  if (metadata.oauthProvider === 'facebook_login') return 'graph.facebook.com';
+
+  return String(channel && channel.externalPageId || '').trim() &&
+    String(channel && channel.externalPageId || '').trim() !== String(channel && channel.instagramUserId || '').trim()
+    ? 'graph.facebook.com'
+    : 'graph.instagram.com';
+}
+
+async function sendInstagramTextMessage({ channel, recipientId, text, requestId = null, fetchImpl = fetch }) {
+  const accessToken = String(channel && channel.accessToken || '').trim();
+  const senderId = String(channel && (channel.instagramUserId || channel.externalId) || '').trim();
+  const safeRecipientId = String(recipientId || '').trim();
+  const safeText = String(text || '').trim();
+
+  if (!accessToken) {
+    throw Object.assign(new Error('instagram_channel_missing_credentials'), {
+      reason: 'instagram_channel_missing_credentials'
+    });
+  }
+
+  if (!senderId || !safeRecipientId || !safeText) {
+    throw Object.assign(new Error('instagram_message_invalid_input'), {
+      reason: 'instagram_message_invalid_input'
+    });
+  }
+
+  const host = resolveInstagramMessagingHost(channel);
+  const url = new URL(`https://${host}/${DEFAULT_GRAPH_VERSION}/${senderId}/messages`);
+  url.searchParams.set('access_token', accessToken);
+  const body = JSON.stringify({
+    recipient: { id: safeRecipientId },
+    message: { text: safeText }
+  });
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const response = await fetchImpl(url.toString(), {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body
+      });
+      const json = await response.json().catch(() => null);
+      const messageId = String(json && (json.message_id || json.id) || '').trim();
+
+      if (response.ok && messageId) {
+        return {
+          messageId,
+          raw: json
+        };
+      }
+
+      const error = Object.assign(
+        new Error(String(json && json.error && json.error.message || 'instagram_message_send_failed')),
+        {
+          reason: 'instagram_message_send_failed',
+          status: response.status,
+          graphCode: json && json.error ? json.error.code || null : null
+        }
+      );
+
+      if (!response.ok) {
+        logWarn('instagram_message_send_provider_error', {
+          requestId,
+          channelId: channel && channel.id ? channel.id : null,
+          recipientId: safeRecipientId,
+          status: response.status,
+          graphCode: error.graphCode
+        });
+      }
+
+      if (response.status !== 429 && response.status < 500) {
+        throw error;
+      }
+
+      lastError = error;
+    } catch (error) {
+      if (
+        error &&
+        error.reason === 'instagram_message_send_failed' &&
+        error.status &&
+        error.status < 500 &&
+        error.status !== 429
+      ) {
+        throw error;
+      }
+      lastError = error;
+    }
+
+    if (attempt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  logWarn('instagram_message_send_failed', {
+    requestId,
+    channelId: channel && channel.id ? channel.id : null,
+    status: lastError && lastError.status ? lastError.status : null,
+    graphCode: lastError && lastError.graphCode ? lastError.graphCode : null
+  });
+
+  throw lastError || Object.assign(new Error('instagram_message_send_failed'), {
+    reason: 'instagram_message_send_failed'
+  });
+}
+
 module.exports = {
   getInstagramOauthProvider,
   exchangeOAuthCodeForAccessToken,
   fetchInstagramBusinessAssets,
-  subscribePageToWebhook
+  subscribePageToWebhook,
+  resolveInstagramMessagingHost,
+  sendInstagramTextMessage
 };
