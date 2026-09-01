@@ -1009,9 +1009,17 @@ async function createOrderForContext(context, payload) {
   const paidAt = normalizeString(payload && payload.paidAt) || null;
   const notes = normalizeString(payload && payload.notes) || null;
   const itemsInput = Array.isArray(payload && payload.items) ? payload.items : [];
+  const discountPercentage =
+    payload && payload.discountPercentage !== undefined && payload.discountPercentage !== null && payload.discountPercentage !== ''
+      ? quantizeDecimal(payload.discountPercentage, 2, NaN)
+      : 0;
 
   if (itemsInput.length === 0) {
     return buildError(context.tenantId, 'missing_order_items');
+  }
+
+  if (!Number.isFinite(discountPercentage) || discountPercentage < 0 || discountPercentage > 100) {
+    return buildError(context.tenantId, 'invalid_order_item_amount');
   }
 
   let contact = null;
@@ -1179,8 +1187,10 @@ async function createOrderForContext(context, payload) {
 
       const orderCurrency = normalizeCurrency(items[0] && items[0].currencySnapshot, requestedCurrency || 'ARS');
       const subtotalAmount = sumQuantized(items.map((item) => item.subtotalAmount), 2);
-      const totalAmount = sumQuantized(items.map((item) => item.totalAmount), 2);
-      const taxAmount = quantizeDecimal(totalAmount - subtotalAmount, 2, 0);
+      const totalAmountBeforeDiscount = sumQuantized(items.map((item) => item.totalAmount), 2);
+      const taxAmount = quantizeDecimal(totalAmountBeforeDiscount - subtotalAmount, 2, 0);
+      const discountAmount = quantizeDecimal((subtotalAmount * discountPercentage) / 100, 2, 0);
+      const totalAmount = quantizeDecimal(totalAmountBeforeDiscount - discountAmount, 2, 0);
 
       const order = await createOrder(
         {
@@ -1201,6 +1211,8 @@ async function createOrderForContext(context, payload) {
           subtotalAmount,
           taxAmount,
           totalAmount,
+          discountPercentage,
+          discountAmount,
           currency: orderCurrency,
           paymentStatus,
           conversationId,
