@@ -386,6 +386,8 @@ async function createOrder(input, client = null) {
   const subtotalAmount = quantizeDecimal(input.subtotalAmount ?? input.subtotal ?? 0, 2, 0);
   const taxAmount = quantizeDecimal(input.taxAmount ?? 0, 2, 0);
   const totalAmount = quantizeDecimal(input.totalAmount ?? input.total ?? 0, 2, 0);
+  const discountPercentage = quantizeDecimal(input.discountPercentage ?? 0, 2, 0);
+  const discountAmount = quantizeDecimal(input.discountAmount ?? 0, 2, 0);
 
   const insertOrder = await dbQuery(
     client,
@@ -408,13 +410,15 @@ async function createOrder(input, client = null) {
        "subtotalAmount",
        "taxAmount",
        "totalAmount",
+       "discountPercentage",
+       "discountAmount",
        currency,
        "paymentStatus",
        "orderStatus",
        "conversationId",
        "updatedAt"
      )
-     VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid, $8, $9::uuid, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::uuid, NOW())
+     VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid, $8, $9::uuid, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::uuid, NOW())
      RETURNING id`,
     [
       input.clinicId,
@@ -435,6 +439,8 @@ async function createOrder(input, client = null) {
       subtotalAmount,
       taxAmount,
       totalAmount,
+      discountPercentage,
+      discountAmount,
       input.currency,
       input.paymentStatus || null,
       legacyOrderStatus,
