@@ -161,6 +161,7 @@ const {
   getPortalWhatsAppStatusController,
   getPortalInstagramStatus,
   postPortalInstagramConnect,
+  postPortalInstagramDisconnect,
   getPortalBotSettingsController,
   patchPortalBotSettingsController,
   getPortalBotTransferConfigController,
@@ -602,6 +603,7 @@ router.post('/tenants/:tenantId/whatsapp/discover-assets', requirePortalInternal
 router.get('/tenants/:tenantId/whatsapp/status', requirePortalInternalAuth, getPortalWhatsAppStatusController);
 router.get('/tenants/:tenantId/instagram/status', requirePortalInternalAuth, getPortalInstagramStatus);
 router.post('/tenants/:tenantId/instagram/connect', requirePortalInternalAuth, postPortalInstagramConnect);
+router.post('/tenants/:tenantId/instagram/disconnect', requirePortalInternalAuth, postPortalInstagramDisconnect);
 router.get('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalAuth, getPortalWhatsAppDefaultChannel);
 router.patch('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalAuth, patchPortalWhatsAppDefaultChannel);
 router.get('/tenants/:tenantId/whatsapp/templates/blueprints', requirePortalInternalAuth, getPortalWhatsAppTemplateBlueprints);

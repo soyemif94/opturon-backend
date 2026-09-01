@@ -617,6 +617,33 @@ async function upsertInstagramChannel(input, client = null) {
   return mapChannelTokenRecord(result.rows[0] || null);
 }
 
+async function disconnectInstagramChannelByIdAndClinicId(channelId, clinicId, client = null) {
+  const safeChannelId = String(channelId || '').trim();
+  const safeClinicId = String(clinicId || '').trim();
+  if (!safeChannelId || !safeClinicId) return null;
+
+  const result = await dbQuery(
+    client,
+    `UPDATE channels
+     SET status = 'inactive',
+         "accessToken" = NULL,
+         "connectionMetadata" = COALESCE("connectionMetadata", '{}'::jsonb) || jsonb_build_object(
+           'disconnectedAt', NOW(),
+           'credentialRetired', TRUE
+         ),
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND "clinicId" = $2
+       AND type = 'instagram'
+       AND provider = 'instagram_graph'
+       AND LOWER(COALESCE(status, '')) = 'active'
+     RETURNING id, "clinicId", type, provider, "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
+    [safeChannelId, safeClinicId]
+  );
+
+  return result.rows.length === 1 ? result.rows[0] : null;
+}
+
 async function getClinicBusinessProfileById(clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -945,6 +972,7 @@ module.exports = {
   findInstagramChannelByRecipientId,
   listInstagramChannelsByClinicId,
   upsertInstagramChannel,
+  disconnectInstagramChannelByIdAndClinicId,
   getClinicWhatsAppSettingsById,
   updateClinicWhatsAppDefaultChannelId,
   getClinicBusinessProfileById,
