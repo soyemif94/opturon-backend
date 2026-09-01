@@ -401,11 +401,47 @@ async function testTransactionalFinalizationScenarios() {
       items: [{ descriptionSnapshot: 'Alta directa', quantity: 1, unitPrice: 50, taxRate: 0 }]
     });
     assert.strictEqual(directConfirmed.ok, true);
+    assert.strictEqual(directConfirmed.order.discountPercentage, 0);
+    assert.strictEqual(directConfirmed.order.discountAmount, 0);
+    assert.strictEqual(directConfirmed.order.totalAmount, 50);
     assert.strictEqual(directConfirmed.order.finalizationVersion, 1);
     assert.strictEqual(
       Array.from(database.notifications.values()).filter((row) => row.orderId === directConfirmed.order.id).length,
       1
     );
+
+    const tenPercentDiscount = await ordersService.createOrderForClinic(clinicId, {
+      contactId,
+      source: 'automation',
+      status: 'draft',
+      discountPercentage: 10,
+      items: [{ descriptionSnapshot: 'Descuento diez', quantity: 1, unitPrice: 100, taxRate: 0 }]
+    });
+    assert.strictEqual(tenPercentDiscount.ok, true);
+    assert.strictEqual(tenPercentDiscount.order.discountPercentage, 10);
+    assert.strictEqual(tenPercentDiscount.order.discountAmount, 10);
+    assert.strictEqual(tenPercentDiscount.order.totalAmount, 90);
+
+    const hundredPercentDiscount = await ordersService.createOrderForClinic(clinicId, {
+      contactId,
+      source: 'automation',
+      status: 'draft',
+      discountPercentage: 100,
+      items: [{ descriptionSnapshot: 'Descuento total', quantity: 1, unitPrice: 100, taxRate: 0 }]
+    });
+    assert.strictEqual(hundredPercentDiscount.ok, true);
+    assert.strictEqual(hundredPercentDiscount.order.discountAmount, 100);
+    assert.strictEqual(hundredPercentDiscount.order.totalAmount, 0);
+
+    const overLimitDiscount = await ordersService.createOrderForClinic(clinicId, {
+      contactId,
+      source: 'automation',
+      status: 'draft',
+      discountPercentage: 101,
+      items: [{ descriptionSnapshot: 'Descuento invalido', quantity: 1, unitPrice: 100, taxRate: 0 }]
+    });
+    assert.strictEqual(overLimitDiscount.ok, false);
+    assert.strictEqual(overLimitDiscount.reason, 'invalid_order_item_amount');
 
     const draftCreation = await ordersService.createOrderForClinic(clinicId, {
       contactId,
