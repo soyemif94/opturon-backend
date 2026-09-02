@@ -34,13 +34,14 @@ function summarizeInstagramAsset(asset) {
   };
 }
 
-function createAssetSelection({ tenantId, clinicId, assets }) {
+function createAssetSelection({ tenantId, clinicId, assets, oauthProvider = null }) {
   pruneExpiredAssetSelections();
   const selectionToken = crypto.randomUUID();
   pendingAssetSelections.set(selectionToken, {
     tenantId,
     clinicId,
     assets,
+    oauthProvider,
     expiresAt: Date.now() + ASSET_SELECTION_TTL_MS
   });
   return selectionToken;
@@ -67,7 +68,7 @@ function consumeAssetSelection({ selectionToken, tenantId, clinicId, selectedPag
   }
 
   pendingAssetSelections.delete(safeToken);
-  return { ok: true, asset };
+  return { ok: true, asset, oauthProvider: record.oauthProvider || null };
 }
 
 function summarizeInstagramChannel(channel) {
@@ -114,6 +115,7 @@ async function connectSelectedInstagramAsset({
     status: 'active',
     connectionSource: 'instagram_oauth',
     connectionMetadata: {
+      oauthProvider: providerOverride || null,
       oauthTokenType: tokenType || null,
       oauthExpiresIn: expiresIn || null,
       availableAssets: availableAssets.map((asset) => summarizeInstagramAsset(asset)).filter(Boolean)
@@ -197,6 +199,7 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
       context,
       selectedAsset: selection.asset,
       availableAssets: [selection.asset],
+      providerOverride: selection.oauthProvider,
       requestId: input.requestId || null
     });
   }
@@ -241,10 +244,11 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     providerOverride: oauthProvider,
     requestId: input.requestId || null
   });
+  const resolvedOauthProvider = token.provider || oauthProvider;
   const assets = await fetchInstagramBusinessAssets({
     accessToken: token.accessToken,
     userId: token.userId,
-    providerOverride: oauthProvider,
+    providerOverride: resolvedOauthProvider,
     requestId: input.requestId || null
   });
 
@@ -252,7 +256,8 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     const selectionToken = createAssetSelection({
       tenantId: context.tenantId,
       clinicId: context.clinic.id,
-      assets
+      assets,
+      oauthProvider: resolvedOauthProvider
     });
 
     logWarn('portal_instagram_connect_ambiguous_assets', {
@@ -286,7 +291,7 @@ async function connectPortalInstagramChannel(tenantId, input = {}) {
     tokenType: token.tokenType || null,
     expiresIn: token.expiresIn || null,
     availableAssets: assets,
-    providerOverride: oauthProvider,
+    providerOverride: resolvedOauthProvider,
     requestId: input.requestId || null
   });
 }
