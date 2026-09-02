@@ -208,6 +208,70 @@ async function subscribePageToWebhook({ pageId, accessToken, providerOverride = 
   };
 }
 
+async function unsubscribePageFromWebhook({ oauthProvider, pageId, accessToken, requestId = null }) {
+  const provider = normalizeInstagramOauthProvider(oauthProvider);
+  const safePageId = String(pageId || '').trim();
+  const safeAccessToken = String(accessToken || '').trim();
+
+  if (!provider) {
+    return { ok: false, status: 'skipped', reason: 'instagram_webhook_unsubscribe_provider_missing_or_invalid' };
+  }
+
+  if (!safePageId || !safeAccessToken) {
+    return { ok: false, status: 'skipped', reason: 'instagram_webhook_unsubscribe_missing_credentials_or_target' };
+  }
+
+  try {
+    if (provider === 'instagram_login') {
+      const url = new URL(`https://graph.instagram.com/${DEFAULT_GRAPH_VERSION}/${safePageId}/subscribed_apps`);
+      url.searchParams.set('access_token', safeAccessToken);
+      const response = await fetch(url.toString(), { method: 'DELETE', headers: { Accept: 'application/json' } });
+      const json = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          status: 'failed',
+          reason: 'instagram_webhook_unsubscribe_failed',
+          graphStatus: response.status || null,
+          graphCode: json && json.error && json.error.code ? String(json.error.code) : null
+        };
+      }
+
+      return { ok: true, status: 'success' };
+    }
+
+    const result = await graphClient.request('DELETE', `/${safePageId}/subscribed_apps`, {
+      accessToken: safeAccessToken,
+      requestId,
+      apiVersion: DEFAULT_GRAPH_VERSION
+    });
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        status: 'failed',
+        reason: 'instagram_webhook_unsubscribe_failed',
+        graphStatus: result.status || null,
+        graphCode: result.data && result.data.error && result.data.error.code
+          ? String(result.data.error.code)
+          : null
+      };
+    }
+
+    return { ok: true, status: 'success' };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'failed',
+      reason: 'instagram_webhook_unsubscribe_request_failed',
+      graphStatus: error && (error.graphStatus || error.status) ? error.graphStatus || error.status : null,
+      graphCode: error && error.graphCode ? String(error.graphCode) : null,
+      errorName: error && error.name ? String(error.name) : 'Error'
+    };
+  }
+}
+
 function resolveInstagramMessagingHost(channel) {
   const metadata = channel && channel.connectionMetadata && typeof channel.connectionMetadata === 'object'
     ? channel.connectionMetadata
@@ -328,6 +392,7 @@ module.exports = {
   exchangeOAuthCodeForAccessToken,
   fetchInstagramBusinessAssets,
   subscribePageToWebhook,
+  unsubscribePageFromWebhook,
   resolveInstagramMessagingHost,
   sendInstagramTextMessage
 };

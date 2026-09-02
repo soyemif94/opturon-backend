@@ -3,12 +3,14 @@ const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   listInstagramChannelsByClinicId,
   upsertInstagramChannel,
+  findChannelByIdAndClinicId,
   disconnectInstagramChannelByIdAndClinicId
 } = require('../repositories/tenant.repository');
 const {
   exchangeOAuthCodeForAccessToken,
   fetchInstagramBusinessAssets,
-  subscribePageToWebhook
+  subscribePageToWebhook,
+  unsubscribePageFromWebhook
 } = require('../integrations/instagram/instagram.service');
 const { logInfo, logWarn } = require('../utils/logger');
 
@@ -310,8 +312,55 @@ async function disconnectPortalInstagramChannel(tenantId, input = {}) {
     };
   }
 
-  const channel = await disconnectInstagramChannelByIdAndClinicId(channelId, context.clinic.id);
+  const channel = await findChannelByIdAndClinicId(channelId, context.clinic.id);
   if (!channel) {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      reason: 'instagram_channel_not_found_or_forbidden'
+    };
+  }
+
+  const metadata = channel.connectionMetadata && typeof channel.connectionMetadata === 'object'
+    ? channel.connectionMetadata
+    : {};
+  const oauthProvider = String(metadata.oauthProvider || '').trim().toLowerCase();
+  const isDisconnectableInstagramChannel =
+    channel.type === 'instagram' &&
+    channel.provider === 'instagram_graph' &&
+    String(channel.status || '').trim().toLowerCase() === 'active';
+
+  if (isDisconnectableInstagramChannel) {
+    const unsubscribeResult = await unsubscribePageFromWebhook({
+      oauthProvider,
+      pageId: channel.externalPageId,
+      accessToken: channel.accessToken,
+      requestId: input.requestId || null
+    });
+
+    const unsubscribeLog = {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      requestId: input.requestId || null,
+      channelId: channel.id,
+      oauthProvider: oauthProvider || null,
+      result: unsubscribeResult.status,
+      reason: unsubscribeResult.reason || null,
+      graphStatus: unsubscribeResult.graphStatus || null,
+      graphCode: unsubscribeResult.graphCode || null,
+      errorName: unsubscribeResult.errorName || null
+    };
+
+    if (unsubscribeResult.ok) {
+      logInfo('portal_instagram_disconnect_remote_unsubscribe_succeeded', unsubscribeLog);
+    } else {
+      logWarn('portal_instagram_disconnect_remote_unsubscribe_not_completed', unsubscribeLog);
+    }
+  }
+
+  const disconnectedChannel = await disconnectInstagramChannelByIdAndClinicId(channelId, context.clinic.id);
+  if (!disconnectedChannel) {
     return {
       ok: false,
       tenantId: context.tenantId,
@@ -324,7 +373,7 @@ async function disconnectPortalInstagramChannel(tenantId, input = {}) {
     tenantId: context.tenantId,
     clinicId: context.clinic.id,
     requestId: input.requestId || null,
-    channelId: channel.id
+    channelId: disconnectedChannel.id
   });
 
   return {
@@ -333,7 +382,7 @@ async function disconnectPortalInstagramChannel(tenantId, input = {}) {
     clinicId: context.clinic.id,
     state: 'not_connected',
     channel: null,
-    channels: [summarizeInstagramChannel(channel)]
+    channels: [summarizeInstagramChannel(disconnectedChannel)]
   };
 }
 
