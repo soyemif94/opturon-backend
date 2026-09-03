@@ -20,6 +20,7 @@ const {
   getPortalSellerMetrics,
   getPortalOrderDetail,
   createPortalOrder,
+  sendPortalOrderWhatsAppSummary,
   patchPortalOrder,
   patchPortalOrderStatus,
   validatePortalOrderTransferPayment
@@ -647,6 +648,43 @@ async function postPortalOrder(req, res) {
         constraint: error.constraint || null
       }
     });
+  }
+}
+
+async function postPortalOrderWhatsAppSummary(req, res) {
+  const tenantId = getRequestTenantId(req);
+  const orderId = String(req.params.orderId || '').trim();
+
+  try {
+    const result = await sendPortalOrderWhatsAppSummary(tenantId, orderId);
+    if (!result.ok) {
+      const status =
+        result.reason === 'missing_order_id' ||
+        result.reason === 'order_without_contact' ||
+        result.reason === 'contact_without_whatsapp_identity'
+          ? 400
+          : result.reason === 'no_active_whatsapp_channel' ||
+              result.reason === 'multiple_active_whatsapp_channels' ||
+              result.reason === 'order_summary_send_in_progress'
+            ? 409
+            : result.reason === 'order_not_found'
+              ? 404
+              : 502;
+      return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        orderId: result.orderId,
+        conversationId: result.conversationId,
+        channelId: result.channelId,
+        message: result.message
+      }
+    });
+  } catch (error) {
+    logError('portal_order_whatsapp_summary_failed', { tenantId, orderId, error: error.message });
+    return res.status(502).json({ success: false, error: 'order_summary_send_failed' });
   }
 }
 
@@ -6093,6 +6131,7 @@ module.exports = {
   getPortalSellerMetricsController,
   getPortalOrder,
   postPortalOrder,
+  postPortalOrderWhatsAppSummary,
   patchPortalOrderController,
   updatePortalOrderStatus,
   postPortalOrderPaymentValidation,

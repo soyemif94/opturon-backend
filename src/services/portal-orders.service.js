@@ -36,14 +36,17 @@ const {
   insertInventoryMovement,
   syncProductStockFromLots
 } = require('../repositories/inventory.repository');
-const { getClinicBusinessProfileById } = require('../repositories/tenant.repository');
+const { getClinicBusinessProfileById, listWhatsAppChannelsByClinicId } = require('../repositories/tenant.repository');
 const { findConversationById } = require('../repositories/conversation.repository');
 const { updateConversationStage } = require('../repositories/conversation.repository');
 const conversationStateRepo = require('../conversations/conversation.repo');
+const { resolveWhatsAppConversation } = require('../conversations/whatsapp-conversation-resolver');
 const { sendPortalMessage } = require('./portal-inbox.service');
 const {
-  prepareOrderCustomerNotification
+  prepareOrderCustomerNotification,
+  buildOrderCustomerNotificationSnapshot
 } = require('./order-customer-notifications.service');
+const { formatOrderCustomerSummary } = require('./order-customer-summary-formatter.service');
 const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../utils/money');
 const { resolveProductPrice } = require('../utils/commerce-price');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
@@ -55,6 +58,7 @@ const PAYMENT_STATUSES = new Set(['unpaid', 'pending', 'paid', 'refunded', 'canc
 const ORDER_PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'mercado_pago', 'other']);
 const ORDER_SOURCES = new Set(['manual', 'inbox', 'automation', 'api', 'bot']);
 const ORDER_CUSTOMER_TYPES = new Set(['registered_contact', 'final_consumer']);
+const orderSummarySendsInFlight = new Set();
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -1312,6 +1316,81 @@ async function createPortalOrder(tenantId, payload) {
   return createOrderForContext(context, payload);
 }
 
+function isActiveWhatsAppChannel(channel, clinicId) {
+  return Boolean(
+    channel &&
+    String(channel.clinicId || '') === String(clinicId || '') &&
+    String(channel.type || '').trim().toLowerCase() === 'whatsapp' &&
+    String(channel.provider || '').trim().toLowerCase() === 'whatsapp_cloud' &&
+    String(channel.status || '').trim().toLowerCase() === 'active' &&
+    normalizeString(channel.phoneNumberId) &&
+    normalizeString(channel.accessToken)
+  );
+}
+
+async function sendPortalOrderWhatsAppSummary(tenantId, orderId) {
+  const context = await resolvePortalTenantContext(tenantId);
+  if (!context.ok || !context.clinic?.id) return context;
+
+  const safeOrderId = normalizeString(orderId);
+  if (!safeOrderId) return buildError(context.tenantId, 'missing_order_id');
+
+  const inFlightKey = `${context.clinic.id}:${safeOrderId}`;
+  if (orderSummarySendsInFlight.has(inFlightKey)) {
+    return buildError(context.tenantId, 'order_summary_send_in_progress');
+  }
+  orderSummarySendsInFlight.add(inFlightKey);
+
+  try {
+    const order = await findOrderById(safeOrderId, context.clinic.id);
+    if (!order) return buildError(context.tenantId, 'order_not_found');
+    if (!order.contactId) return buildError(context.tenantId, 'order_without_contact');
+
+    const contact = await findContactByIdAndClinicId(order.contactId, context.clinic.id);
+    if (!contact || !normalizeString(contact.waId)) {
+      return buildError(context.tenantId, 'contact_without_whatsapp_identity');
+    }
+
+    const channels = (await listWhatsAppChannelsByClinicId(context.clinic.id))
+      .filter((channel) => isActiveWhatsAppChannel(channel, context.clinic.id));
+    if (channels.length === 0) return buildError(context.tenantId, 'no_active_whatsapp_channel');
+    if (channels.length > 1) return buildError(context.tenantId, 'multiple_active_whatsapp_channels');
+
+    const channel = channels[0];
+    const route = await resolveWhatsAppConversation({
+      clinicId: context.clinic.id,
+      channelId: channel.id,
+      providerIdentity: contact.waId,
+      phone: contact.phone || contact.waId,
+      contactName: contact.name || order.customerName || null,
+      waTo: channel.phoneNumberId,
+      direction: 'outbound',
+      preserveExistingName: true,
+      preserveExistingIdentity: true
+    });
+    const summary = formatOrderCustomerSummary({
+      snapshot: buildOrderCustomerNotificationSnapshot(order),
+      customerName: contact.name || order.customerName || null
+    });
+    const outbound = await sendPortalMessage(context.tenantId, route.conversation.id, summary.text);
+    if (!outbound.ok) {
+      return buildError(context.tenantId, outbound.reason || 'order_summary_send_failed');
+    }
+
+    return {
+      ok: true,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      orderId: order.id,
+      conversationId: route.conversation.id,
+      channelId: channel.id,
+      message: outbound.message
+    };
+  } finally {
+    orderSummarySendsInFlight.delete(inFlightKey);
+  }
+}
+
 async function createOrderForClinic(clinicId, payload) {
   const safeClinicId = normalizeString(clinicId);
   if (!safeClinicId) {
@@ -1816,6 +1895,7 @@ module.exports = {
   getPortalSellerMetrics,
   getPortalOrderDetail,
   createPortalOrder,
+  sendPortalOrderWhatsAppSummary,
   createOrderForClinic,
   patchPortalOrder,
   patchPortalOrderStatus,

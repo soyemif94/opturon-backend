@@ -22,6 +22,7 @@ const {
   getPortalSellerMetricsController,
   getPortalOrder,
   postPortalOrder,
+  postPortalOrderWhatsAppSummary,
   patchPortalOrderController,
   updatePortalOrderStatus,
   postPortalOrderPaymentValidation,
@@ -436,6 +437,7 @@ router.get('/tenants/:tenantId/orders', ordersCapability, getPortalOrders);
 router.get('/tenants/:tenantId/orders/payment-metrics', ordersCapability, getPortalOrdersPaymentMetrics);
 router.get('/tenants/:tenantId/seller-metrics', getPortalSellerMetricsController);
 router.post('/tenants/:tenantId/orders', ordersCapability, postPortalOrder);
+router.post('/tenants/:tenantId/orders/:orderId/whatsapp-summary', ordersCapability, postPortalOrderWhatsAppSummary);
 router.get('/tenants/:tenantId/orders/:orderId', ordersCapability, getPortalOrder);
 router.patch('/tenants/:tenantId/orders/:orderId', ordersCapability, patchPortalOrderController);
 router.patch('/tenants/:tenantId/orders/:orderId/status', ordersCapability, updatePortalOrderStatus);
