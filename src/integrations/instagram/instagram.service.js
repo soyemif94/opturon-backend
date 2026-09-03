@@ -87,6 +87,43 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
     throw error;
   }
 
+  if (provider === 'instagram_login') {
+    const longLivedUrl = new URL('https://graph.instagram.com/access_token');
+    longLivedUrl.searchParams.set('grant_type', 'ig_exchange_token');
+    longLivedUrl.searchParams.set('client_secret', appSecret);
+    longLivedUrl.searchParams.set('access_token', String(json.access_token).trim());
+
+    const longLivedResponse = await fetch(longLivedUrl.toString(), { headers: { Accept: 'application/json' } });
+    const longLivedJson = await longLivedResponse.json().catch(() => null);
+    if (!longLivedResponse.ok || !longLivedJson || !longLivedJson.access_token) {
+      logWarn('instagram_oauth_long_lived_exchange_failed', {
+        requestId,
+        provider,
+        stage: 'long_lived_exchange',
+        status: longLivedResponse.status || null,
+        graphCode: longLivedJson && longLivedJson.error && longLivedJson.error.code
+          ? String(longLivedJson.error.code)
+          : null
+      });
+      const error = new Error(
+        (longLivedJson && longLivedJson.error && longLivedJson.error.message) ||
+        'instagram_long_lived_exchange_failed'
+      );
+      error.reason = 'instagram_long_lived_exchange_failed';
+      error.status = longLivedResponse.status;
+      throw error;
+    }
+
+    return {
+      accessToken: String(longLivedJson.access_token).trim(),
+      tokenType: String(longLivedJson.token_type || '').trim() || null,
+      expiresIn: Number.isFinite(Number(longLivedJson.expires_in)) ? Number(longLivedJson.expires_in) : null,
+      userId: String(json.user_id || '').trim() || null,
+      provider,
+      raw: longLivedJson
+    };
+  }
+
   return {
     accessToken: String(json.access_token).trim(),
     tokenType: String(json.token_type || '').trim() || null,
