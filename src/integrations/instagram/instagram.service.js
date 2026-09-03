@@ -137,11 +137,11 @@ async function exchangeOAuthCodeForAccessToken({ code, redirectUri, providerOver
 async function fetchInstagramBusinessAssets({ accessToken, userId = null, providerOverride = null, requestId = null }) {
   if (getInstagramOauthProvider(providerOverride) === 'instagram_login') {
     const url = new URL(`https://graph.instagram.com/${DEFAULT_GRAPH_VERSION}/me`);
-    url.searchParams.set('fields', 'id,username');
+    url.searchParams.set('fields', 'id,user_id,username');
     url.searchParams.set('access_token', accessToken);
     const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
     const json = await response.json().catch(() => null);
-    const instagramUserId = String((json && (json.user_id || json.id)) || userId || '').trim();
+    const instagramUserId = String((json && json.user_id) || userId || (json && json.id) || '').trim();
     if (!response.ok || !instagramUserId) {
       const error = new Error((json && json.error && json.error.message) || 'instagram_business_account_not_found');
       error.reason = response.ok ? 'instagram_business_account_not_found' : 'instagram_profile_lookup_failed';

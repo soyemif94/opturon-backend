@@ -190,6 +190,26 @@ async function testOauthProviderOverridePropagatesAcrossExchangeAndSubscription(
   assert.equal(state.subscribed[0].providerOverride, 'instagram_login');
 }
 
+async function testInstagramLoginWebhookUserIdPersistsToChannelRoutingFields() {
+  resetState();
+  state.assets = [buildAsset({
+    pageId: 'webhook-user-id',
+    instagramBusinessAccountId: 'webhook-user-id'
+  })];
+
+  const connected = await connectPortalInstagramChannel(state.tenantId, {
+    code: 'oauth-code',
+    redirectUri: 'https://www.opturon.com/api/app/integrations/instagram/callback',
+    oauthProvider: 'instagram_login'
+  });
+
+  assert.equal(connected.ok, true);
+  assert.equal(state.upserted.length, 1);
+  assert.equal(state.upserted[0].externalId, 'webhook-user-id');
+  assert.equal(state.upserted[0].externalPageId, 'webhook-user-id');
+  assert.equal(state.upserted[0].instagramUserId, 'webhook-user-id');
+}
+
 async function testUnknownOauthProviderRejected() {
   resetState();
   state.assets = [buildAsset()];
@@ -230,6 +250,7 @@ async function run() {
   await testMultipleAssetsReturnsSafeCandidatesWithoutTokens();
   await testSelectedAssetConnectsExpectedChannel();
   await testOauthProviderOverridePropagatesAcrossExchangeAndSubscription();
+  await testInstagramLoginWebhookUserIdPersistsToChannelRoutingFields();
   await testUnknownOauthProviderRejected();
   await testSelectionTokenCannotBeReused();
   console.log('instagram-connection-ui.test.js: ok');
