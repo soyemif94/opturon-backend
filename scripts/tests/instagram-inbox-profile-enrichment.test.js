@@ -258,8 +258,11 @@ async function testProcessInboundMessagesSuccessAndFailSoft() {
   assert.strictEqual(enrichmentCalls, 2);
   assert.strictEqual(upsertCalls.length, 2);
   assert.strictEqual(insertedMessages.length, 2);
+  assert.strictEqual(upsertCalls[0].phone, null);
+  assert.strictEqual(upsertCalls[0].waId, '1597415198563263');
   assert.strictEqual(upsertCalls[0].name, 'Opturon Platform');
   assert.strictEqual(upsertCalls[0].metadata.instagramProfile.username, 'opturon.agency');
+  assert.strictEqual(upsertCalls[0].profileImageUrl, 'https://cdn.example/opturon.jpg');
   assert.strictEqual(upsertCalls[1].name, null);
 }
 

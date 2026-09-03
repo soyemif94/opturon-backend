@@ -44,8 +44,23 @@ function isValidHttpUrl(value) {
   }
 }
 
+function normalizeInstagramIdentity(metadata) {
+  const profile = metadata && typeof metadata.instagramProfile === 'object' && !Array.isArray(metadata.instagramProfile)
+    ? metadata.instagramProfile
+    : null;
+  if (!profile) return null;
+
+  const senderIgsid = normalizeNullableText(profile.senderIgsid);
+  const username = normalizeNullableText(profile.username);
+  const profileImageUrl = normalizeNullableImageUrl(profile.profileImageUrl || profile.providerProfilePicUrl);
+  if (!senderIgsid && !username) return null;
+
+  return { senderIgsid, username, profileImageUrl };
+}
+
 function normalizeContact(row) {
   const safeName = String(row.name || '').trim();
+  const instagramIdentity = normalizeInstagramIdentity(row.metadata);
 
   return {
     id: row.id,
@@ -54,7 +69,8 @@ function normalizeContact(row) {
     phone: row.phone || null,
     name: safeName || row.companyName || row.waId || 'Contacto',
     email: row.email || null,
-    profileImageUrl: row.profileImageUrl || null,
+    profileImageUrl: row.profileImageUrl || instagramIdentity?.profileImageUrl || null,
+    instagramIdentity,
     whatsappPhone: row.whatsappPhone || null,
     taxId: row.taxId || null,
     taxCondition: row.taxCondition || null,

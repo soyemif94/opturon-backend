@@ -245,6 +245,8 @@ async function testWhatsAppInboundStillEnqueuesReply() {
   assert.strictEqual(result.duplicates, 0);
   assert.strictEqual(state.jobs.length, 1);
   assert.strictEqual(state.jobs[0].type, 'conversation_reply');
+  const contact = state.contacts.get(`${state.clinicId}:5491199999999`);
+  assert.strictEqual(contact.phone, '5491199999999');
 }
 
 function testInboxSourceExposesChannelFilteringAndReadOnlyGuard() {

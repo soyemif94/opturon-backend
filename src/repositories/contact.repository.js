@@ -291,6 +291,7 @@ async function findPortalContactById(clinicId, contactId, client = null) {
        name,
        email,
        "profileImageUrl",
+       metadata,
        "whatsappPhone",
        "taxId",
        "taxCondition",
