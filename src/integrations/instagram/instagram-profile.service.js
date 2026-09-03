@@ -2,6 +2,7 @@ const env = require('../../config/env');
 const { logWarn } = require('../../utils/logger');
 
 const DEFAULT_PROFILE_TTL_MS = 24 * 60 * 60 * 1000;
+const MISSING_PROFILE_PIC_RETRY_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_GRAPH_VERSION = String(env.getWhatsAppGraphVersion()).trim();
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
 
@@ -48,7 +49,10 @@ function isInstagramProfileStale(contact, ttlMs = DEFAULT_PROFILE_TTL_MS, now = 
 
   const lastFetchedAt = Date.parse(fetchedAt);
   if (!Number.isFinite(lastFetchedAt)) return true;
-  return now.getTime() - lastFetchedAt >= ttlMs;
+  const effectiveTtlMs = normalizeString(snapshot.providerProfilePicUrl)
+    ? ttlMs
+    : Math.min(ttlMs, MISSING_PROFILE_PIC_RETRY_TTL_MS);
+  return now.getTime() - lastFetchedAt >= effectiveTtlMs;
 }
 
 function isDerivedIdentityValue(value, snapshot, waId) {
@@ -242,6 +246,7 @@ async function maybeEnrichInstagramContactProfile({ contact, channel, igsid, ttl
 
 module.exports = {
   DEFAULT_PROFILE_TTL_MS,
+  MISSING_PROFILE_PIC_RETRY_TTL_MS,
   formatInstagramUsername,
   normalizeInstagramProfileSnapshot,
   isInstagramProfileStale,

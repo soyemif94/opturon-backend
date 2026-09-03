@@ -64,6 +64,7 @@ async function testInstagramProfileHelpers() {
         {
           metadata: {
             instagramProfile: {
+              providerProfilePicUrl: 'https://cdn.example/avatar.jpg',
               providerProfileFetchedAt: '2026-08-28T11:00:00.000Z'
             }
           }
@@ -72,6 +73,27 @@ async function testInstagramProfileHelpers() {
         new Date('2026-08-28T12:00:00.000Z')
       ),
       false
+    );
+
+    const missingAvatarContact = {
+      metadata: {
+        instagramProfile: {
+          providerProfilePicUrl: null,
+          providerProfileFetchedAt: '2026-08-28T11:00:00.000Z'
+        }
+      }
+    };
+    assert.strictEqual(
+      isInstagramProfileStale(missingAvatarContact, 24 * 60 * 60 * 1000, new Date('2026-08-28T11:30:00.000Z')),
+      false
+    );
+    assert.strictEqual(
+      isInstagramProfileStale(missingAvatarContact, 24 * 60 * 60 * 1000, new Date('2026-08-28T12:01:00.000Z')),
+      true
+    );
+    assert.strictEqual(
+      isInstagramProfileStale(missingAvatarContact, 15 * 60 * 1000, new Date('2026-08-28T11:16:00.000Z')),
+      true
     );
 
     global.fetch = async () => ({
@@ -104,7 +126,31 @@ async function testInstagramProfileHelpers() {
     assert.strictEqual(enriched.changed, true);
     assert.strictEqual(enriched.contactPatch.name, 'Opturon Platform');
     assert.strictEqual(enriched.contactPatch.metadata.instagramProfile.username, 'opturon.agency');
+    assert.strictEqual(enriched.contactPatch.metadata.instagramProfile.senderIgsid, '1597415198563263');
+    assert.strictEqual(enriched.contactPatch.metadata.instagramProfile.providerProfilePicUrl, 'https://cdn.example/opturon.jpg');
+    assert.strictEqual(enriched.contactPatch.metadata.instagramProfile.providerProfilePicFetchedAt, '2026-08-29T00:00:00.000Z');
     assert.strictEqual(enriched.contactPatch.profileImageUrl, 'https://cdn.example/opturon.jpg');
+
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ name: 'Opturon Platform', username: 'opturon.agency' })
+    });
+    const missingAvatarEnrichment = await maybeEnrichInstagramContactProfile({
+      contact: { waId: '1597415198563263', name: null, profileImageUrl: null, metadata: {} },
+      channel: { id: 'channel-instagram-1', instagramUserId: '28349497618013118', accessToken: 'secret-token' },
+      igsid: '1597415198563263',
+      now: new Date('2026-08-29T01:00:00.000Z')
+    });
+    assert.strictEqual(missingAvatarEnrichment.contactPatch.metadata.instagramProfile.providerProfilePicUrl, null);
+    assert.strictEqual(
+      isInstagramProfileStale(
+        { metadata: missingAvatarEnrichment.contactPatch.metadata },
+        24 * 60 * 60 * 1000,
+        new Date('2026-08-29T02:01:00.000Z')
+      ),
+      true
+    );
   } finally {
     global.fetch = originalFetch;
   }
