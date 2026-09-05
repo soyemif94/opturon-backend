@@ -397,7 +397,7 @@ async function testHappyPathAndWindow() {
   assert.strictEqual(harness.state.inbox[0].channelId, IDS.channelA);
   assert.strictEqual(harness.state.inbox[0].to, '541112345678');
   assert.strictEqual(harness.state.inbox[0].raw.transactionalNotification.notificationType, 'order_summary');
-  assert.strictEqual(evaluateCustomerServiceWindow({ lastInboundAt: '2026-08-09T12:00:00.000Z', now: NOW }).allowed, true);
+  assert.strictEqual(evaluateCustomerServiceWindow({ lastInboundAt: '2026-08-09T12:00:00.000Z', now: NOW }).allowed, false);
   assert.strictEqual(evaluateCustomerServiceWindow({ lastInboundAt: '2026-08-09T11:59:59.000Z', now: NOW }).allowed, false);
 }
 
@@ -822,9 +822,14 @@ function buildStatusPayload(status, errors = []) {
 async function testStatusReconciliation() {
   let storedStatus = 'sent';
   let failureMetadata = null;
+  const deliveries = [];
   const rank = { sent: 1, delivered: 2, read: 3 };
   const dependencies = {
     findChannelByPhoneNumberId: async () => ({ id: IDS.channelA, clinicId: IDS.clinicA }),
+    updateConversationDelivery: async (input) => {
+      deliveries.push(input.delivery);
+      return null;
+    },
     reconcileStatus: async (input) => {
       if (input.status === 'failed') {
         if (storedStatus === 'sent') storedStatus = 'failed_permanent';
@@ -841,6 +846,7 @@ async function testStatusReconciliation() {
   await reconcileOrderCustomerNotificationStatuses(buildStatusPayload('read'), { dependencies });
   await reconcileOrderCustomerNotificationStatuses(buildStatusPayload('sent'), { dependencies });
   assert.strictEqual(storedStatus, 'read');
+  assert.deepStrictEqual(deliveries.slice(0, 4).map((delivery) => delivery.status), ['sent', 'delivered', 'read', 'sent']);
 
   storedStatus = 'sent';
   await reconcileOrderCustomerNotificationStatuses(buildStatusPayload('failed', [{
@@ -850,6 +856,7 @@ async function testStatusReconciliation() {
     error_data: { details: 'Bearer token-value' }
   }]), { dependencies });
   assert.strictEqual(storedStatus, 'failed_permanent');
+  assert.strictEqual(deliveries[4].status, 'failed');
   assert.doesNotMatch(JSON.stringify(failureMetadata), /super-secret|token-value/);
   assert.match(JSON.stringify(failureMetadata), /redacted/);
 }

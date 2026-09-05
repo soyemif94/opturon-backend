@@ -321,6 +321,39 @@ async function insertOutboundMessage(record, client = null) {
   }
 }
 
+async function updateOutboundDeliveryStatusByProviderMessageId({
+  clinicId,
+  channelId,
+  providerMessageId,
+  delivery
+}, client = null) {
+  const safeMessageId = String(providerMessageId || '').trim();
+  if (!clinicId || !channelId || !safeMessageId || !delivery || !delivery.status) return null;
+
+  const result = await dbQuery(
+    client,
+    `UPDATE conversation_messages cm
+     SET raw = jsonb_set(COALESCE(cm.raw, '{}'::jsonb), '{delivery}', $4::jsonb, true)
+     FROM conversations c
+     WHERE cm."conversationId" = c.id
+       AND c."clinicId" = $1::uuid
+       AND c."channelId" = $2::uuid
+       AND cm.direction = 'outbound'
+       AND cm."waMessageId" = $3
+       AND CASE COALESCE(cm.raw->'delivery'->>'status', '')
+         WHEN 'read' THEN FALSE
+         WHEN 'failed' THEN FALSE
+         WHEN 'delivered' THEN $5 IN ('read', 'failed')
+         WHEN 'sent' THEN $5 IN ('delivered', 'read', 'failed')
+         ELSE TRUE
+       END
+     RETURNING cm.id, cm."conversationId", cm."waMessageId", cm.raw`,
+    [clinicId, channelId, safeMessageId, JSON.stringify(delivery), String(delivery.status).toLowerCase()]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function getConversationById(id, client = null) {
   const result = await dbQuery(
     client,
@@ -1616,6 +1649,7 @@ module.exports = {
   findInboundMessageByProviderId,
   insertInboundMessage,
   insertOutboundMessage,
+  updateOutboundDeliveryStatusByProviderMessageId,
   getConversationById,
   getConversationByIdAndClinicId,
   listConversationsByContactIdAndClinicId,

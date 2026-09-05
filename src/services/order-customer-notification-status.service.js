@@ -12,6 +12,7 @@ const {
   aggregateOperationalAlertInstanceStatus
 } = require('../repositories/operational-alert-instances.repository');
 const { extractWhatsAppStatusEvents } = require('../webhooks/meta.webhook');
+const { updateOutboundDeliveryStatusByProviderMessageId } = require('../conversations/conversation.repo');
 const { logInfo } = require('../utils/logger');
 const { reconcileStatus: reconcileWhatsAppTemplateCanaryStatus } = require('../repositories/whatsapp-template-canary.repository');
 
@@ -56,6 +57,22 @@ function sanitizeFailedStatusMetadata(event) {
   };
 }
 
+function buildConversationDelivery(event) {
+  const errors = Array.isArray(event && event.errors) ? event.errors : [];
+  const primaryError = errors[0] || {};
+  const errorCode = primaryError.code === undefined || primaryError.code === null ? null : String(primaryError.code);
+  return {
+    status: String(event && event.status || '').trim().toLowerCase(),
+    updatedAt: new Date().toISOString(),
+    provider: 'meta_whatsapp',
+    providerTimestamp: normalizeOccurredAt(event && event.timestamp),
+    errorCode,
+    errorTitle: sanitizeText(primaryError.title, 200),
+    errorDetails: sanitizeText((primaryError.error_data && primaryError.error_data.details) || primaryError.message, 500),
+    ...(errorCode === '131047' ? { reason: 'whatsapp_customer_service_window_closed' } : {})
+  };
+}
+
 async function reconcileOrderCustomerNotificationStatuses(payload, options = {}) {
   const dependencies = {
     findChannelByPhoneNumberId:
@@ -64,6 +81,7 @@ async function reconcileOrderCustomerNotificationStatuses(payload, options = {})
     reconcileOperationalStatus: reconcileOperationalAlertDeliveryStatus,
     reconcileCanaryStatus: reconcileWhatsAppTemplateCanaryStatus,
     aggregateOperationalInstance: aggregateOperationalAlertInstanceStatus,
+    updateConversationDelivery: updateOutboundDeliveryStatusByProviderMessageId,
     ...(options.dependencies || {})
   };
   const events = extractWhatsAppStatusEvents(payload);
@@ -96,6 +114,13 @@ async function reconcileOrderCustomerNotificationStatuses(payload, options = {})
       occurredAt: normalizeOccurredAt(event.timestamp),
       failureMetadata: event.status === 'failed' ? sanitizeFailedStatusMetadata(event) : null
     };
+
+    await dependencies.updateConversationDelivery({
+      clinicId: channel.clinicId,
+      channelId: channel.id,
+      providerMessageId: event.providerMessageId,
+      delivery: buildConversationDelivery(event)
+    });
 
     // Order Summary retains explicit precedence; operational alerts are only a scoped fallback.
     const notification = await dependencies.reconcileStatus(statusInput);
@@ -133,5 +158,6 @@ async function reconcileOrderCustomerNotificationStatuses(payload, options = {})
 module.exports = {
   normalizeOccurredAt,
   sanitizeFailedStatusMetadata,
+  buildConversationDelivery,
   reconcileOrderCustomerNotificationStatuses
 };

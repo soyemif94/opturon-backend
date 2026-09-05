@@ -20,6 +20,7 @@ const { logInfo, logWarn } = require('../utils/logger');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 const { getOwnedHandoffSummary } = require('./handoff-summary.service');
 const { formatInstagramUsername, normalizeInstagramProfileSnapshot } = require('../integrations/instagram/instagram-profile.service');
+const { evaluateCustomerServiceWindow } = require('./whatsapp-customer-service-window.service');
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -86,7 +87,7 @@ function extractImageMediaFromRaw(raw) {
   };
 }
 
-function mapPortalConversationMessage(message) {
+function mapPortalConversationMessage(message, channel) {
   const type = normalizeString(message && message.type) || 'text';
   const imageMedia = extractImageMediaFromRaw(message && message.raw);
   const caption = imageMedia && imageMedia.caption ? imageMedia.caption : '';
@@ -98,7 +99,12 @@ function mapPortalConversationMessage(message) {
     text: message.text || '',
     caption,
     timestamp: message.createdAt,
-    status: message.direction === 'inbound' ? 'read' : 'sent',
+    status: message.direction === 'inbound'
+      ? 'read'
+      : normalizeString(channel && channel.provider).toLowerCase() === 'whatsapp_cloud'
+        ? normalizeString(message && message.raw && message.raw.delivery && message.raw.delivery.status) || 'unknown_delivery'
+        : 'sent',
+    deliveryErrorCode: normalizeString(message && message.raw && message.raw.delivery && message.raw.delivery.errorCode) || null,
     media: imageMedia
       ? {
           mediaId: imageMedia.mediaId,
@@ -605,7 +611,7 @@ function buildConversationChannelBinding({ context, conversationChannel }) {
   };
 }
 
-function buildComposerCapability(channel) {
+function buildComposerCapability(channel, conversation) {
   const provider = normalizeString(channel && channel.provider).toLowerCase();
   const active = normalizeString(channel && channel.status).toLowerCase() === 'active';
   const hasCredential = Boolean(normalizeString(channel && channel.accessToken));
@@ -620,6 +626,21 @@ function buildComposerCapability(channel) {
 
   if (!hasCredential) {
     return { enabled: false, reason: 'conversation_channel_missing_credentials' };
+  }
+
+  if (provider === 'whatsapp_cloud') {
+    const customerServiceWindow = evaluateCustomerServiceWindow({ lastInboundAt: conversation && conversation.lastInboundAt });
+    if (!customerServiceWindow.allowed) {
+      return {
+        enabled: false,
+        reason: 'whatsapp_customer_service_window_closed',
+        customerServiceWindow: {
+          status: customerServiceWindow.status,
+          lastInboundAt: customerServiceWindow.lastInboundAt,
+          expiresAt: customerServiceWindow.expiresAt
+        }
+      };
+    }
   }
 
   return { enabled: true, reason: 'ready' };
@@ -958,7 +979,7 @@ async function getPortalConversationDetail(tenantId, conversationId) {
         })()
         : undefined,
       deal: mapDeal(contextData, conversation.contactId),
-      messages: messages.map((message) => mapPortalConversationMessage(message)),
+      messages: messages.map((message) => mapPortalConversationMessage(message, conversationChannel)),
       notes: Array.isArray(contextData.portalNotes) ? contextData.portalNotes : [],
       tasks: Array.isArray(contextData.portalTasks) ? contextData.portalTasks : [],
       assignee: assignedSeller && assignedSeller.name
@@ -976,7 +997,7 @@ async function getPortalConversationDetail(tenantId, conversationId) {
       })),
       handoffSummary,
       channelBinding,
-      composerCapability: buildComposerCapability(conversationChannel),
+      composerCapability: buildComposerCapability(conversationChannel, conversation),
       relatedOrder: buildRelatedOrderSummary(relatedOrder)
     }
   };
@@ -1704,6 +1725,24 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       channel: toPortalChannel(context.channel),
       reason: 'missing_text'
     };
+  }
+
+  if (runtimeProvider === 'whatsapp_cloud') {
+    const customerServiceWindow = evaluateCustomerServiceWindow({ lastInboundAt: conversation.lastInboundAt });
+    if (!customerServiceWindow.allowed) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(runtimeChannel),
+        reason: 'whatsapp_customer_service_window_closed',
+        customerServiceWindow: {
+          status: customerServiceWindow.status,
+          lastInboundAt: customerServiceWindow.lastInboundAt,
+          expiresAt: customerServiceWindow.expiresAt
+        }
+      };
+    }
   }
 
   if (runtimeProvider === 'whatsapp_cloud') {

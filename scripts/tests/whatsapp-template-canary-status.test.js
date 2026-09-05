@@ -13,6 +13,7 @@ test('webhook status updates the exact tenant/channel Canary attempt', async () 
   const stats = await reconcileOrderCustomerNotificationStatuses(payload('delivered'), { dependencies: {
     findChannelByPhoneNumberId: async () => ({ id: 'channel-a', clinicId: 'clinic-a' }),
     reconcileStatus: async () => null,
+    updateConversationDelivery: async () => null,
     reconcileOperationalStatus: async () => null,
     aggregateOperationalInstance: async () => null,
     reconcileCanaryStatus: async (input) => { observed.push(input); return { id: 'attempt-a' }; }
@@ -25,7 +26,7 @@ test('webhook status updates the exact tenant/channel Canary attempt', async () 
 test('unmatched status remains ignored and never invents delivery', async () => {
   const stats = await reconcileOrderCustomerNotificationStatuses(payload('read'), { dependencies: {
     findChannelByPhoneNumberId: async () => ({ id: 'channel-a', clinicId: 'clinic-a' }),
-    reconcileStatus: async () => null, reconcileOperationalStatus: async () => null,
+    reconcileStatus: async () => null, updateConversationDelivery: async () => null, reconcileOperationalStatus: async () => null,
     aggregateOperationalInstance: async () => null, reconcileCanaryStatus: async () => null
   } });
   assert.equal(stats.matched, 0); assert.equal(stats.ignored, 1);

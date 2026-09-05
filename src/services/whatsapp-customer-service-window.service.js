@@ -36,10 +36,11 @@ function evaluateCustomerServiceWindow({
   }
 
   const expiresAtMs = inboundMs + safeWindowHours * 60 * 60 * 1000;
-  const allowed = nowMs <= expiresAtMs;
+  // Meta's customer service window closes exactly 24 hours after the last inbound.
+  const allowed = nowMs < expiresAtMs;
   return {
     allowed,
-    status: allowed ? 'FREEFORM_ALLOWED' : 'FREEFORM_NOT_ALLOWED',
+    status: allowed ? 'open' : 'closed',
     reason: allowed ? 'real_inbound_within_window' : 'customer_service_window_expired',
     lastInboundAt: new Date(inboundMs).toISOString(),
     expiresAt: new Date(expiresAtMs).toISOString()
