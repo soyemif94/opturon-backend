@@ -72,6 +72,54 @@ function setupCommonMocks(repositoryOverrides = {}, contextOverrides = {}) {
   });
 }
 
+function setupRealPortalContextReadback(channels) {
+  const clinicQueries = [];
+  const channelQueries = [];
+  const clinics = [
+    { id: 'clinic-1', externalTenantId: 'tenant-a', settings: {} },
+    { id: 'clinic-2', externalTenantId: 'tenant-b', settings: {} }
+  ];
+  for (const file of [
+    'src/repositories/tenant.repository.js',
+    'src/services/portal-context.service.js',
+    'src/services/portal-whatsapp-status.service.js'
+  ]) clearModule(file);
+  // Keep the tenant lookup, channel query and context/status mapping real. Only
+  // the database boundary and unrelated product/bot data are simulated.
+  mockModule('src/db/client.js', {
+    query: async (sql, parameters) => {
+      assert.match(sql.trim(), /^SELECT\b/, 'readback must not write to the database');
+      if (/FROM clinics\s+WHERE "externalTenantId" = \$1/.test(sql)) {
+        clinicQueries.push(parameters[0]);
+        return { rows: clinics.filter((clinic) => clinic.externalTenantId === parameters[0]) };
+      }
+      if (/FROM channels\b/.test(sql)) {
+        assert.match(sql, /WHERE "clinicId" = \$1/);
+        assert.match(sql, /AND provider = 'whatsapp_cloud'/);
+        channelQueries.push(parameters[0]);
+        const columns = sql.match(/SELECT ([\s\S]+?)\s+FROM channels/)[1]
+          .split(',').map((column) => column.trim().replaceAll('"', ''));
+        return {
+          rows: channels
+            .filter((channel) => channel.clinicId === parameters[0] && channel.provider === 'whatsapp_cloud')
+            .map((channel) => Object.fromEntries(columns.map((column) => [column, channel[column] ?? null])))
+        };
+      }
+      return { rows: [] };
+    }
+  });
+  mockModule('src/repositories/products.repository.js', { listProductsByClinicId: async () => [] });
+  mockModule('src/repositories/automations.repository.js', { listAutomationsByClinicId: async () => [] });
+  mockModule('src/services/tenant-policy.service.js', { buildTenantPolicyFromSettings: () => ({}) });
+  mockModule('src/utils/bot-config.js', { DEFAULT_BOT_CONFIG: {}, normalizeBotConfig: () => ({}) });
+  return {
+    ...require(modulePath('src/services/portal-context.service.js')),
+    ...require(modulePath('src/services/portal-whatsapp-status.service.js')),
+    clinicQueries,
+    channelQueries
+  };
+}
+
 async function testFinalizeRejectsTenantMismatch() {
   setupCommonMocks({
     findOnboardingSessionByStateToken: async () => ({
@@ -406,16 +454,53 @@ async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCo
     assert.strictEqual(signupStatus.onboardingState, 'connected');
     assert.strictEqual(signupStatus.session.channelId, 'channel-success');
 
-    clearModule('src/services/portal-whatsapp-status.service.js');
-    mockModule('src/db/client.js', { query: async () => ({ rows: [] }) });
-    mockModule('src/utils/bot-config.js', { DEFAULT_BOT_CONFIG: {}, normalizeBotConfig: () => ({}) });
-    const { getPortalWhatsAppStatus } = require(modulePath('src/services/portal-whatsapp-status.service.js'));
-    const status = await getPortalWhatsAppStatus('tenant-a');
-    assert.strictEqual(status.channel.connected, true);
-    assert.strictEqual(status.channel.channelId, 'channel-success');
+    const readback = setupRealPortalContextReadback([context.channel]);
+    const loadedContext = await readback.resolvePortalTenantContext('tenant-a');
+    assert.strictEqual(loadedContext.onboarding.hasChannel, true);
+    assert.strictEqual(loadedContext.channel.id, result.channel.id);
+    assert.strictEqual(loadedContext.channel.provider, 'whatsapp_cloud');
+    assert.strictEqual(loadedContext.channel.phoneNumberId, result.channel.phoneNumberId);
+    assert.strictEqual(loadedContext.channel.wabaId, result.channel.wabaId);
+    for (let reload = 0; reload < 2; reload += 1) {
+      const status = await readback.getPortalWhatsAppStatus('tenant-a');
+      assert.strictEqual(status.channel.connected, true);
+      assert.strictEqual(status.channel.status, 'active');
+      assert.strictEqual(status.channel.channelId, 'channel-success');
+      assert.strictEqual(status.channel.phoneNumberId, result.channel.phoneNumberId);
+      assert.strictEqual(status.channel.wabaId, result.channel.wabaId);
+    }
+    const otherTenant = await readback.getPortalWhatsAppStatus('tenant-b');
+    assert.strictEqual(otherTenant.channel.connected, false);
+    assert.strictEqual(otherTenant.channel.channelId, null);
+    assert.deepStrictEqual(readback.clinicQueries, ['tenant-a', 'tenant-a', 'tenant-a', 'tenant-b']);
+    assert.deepStrictEqual(readback.channelQueries, ['clinic-1', 'clinic-1', 'clinic-1', 'clinic-2']);
+
+    context.channel.status = 'inactive';
+    const inactive = await readback.getPortalWhatsAppStatus('tenant-a');
+    assert.strictEqual(inactive.channel.connected, false);
+    assert.strictEqual(inactive.channel.status, 'inactive');
   } finally {
     global.fetch = originalFetch;
   }
+}
+
+async function testTerminalSessionWithoutChannelDoesNotConnect(status) {
+  setupCommonMocks({
+    findLatestOnboardingSessionByClinicId: async () => ({
+      id: 'session-terminal', status, externalTenantId: 'tenant-a', clinicId: 'clinic-1',
+      createdAt: new Date().toISOString()
+    })
+  });
+  const readback = setupRealPortalContextReadback([]);
+  const { getPortalWhatsAppSignupStatus } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+  const signup = await getPortalWhatsAppSignupStatus('tenant-a');
+  assert.strictEqual(signup.session.status, status);
+  assert.strictEqual(signup.onboardingState, status === 'failed' ? 'error' : 'idle');
+  const context = await readback.resolvePortalTenantContext('tenant-a');
+  assert.strictEqual(context.onboarding.hasChannel, false);
+  const connection = await readback.getPortalWhatsAppStatus('tenant-a');
+  assert.strictEqual(connection.channel.connected, false);
+  assert.strictEqual(connection.channel.channelId, null);
 }
 
 async function testOAuthExchangeErrorIsSanitized({ invalidBody = false, networkError = false } = {}) {
@@ -523,6 +608,8 @@ async function run() {
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: false });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, failCompletion: true });
+  await testTerminalSessionWithoutChannelDoesNotConnect('cancelled');
+  await testTerminalSessionWithoutChannelDoesNotConnect('failed');
   await testOAuthExchangeErrorIsSanitized();
   await testOAuthExchangeErrorIsSanitized({ invalidBody: true });
   await testOAuthExchangeErrorIsSanitized({ networkError: true });
