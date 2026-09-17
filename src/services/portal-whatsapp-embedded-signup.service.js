@@ -124,7 +124,6 @@ function summarizeCode(code) {
   const safeValue = String(code || '').trim();
   if (!safeValue) return null;
   return {
-    preview: redactToken(safeValue),
     length: safeValue.length
   };
 }
@@ -380,7 +379,44 @@ function buildStatusPayload(context, session) {
   };
 }
 
-async function exchangeMetaCodeForAccessToken({ code, redirectUri, requestId = null }) {
+function buildOAuthExchangeError({ payload, status, code, appSecret, requestId }) {
+  const metaError = payload && payload.error && typeof payload.error === 'object' ? payload.error : {};
+  const sensitiveValues = [code, appSecret, payload && payload.access_token, metaError.access_token, metaError.client_secret]
+    .filter((value) => typeof value === 'string' && value);
+  const sanitize = (value, fallback = null) => {
+    if (typeof value !== 'string') return fallback;
+    let safe = value;
+    for (const sensitive of sensitiveValues.sort((a, b) => b.length - a.length)) {
+      safe = safe.split(sensitive).join('[REDACTED]');
+      safe = safe.split(encodeURIComponent(sensitive)).join('[REDACTED]');
+    }
+    return safe
+      .replace(/https?:\/\/\S+/gi, '[REDACTED_URL]')
+      .replace(/((?:access_token|client_secret|app_secret|authorization_code|code)\s*[=:]\s*)[^\s&,;]+/gi, '$1[REDACTED]')
+      .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+      .slice(0, 1000);
+  };
+  // Only diagnostic fields may leave the exchange layer, including in logs and
+  // failed-session metadata. Never retain the upstream body or request URL.
+  const body = {
+    error: {
+      message: sanitize(metaError.message, 'meta_oauth_exchange_failed'),
+      type: sanitize(metaError.type),
+      code: Number.isInteger(metaError.code) ? metaError.code : null,
+      error_subcode: Number.isInteger(metaError.error_subcode) ? metaError.error_subcode : null,
+      fbtrace_id: sanitize(metaError.fbtrace_id)
+    }
+  };
+  logWarn('portal_whatsapp_embedded_signup_exchange_failed', { requestId, status, body });
+  const error = new Error(body.error.message);
+  error.reason = 'meta_oauth_exchange_failed';
+  error.status = status;
+  error.body = body;
+  error.requestId = requestId;
+  return error;
+}
+
+async function exchangeMetaCodeForAccessToken({ code, requestId = null }) {
   const appId = String(env.whatsappAppId || '').trim();
   const appSecret = String(env.metaAppSecret || '').trim();
 
@@ -392,21 +428,33 @@ async function exchangeMetaCodeForAccessToken({ code, redirectUri, requestId = n
 
   logInfo('portal_whatsapp_embedded_signup_exchange_started', {
     requestId,
-    redirectUri,
     code: summarizeCode(code)
   });
 
   const url = new URL(`https://graph.facebook.com/${DEFAULT_GRAPH_VERSION}/oauth/access_token`);
   url.searchParams.set('client_id', appId);
   url.searchParams.set('client_secret', appSecret);
-  url.searchParams.set('redirect_uri', redirectUri);
+  // Embedded Signup's FB.login SDK code uses Meta's SDK redirect, not the
+  // Opturon callback URL stored for session correlation. Follow the documented
+  // business-token exchange: client_id, client_secret and code only.
+  // https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-customers-as-a-tech-provider/
   url.searchParams.set('code', code);
 
-  const response = await fetch(url.toString(), {
-    method: 'GET',
-    headers: { Accept: 'application/json' }
-  });
-  const text = await response.text();
+  let response;
+  let text;
+  try {
+    response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: { Accept: 'application/json' }
+    });
+    text = await response.text();
+  } catch (networkError) {
+    throw buildOAuthExchangeError({
+      payload: { error: { message: networkError.message } },
+      status: response ? response.status : null,
+      code, appSecret, requestId
+    });
+  }
   let json = null;
   try {
     json = text ? JSON.parse(text) : null;
@@ -414,20 +462,10 @@ async function exchangeMetaCodeForAccessToken({ code, redirectUri, requestId = n
     json = null;
   }
 
-  if (!response.ok || !json || !json.access_token) {
-    logWarn('portal_whatsapp_embedded_signup_exchange_failed', {
-      requestId,
-      status: response.status,
-      redirectUri,
-      code: summarizeCode(code),
-      body: json
+  if (!response.ok || !json || typeof json.access_token !== 'string' || !json.access_token.trim()) {
+    throw buildOAuthExchangeError({
+      payload: json, status: response.status, code, appSecret, requestId
     });
-    const error = new Error((json && json.error && json.error.message) || 'meta_oauth_exchange_failed');
-    error.reason = 'meta_oauth_exchange_failed';
-    error.status = response.status;
-    error.body = json;
-    error.requestId = requestId;
-    throw error;
   }
 
   return {
@@ -848,7 +886,6 @@ async function finalizePortalWhatsAppSignup({
     });
     const token = await exchangeMetaCodeForAccessToken({
       code: safeCode,
-      redirectUri: safeRedirectUri,
       requestId
     });
     await markOnboardingSessionProcessing(session.id, {

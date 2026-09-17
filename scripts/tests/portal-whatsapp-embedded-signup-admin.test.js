@@ -342,7 +342,8 @@ async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCo
     }
   }, context);
   mockModule('src/whatsapp/whatsapp-graph.client.js', {
-    request: async (method, endpoint) => {
+    request: async (method, endpoint, options) => {
+      assert.strictEqual(options.accessToken, 'test-access-token', 'exchange token must reach asset discovery and subscription');
       if (method === 'GET' && endpoint === '/waba-success/phone_numbers') {
         steps.push('phone_discovered');
         return { ok: true, status: 200, data: { data: [{ id: 'phone-success', display_phone_number: '+10000000000', verified_name: 'Test' }] } };
@@ -355,11 +356,19 @@ async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCo
   });
 
   const originalFetch = global.fetch;
-  global.fetch = async (url) => {
+  global.fetch = async (url, options) => {
     const requestUrl = new URL(url);
     if (requestUrl.pathname.endsWith('/oauth/access_token')) {
       assert.strictEqual(requestUrl.searchParams.get('code'), 'oauth-success');
-      assert.strictEqual(requestUrl.searchParams.get('redirect_uri'), redirectUri);
+      assert.strictEqual(requestUrl.origin, 'https://graph.facebook.com');
+      assert.strictEqual(requestUrl.pathname, '/v25.0/oauth/access_token');
+      assert.strictEqual(options.method, 'GET');
+      assert.strictEqual(options.headers.Accept, 'application/json');
+      assert.strictEqual(requestUrl.searchParams.get('client_id'), '3388083341350043');
+      assert.strictEqual(requestUrl.searchParams.get('client_secret'), 'app-secret');
+      // Meta's Embedded Signup SDK exchange uses only these three parameters.
+      // https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-customers-as-a-tech-provider/
+      assert.deepStrictEqual([...requestUrl.searchParams.keys()].sort(), ['client_id', 'client_secret', 'code']);
       steps.push('code_exchanged');
       return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'test-access-token', token_type: 'bearer' }) };
     }
@@ -409,6 +418,101 @@ async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCo
   }
 }
 
+async function testOAuthExchangeErrorIsSanitized({ invalidBody = false, networkError = false } = {}) {
+  const code = 'dummy-code-sensitive+/value';
+  const secret = 'dummy-secret-sensitive+/value';
+  const token = 'dummy-token-sensitive';
+  const redirectUri = 'https://opturon.test/api/app/integrations/whatsapp/embedded-signup/callback';
+  const logs = [];
+  let failedSession = null;
+  let fetchCount = 0;
+  setupCommonMocks({
+    findOnboardingSessionByStateToken: async () => ({
+      id: 'session-oauth', status: 'awaiting_callback', externalTenantId: 'tenant-a',
+      clinicId: 'clinic-1', redirectUri, createdAt: new Date().toISOString()
+    }),
+    markOnboardingSessionFailed: async (_id, data) => { failedSession = data; return data; }
+  });
+  mockModule('src/config/env.js', {
+    whatsappAppId: 'test-whatsapp-app', metaAppSecret: secret,
+    // Deliberately different credentials: this test documents the current source,
+    // without presuming that real runtime values belong to any particular app.
+    whatsappAppSecret: 'unused-dedicated-secret', instagramAppSecret: 'unused-instagram-secret',
+    getWhatsAppGraphVersion: () => 'v25.0'
+  });
+  mockModule('src/utils/logger.js', {
+    logInfo: (event, data) => logs.push({ event, ...data }),
+    logWarn: (event, data) => logs.push({ event, ...data }),
+    logError: (event, data) => logs.push({ event, ...data })
+  });
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    fetchCount += 1;
+    if (networkError) throw new Error(`Request failed: ${url}`);
+    return {
+      ok: false, status: 400,
+      text: async () => invalidBody ? '<html>Upstream failure</html>' : JSON.stringify({
+        access_token: token,
+        error: {
+          type: 'OAuthException', code: 100, error_subcode: 36008, fbtrace_id: 'trace-test',
+          message: `Verification rejected: ${code}; ${encodeURIComponent(code)}; ${secret}; access_token=${token}`,
+          client_secret: secret, code_echo: code, access_token: token,
+          error_data: { authorization: `Bearer ${token}` }
+        }
+      })
+    };
+  };
+  try {
+    const { finalizePortalWhatsAppSignup } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+    const result = await finalizePortalWhatsAppSignup({
+      expectedTenantId: 'tenant-a', stateToken: 'state-oauth', code, redirectUri
+    });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, 'meta_oauth_exchange_failed');
+    assert.strictEqual(failedSession.errorCode, 'meta_oauth_exchange_failed');
+    assert.strictEqual(fetchCount, 1, 'never retry a single-use authorization code');
+    const safeOutput = JSON.stringify({ logs, result, failedSession });
+    for (const value of [code, encodeURIComponent(code), secret, encodeURIComponent(secret), token]) {
+      assert.ok(!safeOutput.includes(value), 'OAuth credentials must not appear in logs, response or failed-session metadata');
+    }
+    const exchangeFailure = logs.find((log) => log.event === 'portal_whatsapp_embedded_signup_exchange_failed');
+    assert.ok(exchangeFailure);
+    if (!invalidBody && !networkError) {
+      assert.strictEqual(exchangeFailure.status, 400);
+      assert.deepStrictEqual(exchangeFailure.body.error, {
+        type: 'OAuthException', code: 100, error_subcode: 36008, fbtrace_id: 'trace-test',
+        message: 'Verification rejected: [REDACTED]; [REDACTED]; [REDACTED]; access_token=[REDACTED]'
+      });
+      assert.deepStrictEqual(failedSession.metadata.body, exchangeFailure.body);
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+async function testSessionRedirectMustStillMatchExactly() {
+  const redirectUri = 'https://opturon.test/api/app/integrations/whatsapp/embedded-signup/callback';
+  setupCommonMocks({
+    findOnboardingSessionByStateToken: async () => ({
+      id: 'session-redirect', status: 'awaiting_callback', externalTenantId: 'tenant-a',
+      clinicId: 'clinic-1', redirectUri, createdAt: new Date().toISOString()
+    })
+  });
+  const originalFetch = global.fetch;
+  let fetchCount = 0;
+  global.fetch = async () => { fetchCount += 1; throw new Error('unexpected_network'); };
+  try {
+    const { finalizePortalWhatsAppSignup } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+    const result = await finalizePortalWhatsAppSignup({
+      expectedTenantId: 'tenant-a', stateToken: 'state-redirect', code: 'test-code', redirectUri: `${redirectUri}/`
+    });
+    assert.strictEqual(result.reason, 'embedded_signup_redirect_uri_mismatch');
+    assert.strictEqual(fetchCount, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
 async function run() {
   await testFinalizeRejectsTenantMismatch();
   await testFinalizeRejectsConsumedState();
@@ -419,6 +523,10 @@ async function run() {
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: false });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, failCompletion: true });
+  await testOAuthExchangeErrorIsSanitized();
+  await testOAuthExchangeErrorIsSanitized({ invalidBody: true });
+  await testOAuthExchangeErrorIsSanitized({ networkError: true });
+  await testSessionRedirectMustStillMatchExactly();
   console.log('portal-whatsapp-embedded-signup-admin.test.js: ok');
 }
 
