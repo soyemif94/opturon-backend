@@ -241,6 +241,174 @@ async function testCancelDoesNotPreemptProcessingSession() {
   assert.strictEqual(cancelledCalled, false);
 }
 
+async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCompletion = false }) {
+  const redirectUri = 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback';
+  const steps = [];
+  const context = { channel: null };
+  let session = {
+    id: 'session-success',
+    status: 'awaiting_callback',
+    externalTenantId: 'tenant-a',
+    clinicId: 'clinic-1',
+    stateToken: 'state-success',
+    redirectUri,
+    createdAt: new Date().toISOString()
+  };
+
+  // Exercise the production completion query as well as the service. PostgreSQL
+  // cannot infer omitted parameter types when a query skips a positional binding.
+  clearModule('src/repositories/whatsapp-onboarding.repository.js');
+  mockModule('src/utils/secret-crypto.js', {
+    maybeDecryptSecret: (value) => value,
+    maybeEncryptSecret: (value) => value
+  });
+  const completionQuery = async (sql, parameters) => {
+    assert.match(sql, /SET status = 'completed'/);
+    const positions = [...new Set([...sql.matchAll(/\$(\d+)/g)].map((match) => Number(match[1])))].sort((a, b) => a - b);
+    assert.deepStrictEqual(positions, parameters.map((_, index) => index + 1), 'completion query must reference every supplied binding');
+    for (const field of ['metaCode', 'metaAccessToken', 'metaTokenType', 'metaTokenExpiresAt']) {
+      assert.ok(sql.includes(`"${field}" = NULL`), `${field} must be cleared on completion`);
+    }
+    const boundValue = (field) => {
+      const match = sql.match(new RegExp(`"${field}" = COALESCE\\(\\$(\\d+)`));
+      assert.ok(match, `${field} must be persisted by the completion query`);
+      return parameters[Number(match[1]) - 1];
+    };
+    assert.strictEqual(parameters[0], session.id);
+    assert.strictEqual(boundValue('wabaId'), 'waba-success');
+    assert.strictEqual(boundValue('phoneNumberId'), 'phone-success');
+    assert.strictEqual(boundValue('channelId'), 'channel-success');
+    assert.ok(!parameters.includes('oauth-success'));
+    assert.ok(!parameters.includes('test-access-token'));
+    if (failCompletion) throw new Error('completion_write_failed');
+    session = {
+      ...session,
+      status: 'completed',
+      channelId: boundValue('channelId'),
+      wabaId: boundValue('wabaId'),
+      phoneNumberId: boundValue('phoneNumberId'),
+      completedAt: new Date().toISOString()
+    };
+    steps.push('session_completed');
+    return { rows: [session] };
+  };
+  mockModule('src/db/client.js', { query: completionQuery, withTransaction: async (fn) => fn({ query: completionQuery }) });
+  const { markOnboardingSessionCompleted } = require(modulePath('src/repositories/whatsapp-onboarding.repository.js'));
+
+  setupCommonMocks({
+    findOnboardingSessionByStateToken: async (stateToken) => {
+      assert.strictEqual(stateToken, 'state-success');
+      return session;
+    },
+    findLatestOnboardingSessionByClinicId: async (clinicId) => {
+      assert.strictEqual(clinicId, 'clinic-1');
+      return session;
+    },
+    markOnboardingSessionProcessing: async (_sessionId, data) => {
+      steps.push(data.status);
+      session = { ...session, status: data.status };
+      return session;
+    },
+    upsertWhatsAppChannel: async (data, client) => {
+      assert.strictEqual(typeof client.query, 'function');
+      assert.strictEqual(data.status, 'active');
+      assert.strictEqual(data.clinicId, 'clinic-1');
+      assert.strictEqual(data.wabaId, 'waba-success');
+      assert.strictEqual(data.phoneNumberId, 'phone-success');
+      steps.push('channel_active');
+      context.channel = { ...data, id: 'channel-success', provider: 'whatsapp_cloud' };
+      return context.channel;
+    },
+    deactivateOtherClinicWhatsAppChannels: async (clinicId, channelId) => {
+      assert.strictEqual(clinicId, 'clinic-1');
+      assert.strictEqual(channelId, 'channel-success');
+    },
+    markOnboardingSessionCompleted,
+    markOnboardingSessionFailed: async (_sessionId, data) => {
+      session = { ...session, ...data, status: 'failed' };
+      return session;
+    },
+    withOnboardingTransaction: async (fn) => {
+      const before = { session: { ...session }, channel: context.channel };
+      try {
+        const result = await fn({ query: completionQuery });
+        steps.push('commit');
+        return result;
+      } catch (error) {
+        session = before.session;
+        context.channel = before.channel;
+        throw error;
+      }
+    }
+  }, context);
+  mockModule('src/whatsapp/whatsapp-graph.client.js', {
+    request: async (method, endpoint) => {
+      if (method === 'GET' && endpoint === '/waba-success/phone_numbers') {
+        steps.push('phone_discovered');
+        return { ok: true, status: 200, data: { data: [{ id: 'phone-success', display_phone_number: '+10000000000', verified_name: 'Test' }] } };
+      }
+      assert.strictEqual(method, 'POST');
+      assert.strictEqual(endpoint, '/waba-success/subscribed_apps');
+      steps.push('webhook_subscribed');
+      return { ok: true, status: 200, data: { success: true } };
+    }
+  });
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    const requestUrl = new URL(url);
+    if (requestUrl.pathname.endsWith('/oauth/access_token')) {
+      assert.strictEqual(requestUrl.searchParams.get('code'), 'oauth-success');
+      assert.strictEqual(requestUrl.searchParams.get('redirect_uri'), redirectUri);
+      steps.push('code_exchanged');
+      return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'test-access-token', token_type: 'bearer' }) };
+    }
+    assert.strictEqual(withFinishPayload, false);
+    assert.ok(requestUrl.pathname.endsWith('/debug_token'));
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data: { granular_scopes: [{ scope: 'whatsapp_business_management', target_ids: ['waba-success'] }] } }) };
+  };
+  try {
+    const { finalizePortalWhatsAppSignup, getPortalWhatsAppSignupStatus } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+    const result = await finalizePortalWhatsAppSignup({
+      expectedTenantId: 'tenant-a',
+      stateToken: 'state-success',
+      code: 'oauth-success',
+      redirectUri,
+      metaPayload: withFinishPayload ? { type: 'WA_EMBEDDED_SIGNUP', event: 'FINISH', data: { waba_id: 'waba-success', phone_number_id: 'phone-success' } } : null
+    });
+    if (failCompletion) {
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.reason, 'completion_write_failed');
+      assert.strictEqual(context.channel, null, 'completion failure must roll back the channel');
+      assert.strictEqual(session.status, 'failed');
+      assert.ok(!steps.includes('commit'));
+      const failedStatus = await getPortalWhatsAppSignupStatus('tenant-a');
+      assert.strictEqual(failedStatus.onboardingState, 'error');
+      assert.strictEqual(failedStatus.session.channelId, null);
+      return;
+    }
+    assert.strictEqual(result.ok, true, result.reason);
+    assert.strictEqual(result.status, 'connected');
+    assert.strictEqual(result.channel.status, 'active');
+    assert.strictEqual(result.session.status, 'completed');
+    assert.ok(result.session.completedAt);
+    assert.deepStrictEqual(steps, ['exchanging_code', 'code_exchanged', 'discovering_assets', 'phone_discovered', 'subscribing_app', 'webhook_subscribed', 'persisting_channel', 'channel_active', 'session_completed', 'commit']);
+    const signupStatus = await getPortalWhatsAppSignupStatus('tenant-a');
+    assert.strictEqual(signupStatus.onboardingState, 'connected');
+    assert.strictEqual(signupStatus.session.channelId, 'channel-success');
+
+    clearModule('src/services/portal-whatsapp-status.service.js');
+    mockModule('src/db/client.js', { query: async () => ({ rows: [] }) });
+    mockModule('src/utils/bot-config.js', { DEFAULT_BOT_CONFIG: {}, normalizeBotConfig: () => ({}) });
+    const { getPortalWhatsAppStatus } = require(modulePath('src/services/portal-whatsapp-status.service.js'));
+    const status = await getPortalWhatsAppStatus('tenant-a');
+    assert.strictEqual(status.channel.connected, true);
+    assert.strictEqual(status.channel.channelId, 'channel-success');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
 async function run() {
   await testFinalizeRejectsTenantMismatch();
   await testFinalizeRejectsConsumedState();
@@ -248,6 +416,9 @@ async function run() {
   await testRefreshExpiresOldSession();
   await testCancelDoesNotModifyCompletedSession();
   await testCancelDoesNotPreemptProcessingSession();
+  await testFinalizeSuccessPersistsConnection({ withFinishPayload: true });
+  await testFinalizeSuccessPersistsConnection({ withFinishPayload: false });
+  await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, failCompletion: true });
   console.log('portal-whatsapp-embedded-signup-admin.test.js: ok');
 }
 
