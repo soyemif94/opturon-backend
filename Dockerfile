@@ -17,6 +17,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/data ./data
 COPY --from=builder /app/package*.json ./
+COPY db/migrations ./db/migrations
 
 EXPOSE 3001
 CMD ["npm", "start"]
