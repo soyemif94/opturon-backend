@@ -219,6 +219,7 @@ const {
   requireWhatsAppCanaryRead,
   requireWhatsAppCanaryWrite
 } = require('../middlewares/portal-whatsapp-canary-authorization.middleware');
+const { registerPortalWhatsAppPhoneNumber } = require('../services/portal-whatsapp-embedded-signup.service');
 const {
   getCanary: getPortalWhatsAppTemplateCanary,
   postCanaryRefresh: postPortalWhatsAppTemplateCanaryRefresh,
@@ -266,6 +267,40 @@ function whatsappTemplateSyncNoStore(_req, res, next) {
   res.setHeader('Cache-Control', 'private, no-store');
   res.setHeader('Pragma', 'no-cache');
   next();
+}
+
+const whatsAppRegistrationErrorStatuses = new Map([
+  ['missing_tenant_id', 400],
+  ['whatsapp_registration_channel_unavailable', 404],
+  ['whatsapp_registration_credentials_missing', 422],
+  ['whatsapp_registration_ownership_conflict', 409],
+  ['whatsapp_registration_storage_failed', 500],
+  ['meta_phone_registration_failed', 502]
+]);
+
+async function postPortalWhatsAppRegister(req, res) {
+  try {
+    const tenantId = String(req.activeTenantId || '').trim();
+    const actor = req.whatsappCanaryActor;
+    if (!tenantId || !actor || !actor.id) {
+      return res.status(403).json({ success: false, error: 'portal_whatsapp_registration_forbidden' });
+    }
+    const requestId = String(req.get('x-request-id') || '').trim();
+    const result = await registerPortalWhatsAppPhoneNumber(tenantId, {
+      actorUserId: actor.id,
+      requestId: /^[a-zA-Z0-9._:-]{1,128}$/.test(requestId) ? requestId : null
+    });
+    if (!result || result.ok !== true || result.registered !== true) {
+      const status = result && whatsAppRegistrationErrorStatuses.get(result.reason);
+      return res.status(status || 500).json({
+        success: false,
+        error: status ? result.reason : 'whatsapp_registration_failed'
+      });
+    }
+    return res.status(200).json({ success: true, data: { registered: true } });
+  } catch {
+    return res.status(500).json({ success: false, error: 'whatsapp_registration_failed' });
+  }
 }
 const catalogImageUpload = multer({
   storage: multer.memoryStorage(),
@@ -405,6 +440,7 @@ function handleLoyaltyRewardImageUpload(req, res, next) {
 
 router.use('/tenants/:tenantId/operational-alerts', operationalAlertsNoStore);
 router.use('/tenants/:tenantId/whatsapp/templates/sync', whatsappTemplateSyncNoStore);
+router.use('/tenants/:tenantId/whatsapp/register', whatsappTemplateSyncNoStore);
 // Every tenant-scoped portal route is server-to-server only. Keeping this at
 // the common boundary prevents a newly added route from accidentally bypassing
 // authentication.
@@ -600,6 +636,7 @@ router.post('/tenants/:tenantId/whatsapp/embedded-signup/refresh', requirePortal
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/cancel', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupCancel);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupBootstrap);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/finalize', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupFinalize);
+router.post('/tenants/:tenantId/whatsapp/register', requirePortalInternalAuth, requireWhatsAppCanaryWrite, postPortalWhatsAppRegister);
 router.post('/tenants/:tenantId/whatsapp/manual-connect', requirePortalInternalAuth, postPortalWhatsAppManualConnect);
 router.post('/tenants/:tenantId/whatsapp/discover-assets', requirePortalInternalAuth, postPortalWhatsAppDiscoverAssets);
 router.get('/tenants/:tenantId/whatsapp/status', requirePortalInternalAuth, getPortalWhatsAppStatusController);

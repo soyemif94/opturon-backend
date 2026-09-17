@@ -20,6 +20,9 @@ const {
   markOnboardingSessionPending,
   markOnboardingSessionCompleted,
   findWhatsAppChannelByPhoneNumberId,
+  findWhatsAppChannelByClinicAndPhoneNumberId,
+  getOrCreateRegistrationPin,
+  markWhatsAppPhoneRegistered,
   upsertWhatsAppChannel,
   deactivateOtherClinicWhatsAppChannels,
   withOnboardingTransaction
@@ -31,7 +34,7 @@ const DEFAULT_GRAPH_VERSION = String(env.getWhatsAppGraphVersion()).trim();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ONBOARDING_SESSION_TTL_MS = 60 * 60 * 1000;
 const RECOVERABLE_SESSION_STATUSES = new Set(['created', 'launching', 'awaiting_callback']);
-const PROCESSING_SESSION_STATUSES = new Set(['exchanging_code', 'discovering_assets', 'subscribing_app', 'persisting_channel']);
+const PROCESSING_SESSION_STATUSES = new Set(['exchanging_code', 'discovering_assets', 'subscribing_app', 'registering_phone', 'persisting_channel']);
 const ACTIVE_SESSION_STATUSES = new Set([...RECOVERABLE_SESSION_STATUSES, ...PROCESSING_SESSION_STATUSES]);
 const TERMINAL_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled', 'expired']);
 
@@ -632,6 +635,87 @@ async function subscribeCurrentAppToWaba({ accessToken, wabaId, requestId = null
   };
 }
 
+const REGISTRATION_ERRORS = {
+  missing_tenant_id: 'No recibimos el tenantId para registrar el numero.',
+  whatsapp_registration_channel_unavailable: 'No encontramos un canal WhatsApp unico para este workspace.',
+  whatsapp_registration_credentials_missing: 'El canal no tiene una credencial disponible para registrar el numero.',
+  whatsapp_registration_ownership_conflict: 'El numero pertenece a otro workspace.',
+  whatsapp_registration_storage_failed: 'No pudimos guardar de forma segura el registro del numero.',
+  meta_phone_registration_failed: 'Meta no confirmo el registro del numero. Puedes reintentar.',
+  whatsapp_registration_failed: 'No pudimos completar el registro del numero.'
+};
+
+function registrationError(reason) {
+  const safeReason = Object.prototype.hasOwnProperty.call(REGISTRATION_ERRORS, reason)
+    ? reason : 'whatsapp_registration_failed';
+  const error = new Error(REGISTRATION_ERRORS[safeReason]);
+  error.reason = safeReason;
+  return error;
+}
+
+async function ensureWhatsAppPhoneRegistered({ clinicId, phoneNumberId, accessToken, requestId = null }) {
+  let credential;
+  try {
+    // Durable before the remote call: a timeout or later channel transaction
+    // rollback must never cause a different PIN to be generated on retry.
+    credential = await getOrCreateRegistrationPin({ clinicId, phoneNumberId });
+  } catch (error) {
+    throw registrationError(error.code === 'whatsapp_registration_ownership_conflict'
+      ? error.code : 'whatsapp_registration_storage_failed');
+  }
+  if (credential.registeredAt) return;
+
+  let registration;
+  try {
+    registration = await graphClient.registerWhatsAppPhoneNumber({
+      phoneNumberId, accessToken, pin: credential.pin, requestId
+    });
+  } catch {
+    throw registrationError('meta_phone_registration_failed');
+  }
+  if (!registration || !registration.ok) throw registrationError('meta_phone_registration_failed');
+
+  try {
+    // This confirmation also survives a later channel/session write failure.
+    const saved = await markWhatsAppPhoneRegistered(clinicId, phoneNumberId);
+    if (!saved || !saved.registeredAt) throw new Error('registration_marker_missing');
+  } catch {
+    throw registrationError('whatsapp_registration_storage_failed');
+  }
+}
+
+async function registerPortalWhatsAppPhoneNumber(tenantId, options = {}) {
+  const safeTenantId = String(tenantId || '').trim();
+  try {
+    if (!safeTenantId) throw registrationError('missing_tenant_id');
+    const context = await resolvePortalTenantContext(safeTenantId);
+    const selected = context && context.channel;
+    const clinicId = context && context.clinic && context.clinic.id;
+    if (!context || !context.ok || context.tenantId !== safeTenantId || !clinicId ||
+        !selected || !selected.id || !selected.phoneNumberId || selected.provider !== 'whatsapp_cloud') {
+      throw registrationError('whatsapp_registration_channel_unavailable');
+    }
+    // The request supplies no channel/phone/token override. Resolve credentials
+    // again through the tenant's clinic; never trust an unscoped channel lookup.
+    const channel = await findWhatsAppChannelByClinicAndPhoneNumberId(clinicId, selected.phoneNumberId);
+    if (!channel || channel.id !== selected.id || channel.clinicId !== clinicId ||
+        channel.provider !== 'whatsapp_cloud' || channel.phoneNumberId !== selected.phoneNumberId) {
+      throw registrationError('whatsapp_registration_channel_unavailable');
+    }
+    if (!String(channel.accessToken || '').trim()) {
+      throw registrationError('whatsapp_registration_credentials_missing');
+    }
+    await ensureWhatsAppPhoneRegistered({
+      clinicId, phoneNumberId: channel.phoneNumberId,
+      accessToken: channel.accessToken, requestId: options.requestId || null
+    });
+    return { ok: true, registered: true };
+  } catch (error) {
+    const safeError = registrationError(error.reason);
+    return withReason(safeError.reason, safeError.message);
+  }
+}
+
 async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorUserId = null, metadata = null }) {
   const safeTenantId = String(tenantId || '').trim();
   const safeRedirectUri = String(redirectUri || '').trim();
@@ -969,6 +1053,17 @@ async function finalizePortalWhatsAppSignup({
       });
     }
 
+    await markOnboardingSessionProcessing(session.id, {
+      status: 'registering_phone',
+      metadata: { processing: { stage: 'registering_phone', updatedAt: new Date().toISOString() } }
+    });
+    await ensureWhatsAppPhoneRegistered({
+      clinicId: session.clinicId,
+      phoneNumberId: assets.phoneNumberId,
+      accessToken: token.accessToken,
+      requestId
+    });
+
     const persisted = await withOnboardingTransaction(async (client) => {
       await markOnboardingSessionProcessing(
         session.id,
@@ -1288,6 +1383,7 @@ module.exports = {
   refreshPortalWhatsAppSignupSession,
   cancelPortalWhatsAppSignupSession,
   finalizePortalWhatsAppSignup,
+  registerPortalWhatsAppPhoneNumber,
   buildMetaConfigStatus,
   __private__: {
     ONBOARDING_SESSION_TTL_MS,

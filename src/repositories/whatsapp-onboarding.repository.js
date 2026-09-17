@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { query, withTransaction } = require('../db/client');
 const { maybeDecryptSecret, maybeEncryptSecret } = require('../utils/secret-crypto');
 
@@ -299,6 +300,88 @@ async function findWhatsAppChannelByPhoneNumberId(phoneNumberId, client = null) 
   return mapChannelRecord(result.rows[0] || null);
 }
 
+async function findWhatsAppChannelByClinicAndPhoneNumberId(clinicId, phoneNumberId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken",
+            "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata"
+     FROM channels
+     WHERE "clinicId" = $1
+       AND "phoneNumberId" = $2
+       AND provider = 'whatsapp_cloud'
+     LIMIT 1`,
+    [clinicId, phoneNumberId]
+  );
+  return mapChannelRecord(result.rows[0] || null);
+}
+
+function registrationPinFromRecord(record) {
+  const pin = maybeDecryptSecret(record.encryptedPin, { allowLegacy: false });
+  if (!/^\d{6}$/.test(pin || '')) {
+    const error = new Error('Persisted WhatsApp registration PIN is invalid.');
+    error.code = 'whatsapp_registration_pin_invalid';
+    throw error;
+  }
+  return { pin, registeredAt: record.registeredAt || null };
+}
+
+function generateWhatsAppRegistrationPin() {
+  return crypto.randomInt(0, 1000000).toString().padStart(6, '0');
+}
+
+// This deliberately uses independent committed queries: the PIN must survive a
+// remote timeout or a rollback of the surrounding onboarding operation.
+async function getOrCreateRegistrationPin({ clinicId, phoneNumberId }) {
+  const selectSql = `SELECT "encryptedPin", "registeredAt"
+                    FROM whatsapp_phone_registrations
+                    WHERE "clinicId" = $1 AND "phoneNumberId" = $2
+                    LIMIT 1`;
+  const existing = await query(selectSql, [clinicId, phoneNumberId]);
+  if (existing.rows[0]) return registrationPinFromRecord(existing.rows[0]);
+
+  const pin = generateWhatsAppRegistrationPin();
+  const inserted = await query(
+    `INSERT INTO whatsapp_phone_registrations ("clinicId", "phoneNumberId", "encryptedPin")
+     VALUES ($1, $2, $3)
+     ON CONFLICT ("phoneNumberId") DO NOTHING
+     RETURNING "encryptedPin", "registeredAt"`,
+    [clinicId, phoneNumberId, maybeEncryptSecret(pin)]
+  );
+  if (inserted.rows[0]) return registrationPinFromRecord(inserted.rows[0]);
+
+  // A separate statement sees the committed winner of a concurrent insertion.
+  // Never replace another tenant's PIN or read it into the current tenant.
+  const winner = await query(selectSql, [clinicId, phoneNumberId]);
+  if (winner.rows[0]) return registrationPinFromRecord(winner.rows[0]);
+  const error = new Error('WhatsApp phone registration belongs to another tenant.');
+  error.code = 'whatsapp_registration_ownership_conflict';
+  throw error;
+}
+
+async function findWhatsAppPhoneRegistration(clinicId, phoneNumberId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT "phoneNumberId", "registeredAt"
+     FROM whatsapp_phone_registrations
+     WHERE "clinicId" = $1 AND "phoneNumberId" = $2
+     LIMIT 1`,
+    [clinicId, phoneNumberId]
+  );
+  return result.rows[0] || null;
+}
+
+async function markWhatsAppPhoneRegistered(clinicId, phoneNumberId, client = null) {
+  const result = await dbQuery(
+    client,
+    `UPDATE whatsapp_phone_registrations
+     SET "registeredAt" = COALESCE("registeredAt", NOW()), "updatedAt" = NOW()
+     WHERE "clinicId" = $1 AND "phoneNumberId" = $2
+     RETURNING "phoneNumberId", "registeredAt"`,
+    [clinicId, phoneNumberId]
+  );
+  return result.rows[0] || null;
+}
+
 async function upsertWhatsAppChannel(input, client = null) {
   const result = await dbQuery(
     client,
@@ -438,6 +521,10 @@ module.exports = {
   markOnboardingSessionPending,
   markOnboardingSessionCompleted,
   findWhatsAppChannelByPhoneNumberId,
+  findWhatsAppChannelByClinicAndPhoneNumberId,
+  getOrCreateRegistrationPin,
+  findWhatsAppPhoneRegistration,
+  markWhatsAppPhoneRegistered,
   upsertWhatsAppChannel,
   updateWhatsAppChannelAssetCredentials,
   reassignWhatsAppChannelToClinic,

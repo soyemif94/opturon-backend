@@ -43,7 +43,8 @@ function setupCommonMocks(repositoryOverrides = {}, contextOverrides = {}) {
     })
   });
   mockModule('src/whatsapp/whatsapp-graph.client.js', {
-    request: async () => ({ ok: true, status: 200, data: { data: [] } })
+    request: async () => ({ ok: true, status: 200, data: { data: [] } }),
+    registerWhatsAppPhoneNumber: async () => ({ ok: true })
   });
   mockModule('src/services/portal-whatsapp-assets.service.js', {
     extractGraphErrorMeta: () => ({}),
@@ -65,6 +66,9 @@ function setupCommonMocks(repositoryOverrides = {}, contextOverrides = {}) {
     markOnboardingSessionPending: async () => null,
     markOnboardingSessionCompleted: async () => null,
     findWhatsAppChannelByPhoneNumberId: async () => null,
+    findWhatsAppChannelByClinicAndPhoneNumberId: async () => null,
+    getOrCreateRegistrationPin: async () => ({ pin: '042731', registeredAt: null }),
+    markWhatsAppPhoneRegistered: async () => ({ registeredAt: new Date().toISOString() }),
     upsertWhatsAppChannel: async () => null,
     deactivateOtherClinicWhatsAppChannels: async () => {},
     withOnboardingTransaction: async (fn) => fn({}),
@@ -212,13 +216,13 @@ async function testCancelDoesNotModifyCompletedSession() {
   assert.strictEqual(result.reason, 'embedded_signup_session_already_completed');
 }
 
-async function testCancelDoesNotPreemptProcessingSession() {
+async function testCancelDoesNotPreemptProcessingSession(status = 'discovering_assets') {
   let cancelledCalled = false;
 
   setupCommonMocks({
     findLatestOnboardingSessionByClinicId: async () => ({
       id: 'session-4',
-      status: 'discovering_assets',
+      status,
       externalTenantId: 'tenant-a',
       clinicId: 'clinic-1',
       createdAt: new Date().toISOString(),
@@ -241,10 +245,18 @@ async function testCancelDoesNotPreemptProcessingSession() {
   assert.strictEqual(cancelledCalled, false);
 }
 
-async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCompletion = false }) {
+async function testFinalizeSuccessPersistsConnection({
+  withFinishPayload,
+  failCompletion = false,
+  failRegistration = false,
+  alreadyRegistered = false,
+  foreignChannel = false
+}) {
   const redirectUri = 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback';
   const steps = [];
+  const logs = [];
   const context = { channel: null };
+  let registeredAt = alreadyRegistered ? new Date().toISOString() : null;
   let session = {
     id: 'session-success',
     status: 'awaiting_callback',
@@ -309,6 +321,21 @@ async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCo
       session = { ...session, status: data.status };
       return session;
     },
+    findWhatsAppChannelByPhoneNumberId: async () => foreignChannel ? { id: 'foreign-channel', clinicId: 'clinic-foreign' } : null,
+    getOrCreateRegistrationPin: async ({ clinicId, phoneNumberId }) => {
+      assert.strictEqual(clinicId, 'clinic-1');
+      assert.strictEqual(phoneNumberId, 'phone-success');
+      steps.push('pin_loaded');
+      return { pin: '042731', registeredAt };
+    },
+    markWhatsAppPhoneRegistered: async (clinicId, phoneNumberId) => {
+      assert.strictEqual(clinicId, 'clinic-1');
+      assert.strictEqual(phoneNumberId, 'phone-success');
+      assert.ok(steps.includes('phone_registered'), 'persist success only after Meta confirms registration');
+      registeredAt = new Date().toISOString();
+      steps.push('registration_saved');
+      return { registeredAt };
+    },
     upsertWhatsAppChannel: async (data, client) => {
       assert.strictEqual(typeof client.query, 'function');
       assert.strictEqual(data.status, 'active');
@@ -341,7 +368,25 @@ async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCo
       }
     }
   }, context);
+  mockModule('src/utils/logger.js', {
+    logInfo: (event, data) => logs.push({ event, ...data }),
+    logWarn: (event, data) => logs.push({ event, ...data }),
+    logError: (event, data) => logs.push({ event, ...data })
+  });
   mockModule('src/whatsapp/whatsapp-graph.client.js', {
+    registerWhatsAppPhoneNumber: async (options) => {
+      assert.strictEqual(options.phoneNumberId, 'phone-success');
+      assert.strictEqual(options.accessToken, 'test-access-token');
+      assert.strictEqual(options.pin, '042731');
+      assert.ok(steps.includes('webhook_subscribed'), 'subscribe the WABA before registering the phone');
+      assert.ok(!steps.includes('channel_active'), 'registration must finish before channel activation');
+      if (failRegistration) {
+        steps.push('registration_failed');
+        return { ok: false, reason: 'meta_phone_registration_failed', graphStatus: 400, graphCode: 100 };
+      }
+      steps.push('phone_registered');
+      return { ok: true };
+    },
     request: async (method, endpoint, options) => {
       assert.strictEqual(options.accessToken, 'test-access-token', 'exchange token must reach asset discovery and subscription');
       if (method === 'GET' && endpoint === '/waba-success/phone_numbers') {
@@ -385,12 +430,30 @@ async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCo
       redirectUri,
       metaPayload: withFinishPayload ? { type: 'WA_EMBEDDED_SIGNUP', event: 'FINISH', data: { waba_id: 'waba-success', phone_number_id: 'phone-success' } } : null
     });
+    if (foreignChannel || failRegistration) {
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.reason, foreignChannel ? 'channel_belongs_to_another_workspace' : 'meta_phone_registration_failed');
+      assert.strictEqual(context.channel, null, 'failed registration must not create an active channel');
+      assert.strictEqual(session.status, 'failed');
+      assert.ok(!steps.includes('channel_active'));
+      assert.ok(!steps.includes('session_completed'));
+      assert.ok(!steps.includes('registration_saved'));
+      if (foreignChannel) {
+        assert.ok(!steps.includes('pin_loaded'), 'foreign channels must not get a registration PIN');
+        assert.ok(!steps.includes('webhook_subscribed'), 'foreign channels must not cause Meta mutations');
+      }
+      const safeOutput = JSON.stringify({ logs, result, session });
+      assert.ok(!safeOutput.includes('042731'), 'registration PIN must stay out of logs and session payloads');
+      assert.ok(!safeOutput.includes('test-access-token'), 'registration token must stay out of logs and failure payloads');
+      return;
+    }
     if (failCompletion) {
       assert.strictEqual(result.ok, false);
       assert.strictEqual(result.reason, 'completion_write_failed');
       assert.strictEqual(context.channel, null, 'completion failure must roll back the channel');
       assert.strictEqual(session.status, 'failed');
       assert.ok(!steps.includes('commit'));
+      assert.ok(registeredAt, 'successful Meta registration remains recorded after completion rollback');
       const failedStatus = await getPortalWhatsAppSignupStatus('tenant-a');
       assert.strictEqual(failedStatus.onboardingState, 'error');
       assert.strictEqual(failedStatus.session.channelId, null);
@@ -401,7 +464,13 @@ async function testFinalizeSuccessPersistsConnection({ withFinishPayload, failCo
     assert.strictEqual(result.channel.status, 'active');
     assert.strictEqual(result.session.status, 'completed');
     assert.ok(result.session.completedAt);
-    assert.deepStrictEqual(steps, ['exchanging_code', 'code_exchanged', 'discovering_assets', 'phone_discovered', 'subscribing_app', 'webhook_subscribed', 'persisting_channel', 'channel_active', 'session_completed', 'commit']);
+    assert.deepStrictEqual(steps, [
+      'exchanging_code', 'code_exchanged', 'discovering_assets', 'phone_discovered',
+      'subscribing_app', 'webhook_subscribed', 'registering_phone', 'pin_loaded',
+      ...(alreadyRegistered ? [] : ['phone_registered', 'registration_saved']),
+      'persisting_channel', 'channel_active', 'session_completed', 'commit'
+    ]);
+    assert.ok(!JSON.stringify({ result, logs }).includes('042731'), 'successful signup must not expose the PIN');
     const signupStatus = await getPortalWhatsAppSignupStatus('tenant-a');
     assert.strictEqual(signupStatus.onboardingState, 'connected');
     assert.strictEqual(signupStatus.session.channelId, 'channel-success');
@@ -520,9 +589,13 @@ async function run() {
   await testRefreshExpiresOldSession();
   await testCancelDoesNotModifyCompletedSession();
   await testCancelDoesNotPreemptProcessingSession();
+  await testCancelDoesNotPreemptProcessingSession('registering_phone');
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: false });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, failCompletion: true });
+  await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, failRegistration: true });
+  await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, alreadyRegistered: true });
+  await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, foreignChannel: true });
   await testOAuthExchangeErrorIsSanitized();
   await testOAuthExchangeErrorIsSanitized({ invalidBody: true });
   await testOAuthExchangeErrorIsSanitized({ networkError: true });

@@ -472,6 +472,7 @@ async function request(method, path, options = {}) {
 
   const url = buildGraphUrl(path, query, apiVersion);
   const graphPath = new URL(url).pathname + new URL(url).search;
+  const isPhoneRegistration = /\/register$/.test(new URL(url).pathname);
   const isMessagesEndpoint = /\/messages(\?|$)/.test(graphPath);
   const pathPhoneNumberId = isMessagesEndpoint ? graphPath.split('/').filter(Boolean).slice(-2, -1)[0] || null : null;
   const phoneNumberId = pathPhoneNumberId || (credentials && credentials.phoneNumberId ? String(credentials.phoneNumberId).trim() : null);
@@ -513,6 +514,12 @@ async function request(method, path, options = {}) {
         data = rawBody ? JSON.parse(rawBody) : null;
       } catch (parseError) {
         data = null;
+      }
+
+      // Registration responses can echo the two-step PIN or bearer token. Keep
+      // only the documented success flag before logging or returning any data.
+      if (isPhoneRegistration) {
+        data = { success: Boolean(data && (data.success === true || data.success === 'true')) };
       }
 
       const durationMs = Date.now() - startedAt;
@@ -566,7 +573,7 @@ async function request(method, path, options = {}) {
         graphErrorSubcode: errFields.error_subcode,
         graphErrorMessage: errFields.error_message,
         errorCategory: category,
-        rawGraphErrorBody: reduceRawBody(rawBody),
+        rawGraphErrorBody: isPhoneRegistration ? '[REDACTED_REGISTRATION_RESPONSE]' : reduceRawBody(rawBody),
         tokenLen: accessToken.length
       });
 
@@ -604,7 +611,7 @@ async function request(method, path, options = {}) {
         to,
         status: null,
         durationMs,
-        error: error.message,
+        error: isPhoneRegistration ? 'meta_phone_registration_failed' : error.message,
         tokenLen: accessToken.length
       });
 
@@ -626,7 +633,7 @@ async function request(method, path, options = {}) {
         error_subcode: null,
         error_code: null,
         errorCategory: 'transient',
-        exception: error
+        exception: isPhoneRegistration ? new Error('meta_phone_registration_failed') : error
       };
     }
   }
@@ -643,6 +650,28 @@ async function request(method, path, options = {}) {
     error_code: null,
     errorCategory: 'unknown'
   };
+}
+
+async function registerWhatsAppPhoneNumber({ phoneNumberId, accessToken, pin, requestId = null }) {
+  const safePhoneNumberId = String(phoneNumberId || '').trim();
+  const safeAccessToken = String(accessToken || '').trim();
+  if (!safePhoneNumberId || !safeAccessToken || typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
+    return { ok: false, reason: 'meta_phone_registration_failed' };
+  }
+  const result = await request('POST', `/${encodeURIComponent(safePhoneNumberId)}/register`, {
+    credentials: { accessToken: safeAccessToken, phoneNumberId: safePhoneNumberId },
+    requestId,
+    apiVersion: GRAPH_API_VERSION,
+    body: { messaging_product: 'whatsapp', pin },
+    // A timeout may already have applied the PIN. Caller retries deliberately
+    // using its durable PIN, rather than consuming Meta's registration quota.
+    maxRetries: 0
+  });
+  // Meta documents success:true. No stable "already registered" error contract
+  // is established here: never promote arbitrary Graph errors to success.
+  return result.ok && result.data && result.data.success === true
+    ? { ok: true }
+    : { ok: false, reason: 'meta_phone_registration_failed', graphStatus: result.status || null };
 }
 
 function resolveAccessToken(credentials = null) {
@@ -663,6 +692,7 @@ async function sendImageMessageViaGraph(options) {
 
 module.exports = {
   request,
+  registerWhatsAppPhoneNumber,
   buildGraphUrl,
   buildMessagesEndpointUrl,
   classifyGraphError,
