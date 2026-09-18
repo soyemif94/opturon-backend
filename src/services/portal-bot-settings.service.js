@@ -137,12 +137,22 @@ async function updatePortalBotSettings(tenantId, payload) {
     const botSettings = clinic && clinic.botSettings && typeof clinic.botSettings === 'object'
       ? clinic.botSettings
       : {};
-    const mergedBotConfig = normalizeBotConfig(payload.botConfig, normalizeBotConfig(botSettings.config, DEFAULT_BOT_CONFIG));
+    const mergedBotConfig = {
+      ...normalizeBotConfig(botSettings.config, DEFAULT_BOT_CONFIG),
+      ...payload.botConfig
+    };
     const validation = validateBotConfig(mergedBotConfig);
     if (!validation.ok) {
       return buildReason(
         'invalid_bot_config',
-        validation.errors.name || validation.errors.tone || validation.errors.treatment || 'La configuracion del bot no es valida.',
+        validation.errors.name ||
+          validation.errors.tone ||
+          validation.errors.treatment ||
+          validation.errors.businessProfilePreset ||
+          validation.errors.commercialObjective ||
+          validation.errors.salesMode ||
+          validation.errors.businessInstructions ||
+          'La configuracion del bot no es valida.',
         {
           tenantId: safeTenantId,
           fieldErrors: validation.errors

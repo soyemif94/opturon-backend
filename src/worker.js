@@ -84,6 +84,7 @@ const {
   normalizeTransferConfig
 } = require('./utils/transfer-config');
 const { DEFAULT_BOT_CONFIG, normalizeBotConfig } = require('./utils/bot-config');
+const { PROFILE_LABELS, OBJECTIVE_LABELS, hasTenantCommercialProfile } = require('./ai/tenant-commercial-profile');
 const { maybeRunArchivedContactCleanup } = require('./services/contact-archive-cleanup.service');
 const {
   CAPABILITY_STATUSES,
@@ -1099,6 +1100,28 @@ function buildConfiguredGreetingCopy(botConfig) {
     presentation || '¡Hola! 😊',
     'Contame un poco de tu negocio o qué estás buscando resolver y te doy una mano.'
   ].join('\n');
+}
+
+function buildConfiguredCommercialGreetingCopy(botConfig) {
+  const config = normalizeBotConfig(botConfig, DEFAULT_BOT_CONFIG);
+  if (!hasTenantCommercialProfile(config)) return null;
+
+  const formal = usesFormalBotTreatment(config);
+  const profile = PROFILE_LABELS[config.businessProfilePreset] || 'este negocio';
+  const objective = OBJECTIVE_LABELS[config.commercialObjective] || 'ayudar con la consulta';
+  const opening = config.name
+    ? (formal ? `Hola, soy ${config.name}.` : `¡Hola! Soy ${config.name} 😊`)
+    : (formal ? 'Hola.' : '¡Hola! 😊');
+  const action = formal
+    ? `Represento a ${profile.toLowerCase()}. Cuenteme que necesita y lo ayudo a ${objective.toLowerCase()} usando la informacion real disponible.`
+    : `Represento a ${profile.toLowerCase()}. Contame qué necesitás y te ayudo a ${objective.toLowerCase()} usando la información real disponible.`;
+  const proactive = config.salesMode === 'proactive'
+    ? (formal
+      ? 'También puedo sugerirle alternativas o complementos que estén disponibles en el catálogo.'
+      : 'También puedo sugerirte alternativas o complementos que estén disponibles en el catálogo.')
+    : null;
+
+  return [opening, action, proactive].filter(Boolean).join('\n');
 }
 
 function buildConfiguredHandoffMessage(botConfig) {
@@ -8576,6 +8599,10 @@ function buildCommercialGreetingReply(safeContext, rawText = '', clinic = null) 
   if (configuredGreeting) {
     return configuredGreeting;
   }
+  const configuredCommercialGreeting = buildConfiguredCommercialGreetingCopy(botConfig);
+  if (configuredCommercialGreeting) {
+    return configuredCommercialGreeting;
+  }
   const greeting = pickTextVariant(`commercial_greeting:${context.activeBotDomain || 'neutral'}:${normalizeCommandText(rawText)}`, [
     '¡Hola! 😊',
     '¡Buenas! 👋',
@@ -13894,7 +13921,7 @@ function isConfiguredBotRecommendationIntent(input) {
 }
 
 function buildBotWelcomeReply(config, botConfig = DEFAULT_BOT_CONFIG) {
-  const configuredGreeting = buildConfiguredGreetingCopy(botConfig);
+  const configuredGreeting = buildConfiguredGreetingCopy(botConfig) || buildConfiguredCommercialGreetingCopy(botConfig);
   const greeting = configuredGreeting || config.welcomeMessage;
   return `${greeting}\n\n${config.offerDescription}\n\n${config.closingCta}`;
 }
@@ -18903,6 +18930,7 @@ async function processConversationReplyJobUnlocked(job) {
         recentMessages: Array.isArray(recentMessages)
           ? recentMessages.map((item) => item && (item.text || item.body || item.message || '')).filter(Boolean)
           : [],
+        botConfig: getClinicBotConfig(clinic),
         reason: aiAssistInvocation.reason
       });
 
@@ -20609,6 +20637,7 @@ module.exports = {
     hasEnoughCommercialSignalsForSoftRecommendation,
     buildIntelligentFallbackReply,
     buildCommercialGreetingReply,
+    buildConfiguredCommercialGreetingCopy,
     buildBotWelcomeReply,
     resolveConfiguredSalesBotReply,
     buildCommercialIndecisionReply,

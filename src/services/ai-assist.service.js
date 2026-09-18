@@ -9,6 +9,7 @@ const {
   countClinicEventsByTypeCurrentMonth
 } = require('../repositories/conversation-events.repository');
 const { logInfo, logWarn } = require('../utils/logger');
+const { buildCommercialPromptContext } = require('../ai/tenant-commercial-profile');
 
 const AI_ASSIST_EVENT_TYPE = 'AI_ASSIST_INVOKED';
 const AI_ASSIST_FAILURE_EVENT_TYPE = 'AI_ASSIST_FAILED';
@@ -173,7 +174,7 @@ function logAiAssistRuntimeConfigOnce() {
   logInfo('ai_assist_runtime_config', diagnostics);
 }
 
-function buildAiAssistSystemPrompt() {
+function buildAiAssistSystemPrompt(botConfig = null) {
   const kb = getCommercialKnowledgePromptContext();
   return [
     'Sos un asistente de clasificación para una plataforma conversacional multi-tenant.',
@@ -181,6 +182,7 @@ function buildAiAssistSystemPrompt() {
     'Tu tarea es clasificar intencion comercial, extraer entidades y recomendar una ruta segura.',
     'Devolve solo JSON valido, sin markdown.',
     'No inventes precios, stock, puntos, turnos, saldos, datos bancarios, disponibilidad ni promesas comerciales.',
+    buildCommercialPromptContext(botConfig),
     'Si el mensaje trata sobre pagos, comprobantes, agenda, turnos, catalogo operativo, pedidos, fidelizacion o handoff humano, devolve intent=unknown y routingDecision=fallback_current.',
     'Si no hay suficiente confianza, devolve confidence baja e intent=unknown.',
     'Dominio permitido principal: commerce.',
@@ -345,7 +347,7 @@ async function callOpenAiAssist(input) {
     max_tokens: 320,
     response_format: { type: 'json_object' },
     messages: [
-      { role: 'system', content: buildAiAssistSystemPrompt() },
+      { role: 'system', content: buildAiAssistSystemPrompt(input.botConfig) },
       { role: 'user', content: buildAiAssistUserPrompt(input) }
     ]
   };
@@ -477,7 +479,8 @@ async function classifyCommerceAiAssist(input, options = {}) {
       {
         message: input.message,
         context: input.context || {},
-        recentMessages: input.recentMessages || []
+        recentMessages: input.recentMessages || [],
+        botConfig: input.botConfig || null
       },
       provider
     );
