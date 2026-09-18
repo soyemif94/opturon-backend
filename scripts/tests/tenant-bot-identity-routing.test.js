@@ -5,7 +5,8 @@ const productsByTenant = {
   'tenant-distributor': [
     { id: 'candy-1', name: 'Caramelos surtidos', categoryId: 'cat-candy', categoryName: 'Golosinas', price: 1500, currency: 'ARS', stock: 12, status: 'active', sku: 'CAR-1' },
     { id: 'candy-2', name: 'Alfajores caja x12', categoryId: 'cat-candy', categoryName: 'Golosinas', price: 6200, currency: 'ARS', stock: 4, status: 'active', sku: 'ALF-12' },
-    { id: 'drink-1', name: 'Gaseosa cola 500ml', categoryId: 'cat-drinks', categoryName: 'Bebidas', price: 1800, currency: 'ARS', stock: 8, status: 'active', sku: 'COLA-500' }
+    { id: 'drink-1', name: 'Gaseosa cola 500ml', categoryId: 'cat-drinks', categoryName: 'Bebidas', price: 1800, currency: 'ARS', stock: 8, status: 'active', sku: 'COLA-500' },
+    { id: 'candy-out', name: 'LA YAPA X UNIDAD', categoryId: 'cat-candy', categoryName: 'Golosinas', price: 450, currency: 'ARS', stock: 0, status: 'active', sku: 'YAPA-1' }
   ],
   'tenant-clinic': [
     { id: 'service-1', name: 'Consulta general', categoryId: 'cat-services', categoryName: 'Consultas', price: 9000, currency: 'ARS', stock: 1, status: 'active', sku: 'CONSULTA' }
@@ -185,6 +186,16 @@ async function main() {
   assert.match(priceAndStockReply.replyText, /12\s+unidades|stock/i);
   assert.doesNotMatch(priceAndStockReply.replyText, forbiddenPlatformSales);
   assert.strictEqual(priceAndStockReply.contextPatch.activeBotDomain, 'commerce');
+
+  const outOfStockGroundingReply = await tenantReply(
+    distributor,
+    conversation('conv-distributor-out-of-stock', distributor.id),
+    '¿Cuánto sale LA YAPA X UNIDAD y tenés stock?'
+  );
+  assert.match(outOfStockGroundingReply.replyText, /LA YAPA X UNIDAD/i);
+  assert.match(outOfStockGroundingReply.replyText, /\$\s*450/);
+  assert.match(outOfStockGroundingReply.replyText, /no tiene stock disponible/i);
+  assert.doesNotMatch(outOfStockGroundingReply.replyText, forbiddenPlatformSales);
 
   const proactiveReply = await tenantReply(
     distributor,

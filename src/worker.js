@@ -11650,16 +11650,19 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, inboundTex
   }
 
   const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+  const activeProducts = (Array.isArray(clinicProducts) ? clinicProducts : []).filter((product) => (
+    String(product && product.status ? product.status : '').toLowerCase() === 'active'
+  ));
   const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
   const cartItems = normalizeCommerceCartItems(safeContext);
 
   if (commercialIntent.type === 'prices' || commercialIntent.type === 'stock' || detectIntent(inboundText) === 'pricing') {
     const referencedProduct =
-      findProductsByQuery(eligibleProducts, inboundText)[0] ||
-      findProductByName(eligibleProducts, inboundText) ||
-      findCatalogItemByStoredId(eligibleProducts, safeContext.commerceSuggestedProductId) ||
+      findProductsByQuery(activeProducts, inboundText)[0] ||
+      findProductByName(activeProducts, inboundText) ||
+      findCatalogItemByStoredId(activeProducts, safeContext.commerceSuggestedProductId) ||
       findCatalogItemByStoredId(
-        eligibleProducts,
+        activeProducts,
         safeContext.commerceLastAddedItem && safeContext.commerceLastAddedItem.productId
       ) ||
       null;
@@ -11669,7 +11672,7 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, inboundTex
     if (wantsPrice) {
       replyParts.push(referencedProduct
         ? buildProductPricingReply([referencedProduct], referencedProduct.name)
-        : buildProductPricingReply(eligibleProducts, inboundText));
+        : buildProductPricingReply(activeProducts, inboundText));
     }
     if (wantsStock) replyParts.push(buildStockAvailabilityReply(referencedProduct));
     return {
