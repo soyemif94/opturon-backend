@@ -11658,8 +11658,8 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, inboundTex
 
   if (commercialIntent.type === 'prices' || commercialIntent.type === 'stock' || detectIntent(inboundText) === 'pricing') {
     const referencedProduct =
-      findProductsByQuery(activeProducts, inboundText)[0] ||
       findProductByName(activeProducts, inboundText) ||
+      findProductsByQuery(activeProducts, inboundText)[0] ||
       findCatalogItemByStoredId(activeProducts, safeContext.commerceSuggestedProductId) ||
       findCatalogItemByStoredId(
         activeProducts,

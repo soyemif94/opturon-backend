@@ -6,6 +6,7 @@ const productsByTenant = {
     { id: 'candy-1', name: 'Caramelos surtidos', categoryId: 'cat-candy', categoryName: 'Golosinas', price: 1500, currency: 'ARS', stock: 12, status: 'active', sku: 'CAR-1' },
     { id: 'candy-2', name: 'Alfajores caja x12', categoryId: 'cat-candy', categoryName: 'Golosinas', price: 6200, currency: 'ARS', stock: 4, status: 'active', sku: 'ALF-12' },
     { id: 'drink-1', name: 'Gaseosa cola 500ml', categoryId: 'cat-drinks', categoryName: 'Bebidas', price: 1800, currency: 'ARS', stock: 8, status: 'active', sku: 'COLA-500' },
+    { id: 'candy-similar', name: 'BELDENT X UNIDAD', categoryId: 'cat-candy', categoryName: 'Golosinas', price: 830, currency: 'ARS', stock: 0, status: 'active', sku: 'BELDENT-1' },
     { id: 'candy-out', name: 'LA YAPA X UNIDAD', categoryId: 'cat-candy', categoryName: 'Golosinas', price: 450, currency: 'ARS', stock: 0, status: 'active', sku: 'YAPA-1' }
   ],
   'tenant-clinic': [
