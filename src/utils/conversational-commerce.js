@@ -137,6 +137,39 @@ function parseProductDiscoveryRequest(rawText) {
   return null;
 }
 
+function parseTenantBusinessOfferRequest(rawText) {
+  const text = normalizeConversationalText(rawText);
+  if (!text) return null;
+
+  if (
+    /\b(?:que|cuales)\s+(?:productos|servicios|articulos|mercaderia|categorias)\s+(?:manejan|tienen|venden|ofrecen)\b/.test(text) ||
+    /\b(?:queria|quisiera)\s+saber\s+(?:que|cuales)\s+(?:productos|servicios|articulos|mercaderia|categorias)\s+(?:manejan|tienen|venden|ofrecen)\b/.test(text) ||
+    /^(?:que|cuales)\s+(?:manejan|tienen|venden|ofrecen)$/.test(text)
+  ) {
+    return { intent: 'tenant_offer_discovery', query: null };
+  }
+
+  const offerMatch = text.match(/\b(?:que|cuales)\s+(.+?)\s+(?:me\s+)?(?:podes|pueden|podrian)\s+ofrecer\b/);
+  if (offerMatch) {
+    const query = String(offerMatch[1] || '')
+      .replace(/\b(?:productos|servicios|articulos|mercaderia|opciones)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { intent: 'tenant_offer_discovery', query: query || null };
+  }
+
+  const searchMatch = text.match(/\bbusco\s+(?:algo|opciones?|productos?|servicios?)?\s*(?:para|de)\s+(.+)$/);
+  if (searchMatch) {
+    const query = String(searchMatch[1] || '')
+      .replace(/\balquilar\b/g, 'alquiler')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return query ? { intent: 'tenant_offer_discovery', query } : null;
+  }
+
+  return null;
+}
+
 module.exports = {
   extractCommercialProductQuery,
   findProductsByQuery,
@@ -144,5 +177,6 @@ module.exports = {
   parseCommerceNaturalOrder,
   parseCommerceQuantity,
   parseContextualCartAction,
-  parseProductDiscoveryRequest
+  parseProductDiscoveryRequest,
+  parseTenantBusinessOfferRequest
 };

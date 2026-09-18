@@ -10,6 +10,7 @@ const {
 } = require('../repositories/conversation-events.repository');
 const { logInfo, logWarn } = require('../utils/logger');
 const { buildCommercialPromptContext } = require('../ai/tenant-commercial-profile');
+const { ASSISTANT_MODES, normalizeAssistantMode } = require('../ai/assistant-mode');
 
 const AI_ASSIST_EVENT_TYPE = 'AI_ASSIST_INVOKED';
 const AI_ASSIST_FAILURE_EVENT_TYPE = 'AI_ASSIST_FAILED';
@@ -174,7 +175,22 @@ function logAiAssistRuntimeConfigOnce() {
   logInfo('ai_assist_runtime_config', diagnostics);
 }
 
-function buildAiAssistSystemPrompt(botConfig = null) {
+function buildAiAssistSystemPrompt(botConfig = null, options = {}) {
+  const assistantMode = normalizeAssistantMode(options.assistantMode);
+  if (assistantMode === ASSISTANT_MODES.TENANT_BUSINESS) {
+    return [
+      'Sos un clasificador de intenciones para el asistente de un negocio tenant.',
+      'No respondas al usuario final libremente.',
+      'Devolve solo JSON valido, sin markdown.',
+      buildCommercialPromptContext(botConfig, { assistantMode }),
+      'La persona conversa con el negocio tenant. No la trates como prospecto de Opturon.',
+      'Consultas sobre productos, servicios, catalogo, precios, stock, pedidos o recomendaciones deben usar routingDecision=fallback_current para que el runtime tenant consulte datos reales.',
+      'No clasifiques consultas del negocio como discovery de software, CRM, volumen de WhatsApp o cantidad de vendedores.',
+      'Si no hay suficiente confianza, devolve confidence baja e intent=unknown.',
+      'Entities debe incluir solo inferencias conservadoras y nunca datos comerciales inventados.'
+    ].join('\n');
+  }
+
   const kb = getCommercialKnowledgePromptContext();
   return [
     'Sos un asistente de clasificación para una plataforma conversacional multi-tenant.',
@@ -182,7 +198,7 @@ function buildAiAssistSystemPrompt(botConfig = null) {
     'Tu tarea es clasificar intencion comercial, extraer entidades y recomendar una ruta segura.',
     'Devolve solo JSON valido, sin markdown.',
     'No inventes precios, stock, puntos, turnos, saldos, datos bancarios, disponibilidad ni promesas comerciales.',
-    buildCommercialPromptContext(botConfig),
+    buildCommercialPromptContext(botConfig, { assistantMode }),
     'Si el mensaje trata sobre pagos, comprobantes, agenda, turnos, catalogo operativo, pedidos, fidelizacion o handoff humano, devolve intent=unknown y routingDecision=fallback_current.',
     'Si no hay suficiente confianza, devolve confidence baja e intent=unknown.',
     'Dominio permitido principal: commerce.',
@@ -227,6 +243,7 @@ function buildAiAssistSystemPrompt(botConfig = null) {
 
 function buildAiAssistUserPrompt(input) {
   const context = input && input.context && typeof input.context === 'object' ? input.context : {};
+  const assistantMode = normalizeAssistantMode(input && input.assistantMode);
   const recentMessages = Array.isArray(input.recentMessages)
     ? input.recentMessages
         .map((item) => String(item || '').trim())
@@ -234,12 +251,17 @@ function buildAiAssistUserPrompt(input) {
         .slice(-6)
     : [];
 
-  const kbMatch = findCommercialKnowledgeMatch(input && input.message);
+  const kbMatch = assistantMode === ASSISTANT_MODES.OPTURON_SALES
+    ? findCommercialKnowledgeMatch(input && input.message)
+    : null;
 
   return JSON.stringify({
     task: 'classify_commerce_intent_for_routing',
     allowedReplyIntents: Array.from(SUPPORTED_REPLY_INTENTS),
-    commercialKnowledgeBaseVersion: getCommercialKnowledgePromptContext().version,
+    assistantMode,
+    commercialKnowledgeBaseVersion: assistantMode === ASSISTANT_MODES.OPTURON_SALES
+      ? getCommercialKnowledgePromptContext().version
+      : null,
     commercialKnowledgeMatch: kbMatch,
     message: String(input.message || '').trim(),
     recentMessages,
@@ -347,7 +369,7 @@ async function callOpenAiAssist(input) {
     max_tokens: 320,
     response_format: { type: 'json_object' },
     messages: [
-      { role: 'system', content: buildAiAssistSystemPrompt(input.botConfig) },
+      { role: 'system', content: buildAiAssistSystemPrompt(input.botConfig, { assistantMode: input.assistantMode }) },
       { role: 'user', content: buildAiAssistUserPrompt(input) }
     ]
   };
@@ -480,7 +502,8 @@ async function classifyCommerceAiAssist(input, options = {}) {
         message: input.message,
         context: input.context || {},
         recentMessages: input.recentMessages || [],
-        botConfig: input.botConfig || null
+        botConfig: input.botConfig || null,
+        assistantMode: input.assistantMode
       },
       provider
     );

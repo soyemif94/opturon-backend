@@ -29,7 +29,8 @@ const {
   parseCommerceNaturalOrder,
   parseCommerceQuantity,
   parseContextualCartAction,
-  parseProductDiscoveryRequest
+  parseProductDiscoveryRequest,
+  parseTenantBusinessOfferRequest
 } = require('./utils/conversational-commerce');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
@@ -85,6 +86,13 @@ const {
 } = require('./utils/transfer-config');
 const { DEFAULT_BOT_CONFIG, normalizeBotConfig } = require('./utils/bot-config');
 const { PROFILE_LABELS, OBJECTIVE_LABELS, hasTenantCommercialProfile } = require('./ai/tenant-commercial-profile');
+const {
+  ASSISTANT_MODES,
+  normalizeAssistantMode,
+  resolveAssistantModeFromSettings,
+  buildAssistantModeCompatibilityPatch,
+  sanitizeConversationContextForAssistantMode
+} = require('./ai/assistant-mode');
 const { maybeRunArchivedContactCleanup } = require('./services/contact-archive-cleanup.service');
 const {
   CAPABILITY_STATUSES,
@@ -8162,8 +8170,12 @@ function shouldInvokeAiAssist({
   commercialIntent,
   transferPaymentIntent,
   inboundText,
-  safeContext
+  safeContext,
+  assistantMode = ASSISTANT_MODES.OPTURON_SALES
 }) {
+  if (normalizeAssistantMode(assistantMode, ASSISTANT_MODES.OPTURON_SALES) === ASSISTANT_MODES.TENANT_BUSINESS) {
+    return { ok: false, reason: 'tenant_business_platform_sales_ai_disabled' };
+  }
   const text = normalizeCommandText(inboundText);
   if (!text) return { ok: false, reason: 'empty_message' };
   if (isGreetingIntent(text) || isThanksIntent(text) || isAffirmativeIntent(text) || isNegativeIntent(text)) {
@@ -8212,8 +8224,12 @@ async function resolveAiAssistDecision({
   conversation,
   inboundText,
   aiDecision,
-  safeContext
+  safeContext,
+  assistantMode = ASSISTANT_MODES.OPTURON_SALES
 }) {
+  if (normalizeAssistantMode(assistantMode, ASSISTANT_MODES.OPTURON_SALES) === ASSISTANT_MODES.TENANT_BUSINESS) {
+    return null;
+  }
   const decision = aiDecision && typeof aiDecision === 'object' ? aiDecision : null;
   if (!decision || decision.routingDecision === 'fallback_current') {
     return null;
@@ -11519,13 +11535,285 @@ function getClinicTransferConfig(clinic) {
   return normalizeTransferConfig(config, true);
 }
 
+function isTenantBusinessProactiveRecommendationIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return false;
+  return (
+    /\bque mas (?:me )?recomendas\b/.test(text) ||
+    /\bque otra cosa (?:me )?recomendas\b/.test(text) ||
+    /\bque podria agregar\b/.test(text) ||
+    /\brecomendame (?:algo|otro|otra)\b/.test(text)
+  );
+}
+
+function buildTenantCatalogContextPatch({ products, categories = null, cartItems = null, suggestedProduct = null }) {
+  const page = buildCommerceCatalogPage(products);
+  return buildCommerceResetPatch({
+    activeBotDomain: 'commerce',
+    commerceCatalog: page.items,
+    commerceCategories: Array.isArray(categories) && categories.length ? categories : null,
+    commerceCategorySelection: Array.isArray(categories) && categories.length > 0,
+    commerceCatalogOffset: page.offset,
+    commerceCatalogNextOffset: page.nextOffset,
+    commerceCatalogTotal: page.total,
+    commerceCartItems: Array.isArray(cartItems) && cartItems.length ? cartItems : null,
+    commerceSuggestedProductId: suggestedProduct && (suggestedProduct.id || suggestedProduct.productId)
+      ? String(suggestedProduct.id || suggestedProduct.productId)
+      : null,
+    commerceSuggestedProductName: suggestedProduct && suggestedProduct.name
+      ? String(suggestedProduct.name)
+      : null,
+    ...(suggestedProduct
+      ? buildCommercialShortMemoryPatch({
+        topic: 'catalog',
+        categoryId: suggestedProduct.categoryId || null,
+        lastSuggestedProductId: suggestedProduct.id || suggestedProduct.productId,
+        recommendationType: 'general'
+      })
+      : null)
+  });
+}
+
+async function buildTenantBusinessIntentReply({ clinic, conversation, inboundText }) {
+  const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
+    ? conversation.context
+    : {};
+  const offerRequest = parseTenantBusinessOfferRequest(inboundText);
+  const proactiveRecommendation = isTenantBusinessProactiveRecommendationIntent(inboundText);
+  const commercialIntent = detectCommercialIntent(inboundText);
+  const transactionalIntent = [
+    'products',
+    'prices',
+    'payment',
+    'location',
+    'hours',
+    'delivery',
+    'stock',
+    'promotions',
+    'human_handoff',
+    'recommendation'
+  ].includes(commercialIntent.type);
+  if (!offerRequest && !proactiveRecommendation && !transactionalIntent && detectIntent(inboundText) !== 'pricing') {
+    return null;
+  }
+
+  const businessProfile = getClinicBusinessProfile(clinic);
+  const botConfig = getClinicBotConfig(clinic);
+  const address = normalizeBusinessProfileText(businessProfile.address);
+  const openingHours = normalizeBusinessProfileText(businessProfile.openingHours);
+  const deliveryZones = normalizeBusinessProfileText(businessProfile.deliveryZones);
+  const paymentMethods = normalizeBusinessProfileText(businessProfile.paymentMethods);
+  const transferConfig = getClinicTransferConfig(clinic);
+
+  if (commercialIntent.type === 'location') {
+    return {
+      type: 'location',
+      replyText: address
+        ? `Estamos en ${address} 😊`
+        : 'Todavía no tengo una dirección cargada para este negocio. Si querés, te paso con alguien del equipo.'
+    };
+  }
+
+  if (commercialIntent.type === 'hours') {
+    return {
+      type: 'hours',
+      replyText: openingHours
+        ? `Nuestros horarios son:\n${openingHours} 😊`
+        : 'Todavía no tengo horarios cargados. Si querés, te paso con alguien del equipo para confirmarlo.'
+    };
+  }
+
+  if (commercialIntent.type === 'delivery') {
+    return {
+      type: 'delivery',
+      replyText: deliveryZones
+        ? `Sí 😊 Hacemos envíos.\n\n${deliveryZones}`
+        : 'No tengo confirmado si este negocio hace envíos. Si querés, te paso con alguien del equipo.'
+    };
+  }
+
+  if (commercialIntent.type === 'payment') {
+    return {
+      type: 'payment',
+      replyText: buildPaymentMethodsReply({ paymentMethods, transferConfig, activePlanName: null })
+    };
+  }
+
+  if (commercialIntent.type === 'human_handoff') {
+    return {
+      type: 'human_handoff',
+      replyText: hasCustomBotConfigValue(botConfig.handoffMessage)
+        ? String(botConfig.handoffMessage).trim()
+        : 'Claro 😊 Te paso con alguien del equipo para que te ayude mejor.',
+      triggerHandoff: true
+    };
+  }
+
+  const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+  const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
+  const cartItems = normalizeCommerceCartItems(safeContext);
+
+  if (commercialIntent.type === 'prices' || commercialIntent.type === 'stock' || detectIntent(inboundText) === 'pricing') {
+    const referencedProduct =
+      findProductsByQuery(eligibleProducts, inboundText)[0] ||
+      findProductByName(eligibleProducts, inboundText) ||
+      findCatalogItemByStoredId(eligibleProducts, safeContext.commerceSuggestedProductId) ||
+      findCatalogItemByStoredId(
+        eligibleProducts,
+        safeContext.commerceLastAddedItem && safeContext.commerceLastAddedItem.productId
+      ) ||
+      null;
+    const wantsPrice = detectIntent(inboundText) === 'pricing' || commercialIntent.type === 'prices';
+    const wantsStock = commercialIntent.type === 'stock';
+    const replyParts = [];
+    if (wantsPrice) {
+      replyParts.push(referencedProduct
+        ? buildProductPricingReply([referencedProduct], referencedProduct.name)
+        : buildProductPricingReply(eligibleProducts, inboundText));
+    }
+    if (wantsStock) replyParts.push(buildStockAvailabilityReply(referencedProduct));
+    return {
+      type: wantsPrice && wantsStock ? 'price_and_stock' : commercialIntent.type,
+      replyText: replyParts.filter(Boolean).join('\n\n'),
+      contextPatch: referencedProduct
+        ? buildTenantCatalogContextPatch({
+          products: eligibleProducts,
+          cartItems,
+          suggestedProduct: referencedProduct
+        })
+        : null
+    };
+  }
+
+  if (commercialIntent.type === 'promotions') {
+    const promotedProducts = eligibleProducts
+      .filter((product) => Number(product && product.discountPercentage ? product.discountPercentage : 0) > 0)
+      .sort((left, right) => Number(right.discountPercentage || 0) - Number(left.discountPercentage || 0))
+      .slice(0, 3);
+    return {
+      type: 'promotions',
+      replyText: promotedProducts.length
+        ? ['Tenemos estas promociones cargadas:', '', ...promotedProducts.map((product) => `- ${product.name}: ${formatWholeNumber(product.discountPercentage)}% off`)].join('\n')
+        : 'Por ahora no veo promociones cargadas, pero puedo mostrarte productos reales del catálogo.'
+    };
+  }
+
+  if (proactiveRecommendation || commercialIntent.type === 'recommendation') {
+    const cartProductIds = new Set(cartItems.map((item) => String(item.productId || '').trim()).filter(Boolean));
+    const candidates = eligibleProducts
+      .filter((product) => !cartProductIds.has(String(product.id || product.productId || '').trim()))
+      .slice(0, 3);
+    if (!candidates.length) {
+      return {
+        type: 'tenant_catalog_recommendation',
+        replyText: 'No encuentro más productos activos para recomendarte en este momento. Si me decís qué categoría querés reponer, reviso el catálogo real con vos.'
+      };
+    }
+    const replyLines = candidates.map((product) => {
+      const resolvedPrice = resolveProductPrice(product);
+      return `- ${product.name}${resolvedPrice.valid ? ` — ${formatMoney(resolvedPrice.value, product.currency)}` : ' — precio no disponible'}`;
+    });
+    return {
+      type: 'tenant_catalog_recommendation',
+      replyText: [
+        'Para completar el pedido, podrías sumar alguna de estas opciones disponibles:',
+        '',
+        ...replyLines,
+        '',
+        'Decime cuál te interesa y revisamos cantidad y disponibilidad real.'
+      ].join('\n'),
+      newState: 'WAITING_PRODUCT_SELECTION',
+      contextPatch: buildTenantCatalogContextPatch({
+        products: candidates,
+        cartItems,
+        suggestedProduct: candidates.length === 1 ? candidates[0] : null
+      })
+    };
+  }
+
+  if (!eligibleProducts.length) {
+    return {
+      type: 'tenant_catalog_discovery',
+      replyText: 'En este momento no encuentro productos o servicios activos en el catálogo. Decime qué necesitás y lo revisamos sin inventar disponibilidad.',
+      newState: 'IDLE'
+    };
+  }
+
+  if (!offerRequest && commercialIntent.type === 'products') {
+    const categories = buildCommerceCategories(eligibleProducts);
+    return categories.length
+      ? {
+        type: 'tenant_catalog_discovery',
+        replyText: buildCommerceCategoriesReply(categories),
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: buildCommerceResetPatch({
+          activeBotDomain: 'commerce',
+          commerceCategories: categories,
+          commerceCategorySelection: true,
+          commerceCartItems: cartItems.length ? cartItems : null
+        })
+      }
+      : {
+        type: 'tenant_catalog_discovery',
+        replyText: buildCommerceCatalogReply(buildCommerceCatalogPage(eligibleProducts)),
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: buildTenantCatalogContextPatch({ products: eligibleProducts, cartItems })
+      };
+  }
+
+  if (offerRequest.query) {
+    const matches = findProductsByQuery(eligibleProducts, offerRequest.query);
+    const visibleProducts = matches.length ? matches : eligibleProducts;
+    const unambiguousProduct = matches.length === 1 ? matches[0] : null;
+    return {
+      type: 'tenant_catalog_discovery',
+      replyText: buildProductDiscoveryReply(matches, offerRequest.query),
+      newState: 'WAITING_PRODUCT_SELECTION',
+      contextPatch: buildTenantCatalogContextPatch({
+        products: visibleProducts,
+        cartItems,
+        suggestedProduct: unambiguousProduct
+      })
+    };
+  }
+
+  const categories = buildCommerceCategories(eligibleProducts);
+  if (categories.length) {
+    return {
+      type: 'tenant_catalog_discovery',
+      replyText: buildCommerceCategoriesReply(categories),
+      newState: 'WAITING_PRODUCT_SELECTION',
+      contextPatch: buildCommerceResetPatch({
+        activeBotDomain: 'commerce',
+        commerceCategories: categories,
+        commerceCategorySelection: true,
+        commerceCartItems: cartItems.length ? cartItems : null
+      })
+    };
+  }
+
+  const page = buildCommerceCatalogPage(eligibleProducts);
+  return {
+    type: 'tenant_catalog_discovery',
+    replyText: buildCommerceCatalogReply(page),
+    newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+    contextPatch: buildTenantCatalogContextPatch({ products: eligibleProducts, cartItems })
+  };
+}
+
 async function buildSafeCommercialIntentReply({
   clinic,
   conversation,
   contact = null,
   channel = null,
-  inboundText
+  inboundText,
+  assistantMode = ASSISTANT_MODES.OPTURON_SALES
 }) {
+  const normalizedAssistantMode = normalizeAssistantMode(assistantMode, ASSISTANT_MODES.OPTURON_SALES);
+  if (normalizedAssistantMode === ASSISTANT_MODES.TENANT_BUSINESS) {
+    return buildTenantBusinessIntentReply({ clinic, conversation, inboundText });
+  }
+
   const detectedCommercialIntent = detectCommercialIntent(inboundText);
   const compoundCommercialIntent = detectCompoundCommercialIntent(inboundText);
   const commercialIntent = compoundCommercialIntent
@@ -18498,7 +18786,11 @@ async function processConversationReplyJobUnlocked(job) {
 
   const inboundText = String(inboundMessage.text || '').trim();
   const currentState = String(conversation.state || '').toUpperCase();
-  const safeContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
+  const storedContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
+  const assistantMode = resolveAssistantModeFromSettings(parseClinicSettingsObject(clinic));
+  const assistantModeCompatibilityPatch = buildAssistantModeCompatibilityPatch(assistantMode, storedContext);
+  const safeContext = sanitizeConversationContextForAssistantMode(assistantMode, storedContext);
+  const runtimeConversation = { ...conversation, context: safeContext };
   const normalizedInboundText = normalizeCommandText(inboundText);
   const intent = detectIntent(inboundText);
   const commercialIntent = detectCommercialIntent(inboundText);
@@ -18529,6 +18821,7 @@ async function processConversationReplyJobUnlocked(job) {
       waMessageId,
       currentState,
       activeBotDomain,
+      assistantMode,
       inboundText: normalizedInboundText.slice(0, 240),
       intent,
       commercialIntentType: commercialIntent.type || null,
@@ -18820,10 +19113,11 @@ async function processConversationReplyJobUnlocked(job) {
   if (!shouldPrioritizeAgendaFlow && !shouldShortCircuitToDemoSourceOfTruth) {
     const safeCommercialReply = await buildSafeCommercialIntentReply({
       clinic,
-      conversation,
+      conversation: runtimeConversation,
       contact,
       channel,
-      inboundText
+      inboundText,
+      assistantMode
     });
 
     if (safeCommercialReply) {
@@ -18855,20 +19149,24 @@ async function processConversationReplyJobUnlocked(job) {
             ...replyAutomationMeta,
             source: 'safe_commercial_handoff'
           },
-          contextPatch: safeCommercialReply.contextPatch || null,
-          conversationState: conversation.state || 'READY'
+          contextPatch: mergeContextPatches(
+            safeCommercialReply.contextPatch || null,
+            assistantModeCompatibilityPatch
+          ),
+          conversationState: safeCommercialReply.newState || conversation.state || 'READY'
         });
         return;
       }
 
       await updateLeadStatus(routedLead.id, 'qualifying', `semantic:${safeCommercialReply.type}`);
-      if (safeCommercialReply.contextPatch) {
-        await conversationRepo.updateConversationState({
-          conversationId: conversation.id,
-          state: conversation.state || 'READY',
-          contextPatch: safeCommercialReply.contextPatch
-        });
-      }
+      await conversationRepo.updateConversationState({
+        conversationId: conversation.id,
+        state: safeCommercialReply.newState || conversation.state || 'READY',
+        contextPatch: mergeContextPatches(
+          safeCommercialReply.contextPatch || null,
+          assistantModeCompatibilityPatch
+        )
+      });
       logInfo('conversation_reply_job_trace', {
         stage: 'safe_commercial_reply_selected',
         requestId,
@@ -18910,7 +19208,8 @@ async function processConversationReplyJobUnlocked(job) {
       commercialIntent,
       transferPaymentIntent,
       inboundText,
-      safeContext
+      safeContext,
+      assistantMode
     });
     if (aiAssistInvocation.ok) {
       if (aiAssistInvocation.reason === 'commercial_weak_signal') {
@@ -18931,6 +19230,7 @@ async function processConversationReplyJobUnlocked(job) {
           ? recentMessages.map((item) => item && (item.text || item.body || item.message || '')).filter(Boolean)
           : [],
         botConfig: getClinicBotConfig(clinic),
+        assistantMode,
         reason: aiAssistInvocation.reason
       });
 
@@ -18940,14 +19240,18 @@ async function processConversationReplyJobUnlocked(job) {
           conversation,
           inboundText,
           aiDecision: aiAssistResult.decision,
-          safeContext
+          safeContext,
+          assistantMode
         });
 
         if (aiAssistReply) {
           await conversationRepo.updateConversationState({
             conversationId: conversation.id,
             state: conversation.state || 'READY',
-            contextPatch: aiAssistReply.contextPatch || null
+            contextPatch: mergeContextPatches(
+              aiAssistReply.contextPatch || null,
+              assistantModeCompatibilityPatch
+            )
           });
 
           await sendAndPersistReply({
@@ -18987,7 +19291,10 @@ async function processConversationReplyJobUnlocked(job) {
             await conversationRepo.updateConversationState({
               conversationId: conversation.id,
               state: conversation.state || 'READY',
-              contextPatch: weakSignalFallback.contextPatch || null
+              contextPatch: mergeContextPatches(
+                weakSignalFallback.contextPatch || null,
+                assistantModeCompatibilityPatch
+              )
             });
 
             await sendAndPersistReply({
@@ -19036,7 +19343,10 @@ async function processConversationReplyJobUnlocked(job) {
       await conversationRepo.updateConversationState({
         conversationId: conversation.id,
         state: conversation.state || 'READY',
-        contextPatch: intelligentFallback.contextPatch
+        contextPatch: mergeContextPatches(
+          intelligentFallback.contextPatch || null,
+          assistantModeCompatibilityPatch
+        )
       });
 
       await sendAndPersistReply({
@@ -19228,7 +19538,7 @@ async function processConversationReplyJobUnlocked(job) {
         inboundText: normalizedInboundText
       });
       decision = await resolveCommerceDecision({
-        conversation,
+        conversation: runtimeConversation,
         clinic,
         contact,
         inboundText,
@@ -19874,6 +20184,13 @@ async function processConversationReplyJobUnlocked(job) {
       inboundText
     });
     decisionSource = 'legacy_conversation_engine';
+  }
+
+  if (decision) {
+    decision.contextPatch = mergeContextPatches(
+      decision.contextPatch || null,
+      assistantModeCompatibilityPatch
+    );
   }
 
   if (
@@ -20657,6 +20974,11 @@ module.exports = {
     shouldUseWeakSignalCommercialFallback,
     buildWeakSignalCommercialFallback,
     resolveAiAssistDecision,
+    buildTenantBusinessIntentReply,
+    isTenantBusinessProactiveRecommendationIntent,
+    resolveAssistantModeFromSettings,
+    buildAssistantModeCompatibilityPatch,
+    sanitizeConversationContextForAssistantMode,
     buildLoyaltyWhatsAppReply,
     buildLoyaltyContextPatch,
     getPendingLoyaltyOfferedAction,

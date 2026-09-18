@@ -1,4 +1,5 @@
 const { DEFAULT_BOT_CONFIG, normalizeBotConfig } = require('../utils/bot-config');
+const { ASSISTANT_MODES, normalizeAssistantMode } = require('./assistant-mode');
 
 const PROFILE_LABELS = Object.freeze({
   wholesale_distributor: 'Distribuidora mayorista',
@@ -34,6 +35,18 @@ const CORE_COMMERCIAL_TRUTH_RULES = Object.freeze([
   'No digas que existe un producto si el catalogo del tenant no lo contiene.',
   'No prometas acciones que Opturon no puede ejecutar.',
   'Catalogo, precios, inventario y datos operativos reales del tenant son la fuente de verdad.'
+]);
+
+const TENANT_BUSINESS_IDENTITY_RULES = Object.freeze([
+  'Representas exclusivamente al negocio del tenant autenticado en esta conversacion.',
+  'No sos un vendedor de Opturon y no debes ofrecer Opturon, CRM, automatizaciones ni otros productos de la plataforma.',
+  'Solo podes mencionar esos servicios si forman parte explicita del catalogo o de la configuracion comercial del propio tenant.',
+  'Interpreta el negocio del usuario final como contexto de compra o atencion del tenant, nunca como una señal para vender la plataforma.'
+]);
+
+const OPTURON_SALES_IDENTITY_RULES = Object.freeze([
+  'Esta superficie fue configurada explicitamente para vender Opturon.',
+  'Podes orientar el discovery a la operacion, los canales y las necesidades de software del prospecto.'
 ]);
 
 function hasTenantCommercialProfile(rawConfig) {
@@ -74,12 +87,24 @@ function buildTenantCommercialProfileBlock(rawConfig) {
   ].join('\n');
 }
 
-function buildCommercialPromptContext(rawConfig) {
-  const tenantBlock = buildTenantCommercialProfileBlock(rawConfig);
+function buildCommercialPromptContext(rawConfig, options = {}) {
+  const assistantMode = normalizeAssistantMode(options.assistantMode);
+  const tenantBlock = assistantMode === ASSISTANT_MODES.TENANT_BUSINESS
+    ? buildTenantCommercialProfileBlock(rawConfig)
+    : '';
+  const identityRules = assistantMode === ASSISTANT_MODES.OPTURON_SALES
+    ? OPTURON_SALES_IDENTITY_RULES
+    : TENANT_BUSINESS_IDENTITY_RULES;
+  const identityTag = assistantMode === ASSISTANT_MODES.OPTURON_SALES
+    ? 'OPTURON_SALES_IDENTITY'
+    : 'TENANT_BUSINESS_IDENTITY';
   return [
     '<CORE_COMMERCIAL_TRUTH_RULES>',
     ...CORE_COMMERCIAL_TRUTH_RULES,
     '</CORE_COMMERCIAL_TRUTH_RULES>',
+    `<${identityTag}>`,
+    ...identityRules,
+    `</${identityTag}>`,
     tenantBlock
   ].filter(Boolean).join('\n');
 }
@@ -89,6 +114,8 @@ module.exports = {
   OBJECTIVE_LABELS,
   SALES_MODE_LABELS,
   CORE_COMMERCIAL_TRUTH_RULES,
+  TENANT_BUSINESS_IDENTITY_RULES,
+  OPTURON_SALES_IDENTITY_RULES,
   hasTenantCommercialProfile,
   buildTenantCommercialProfileBlock,
   buildCommercialPromptContext

@@ -165,7 +165,8 @@ async function main() {
     'src/ai/commercial-knowledge-base.js',
     'src/services/ai-assist.service.js'
   ].map((file) => fs.readFileSync(path.resolve(__dirname, '..', '..', file), 'utf8')).join('\n');
-  check('runtime has no nominal Opturon plan or brand dependency', !/Plan Inicial|Plan Crecimiento|Plan Empresa|\bOpturon\b/i.test(runtimeFiles));
+  check('runtime has no nominal Opturon plan dependency', !/Plan Inicial|Plan Crecimiento|Plan Empresa/i.test(runtimeFiles));
+  check('Opturon identity appears only as an explicitly scoped platform-sales boundary', /OPTURON_SALES_IDENTITY|opturon_sales/i.test(runtimeFiles));
 
   const unsafeConfig = normalizeBotConfig({
     name: 'Alma',
@@ -182,7 +183,7 @@ async function main() {
   check('configured commercial greeting follows the order objective', /generar pedidos/i.test(commercialGreeting));
   check('proactive greeting remains grounded in the tenant catalog', /disponibles en el cat[aá]logo/i.test(commercialGreeting));
   check('neutral legacy config keeps the previous greeting path', worker.buildConfiguredCommercialGreetingCopy({}) === null);
-  const aiPrompt = aiAssist.buildAiAssistSystemPrompt();
+  const aiPrompt = aiAssist.buildAiAssistSystemPrompt(null, { assistantMode: 'opturon_sales' });
   check('AI Assist remains classifier-only', /No respondas al usuario final libremente/i.test(aiPrompt));
   check('AI Assist keeps transactional exclusions', /pagos, comprobantes, agenda, turnos, catalogo operativo, pedidos, fidelizacion o handoff humano/i.test(aiPrompt));
 
