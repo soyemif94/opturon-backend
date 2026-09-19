@@ -30,7 +30,9 @@ const {
   parseCommerceQuantity,
   parseContextualCartAction,
   parseProductDiscoveryRequest,
-  parseTenantBusinessOfferRequest
+  parseTenantBusinessOfferRequest,
+  rankSimilarProducts,
+  resolveProductStockPriority
 } = require('./utils/conversational-commerce');
 const conversationRepo = require('./conversations/conversation.repo');
 const { decideReply } = require('./conversations/conversation.engine');
@@ -1728,7 +1730,13 @@ function detectWeakCommercialSignal(rawText) {
   return null;
 }
 
-const COMMERCE_PRODUCTS_PAGE_SIZE = 10;
+const COMMERCE_PRODUCTS_PAGE_SIZE = 100;
+const COMMERCE_SIMILAR_PRODUCTS_PAGE_SIZE = 8;
+const COMMERCE_CATALOG_ACTIONS = Object.freeze({
+  CATALOG_BROWSE: 'CATALOG_BROWSE',
+  SIMILAR_PRODUCTS: 'SIMILAR_PRODUCTS',
+  PRODUCT_SELECTED: 'PRODUCT_SELECTED'
+});
 const COMMERCE_MORE_KEYWORDS = new Set([
   'mas',
   'más',
@@ -1859,7 +1867,8 @@ function buildCommerceCatalogPage(products, {
   offset = 0,
   categoryId = null,
   limit = COMMERCE_PRODUCTS_PAGE_SIZE,
-  includeUnavailable = false
+  includeUnavailable = false,
+  includePrices = true
 } = {}) {
   const catalogProducts = (includeUnavailable
     ? buildCommerceCatalogProducts(products)
@@ -1873,7 +1882,7 @@ function buildCommerceCatalogPage(products, {
     return String(product && product.categoryId ? product.categoryId : '').trim() === String(categoryId).trim();
   });
   const safeOffset = Math.max(0, Number(offset || 0));
-  const safeLimit = Math.max(1, Math.min(20, Number(limit || COMMERCE_PRODUCTS_PAGE_SIZE)));
+  const safeLimit = Math.max(1, Math.min(COMMERCE_PRODUCTS_PAGE_SIZE, Number(limit || COMMERCE_PRODUCTS_PAGE_SIZE)));
   const items = catalogProducts.slice(safeOffset, safeOffset + safeLimit).map((product, index) => {
     const resolvedPrice = resolveProductPrice(product);
     return {
@@ -1909,17 +1918,20 @@ function buildCommerceCatalogPage(products, {
     hasMore,
     categoryId: categoryId || null,
     categoryName: resolvedCategoryName,
-    catalogMembership: includeUnavailable === true
+    catalogMembership: includeUnavailable === true,
+    includePrices: includePrices === true,
+    logicalPage: Math.floor(safeOffset / safeLimit) + 1,
+    pageSize: safeLimit
   };
 }
 
 function formatCommerceIndex(index) {
-  const digits = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-  return digits[index - 1] || `${index}.`;
+  return `${index}.`;
 }
 
 const WHATSAPP_IMAGE_CAPTION_MAX_CHARS = 1024;
 const WHATSAPP_TEXT_MAX_CHARS = 4096;
+const WHATSAPP_TEXT_SAFE_BUDGET = 3500;
 
 function normalizeCommercialDetailText(value) {
   return String(value || '')
@@ -1958,9 +1970,9 @@ function resolveCatalogProductShortDescription(product, maxLength = 220) {
   return truncateAtWordBoundary(firstSentence ? firstSentence[0].trim() : description, maxLength);
 }
 
-function splitWhatsAppTextChunks(value, maxLength = WHATSAPP_TEXT_MAX_CHARS) {
+function splitWhatsAppTextChunks(value, maxLength = WHATSAPP_TEXT_SAFE_BUDGET) {
   const text = normalizeCommercialDetailText(value);
-  const safeMaxLength = Math.max(1, Number(maxLength) || WHATSAPP_TEXT_MAX_CHARS);
+  const safeMaxLength = Math.max(1, Math.min(WHATSAPP_TEXT_MAX_CHARS, Number(maxLength) || WHATSAPP_TEXT_SAFE_BUDGET));
   if (!text) return [];
   if (text.length <= safeMaxLength) return [text];
 
@@ -8764,7 +8776,40 @@ function buildStockAvailabilityReply(product) {
     return `${safeProduct.name} tiene stock disponible ahora mismo 😊`;
   }
 
-  return `El producto ${safeProduct.name} no tiene stock disponible en este momento. Si querés, te muestro otra opción.`;
+  return `El producto ${safeProduct.name} no tiene stock disponible en este momento. Si querés, puedo mostrarte productos similares.`;
+}
+
+function buildSimilarProductsReply(selectedProduct, rankedEntries, { offset = 0 } = {}) {
+  const entries = Array.isArray(rankedEntries) ? rankedEntries : [];
+  const selectedName = String(selectedProduct && selectedProduct.name || 'ese producto').trim();
+  if (!entries.length) {
+    return [
+      `No hay stock de ${selectedName}.`,
+      '',
+      'No encontré una alternativa suficientemente parecida.',
+      'Si querés, puedo seguir mostrándote el catálogo o buscar otra marca o producto.'
+    ].join('\n');
+  }
+
+  return [
+    `No hay stock de ${selectedName}.`,
+    '',
+    'Estas opciones son similares:',
+    '',
+    ...entries.map((entry, index) => {
+      const product = entry.product || entry;
+      const price = resolveProductPrice(product);
+      const stockPriority = resolveProductStockPriority(product);
+      const stockLabel = stockPriority === 2
+        ? 'con stock'
+        : stockPriority === 1
+          ? 'stock no informado'
+          : 'sin stock';
+      return `${offset + index + 1}. ${truncateAtWordBoundary(product.name, 280)}${price.valid ? ` — ${formatMoney(price.value, product.currency)}` : ''} — ${stockLabel}`;
+    }),
+    '',
+    'Decime cuál te interesa. También podés escribir "seguir catálogo" para retomar la lista general.'
+  ].join('\n');
 }
 
 function describeSalesContextShort(salesContext) {
@@ -9853,6 +9898,7 @@ function buildCommerceCatalogReply(page) {
   const products = page && Array.isArray(page.items) ? page.items : [];
   const planCatalog = isPlanCatalog(products);
   const catalogMembership = Boolean(page && page.catalogMembership === true && !planCatalog);
+  const includePrices = page && page.includePrices === true;
   if (!products.length) {
     return planCatalog
       ? 'Hola 👋\n\nTe ayudo a elegir la opción ideal.\n\nEn este momento no tenemos planes disponibles para mostrarte por WhatsApp.'
@@ -9862,12 +9908,16 @@ function buildCommerceCatalogReply(page) {
   }
 
   const lines = [
-    'Hola 👋',
-    '',
-    planCatalog
-      ? 'Te ayudo a elegir la opción ideal.'
-      : '¡Bienvenido! Te ayudo a armar tu pedido por aca.',
-    '',
+    ...(Number(page && page.offset || 0) === 0
+      ? [
+        'Hola 👋',
+        '',
+        planCatalog
+          ? 'Te ayudo a elegir la opción ideal.'
+          : '¡Bienvenido! Te ayudo a armar tu pedido por aca.',
+        ''
+      ]
+      : []),
     page && page.categoryName
       ? planCatalog
         ? `Estos son los planes disponibles de ${page.categoryName}:`
@@ -9882,9 +9932,11 @@ function buildCommerceCatalogReply(page) {
     '',
     ...products.map((product) => {
       if (planCatalog) return buildPlanCatalogLine(product);
+      const safeName = truncateAtWordBoundary(product.name, 320);
+      if (!includePrices) return `${formatCommerceIndex(product.index)} ${safeName}`;
       const resolvedPrice = resolveProductPrice(product);
       const priceLabel = resolvedPrice.valid ? formatMoney(resolvedPrice.value, product.currency) : 'precio no disponible';
-      return `${formatCommerceIndex(product.index)} ${product.name} — ${priceLabel}`;
+      return `${formatCommerceIndex(product.index)} ${safeName} — ${priceLabel}`;
     }),
     '',
     'Podes:',
@@ -9912,7 +9964,7 @@ function buildCommerceCatalogReply(page) {
 
 function parseCommerceSelection(rawText, max) {
   const text = normalizeCommandText(rawText);
-  const match = text.match(/^(\d{1,2})$/);
+  const match = text.match(/^(\d{1,6})$/);
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isInteger(value) || value < 1 || value > max) {
@@ -9947,6 +9999,37 @@ function parseCommerceMultiSelection(rawText, max) {
 
 function isCommerceMoreIntent(rawText) {
   return COMMERCE_MORE_KEYWORDS.has(normalizeCommandText(rawText));
+}
+
+function isCommerceSimilarProductsIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  return isCommerceMoreIntent(text) || [
+    'otra opcion',
+    'otras opciones',
+    'alternativas',
+    'similares',
+    'productos similares',
+    'mostrame otros',
+    'mostrar otros'
+  ].includes(text);
+}
+
+function isCommerceResumeCatalogIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  return [
+    'seguir catalogo',
+    'seguir el catalogo',
+    'seguir viendo productos',
+    'continuar catalogo',
+    'continuar el catalogo',
+    'volver al catalogo'
+  ].includes(text);
+}
+
+function isCatalogPriceListIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text || !/\b(precio|precios)\b/.test(text)) return false;
+  return /\b(lista|catalogo|productos|articulos|mercaderia)\b/.test(text);
 }
 
 function isCommerceBackToCategoriesIntent(rawText) {
@@ -10148,6 +10231,14 @@ function buildCommerceResetPatch(extra = {}) {
     commerceCatalogOffset: null,
     commerceCatalogNextOffset: null,
     commerceCatalogTotal: null,
+    commerceCatalogLogicalPage: null,
+    commerceCatalogLastListedProductIds: null,
+    commerceCatalogPendingAction: null,
+    commerceCatalogIncludePrices: null,
+    commerceCatalogSelectedProductId: null,
+    commerceCatalogSelectedProductName: null,
+    commerceSimilarProductIds: null,
+    commerceSimilarNextOffset: null,
     commerceSelectedProduct: null,
     commerceLastAddedItem: null,
     commerceSuggestedProductId: null,
@@ -11654,13 +11745,14 @@ function buildTenantCatalogBrowseContextPatch({
   page = null,
   activeCategoryId = null,
   activeCategoryName = null,
-  suggestedProduct = null
+  suggestedProduct = null,
+  includePrices = false
 }) {
   const safeProducts = buildCommerceCatalogProducts(products);
   const safeCategories = Array.isArray(categories) ? categories : [];
   const resolvedPage = page || (safeCategories.length
     ? null
-    : buildCommerceCatalogPage(safeProducts, { includeUnavailable: true }));
+    : buildCommerceCatalogPage(safeProducts, { includeUnavailable: true, includePrices }));
   return buildCommerceResetPatch({
     activeBotDomain: 'commerce',
     commerceCatalogBrowseMode: 'tenant_catalog',
@@ -11672,6 +11764,16 @@ function buildTenantCatalogBrowseContextPatch({
     commerceCatalogOffset: resolvedPage ? resolvedPage.offset : null,
     commerceCatalogNextOffset: resolvedPage ? resolvedPage.nextOffset : null,
     commerceCatalogTotal: resolvedPage ? resolvedPage.total : safeProducts.length,
+    commerceCatalogLogicalPage: resolvedPage ? resolvedPage.logicalPage : null,
+    commerceCatalogLastListedProductIds: resolvedPage
+      ? resolvedPage.items.map((product) => String(product.productId || product.id || '').trim()).filter(Boolean)
+      : null,
+    commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.CATALOG_BROWSE,
+    commerceCatalogIncludePrices: resolvedPage ? resolvedPage.includePrices === true : includePrices === true,
+    commerceCatalogSelectedProductId: null,
+    commerceCatalogSelectedProductName: null,
+    commerceSimilarProductIds: null,
+    commerceSimilarNextOffset: null,
     commerceCartItems: Array.isArray(cartItems) && cartItems.length ? cartItems : null,
     commerceActiveCategoryId: activeCategoryId,
     commerceActiveCategoryName: activeCategoryName,
@@ -11699,6 +11801,66 @@ function isTenantCatalogBrowseContext(conversation) {
   );
 }
 
+function buildTenantCatalogOutOfStockContextPatch(conversation, product) {
+  const clinicId = String(conversation && conversation.clinicId || '').trim();
+  const productId = String(product && (product.id || product.productId) || '').trim();
+  return {
+    commerceCatalogBrowseMode: 'tenant_catalog',
+    commerceCatalogBrowseTenantId: clinicId || null,
+    commerceCatalogIncludesUnavailable: true,
+    commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.SIMILAR_PRODUCTS,
+    commerceCatalogSelectedProductId: productId || null,
+    commerceCatalogSelectedProductName: String(product && product.name || '').trim() || null,
+    commerceSimilarProductIds: null,
+    commerceSimilarNextOffset: 0,
+    commerceSuggestedProductId: productId || null,
+    commerceSuggestedProductName: String(product && product.name || '').trim() || null
+  };
+}
+
+function buildTenantSimilarProductsDecision({ conversation, activeProducts, selectedProduct }) {
+  const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
+    ? conversation.context
+    : {};
+  const rankedNow = rankSimilarProducts(activeProducts, selectedProduct);
+  const rankedById = new Map(rankedNow.map((entry) => [String(entry.product.id || entry.product.productId), entry]));
+  const storedIds = Array.isArray(safeContext.commerceSimilarProductIds)
+    ? safeContext.commerceSimilarProductIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  const ranked = storedIds.length
+    ? storedIds.map((id) => rankedById.get(id)).filter(Boolean)
+    : rankedNow;
+  const storedNextOffset = safeContext.commerceSimilarNextOffset;
+  const offset = storedIds.length
+    ? storedNextOffset !== null && storedNextOffset !== undefined && Number.isFinite(Number(storedNextOffset))
+      ? Math.max(0, Number(storedNextOffset))
+      : ranked.length
+    : 0;
+  const pageEntries = ranked.slice(offset, offset + COMMERCE_SIMILAR_PRODUCTS_PAGE_SIZE);
+  const nextOffset = offset + pageEntries.length < ranked.length
+    ? offset + pageEntries.length
+    : null;
+  return {
+    type: pageEntries.length ? 'tenant_catalog_similar_products' : 'tenant_catalog_similar_products_empty',
+    replyText: pageEntries.length
+      ? buildSimilarProductsReply(selectedProduct, pageEntries, { offset })
+      : storedIds.length
+        ? 'Ya te mostré todas las alternativas similares que encontré. Podés escribir "seguir catálogo" para retomar la lista general.'
+        : buildSimilarProductsReply(selectedProduct, [], { offset }),
+    newState: 'WAITING_PRODUCT_SELECTION',
+    contextPatch: {
+      commerceCatalogBrowseMode: 'tenant_catalog',
+      commerceCatalogBrowseTenantId: String(conversation.clinicId),
+      commerceCatalogIncludesUnavailable: true,
+      commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.SIMILAR_PRODUCTS,
+      commerceCatalogSelectedProductId: String(selectedProduct.id || selectedProduct.productId || '').trim() || null,
+      commerceCatalogSelectedProductName: selectedProduct.name || null,
+      commerceSimilarProductIds: ranked.map((entry) => String(entry.product.id || entry.product.productId)).filter(Boolean),
+      commerceSimilarNextOffset: nextOffset
+    }
+  };
+}
+
 async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contact = null, inboundText }) {
   if (!isTenantCatalogBrowseContext(conversation)) return null;
 
@@ -11716,9 +11878,6 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
     return resolveCommerceDecision({ conversation, clinic, contact, inboundText });
   }
   const commercialIntent = detectCommercialIntent(inboundText);
-  if (commercialIntent.type === 'prices' || commercialIntent.type === 'stock' || detectIntent(inboundText) === 'pricing') {
-    return null;
-  }
 
   const clinicProducts = await listProductsByClinicId(conversation.clinicId);
   const activeProducts = buildCommerceCatalogProducts(clinicProducts);
@@ -11734,6 +11893,102 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
   const total = Number.isFinite(Number(safeContext.commerceCatalogTotal))
     ? Number(safeContext.commerceCatalogTotal)
     : 0;
+  const pendingAction = String(safeContext.commerceCatalogPendingAction || COMMERCE_CATALOG_ACTIONS.CATALOG_BROWSE);
+  const includePrices = safeContext.commerceCatalogIncludePrices === true;
+  const selectedContextProduct = findCatalogItemByStoredId(
+    activeProducts,
+    safeContext.commerceCatalogSelectedProductId || safeContext.commerceSuggestedProductId
+  );
+
+  if (!categorySelectionActive && isCommerceResumeCatalogIntent(inboundText)) {
+    if (nextOffset === null || nextOffset >= total) {
+      return {
+        type: 'tenant_catalog_pagination_complete',
+        replyText: 'Ya llegaste al final del catálogo. Decime qué producto o categoría querés consultar y te ayudo.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: {
+          commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.CATALOG_BROWSE,
+          commerceCatalogSelectedProductId: null,
+          commerceCatalogSelectedProductName: null,
+          commerceSimilarProductIds: null,
+          commerceSimilarNextOffset: null
+        }
+      };
+    }
+    const page = buildCommerceCatalogPage(activeProducts, {
+      offset: nextOffset,
+      categoryId: activeCategoryId,
+      includeUnavailable: true,
+      includePrices
+    });
+    return {
+      type: 'tenant_catalog_resume',
+      replyText: buildCommerceCatalogReply(page),
+      newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: buildTenantCatalogBrowseContextPatch({
+        clinicId: conversation.clinicId,
+        products: activeProducts,
+        cartItems,
+        page,
+        activeCategoryId,
+        activeCategoryName,
+        includePrices
+      })
+    };
+  }
+
+  if (
+    !categorySelectionActive &&
+    pendingAction === COMMERCE_CATALOG_ACTIONS.SIMILAR_PRODUCTS &&
+    isCommerceSimilarProductsIntent(inboundText)
+  ) {
+    if (!selectedContextProduct) {
+      return {
+        type: 'tenant_catalog_similar_products_missing_context',
+        replyText: 'No pude recuperar el producto anterior. Decime cuál producto querés comparar y busco alternativas reales del catálogo.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: { commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.CATALOG_BROWSE }
+      };
+    }
+    return buildTenantSimilarProductsDecision({
+      conversation,
+      activeProducts,
+      selectedProduct: selectedContextProduct
+    });
+  }
+
+  if (commercialIntent.type === 'prices' || commercialIntent.type === 'stock' || detectIntent(inboundText) === 'pricing') {
+    const referencedProduct =
+      findProductByName(activeProducts, inboundText) ||
+      findProductsByQuery(activeProducts, inboundText)[0] ||
+      selectedContextProduct ||
+      null;
+    const wantsPrice = detectIntent(inboundText) === 'pricing' || commercialIntent.type === 'prices';
+    const wantsStock = commercialIntent.type === 'stock';
+    const replyParts = [];
+    if (wantsPrice) {
+      replyParts.push(referencedProduct
+        ? buildProductPricingReply([referencedProduct], referencedProduct.name)
+        : buildProductPricingReply(activeProducts, inboundText));
+    }
+    if (wantsStock) replyParts.push(buildStockAvailabilityReply(referencedProduct));
+    return {
+      type: wantsPrice && wantsStock ? 'tenant_catalog_price_and_stock' : `tenant_catalog_${commercialIntent.type}`,
+      replyText: replyParts.filter(Boolean).join('\n\n'),
+      newState: 'WAITING_PRODUCT_SELECTION',
+      contextPatch: referencedProduct && Number(referencedProduct.stock || 0) <= 0
+        ? buildTenantCatalogOutOfStockContextPatch(conversation, referencedProduct)
+        : referencedProduct
+          ? {
+            commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.PRODUCT_SELECTED,
+            commerceCatalogSelectedProductId: String(referencedProduct.id || referencedProduct.productId || '').trim() || null,
+            commerceCatalogSelectedProductName: referencedProduct.name || null,
+            commerceSuggestedProductId: String(referencedProduct.id || referencedProduct.productId || '').trim() || null,
+            commerceSuggestedProductName: referencedProduct.name || null
+          }
+          : null
+    };
+  }
 
   if (categorySelectionActive) {
     const categories = categoriesFromContext.length
@@ -11743,7 +11998,8 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
     if (selectedCategory) {
       const page = buildCommerceCatalogPage(activeProducts, {
         categoryId: selectedCategory.categoryId,
-        includeUnavailable: true
+        includeUnavailable: true,
+        includePrices
       });
       return {
         type: 'tenant_catalog_category_selection',
@@ -11755,13 +12011,18 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
           cartItems,
           page,
           activeCategoryId: selectedCategory.categoryId,
-          activeCategoryName: selectedCategory.name
+          activeCategoryName: selectedCategory.name,
+          includePrices
         })
       };
     }
   }
 
-  if (!categorySelectionActive && isCommerceMoreIntent(inboundText)) {
+  if (
+    !categorySelectionActive &&
+    pendingAction === COMMERCE_CATALOG_ACTIONS.CATALOG_BROWSE &&
+    isCommerceMoreIntent(inboundText)
+  ) {
     if (!nextOffset || nextOffset >= total) {
       return {
         type: 'tenant_catalog_pagination_complete',
@@ -11777,7 +12038,8 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
     const page = buildCommerceCatalogPage(activeProducts, {
       offset: nextOffset,
       categoryId: activeCategoryId,
-      includeUnavailable: true
+      includeUnavailable: true,
+      includePrices
     });
     return {
       type: 'tenant_catalog_pagination',
@@ -11789,12 +12051,42 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
         cartItems,
         page,
         activeCategoryId,
-        activeCategoryName
+        activeCategoryName,
+        includePrices
       })
     };
   }
 
-  const numericSelection = parseCommerceSelection(inboundText, 99);
+  const numericSelection = parseCommerceSelection(inboundText, total || activeProducts.length);
+  if (!categorySelectionActive && pendingAction === COMMERCE_CATALOG_ACTIONS.SIMILAR_PRODUCTS && numericSelection) {
+    const similarIds = Array.isArray(safeContext.commerceSimilarProductIds)
+      ? safeContext.commerceSimilarProductIds
+      : [];
+    const selectedSimilar = findCatalogItemByStoredId(activeProducts, similarIds[numericSelection - 1]);
+    if (selectedSimilar) {
+      if (Number(selectedSimilar.stock || 0) <= 0) {
+        return {
+          type: 'tenant_catalog_similar_product_unavailable',
+          replyText: `${buildProductPricingReply([selectedSimilar], selectedSimilar.name)}\n\n${buildStockAvailabilityReply(selectedSimilar)}`,
+          newState: 'WAITING_PRODUCT_SELECTION',
+          contextPatch: buildTenantCatalogOutOfStockContextPatch(conversation, selectedSimilar)
+        };
+      }
+      return {
+        type: 'tenant_catalog_similar_product_selection',
+        replyText: `Elegiste: ${selectedSimilar.name}\n\n¿Cuantas unidades queres?`,
+        outboundMedia: [buildCatalogProductImageMessage(selectedSimilar)].filter(Boolean),
+        newState: 'WAITING_QUANTITY',
+        contextPatch: {
+          commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.PRODUCT_SELECTED,
+          commerceCatalogSelectedProductId: String(selectedSimilar.id || selectedSimilar.productId || '').trim() || null,
+          commerceCatalogSelectedProductName: selectedSimilar.name || null,
+          commerceSelectedProduct: selectedSimilar,
+          commerceCartItems: cartItems
+        }
+      };
+    }
+  }
   if (!numericSelection) {
     const matchedProduct = findProductByName(activeProducts, inboundText);
     if (matchedProduct) {
@@ -11803,21 +12095,24 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
         type: 'tenant_catalog_direct_search',
         replyText: `${pricing}\n\n${buildStockAvailabilityReply(matchedProduct)}`,
         newState: 'WAITING_PRODUCT_SELECTION',
-        contextPatch: {
-          commerceCatalogBrowseMode: 'tenant_catalog',
-          commerceCatalogBrowseTenantId: String(conversation.clinicId),
-          commerceCatalogIncludesUnavailable: true,
-          commerceSuggestedProductId: String(matchedProduct.id || matchedProduct.productId || '').trim() || null,
-          commerceSuggestedProductName: matchedProduct.name || null
-        }
+        contextPatch: Number(matchedProduct.stock || 0) <= 0
+          ? buildTenantCatalogOutOfStockContextPatch(conversation, matchedProduct)
+          : {
+            commerceCatalogBrowseMode: 'tenant_catalog',
+            commerceCatalogBrowseTenantId: String(conversation.clinicId),
+            commerceCatalogIncludesUnavailable: true,
+            commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.PRODUCT_SELECTED,
+            commerceCatalogSelectedProductId: String(matchedProduct.id || matchedProduct.productId || '').trim() || null,
+            commerceCatalogSelectedProductName: matchedProduct.name || null,
+            commerceSuggestedProductId: String(matchedProduct.id || matchedProduct.productId || '').trim() || null,
+            commerceSuggestedProductName: matchedProduct.name || null
+          }
       };
     }
   }
 
   if (!categorySelectionActive && numericSelection) {
-    const selectedProduct = catalogFromContext.find((product) => Number(product.index) === numericSelection) ||
-      catalogFromContext[numericSelection - 1] ||
-      null;
+    const selectedProduct = catalogFromContext.find((product) => Number(product.index) === numericSelection) || null;
     if (selectedProduct) {
       const persistedProduct = findCatalogItemByStoredId(activeProducts, selectedProduct.productId || selectedProduct.id) || selectedProduct;
       if (Number(persistedProduct.stock || 0) <= 0) {
@@ -11825,13 +12120,7 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
           type: 'tenant_catalog_product_unavailable',
           replyText: `${buildProductPricingReply([persistedProduct], persistedProduct.name)}\n\n${buildStockAvailabilityReply(persistedProduct)}`,
           newState: 'WAITING_PRODUCT_SELECTION',
-          contextPatch: {
-            commerceCatalogBrowseMode: 'tenant_catalog',
-            commerceCatalogBrowseTenantId: String(conversation.clinicId),
-            commerceCatalogIncludesUnavailable: true,
-            commerceSuggestedProductId: String(persistedProduct.id || persistedProduct.productId || '').trim() || null,
-            commerceSuggestedProductName: persistedProduct.name || null
-          }
+          contextPatch: buildTenantCatalogOutOfStockContextPatch(conversation, persistedProduct)
         };
       }
       return {
@@ -11843,6 +12132,9 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
           commerceCatalogBrowseMode: 'tenant_catalog',
           commerceCatalogBrowseTenantId: String(conversation.clinicId),
           commerceCatalogIncludesUnavailable: true,
+          commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.PRODUCT_SELECTED,
+          commerceCatalogSelectedProductId: String(persistedProduct.id || persistedProduct.productId || '').trim() || null,
+          commerceCatalogSelectedProductName: persistedProduct.name || null,
           commerceCatalog: catalogFromContext,
           commerceCartItems: cartItems,
           commerceSelectedProduct: persistedProduct,
@@ -11950,6 +12242,41 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
   const activeProducts = buildCommerceCatalogProducts(clinicProducts);
   const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
   const cartItems = normalizeCommerceCartItems(safeContext);
+  const catalogIncludePrices = isCatalogPriceListIntent(inboundText);
+
+  if (catalogIncludePrices && activeProducts.length) {
+    const categories = buildCommerceCategories(activeProducts, { includeUnavailable: true });
+    const useCategories = hasUsefulCommerceCategories(categories, activeProducts.length);
+    const page = buildCommerceCatalogPage(activeProducts, {
+      includeUnavailable: true,
+      includePrices: true
+    });
+    return useCategories
+      ? {
+        type: 'tenant_catalog_discovery_with_prices',
+        replyText: buildCommerceCategoriesReply(categories, { catalogMembership: true }),
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: buildTenantCatalogBrowseContextPatch({
+          clinicId: conversation.clinicId,
+          products: activeProducts,
+          categories,
+          cartItems,
+          includePrices: true
+        })
+      }
+      : {
+        type: 'tenant_catalog_discovery_with_prices',
+        replyText: buildCommerceCatalogReply(page),
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: buildTenantCatalogBrowseContextPatch({
+          clinicId: conversation.clinicId,
+          products: activeProducts,
+          cartItems,
+          page,
+          includePrices: true
+        })
+      };
+  }
 
   if (commercialIntent.type === 'prices' || commercialIntent.type === 'stock' || detectIntent(inboundText) === 'pricing') {
     const referencedProduct =
@@ -11973,12 +12300,24 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
     return {
       type: wantsPrice && wantsStock ? 'price_and_stock' : commercialIntent.type,
       replyText: replyParts.filter(Boolean).join('\n\n'),
-      contextPatch: referencedProduct
-        ? buildTenantCatalogContextPatch({
-          products: eligibleProducts,
-          cartItems,
-          suggestedProduct: referencedProduct
-        })
+      contextPatch: referencedProduct && Number(referencedProduct.stock || 0) <= 0
+        ? {
+          ...buildTenantCatalogBrowseContextPatch({
+            clinicId: conversation.clinicId,
+            products: activeProducts,
+            cartItems,
+            includePrices: false
+          }),
+          commerceCatalogOffset: null,
+          commerceCatalogNextOffset: 0,
+          ...buildTenantCatalogOutOfStockContextPatch(conversation, referencedProduct)
+        }
+        : referencedProduct
+          ? buildTenantCatalogContextPatch({
+            products: eligibleProducts,
+            cartItems,
+            suggestedProduct: referencedProduct
+          })
         : null
     };
   }
@@ -12040,7 +12379,10 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
   if (!offerRequest && commercialIntent.type === 'products') {
     const categories = buildCommerceCategories(activeProducts, { includeUnavailable: true });
     const useCategories = hasUsefulCommerceCategories(categories, activeProducts.length);
-    const page = buildCommerceCatalogPage(activeProducts, { includeUnavailable: true });
+    const page = buildCommerceCatalogPage(activeProducts, {
+      includeUnavailable: true,
+      includePrices: catalogIncludePrices
+    });
     return useCategories
       ? {
         type: 'tenant_catalog_discovery',
@@ -12050,7 +12392,8 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
           clinicId: conversation.clinicId,
           products: activeProducts,
           categories,
-          cartItems
+          cartItems,
+          includePrices: catalogIncludePrices
         })
       }
       : {
@@ -12061,7 +12404,8 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
           clinicId: conversation.clinicId,
           products: activeProducts,
           cartItems,
-          page
+          page,
+          includePrices: catalogIncludePrices
         })
       };
   }
@@ -12070,7 +12414,10 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
     const matches = findProductsByQuery(activeProducts, offerRequest.query);
     const visibleProducts = matches.length ? matches : activeProducts;
     const unambiguousProduct = matches.length === 1 ? matches[0] : null;
-    const page = buildCommerceCatalogPage(visibleProducts, { includeUnavailable: true });
+    const page = buildCommerceCatalogPage(visibleProducts, {
+      includeUnavailable: true,
+      includePrices: catalogIncludePrices
+    });
     return {
       type: 'tenant_catalog_discovery',
       replyText: buildProductDiscoveryReply(matches, offerRequest.query),
@@ -12080,7 +12427,8 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
         products: visibleProducts,
         cartItems,
         page,
-        suggestedProduct: unambiguousProduct
+        suggestedProduct: unambiguousProduct,
+        includePrices: catalogIncludePrices
       })
     };
   }
@@ -12095,12 +12443,16 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
         clinicId: conversation.clinicId,
         products: activeProducts,
         categories,
-        cartItems
+        cartItems,
+        includePrices: catalogIncludePrices
       })
     };
   }
 
-  const page = buildCommerceCatalogPage(activeProducts, { includeUnavailable: true });
+  const page = buildCommerceCatalogPage(activeProducts, {
+    includeUnavailable: true,
+    includePrices: catalogIncludePrices
+  });
   return {
     type: 'tenant_catalog_discovery',
     replyText: buildCommerceCatalogReply(page),
@@ -12109,7 +12461,8 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
       clinicId: conversation.clinicId,
       products: activeProducts,
       cartItems,
-      page
+      page,
+      includePrices: catalogIncludePrices
     })
   };
 }

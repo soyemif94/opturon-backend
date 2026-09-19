@@ -141,7 +141,9 @@ async function main() {
   assert.ok(numeric);
   assert.match(numeric.replyText, /LA YAPA X UNIDAD/i);
   assert.match(numeric.replyText, /no tiene stock disponible/i);
+  assert.match(numeric.replyText, /productos similares/i);
   assert.doesNotMatch(numeric.replyText, platformCopy);
+  const unavailableConversation = applyDecision(mixedConversation, numeric);
 
   const directSearch = await tenantReply(mixedClinic, mixedConversation, 'LA YAPA');
   assert.match(directSearch.replyText, /LA YAPA X UNIDAD/i);
@@ -152,22 +154,11 @@ async function main() {
   assert.match(explicitStock.replyText, /LA YAPA X UNIDAD/i);
   assert.match(explicitStock.replyText, /no tiene stock disponible/i);
 
-  const secondPage = await tenantReply(mixedClinic, mixedConversation, 'ver mas');
-  assert.ok(secondPage);
-  assert.strictEqual(secondPage.contextPatch.commerceCatalog[0].index, 11);
-  assert.doesNotMatch(secondPage.replyText, /LA YAPA X UNIDAD/i);
-  assert.match(secondPage.replyText, /PRODUCTO MIXTO 11/i);
-  assert.doesNotMatch(secondPage.replyText, platformCopy);
-  let paginationConversation = applyDecision(mixedConversation, secondPage);
-  const thirdPage = await tenantReply(mixedClinic, paginationConversation, 'siguiente');
-  assert.strictEqual(thirdPage.contextPatch.commerceCatalog[0].index, 21);
-  paginationConversation = applyDecision(paginationConversation, thirdPage);
-  const fourthPage = await tenantReply(mixedClinic, paginationConversation, 'continuar');
-  assert.strictEqual(fourthPage.contextPatch.commerceCatalog[0].index, 31);
-  paginationConversation = applyDecision(paginationConversation, fourthPage);
-  const endOfCatalog = await tenantReply(mixedClinic, paginationConversation, 'mas');
-  assert.match(endOfCatalog.replyText, /final del catalogo/i);
-  assert.doesNotMatch(endOfCatalog.replyText, /PRODUCTO MIXTO/i);
+  const contextualAlternatives = await tenantReply(mixedClinic, unavailableConversation, 'ver mas');
+  assert.ok(contextualAlternatives);
+  assert.match(contextualAlternatives.replyText, /alternativa suficientemente parecida/i);
+  assert.doesNotMatch(contextualAlternatives.replyText, /PRODUCTO MIXTO 11/i);
+  assert.doesNotMatch(contextualAlternatives.replyText, platformCopy);
 
   const categoryClinic = clinic('tenant-categorized');
   let categoryConversation = conversation('category-conversation', categoryClinic.id);
@@ -197,7 +188,8 @@ async function main() {
   assert.match(noCategoryReply.replyText, /Trabajamos con 100 productos/i);
   assert.match(noCategoryReply.replyText, /SIN CATEGORIA 1/i);
   assert.doesNotMatch(noCategoryReply.replyText, /1[^\n]*Otros/i);
-  assert.strictEqual(noCategoryReply.contextPatch.commerceCatalogNextOffset, 10);
+  assert.strictEqual(noCategoryReply.contextPatch.commerceCatalog.length, 100);
+  assert.strictEqual(noCategoryReply.contextPatch.commerceCatalogNextOffset, null);
 
   const tenantB = clinic('tenant-b');
   const foreignStateConversation = conversation(

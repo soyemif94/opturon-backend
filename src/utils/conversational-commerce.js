@@ -15,6 +15,59 @@ const QUANTITY_WORDS = Object.freeze({
   diez: 10
 });
 
+const PRODUCT_SIMILARITY_NOISE_TOKENS = new Set([
+  'x',
+  'u',
+  'un',
+  'una',
+  'unidad',
+  'unidades',
+  'und',
+  'pack',
+  'packs',
+  'caja',
+  'cajas',
+  'display',
+  'displays',
+  'sobre',
+  'sobres',
+  'bolsa',
+  'bolsas',
+  'botella',
+  'botellas',
+  'frasco',
+  'frascos',
+  'sabor',
+  'sabores',
+  'producto',
+  'productos',
+  'articulo',
+  'articulos',
+  'modelo',
+  'modelos',
+  'marca',
+  'marcas',
+  'familia',
+  'familias',
+  'tipo',
+  'tipos',
+  'gr',
+  'g',
+  'kg',
+  'ml',
+  'cc',
+  'lt',
+  'litro',
+  'litros',
+  'de',
+  'del',
+  'la',
+  'las',
+  'el',
+  'los',
+  'por'
+]);
+
 function parseCommerceQuantity(rawText) {
   const text = normalizeConversationalText(rawText);
   const match = text.match(/^(\d{1,3})$/);
@@ -118,6 +171,158 @@ function findProductsByQuery(products, rawText) {
     }));
 }
 
+function normalizeProductSimilarityToken(value) {
+  const token = normalizeConversationalText(value)
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+  if (!token || /^\d+(?:g|gr|kg|ml|cc|lt)?$/.test(token) || PRODUCT_SIMILARITY_NOISE_TOKENS.has(token)) {
+    return '';
+  }
+  if (token.length > 6 && token.endsWith('itos')) return token.slice(0, -4);
+  if (token.length > 6 && token.endsWith('itas')) return token.slice(0, -4);
+  if (token.length > 5 && token.endsWith('es')) return token.slice(0, -2);
+  if (token.length > 4 && token.endsWith('s')) return token.slice(0, -1);
+  return token;
+}
+
+function productSimilarityTokens(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const rawValues = [
+    safeProduct.name,
+    safeProduct.brand,
+    safeProduct.family,
+    safeProduct.productFamily,
+    safeProduct.subcategory,
+    safeProduct.type,
+    safeProduct.categoryName
+  ];
+  return [...new Set(rawValues
+    .flatMap((value) => normalizeConversationalText(value).split(/\s+/))
+    .map(normalizeProductSimilarityToken)
+    .filter(Boolean))];
+}
+
+function normalizeProductSimilarityField(value) {
+  return normalizeConversationalText(value)
+    .split(/\s+/)
+    .map(normalizeProductSimilarityToken)
+    .filter(Boolean)
+    .join(' ');
+}
+
+function resolveProductSimilarityFamily(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const metadata = safeProduct.metadata && typeof safeProduct.metadata === 'object' ? safeProduct.metadata : {};
+  const catalog = metadata.catalog && typeof metadata.catalog === 'object' ? metadata.catalog : {};
+  return normalizeProductSimilarityField(
+    safeProduct.family || safeProduct.productFamily || safeProduct.subcategory || safeProduct.type || metadata.family || catalog.family || catalog.subcategory || ''
+  );
+}
+
+function resolveProductSimilarityBrand(product) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const metadata = safeProduct.metadata && typeof safeProduct.metadata === 'object' ? safeProduct.metadata : {};
+  const catalog = metadata.catalog && typeof metadata.catalog === 'object' ? metadata.catalog : {};
+  return normalizeProductSimilarityField(safeProduct.brand || metadata.brand || catalog.brand || '');
+}
+
+function resolveProductStockPriority(product) {
+  const rawStock = product && Object.prototype.hasOwnProperty.call(product, 'stock') ? product.stock : null;
+  if (rawStock === null || rawStock === undefined || rawStock === '') return 1;
+  const stock = Number(rawStock);
+  if (!Number.isFinite(stock)) return 1;
+  return stock > 0 ? 2 : 0;
+}
+
+function rankSimilarProducts(products, selectedProduct, { minimumRelevance = 18 } = {}) {
+  const safeProducts = Array.isArray(products) ? products.filter(Boolean) : [];
+  const selected = selectedProduct && typeof selectedProduct === 'object' ? selectedProduct : null;
+  const selectedId = String(selected && (selected.id || selected.productId) || '').trim();
+  if (!selected || !selectedId) return [];
+
+  const selectedTokens = productSimilarityTokens(selected);
+  const tokenDocuments = new Map();
+  for (const product of safeProducts) {
+    for (const token of productSimilarityTokens(product)) {
+      tokenDocuments.set(token, (tokenDocuments.get(token) || 0) + 1);
+    }
+  }
+
+  const selectedCategoryId = String(selected.categoryId || '').trim();
+  const selectedCategoryName = normalizeProductSimilarityField(selected.categoryName);
+  const selectedBrand = resolveProductSimilarityBrand(selected);
+  const selectedFamily = resolveProductSimilarityFamily(selected);
+  const documentCount = Math.max(1, safeProducts.length);
+  const ranked = [];
+
+  for (const product of safeProducts) {
+    const productId = String(product && (product.id || product.productId) || '').trim();
+    if (!productId || productId === selectedId) continue;
+
+    const signals = [];
+    let relevanceScore = 0;
+    const productCategoryId = String(product.categoryId || '').trim();
+    const productCategoryName = normalizeProductSimilarityField(product.categoryName);
+    if (
+      (selectedCategoryId && productCategoryId && selectedCategoryId === productCategoryId) ||
+      (selectedCategoryName && productCategoryName && selectedCategoryName === productCategoryName)
+    ) {
+      relevanceScore += 55;
+      signals.push('same_category');
+    }
+
+    const productBrand = resolveProductSimilarityBrand(product);
+    if (selectedBrand && productBrand && selectedBrand === productBrand) {
+      relevanceScore += 45;
+      signals.push('same_brand');
+    }
+
+    const productFamily = resolveProductSimilarityFamily(product);
+    if (selectedFamily && productFamily && selectedFamily === productFamily) {
+      relevanceScore += 50;
+      signals.push('same_family');
+    }
+
+    const candidateTokens = productSimilarityTokens(product);
+    const sharedTokens = selectedTokens.filter((token) => candidateTokens.includes(token));
+    if (sharedTokens.length) {
+      const tokenScore = sharedTokens.reduce((score, token) => {
+        const frequency = Math.max(1, tokenDocuments.get(token) || 1);
+        const inverseFrequency = Math.log((documentCount + 1) / frequency) + 1;
+        return score + Math.min(32, 8 + inverseFrequency * 5);
+      }, 0);
+      relevanceScore += tokenScore;
+      signals.push('significant_token_overlap');
+    }
+
+    const fuzzyFamilyMatch = selectedTokens.some((left) => (
+      left.length >= 5 && candidateTokens.some((right) => right.length >= 5 && left.slice(0, 5) === right.slice(0, 5))
+    ));
+    if (!sharedTokens.length && fuzzyFamilyMatch) {
+      relevanceScore += 20;
+      signals.push('product_family_similarity');
+    }
+
+    if (relevanceScore < minimumRelevance) continue;
+    const stockPriority = resolveProductStockPriority(product);
+    const stockScore = stockPriority === 2 ? 15 : stockPriority === 1 ? 7 : 0;
+    ranked.push({
+      product,
+      relevanceScore,
+      stockPriority,
+      score: relevanceScore + stockScore,
+      signals
+    });
+  }
+
+  return ranked.sort((left, right) => (
+    right.score - left.score ||
+    right.relevanceScore - left.relevanceScore ||
+    right.stockPriority - left.stockPriority ||
+    String(left.product.name || '').localeCompare(String(right.product.name || ''), 'es')
+  ));
+}
+
 function parseProductDiscoveryRequest(rawText) {
   const text = normalizeConversationalText(rawText);
   if (!text) return null;
@@ -178,5 +383,8 @@ module.exports = {
   parseCommerceQuantity,
   parseContextualCartAction,
   parseProductDiscoveryRequest,
-  parseTenantBusinessOfferRequest
+  parseTenantBusinessOfferRequest,
+  productSimilarityTokens,
+  rankSimilarProducts,
+  resolveProductStockPriority
 };
