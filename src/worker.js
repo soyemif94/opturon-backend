@@ -11801,6 +11801,113 @@ function isTenantCatalogBrowseContext(conversation) {
   );
 }
 
+function classifyTenantExplicitNewIntent(rawText) {
+  const text = normalizeCommandText(rawText);
+  if (!text) return null;
+  const contextDependentReplies = new Set([
+    'si',
+    'no',
+    'dale',
+    'ok',
+    'ese',
+    'esa',
+    'el primero',
+    'la primera',
+    'seguir',
+    'continuar',
+    'quiero',
+    'quiero ver',
+    'mostrame',
+    'contame',
+    'decime',
+    'otra opcion',
+    'otras opciones'
+  ]);
+
+  if (
+    parseCommerceSelection(text, 999999) ||
+    isCommerceMoreIntent(text) ||
+    isCommerceSimilarProductsIntent(text) ||
+    isCommerceResumeCatalogIntent(text) ||
+    isCommerceBackToCategoriesIntent(text) ||
+    contextDependentReplies.has(text)
+  ) {
+    return null;
+  }
+
+  const offerRequest = parseTenantBusinessOfferRequest(rawText);
+  if (offerRequest) {
+    return {
+      type: offerRequest.query ? 'catalog_search' : 'products',
+      confidence: 'strong',
+      query: offerRequest.query || null
+    };
+  }
+
+  const productDiscovery = parseProductDiscoveryRequest(rawText);
+  if (productDiscovery && productDiscovery.query) {
+    return { type: 'catalog_search', confidence: 'strong', query: productDiscovery.query };
+  }
+
+  const explicitProductSearch = [
+    /^(?:busco|necesito)\s+(?:el|la|los|las|un|una)?\s*(.+)$/,
+    /^quiero\s+(?:ver|buscar)\s+(?:el|la|los|las|un|una)?\s*(.+)$/
+  ].map((pattern) => text.match(pattern)).find(Boolean);
+  const explicitProductQuery = explicitProductSearch
+    ? String(explicitProductSearch[1] || '').trim()
+    : '';
+  if (explicitProductQuery && !/^(?:productos?|catalogo|opciones?)$/.test(explicitProductQuery)) {
+    return {
+      type: 'product_search',
+      confidence: 'strong',
+      query: explicitProductQuery
+    };
+  }
+
+  const commercialIntent = detectCommercialIntent(text);
+  if (commercialIntent.type !== 'unknown') {
+    return { type: commercialIntent.type, confidence: 'strong', query: null };
+  }
+
+  if (
+    text === 'quiero hacer un pedido' ||
+    text === 'quiero armar un pedido' ||
+    text === 'quiero comprar' ||
+    text === 'hacer un pedido'
+  ) {
+    return { type: 'order', confidence: 'strong', query: null };
+  }
+
+  return null;
+}
+
+function buildIncompatibleTenantCatalogStateClearPatch() {
+  return {
+    commerceCatalogBrowseMode: null,
+    commerceCatalogBrowseTenantId: null,
+    commerceCatalogIncludesUnavailable: null,
+    commerceCatalog: null,
+    commerceCategories: null,
+    commerceCategorySelection: null,
+    commerceActiveCategoryId: null,
+    commerceActiveCategoryName: null,
+    commerceCatalogOffset: null,
+    commerceCatalogNextOffset: null,
+    commerceCatalogTotal: null,
+    commerceCatalogLogicalPage: null,
+    commerceCatalogLastListedProductIds: null,
+    commerceCatalogPendingAction: null,
+    commerceCatalogIncludePrices: null,
+    commerceCatalogSelectedProductId: null,
+    commerceCatalogSelectedProductName: null,
+    commerceSimilarProductIds: null,
+    commerceSimilarNextOffset: null,
+    commerceSelectedProduct: null,
+    commerceSuggestedProductId: null,
+    commerceSuggestedProductName: null
+  };
+}
+
 function buildTenantCatalogOutOfStockContextPatch(conversation, product) {
   const clinicId = String(conversation && conversation.clinicId || '').trim();
   const productId = String(product && (product.id || product.productId) || '').trim();
@@ -12161,15 +12268,28 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
   };
 }
 
-async function buildTenantBusinessIntentReply({ clinic, conversation, contact = null, inboundText }) {
+async function buildTenantBusinessIntentReplyCore({
+  clinic,
+  conversation,
+  contact = null,
+  inboundText,
+  skipCatalogBrowseState = false,
+  explicitNewIntent = null
+}) {
   const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
     ? conversation.context
     : {};
-  const catalogBrowseDecision = await resolveTenantCatalogBrowseDecision({ clinic, conversation, contact, inboundText });
+  const catalogBrowseDecision = skipCatalogBrowseState
+    ? null
+    : await resolveTenantCatalogBrowseDecision({ clinic, conversation, contact, inboundText });
   if (catalogBrowseDecision) return catalogBrowseDecision;
   const offerRequest = parseTenantBusinessOfferRequest(inboundText);
   const proactiveRecommendation = isTenantBusinessProactiveRecommendationIntent(inboundText);
   const commercialIntent = detectCommercialIntent(inboundText);
+  const explicitCatalogSearch = Boolean(
+    explicitNewIntent &&
+    ['catalog_search', 'product_search'].includes(explicitNewIntent.type)
+  );
   const transactionalIntent = [
     'products',
     'prices',
@@ -12182,7 +12302,13 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
     'human_handoff',
     'recommendation'
   ].includes(commercialIntent.type);
-  if (!offerRequest && !proactiveRecommendation && !transactionalIntent && detectIntent(inboundText) !== 'pricing') {
+  if (
+    !offerRequest &&
+    !proactiveRecommendation &&
+    !transactionalIntent &&
+    detectIntent(inboundText) !== 'pricing' &&
+    !explicitCatalogSearch
+  ) {
     return null;
   }
 
@@ -12243,6 +12369,63 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
   const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
   const cartItems = normalizeCommerceCartItems(safeContext);
   const catalogIncludePrices = isCatalogPriceListIntent(inboundText);
+
+  if (
+    explicitNewIntent &&
+    ['catalog_search', 'product_search'].includes(explicitNewIntent.type) &&
+    explicitNewIntent.query
+  ) {
+    const exactProduct = findProductByName(activeProducts, explicitNewIntent.query);
+    const matches = exactProduct ? [exactProduct] : findProductsByQuery(activeProducts, explicitNewIntent.query);
+    const unambiguousProduct = matches.length === 1 ? matches[0] : null;
+    if (unambiguousProduct) {
+      return {
+        type: 'tenant_catalog_direct_search',
+        replyText: `${buildProductPricingReply([unambiguousProduct], unambiguousProduct.name)}\n\n${buildStockAvailabilityReply(unambiguousProduct)}`,
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: Number(unambiguousProduct.stock || 0) <= 0
+          ? {
+            ...buildTenantCatalogBrowseContextPatch({
+              clinicId: conversation.clinicId,
+              products: activeProducts,
+              cartItems,
+              includePrices: false
+            }),
+            ...buildTenantCatalogOutOfStockContextPatch(conversation, unambiguousProduct)
+          }
+          : {
+            ...buildTenantCatalogBrowseContextPatch({
+              clinicId: conversation.clinicId,
+              products: activeProducts,
+              cartItems,
+              suggestedProduct: unambiguousProduct,
+              includePrices: false
+            }),
+            commerceCatalogPendingAction: COMMERCE_CATALOG_ACTIONS.PRODUCT_SELECTED,
+            commerceCatalogSelectedProductId: String(unambiguousProduct.id || unambiguousProduct.productId || '').trim() || null,
+            commerceCatalogSelectedProductName: unambiguousProduct.name || null
+          }
+      };
+    }
+
+    const visibleProducts = matches.length ? matches : activeProducts;
+    const page = buildCommerceCatalogPage(visibleProducts, {
+      includeUnavailable: true,
+      includePrices: catalogIncludePrices
+    });
+    return {
+      type: 'tenant_catalog_search',
+      replyText: buildProductDiscoveryReply(matches, explicitNewIntent.query),
+      newState: 'WAITING_PRODUCT_SELECTION',
+      contextPatch: buildTenantCatalogBrowseContextPatch({
+        clinicId: conversation.clinicId,
+        products: visibleProducts,
+        cartItems,
+        page,
+        includePrices: catalogIncludePrices
+      })
+    };
+  }
 
   if (catalogIncludePrices && activeProducts.length) {
     const categories = buildCommerceCategories(activeProducts, { includeUnavailable: true });
@@ -12464,6 +12647,45 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, contact = 
       page,
       includePrices: catalogIncludePrices
     })
+  };
+}
+
+async function buildTenantBusinessIntentReply({ clinic, conversation, contact = null, inboundText }) {
+  const explicitNewIntent = classifyTenantExplicitNewIntent(inboundText);
+  if (!explicitNewIntent) {
+    return buildTenantBusinessIntentReplyCore({ clinic, conversation, contact, inboundText });
+  }
+
+  const clearPendingPatch = isTenantCatalogBrowseContext(conversation)
+    ? buildIncompatibleTenantCatalogStateClearPatch()
+    : null;
+  const effectiveConversation = clearPendingPatch
+    ? {
+      ...conversation,
+      context: {
+        ...(conversation && conversation.context && typeof conversation.context === 'object'
+          ? conversation.context
+          : {}),
+        ...clearPendingPatch
+      }
+    }
+    : conversation;
+  const decision = await buildTenantBusinessIntentReplyCore({
+    clinic,
+    conversation: effectiveConversation,
+    contact,
+    inboundText,
+    skipCatalogBrowseState: true,
+    explicitNewIntent
+  });
+  if (!decision || !clearPendingPatch) return decision;
+
+  return {
+    ...decision,
+    contextPatch: {
+      ...clearPendingPatch,
+      ...(decision.contextPatch || {})
+    }
   };
 }
 
@@ -21598,6 +21820,7 @@ module.exports = {
     splitWhatsAppTextChunks,
     truncateAtWordBoundary,
     buildCommercialPlanObjectionReply,
+    classifyTenantExplicitNewIntent,
     buildSafeCommercialIntentReply,
     buildCommercialShortMemoryReply,
     getActiveCommercialShortMemory,
