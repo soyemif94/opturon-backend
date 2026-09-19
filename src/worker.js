@@ -644,6 +644,13 @@ const COMMERCIAL_INTENT_MAP = {
       'mostrar productos',
       'quiero comprar',
       'quiero ver opciones',
+      'lista de productos',
+      'pasame el catalogo',
+      'mostrame productos',
+      'que productos tienen',
+      'que productos manejan',
+      'que productos trabajan',
+      'que mercaderia trabajan',
       'que tenes de'
     ],
     includes: [
@@ -667,6 +674,13 @@ const COMMERCIAL_INTENT_MAP = {
       'que venden',
       'que tienen',
       'quiero comprar',
+      'lista de productos',
+      'pasame el catalogo',
+      'mostrame productos',
+      'que productos tienen',
+      'que productos manejan',
+      'que productos trabajan',
+      'que mercaderia trabajan',
       'que tenes de'
     ],
     patterns: COMMERCIAL_OFFER_PATTERNS
@@ -1715,7 +1729,17 @@ function detectWeakCommercialSignal(rawText) {
 }
 
 const COMMERCE_PRODUCTS_PAGE_SIZE = 10;
-const COMMERCE_MORE_KEYWORDS = new Set(['mas', 'más', 'ver mas', 'ver más', 'mostrar mas', 'mostrar más', 'siguiente']);
+const COMMERCE_MORE_KEYWORDS = new Set([
+  'mas',
+  'más',
+  'ver mas',
+  'ver más',
+  'mostrar mas',
+  'mostrar más',
+  'siguiente',
+  'otros',
+  'continuar'
+]);
 const COMMERCE_UNCATEGORIZED_CATEGORY_ID = '__uncategorized__';
 const COMMERCIAL_SHORT_MEMORY_TTL_MS = 10 * 60 * 1000;
 const COMMERCIAL_PAYMENT_CONTEXT_TTL_MS = 30 * 60 * 1000;
@@ -1767,18 +1791,27 @@ const PLAN_PENDING_ACTION_COMPARE_RECOMMENDED = 'compare_recommended_plan';
 const PLAN_PENDING_ACTION_COMPARE_CURRENT = 'compare_current_plan_with_plan';
 
 function buildCommerceEligibleProducts(products) {
-  return (Array.isArray(products) ? products : []).filter((product) => {
-    const status = String(product && product.status ? product.status : '').toLowerCase();
+  return buildCommerceCatalogProducts(products).filter((product) => {
     const stock = Number(product && product.stock ? product.stock : 0);
-    return status === 'active' && stock > 0;
+    return stock > 0;
   });
 }
 
-function buildCommerceCategories(products) {
+function buildCommerceCatalogProducts(products) {
+  return (Array.isArray(products) ? products : []).filter((product) => (
+    String(product && product.status ? product.status : '').toLowerCase() === 'active'
+  ));
+}
+
+function buildCommerceCategories(products, { includeUnavailable = false } = {}) {
   const grouped = new Map();
   let uncategorizedCount = 0;
 
-  for (const product of buildCommerceEligibleProducts(products)) {
+  const catalogProducts = includeUnavailable
+    ? buildCommerceCatalogProducts(products)
+    : buildCommerceEligibleProducts(products);
+
+  for (const product of catalogProducts) {
     const categoryId = String(product && product.categoryId ? product.categoryId : '').trim();
     const categoryName = String(product && product.categoryName ? product.categoryName : '').trim();
     if (!categoryId || !categoryName) {
@@ -1813,8 +1846,24 @@ function buildCommerceCategories(products) {
   }));
 }
 
-function buildCommerceCatalogPage(products, { offset = 0, categoryId = null, limit = COMMERCE_PRODUCTS_PAGE_SIZE } = {}) {
-  const eligibleProducts = buildCommerceEligibleProducts(products).filter((product) => {
+function hasUsefulCommerceCategories(categories, productCount) {
+  const safeCategories = Array.isArray(categories) ? categories : [];
+  const safeProductCount = Math.max(0, Number(productCount || 0));
+  const categorizedCount = safeCategories
+    .filter((category) => category.categoryId !== COMMERCE_UNCATEGORIZED_CATEGORY_ID)
+    .reduce((total, category) => total + Math.max(0, Number(category.productCount || 0)), 0);
+  return categorizedCount > 0 && safeProductCount > 0 && categorizedCount / safeProductCount >= 0.25;
+}
+
+function buildCommerceCatalogPage(products, {
+  offset = 0,
+  categoryId = null,
+  limit = COMMERCE_PRODUCTS_PAGE_SIZE,
+  includeUnavailable = false
+} = {}) {
+  const catalogProducts = (includeUnavailable
+    ? buildCommerceCatalogProducts(products)
+    : buildCommerceEligibleProducts(products)).filter((product) => {
     if (!categoryId) return true;
     if (String(categoryId).trim() === COMMERCE_UNCATEGORIZED_CATEGORY_ID) {
       const currentCategoryId = String(product && product.categoryId ? product.categoryId : '').trim();
@@ -1825,7 +1874,7 @@ function buildCommerceCatalogPage(products, { offset = 0, categoryId = null, lim
   });
   const safeOffset = Math.max(0, Number(offset || 0));
   const safeLimit = Math.max(1, Math.min(20, Number(limit || COMMERCE_PRODUCTS_PAGE_SIZE)));
-  const items = eligibleProducts.slice(safeOffset, safeOffset + safeLimit).map((product, index) => {
+  const items = catalogProducts.slice(safeOffset, safeOffset + safeLimit).map((product, index) => {
     const resolvedPrice = resolveProductPrice(product);
     return {
       index: safeOffset + index + 1,
@@ -1843,8 +1892,8 @@ function buildCommerceCatalogPage(products, { offset = 0, categoryId = null, lim
   });
 
   const nextOffset = safeOffset + items.length;
-  const hasMore = nextOffset < eligibleProducts.length;
-  const firstProductWithCategory = eligibleProducts.find((product) => product && product.categoryName);
+  const hasMore = nextOffset < catalogProducts.length;
+  const firstProductWithCategory = catalogProducts.find((product) => product && product.categoryName);
   const resolvedCategoryName =
     categoryId && String(categoryId).trim() === COMMERCE_UNCATEGORIZED_CATEGORY_ID
       ? 'Otros'
@@ -1854,12 +1903,13 @@ function buildCommerceCatalogPage(products, { offset = 0, categoryId = null, lim
 
   return {
     items,
-    total: eligibleProducts.length,
+    total: catalogProducts.length,
     offset: safeOffset,
     nextOffset: hasMore ? nextOffset : null,
     hasMore,
     categoryId: categoryId || null,
-    categoryName: resolvedCategoryName
+    categoryName: resolvedCategoryName,
+    catalogMembership: includeUnavailable === true
   };
 }
 
@@ -5669,6 +5719,16 @@ function buildIntelligentFallbackReply(safeContext) {
   if (hasCustomBotConfigValue(botConfig.fallbackMessage)) {
     return {
       replyText: String(botConfig.fallbackMessage).trim(),
+      contextPatch: {
+        intelligentFallbackCount: Math.min(nextCount, 2),
+        intelligentFallbackAt: new Date().toISOString()
+      }
+    };
+  }
+  const assistantMode = resolveAssistantModeFromSettings(parseClinicSettingsObject(clinic));
+  if (assistantMode === ASSISTANT_MODES.TENANT_BUSINESS) {
+    return {
+      replyText: 'No llegue a identificar que queres seleccionar. Decime que producto, categoria o precio queres consultar y te ayudo.',
       contextPatch: {
         intelligentFallbackCount: Math.min(nextCount, 2),
         intelligentFallbackAt: new Date().toISOString()
@@ -9769,9 +9829,11 @@ function buildPlanDetailReply(product, { includePrice = true, includeFeatures = 
   ].join('\n');
 }
 
-function buildCommerceCategoriesReply(categories) {
+function buildCommerceCategoriesReply(categories, { catalogMembership = false } = {}) {
   if (!categories.length) {
-    return 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos categorias activas con productos disponibles.';
+    return catalogMembership
+      ? 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos categorias activas en el catalogo.'
+      : 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos categorias activas con productos disponibles.';
   }
 
   return [
@@ -9779,7 +9841,7 @@ function buildCommerceCategoriesReply(categories) {
     '',
     '¡Bienvenido! Te ayudo a armar tu pedido por aca.',
     '',
-    'Estas son nuestras categorias disponibles:',
+    catalogMembership ? 'Estas son las categorias de nuestro catalogo:' : 'Estas son nuestras categorias disponibles:',
     '',
     ...categories.map((category) => `${formatCommerceIndex(category.index)} ${category.name}`),
     '',
@@ -9790,10 +9852,13 @@ function buildCommerceCategoriesReply(categories) {
 function buildCommerceCatalogReply(page) {
   const products = page && Array.isArray(page.items) ? page.items : [];
   const planCatalog = isPlanCatalog(products);
+  const catalogMembership = Boolean(page && page.catalogMembership === true && !planCatalog);
   if (!products.length) {
     return planCatalog
       ? 'Hola 👋\n\nTe ayudo a elegir la opción ideal.\n\nEn este momento no tenemos planes disponibles para mostrarte por WhatsApp.'
-      : 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos productos disponibles para pedir por WhatsApp.';
+      : catalogMembership
+        ? 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos productos activos en el catalogo.'
+        : 'Hola 👋\n\n¡Bienvenido! Te ayudo a armar tu pedido por aca.\n\nEn este momento no tenemos productos disponibles para pedir por WhatsApp.';
   }
 
   const lines = [
@@ -9806,10 +9871,14 @@ function buildCommerceCatalogReply(page) {
     page && page.categoryName
       ? planCatalog
         ? `Estos son los planes disponibles de ${page.categoryName}:`
-        : `Estos son algunos productos disponibles de ${page.categoryName}:`
+        : catalogMembership
+          ? `Estos son algunos productos del catalogo de ${page.categoryName}:`
+          : `Estos son algunos productos disponibles de ${page.categoryName}:`
       : planCatalog
         ? 'Estos son nuestros planes disponibles:'
-        : 'Estos son algunos de nuestros productos disponibles:',
+        : catalogMembership
+          ? `Trabajamos con ${page.total} productos. Te muestro algunos:`
+          : 'Estos son algunos de nuestros productos disponibles:',
     '',
     ...products.map((product) => {
       if (planCatalog) return buildPlanCatalogLine(product);
@@ -10068,6 +10137,9 @@ function hasCommerceContext(context) {
 function buildCommerceResetPatch(extra = {}) {
   return {
     activeBotDomain: null,
+    commerceCatalogBrowseMode: null,
+    commerceCatalogBrowseTenantId: null,
+    commerceCatalogIncludesUnavailable: null,
     commerceCatalog: null,
     commerceCategories: null,
     commerceCategorySelection: null,
@@ -11574,10 +11646,235 @@ function buildTenantCatalogContextPatch({ products, categories = null, cartItems
   });
 }
 
-async function buildTenantBusinessIntentReply({ clinic, conversation, inboundText }) {
+function buildTenantCatalogBrowseContextPatch({
+  clinicId,
+  products,
+  categories = null,
+  cartItems = null,
+  page = null,
+  activeCategoryId = null,
+  activeCategoryName = null,
+  suggestedProduct = null
+}) {
+  const safeProducts = buildCommerceCatalogProducts(products);
+  const safeCategories = Array.isArray(categories) ? categories : [];
+  const resolvedPage = page || (safeCategories.length
+    ? null
+    : buildCommerceCatalogPage(safeProducts, { includeUnavailable: true }));
+  return buildCommerceResetPatch({
+    activeBotDomain: 'commerce',
+    commerceCatalogBrowseMode: 'tenant_catalog',
+    commerceCatalogBrowseTenantId: String(clinicId || '').trim() || null,
+    commerceCatalogIncludesUnavailable: true,
+    commerceCatalog: resolvedPage && resolvedPage.items.length ? resolvedPage.items : null,
+    commerceCategories: safeCategories.length ? safeCategories : null,
+    commerceCategorySelection: safeCategories.length > 0 && !resolvedPage,
+    commerceCatalogOffset: resolvedPage ? resolvedPage.offset : null,
+    commerceCatalogNextOffset: resolvedPage ? resolvedPage.nextOffset : null,
+    commerceCatalogTotal: resolvedPage ? resolvedPage.total : safeProducts.length,
+    commerceCartItems: Array.isArray(cartItems) && cartItems.length ? cartItems : null,
+    commerceActiveCategoryId: activeCategoryId,
+    commerceActiveCategoryName: activeCategoryName,
+    commerceSuggestedProductId: suggestedProduct && (suggestedProduct.id || suggestedProduct.productId)
+      ? String(suggestedProduct.id || suggestedProduct.productId)
+      : null,
+    commerceSuggestedProductName: suggestedProduct && suggestedProduct.name
+      ? String(suggestedProduct.name)
+      : null
+  });
+}
+
+function isTenantCatalogBrowseContext(conversation) {
+  const safeConversation = conversation && typeof conversation === 'object' ? conversation : {};
+  const safeContext = safeConversation.context && typeof safeConversation.context === 'object'
+    ? safeConversation.context
+    : {};
+  return (
+    safeContext.commerceCatalogBrowseMode === 'tenant_catalog' &&
+    String(safeContext.commerceCatalogBrowseTenantId || '').trim() === String(safeConversation.clinicId || '').trim() &&
+    (
+      safeContext.commerceCategorySelection === true ||
+      (Array.isArray(safeContext.commerceCatalog) && safeContext.commerceCatalog.length > 0)
+    )
+  );
+}
+
+async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contact = null, inboundText }) {
+  if (!isTenantCatalogBrowseContext(conversation)) return null;
+
+  const safeContext = conversation.context;
+  const currentState = String(conversation.state || '').toUpperCase();
+  if (
+    currentState !== 'WAITING_PRODUCT_SELECTION' ||
+    isCommerceConfirmIntent(inboundText) ||
+    isCommerceCancelIntent(inboundText) ||
+    isCommerceUndoIntent(inboundText) ||
+    isCommerceViewCartIntent(inboundText) ||
+    isCommerceClearCartIntent(inboundText) ||
+    isCommerceHelpIntent(inboundText)
+  ) {
+    return resolveCommerceDecision({ conversation, clinic, contact, inboundText });
+  }
+  const commercialIntent = detectCommercialIntent(inboundText);
+  if (commercialIntent.type === 'prices' || commercialIntent.type === 'stock' || detectIntent(inboundText) === 'pricing') {
+    return null;
+  }
+
+  const clinicProducts = await listProductsByClinicId(conversation.clinicId);
+  const activeProducts = buildCommerceCatalogProducts(clinicProducts);
+  const cartItems = normalizeCommerceCartItems(safeContext);
+  const categoriesFromContext = Array.isArray(safeContext.commerceCategories) ? safeContext.commerceCategories : [];
+  const catalogFromContext = Array.isArray(safeContext.commerceCatalog) ? safeContext.commerceCatalog : [];
+  const categorySelectionActive = safeContext.commerceCategorySelection === true;
+  const activeCategoryId = String(safeContext.commerceActiveCategoryId || '').trim() || null;
+  const activeCategoryName = String(safeContext.commerceActiveCategoryName || '').trim() || null;
+  const nextOffset = Number.isFinite(Number(safeContext.commerceCatalogNextOffset))
+    ? Number(safeContext.commerceCatalogNextOffset)
+    : null;
+  const total = Number.isFinite(Number(safeContext.commerceCatalogTotal))
+    ? Number(safeContext.commerceCatalogTotal)
+    : 0;
+
+  if (categorySelectionActive) {
+    const categories = categoriesFromContext.length
+      ? categoriesFromContext
+      : buildCommerceCategories(activeProducts, { includeUnavailable: true });
+    const selectedCategory = parseCommerceCategorySelection(inboundText, categories);
+    if (selectedCategory) {
+      const page = buildCommerceCatalogPage(activeProducts, {
+        categoryId: selectedCategory.categoryId,
+        includeUnavailable: true
+      });
+      return {
+        type: 'tenant_catalog_category_selection',
+        replyText: buildCommerceCatalogReply(page),
+        newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+        contextPatch: buildTenantCatalogBrowseContextPatch({
+          clinicId: conversation.clinicId,
+          products: activeProducts,
+          cartItems,
+          page,
+          activeCategoryId: selectedCategory.categoryId,
+          activeCategoryName: selectedCategory.name
+        })
+      };
+    }
+  }
+
+  if (!categorySelectionActive && isCommerceMoreIntent(inboundText)) {
+    if (!nextOffset || nextOffset >= total) {
+      return {
+        type: 'tenant_catalog_pagination_complete',
+        replyText: 'Ya llegaste al final del catalogo. Decime que producto o categoria queres consultar y te ayudo.',
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: {
+          commerceCatalogBrowseMode: 'tenant_catalog',
+          commerceCatalogBrowseTenantId: String(conversation.clinicId),
+          commerceCatalogIncludesUnavailable: true
+        }
+      };
+    }
+    const page = buildCommerceCatalogPage(activeProducts, {
+      offset: nextOffset,
+      categoryId: activeCategoryId,
+      includeUnavailable: true
+    });
+    return {
+      type: 'tenant_catalog_pagination',
+      replyText: buildCommerceCatalogReply(page),
+      newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
+      contextPatch: buildTenantCatalogBrowseContextPatch({
+        clinicId: conversation.clinicId,
+        products: activeProducts,
+        cartItems,
+        page,
+        activeCategoryId,
+        activeCategoryName
+      })
+    };
+  }
+
+  const numericSelection = parseCommerceSelection(inboundText, 99);
+  if (!numericSelection) {
+    const matchedProduct = findProductByName(activeProducts, inboundText);
+    if (matchedProduct) {
+      const pricing = buildProductPricingReply([matchedProduct], matchedProduct.name);
+      return {
+        type: 'tenant_catalog_direct_search',
+        replyText: `${pricing}\n\n${buildStockAvailabilityReply(matchedProduct)}`,
+        newState: 'WAITING_PRODUCT_SELECTION',
+        contextPatch: {
+          commerceCatalogBrowseMode: 'tenant_catalog',
+          commerceCatalogBrowseTenantId: String(conversation.clinicId),
+          commerceCatalogIncludesUnavailable: true,
+          commerceSuggestedProductId: String(matchedProduct.id || matchedProduct.productId || '').trim() || null,
+          commerceSuggestedProductName: matchedProduct.name || null
+        }
+      };
+    }
+  }
+
+  if (!categorySelectionActive && numericSelection) {
+    const selectedProduct = catalogFromContext.find((product) => Number(product.index) === numericSelection) ||
+      catalogFromContext[numericSelection - 1] ||
+      null;
+    if (selectedProduct) {
+      const persistedProduct = findCatalogItemByStoredId(activeProducts, selectedProduct.productId || selectedProduct.id) || selectedProduct;
+      if (Number(persistedProduct.stock || 0) <= 0) {
+        return {
+          type: 'tenant_catalog_product_unavailable',
+          replyText: `${buildProductPricingReply([persistedProduct], persistedProduct.name)}\n\n${buildStockAvailabilityReply(persistedProduct)}`,
+          newState: 'WAITING_PRODUCT_SELECTION',
+          contextPatch: {
+            commerceCatalogBrowseMode: 'tenant_catalog',
+            commerceCatalogBrowseTenantId: String(conversation.clinicId),
+            commerceCatalogIncludesUnavailable: true,
+            commerceSuggestedProductId: String(persistedProduct.id || persistedProduct.productId || '').trim() || null,
+            commerceSuggestedProductName: persistedProduct.name || null
+          }
+        };
+      }
+      return {
+        type: 'tenant_catalog_product_selection',
+        replyText: `Elegiste: ${persistedProduct.name}\n\n¿Cuantas unidades queres?`,
+        outboundMedia: [buildCatalogProductImageMessage(persistedProduct)].filter(Boolean),
+        newState: 'WAITING_QUANTITY',
+        contextPatch: {
+          commerceCatalogBrowseMode: 'tenant_catalog',
+          commerceCatalogBrowseTenantId: String(conversation.clinicId),
+          commerceCatalogIncludesUnavailable: true,
+          commerceCatalog: catalogFromContext,
+          commerceCartItems: cartItems,
+          commerceSelectedProduct: persistedProduct,
+          commerceActiveCategoryId: activeCategoryId,
+          commerceActiveCategoryName: activeCategoryName,
+          commerceCatalogNextOffset: nextOffset,
+          commerceCatalogTotal: total
+        }
+      };
+    }
+  }
+
+  return {
+    type: 'tenant_catalog_safe_fallback',
+    replyText: categorySelectionActive
+      ? 'No llegue a identificar que categoria queres seleccionar. Escribi el numero o el nombre de una categoria y te ayudo.'
+      : 'No llegue a identificar que producto queres seleccionar. Decime el nombre del producto o elegi un numero de la lista.',
+    newState: 'WAITING_PRODUCT_SELECTION',
+    contextPatch: {
+      commerceCatalogBrowseMode: 'tenant_catalog',
+      commerceCatalogBrowseTenantId: String(conversation.clinicId),
+      commerceCatalogIncludesUnavailable: true
+    }
+  };
+}
+
+async function buildTenantBusinessIntentReply({ clinic, conversation, contact = null, inboundText }) {
   const safeContext = conversation && conversation.context && typeof conversation.context === 'object'
     ? conversation.context
     : {};
+  const catalogBrowseDecision = await resolveTenantCatalogBrowseDecision({ clinic, conversation, contact, inboundText });
+  if (catalogBrowseDecision) return catalogBrowseDecision;
   const offerRequest = parseTenantBusinessOfferRequest(inboundText);
   const proactiveRecommendation = isTenantBusinessProactiveRecommendationIntent(inboundText);
   const commercialIntent = detectCommercialIntent(inboundText);
@@ -11650,9 +11947,7 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, inboundTex
   }
 
   const clinicProducts = await listProductsByClinicId(conversation.clinicId);
-  const activeProducts = (Array.isArray(clinicProducts) ? clinicProducts : []).filter((product) => (
-    String(product && product.status ? product.status : '').toLowerCase() === 'active'
-  ));
+  const activeProducts = buildCommerceCatalogProducts(clinicProducts);
   const eligibleProducts = buildCommerceEligibleProducts(clinicProducts);
   const cartItems = normalizeCommerceCartItems(safeContext);
 
@@ -11734,73 +12029,88 @@ async function buildTenantBusinessIntentReply({ clinic, conversation, inboundTex
     };
   }
 
-  if (!eligibleProducts.length) {
+  if (!activeProducts.length) {
     return {
       type: 'tenant_catalog_discovery',
-      replyText: 'En este momento no encuentro productos o servicios activos en el catálogo. Decime qué necesitás y lo revisamos sin inventar disponibilidad.',
+      replyText: 'En este momento no encuentro productos o servicios activos en el catalogo. Decime que necesitas y lo revisamos sin inventar disponibilidad.',
       newState: 'IDLE'
     };
   }
 
   if (!offerRequest && commercialIntent.type === 'products') {
-    const categories = buildCommerceCategories(eligibleProducts);
-    return categories.length
+    const categories = buildCommerceCategories(activeProducts, { includeUnavailable: true });
+    const useCategories = hasUsefulCommerceCategories(categories, activeProducts.length);
+    const page = buildCommerceCatalogPage(activeProducts, { includeUnavailable: true });
+    return useCategories
       ? {
         type: 'tenant_catalog_discovery',
-        replyText: buildCommerceCategoriesReply(categories),
+        replyText: buildCommerceCategoriesReply(categories, { catalogMembership: true }),
         newState: 'WAITING_PRODUCT_SELECTION',
-        contextPatch: buildCommerceResetPatch({
-          activeBotDomain: 'commerce',
-          commerceCategories: categories,
-          commerceCategorySelection: true,
-          commerceCartItems: cartItems.length ? cartItems : null
+        contextPatch: buildTenantCatalogBrowseContextPatch({
+          clinicId: conversation.clinicId,
+          products: activeProducts,
+          categories,
+          cartItems
         })
       }
       : {
         type: 'tenant_catalog_discovery',
-        replyText: buildCommerceCatalogReply(buildCommerceCatalogPage(eligibleProducts)),
+        replyText: buildCommerceCatalogReply(page),
         newState: 'WAITING_PRODUCT_SELECTION',
-        contextPatch: buildTenantCatalogContextPatch({ products: eligibleProducts, cartItems })
+        contextPatch: buildTenantCatalogBrowseContextPatch({
+          clinicId: conversation.clinicId,
+          products: activeProducts,
+          cartItems,
+          page
+        })
       };
   }
 
   if (offerRequest.query) {
-    const matches = findProductsByQuery(eligibleProducts, offerRequest.query);
-    const visibleProducts = matches.length ? matches : eligibleProducts;
+    const matches = findProductsByQuery(activeProducts, offerRequest.query);
+    const visibleProducts = matches.length ? matches : activeProducts;
     const unambiguousProduct = matches.length === 1 ? matches[0] : null;
+    const page = buildCommerceCatalogPage(visibleProducts, { includeUnavailable: true });
     return {
       type: 'tenant_catalog_discovery',
       replyText: buildProductDiscoveryReply(matches, offerRequest.query),
       newState: 'WAITING_PRODUCT_SELECTION',
-      contextPatch: buildTenantCatalogContextPatch({
+      contextPatch: buildTenantCatalogBrowseContextPatch({
+        clinicId: conversation.clinicId,
         products: visibleProducts,
         cartItems,
+        page,
         suggestedProduct: unambiguousProduct
       })
     };
   }
 
-  const categories = buildCommerceCategories(eligibleProducts);
-  if (categories.length) {
+  const categories = buildCommerceCategories(activeProducts, { includeUnavailable: true });
+  if (hasUsefulCommerceCategories(categories, activeProducts.length)) {
     return {
       type: 'tenant_catalog_discovery',
-      replyText: buildCommerceCategoriesReply(categories),
+      replyText: buildCommerceCategoriesReply(categories, { catalogMembership: true }),
       newState: 'WAITING_PRODUCT_SELECTION',
-      contextPatch: buildCommerceResetPatch({
-        activeBotDomain: 'commerce',
-        commerceCategories: categories,
-        commerceCategorySelection: true,
-        commerceCartItems: cartItems.length ? cartItems : null
+      contextPatch: buildTenantCatalogBrowseContextPatch({
+        clinicId: conversation.clinicId,
+        products: activeProducts,
+        categories,
+        cartItems
       })
     };
   }
 
-  const page = buildCommerceCatalogPage(eligibleProducts);
+  const page = buildCommerceCatalogPage(activeProducts, { includeUnavailable: true });
   return {
     type: 'tenant_catalog_discovery',
     replyText: buildCommerceCatalogReply(page),
     newState: page.items.length ? 'WAITING_PRODUCT_SELECTION' : 'IDLE',
-    contextPatch: buildTenantCatalogContextPatch({ products: eligibleProducts, cartItems })
+    contextPatch: buildTenantCatalogBrowseContextPatch({
+      clinicId: conversation.clinicId,
+      products: activeProducts,
+      cartItems,
+      page
+    })
   };
 }
 
@@ -11814,7 +12124,7 @@ async function buildSafeCommercialIntentReply({
 }) {
   const normalizedAssistantMode = normalizeAssistantMode(assistantMode, ASSISTANT_MODES.OPTURON_SALES);
   if (normalizedAssistantMode === ASSISTANT_MODES.TENANT_BUSINESS) {
-    return buildTenantBusinessIntentReply({ clinic, conversation, inboundText });
+    return buildTenantBusinessIntentReply({ clinic, conversation, contact, inboundText });
   }
 
   const detectedCommercialIntent = detectCommercialIntent(inboundText);
