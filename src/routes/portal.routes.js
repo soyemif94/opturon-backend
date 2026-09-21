@@ -203,6 +203,7 @@ const {
   getOperationalAlertHistoryDetail
 } = require('../controllers/portal-operational-alerts.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
+const { requireAdminInternalActor } = require('../middlewares/partner-auth.middleware');
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
 const { requireInventoryReadRole, requireSensitiveInventoryRole, requireInventoryReceiptRole, requireCatalogWriteRole } = require('../middlewares/portal-inventory-authorization.middleware');
@@ -453,9 +454,9 @@ router.use(
 router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
 router.get('/loyalty-reward-images/:tenantId/:fileName', getPortalLoyaltyRewardImagePublic);
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
-router.get('/tenants/:tenantId/policy', requirePortalInternalAuth, getPortalTenantPolicy);
-router.post('/tenants/:tenantId/provision', requirePortalInternalAuth, postPortalTenantProvision);
-router.patch('/tenants/:tenantId/policy', requirePortalInternalAuth, patchPortalTenantPolicy);
+router.get('/tenants/:tenantId/policy', requireAdminInternalActor, getPortalTenantPolicy);
+router.post('/tenants/:tenantId/provision', requireAdminInternalActor, postPortalTenantProvision);
+router.patch('/tenants/:tenantId/policy', requireAdminInternalActor, patchPortalTenantPolicy);
 router.get('/tenants/:tenantId/conversations', inboxModule, getPortalConversations);
 router.patch('/tenants/:tenantId/conversations/archive', inboxModule, patchPortalConversationsArchive);
 router.patch('/tenants/:tenantId/conversations/restore', inboxModule, patchPortalConversationsRestore);

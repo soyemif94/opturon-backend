@@ -5139,16 +5139,16 @@ async function postPortalProductsBulkDeleteExecute(req, res) {
 
 async function patchPortalTenantPolicy(req, res) {
   const tenantId = getRequestTenantId(req);
-  const actor = getPortalActorMeta(req);
+  const actor = req.adminActor || null;
 
   try {
     const result = await updateTenantPolicyByExternalTenantId(tenantId, req.body || {}, {
-      mode: 'tenant',
-      actorUserId: actor.actorId,
-      actorRole: 'client_portal',
-      actorScope: 'client',
-      action: 'tenant_policy_updated_by_tenant',
-      source: 'portal_internal_api'
+      mode: 'admin',
+      actorUserId: actor && actor.id ? String(actor.id) : null,
+      actorRole: actor && actor.role ? String(actor.role).toLowerCase() : null,
+      actorScope: actor && actor.accountScope ? String(actor.accountScope) : null,
+      action: 'tenant_policy_updated_by_opturon_admin',
+      source: 'portal_control_plane_api'
     });
     if (!result.ok) {
       const status = result.reason === 'tenant_not_found' ? 404 : 400;

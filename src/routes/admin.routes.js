@@ -46,9 +46,9 @@ const { requireAdminInternalActor } = require('../middlewares/partner-auth.middl
 const router = express.Router();
 
 router.post('/set-active-tenant', requirePortalInternalAuth, postSetActiveTenant);
-router.get('/tenants', requirePortalInternalAuth, getTenants);
-router.get('/tenants/:tenantId/policy', requirePortalInternalAuth, getTenantPolicy);
-router.patch('/tenants/:tenantId/policy', requirePortalInternalAuth, patchTenantPolicy);
+router.get('/tenants', requireAdminInternalActor, getTenants);
+router.get('/tenants/:tenantId/policy', requireAdminInternalActor, getTenantPolicy);
+router.patch('/tenants/:tenantId/policy', requireAdminInternalActor, patchTenantPolicy);
 router.post('/tenants/:tenantId/transfer-payments/validation', requirePortalInternalAuth, postTransferPaymentValidation);
 router.get('/billing/subscriptions', requirePortalInternalAuth, getAdminBillingSubscriptions);
 router.post('/billing/subscriptions', requirePortalInternalAuth, postAdminBillingSubscription);
