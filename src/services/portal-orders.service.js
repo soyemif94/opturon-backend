@@ -1372,7 +1372,7 @@ async function sendPortalOrderWhatsAppSummary(tenantId, orderId) {
       snapshot: buildOrderCustomerNotificationSnapshot(order),
       customerName: contact.name || order.customerName || null
     });
-    const outbound = await sendPortalMessage(context.tenantId, route.conversation.id, summary.text);
+    const outbound = await sendPortalMessage(context.tenantId, route.conversation.id, summary.text, { humanInitiated: false });
     if (!outbound.ok) {
       return buildError(context.tenantId, outbound.reason || 'order_summary_send_failed');
     }
@@ -1872,7 +1872,7 @@ async function validatePortalOrderTransferPayment(tenantId, orderId, payload = {
     return result;
   }
 
-  const notification = await sendPortalMessage(tenantId, result.conversationId, result.notificationText);
+  const notification = await sendPortalMessage(tenantId, result.conversationId, result.notificationText, { humanInitiated: false });
 
   return {
     ok: true,

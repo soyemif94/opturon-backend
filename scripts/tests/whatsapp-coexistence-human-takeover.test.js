@@ -159,10 +159,13 @@ test('runtime wiring keeps echoes out of inbound routing and guards every conver
   const inbound = fs.readFileSync(path.join(root, 'src/webhooks/meta.webhook.js'), 'utf8');
   const worker = fs.readFileSync(path.join(root, 'src/worker.js'), 'utf8');
   const portal = fs.readFileSync(path.join(root, 'src/services/portal-inbox.service.js'), 'utf8');
+  const orders = fs.readFileSync(path.join(root, 'src/services/portal-orders.service.js'), 'utf8');
   assert.match(webhook, /processSmbMessageEchoes\(payload/);
   assert.match(inbound, /smb_message_echoes'\) continue/);
   assert.ok((worker.match(/isAutomaticReplyAllowedNow\(/g) || []).length >= 4);
   assert.match(worker, /job\.type === 'conversation_operational'/);
   assert.ok(portal.indexOf('sendChannelScopedMessage') < portal.lastIndexOf('activateHumanTakeover'));
   assert.match(portal, /source: TAKEOVER_SOURCES\.OPTURON_INBOX/);
+  assert.match(portal, /options\.humanInitiated !== false/);
+  assert.equal((orders.match(/humanInitiated: false/g) || []).length, 2);
 });

@@ -1623,7 +1623,7 @@ async function patchPortalConversationNextAction(tenantId, conversationId, paylo
   };
 }
 
-async function sendPortalMessage(tenantId, conversationId, text) {
+async function sendPortalMessage(tenantId, conversationId, text, options = {}) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
 
@@ -1795,6 +1795,7 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       }
     );
 
+  const humanInitiated = options.humanInitiated !== false;
   const persistPortalOutbound = async (client = null) => {
     const outboundWrite = await conversationRepo.insertOutboundMessage({
       conversationId: conversation.id,
@@ -1807,11 +1808,13 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       text: safeText,
       raw: {
         ...(sendResult && sendResult.raw ? sendResult.raw : {}),
-        actor: 'HUMAN',
-        source: TAKEOVER_SOURCES.OPTURON_INBOX
+        ...(humanInitiated ? {
+          actor: 'HUMAN',
+          source: TAKEOVER_SOURCES.OPTURON_INBOX
+        } : {})
       }
     }, client);
-    if (runtimeProvider !== 'whatsapp_cloud') return { outboundWrite, takeover: null };
+    if (runtimeProvider !== 'whatsapp_cloud' || !humanInitiated) return { outboundWrite, takeover: null };
     const takeover = await activateHumanTakeover({
       clinicId: context.clinic.id,
       conversationId: conversation.id,
