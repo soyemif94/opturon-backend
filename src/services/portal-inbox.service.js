@@ -1808,7 +1808,7 @@ async function sendPortalMessage(tenantId, conversationId, text, options = {}) {
       text: safeText,
       raw: {
         ...(sendResult && sendResult.raw ? sendResult.raw : {}),
-        ...(humanInitiated ? {
+        ...(humanInitiated && runtimeProvider === 'whatsapp_cloud' ? {
           actor: 'HUMAN',
           source: TAKEOVER_SOURCES.OPTURON_INBOX
         } : {})

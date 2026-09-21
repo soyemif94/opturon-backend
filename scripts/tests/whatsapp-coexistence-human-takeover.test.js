@@ -167,5 +167,6 @@ test('runtime wiring keeps echoes out of inbound routing and guards every conver
   assert.ok(portal.indexOf('sendChannelScopedMessage') < portal.lastIndexOf('activateHumanTakeover'));
   assert.match(portal, /source: TAKEOVER_SOURCES\.OPTURON_INBOX/);
   assert.match(portal, /options\.humanInitiated !== false/);
+  assert.match(portal, /humanInitiated && runtimeProvider === 'whatsapp_cloud'/);
   assert.equal((orders.match(/humanInitiated: false/g) || []).length, 2);
 });
