@@ -4,6 +4,7 @@ const { maybeDecryptSecret, maybeEncryptSecret } = require('../utils/secret-cryp
 const {
   WHATSAPP_CONNECTION_MODE,
   assertWhatsAppConnectionMode,
+  resolveChannelWhatsAppConnectionMode,
   resolveStoredWhatsAppConnectionMode
 } = require('../whatsapp/whatsapp-connection-mode');
 
@@ -30,7 +31,7 @@ function mapChannelRecord(record) {
 
   return {
     ...record,
-    connectionMode: resolveStoredWhatsAppConnectionMode(record.connectionMode),
+    connectionMode: resolveChannelWhatsAppConnectionMode(record.provider, record.connectionMode),
     accessToken: maybeDecryptSecret(record.accessToken)
   };
 }

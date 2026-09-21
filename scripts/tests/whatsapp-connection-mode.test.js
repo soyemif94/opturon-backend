@@ -24,7 +24,7 @@ test('WhatsApp connection mode migration and repository stay safe by default', a
         id text PRIMARY KEY DEFAULT md5(random()::text || clock_timestamp()::text),
         "clinicId" uuid NOT NULL REFERENCES clinics(id),
         provider text NOT NULL DEFAULT 'whatsapp_cloud',
-        "phoneNumberId" text NOT NULL UNIQUE,
+        "phoneNumberId" text UNIQUE,
         "wabaId" text,
         "accessToken" text,
         "displayPhoneNumber" text,
@@ -57,10 +57,27 @@ test('WhatsApp connection mode migration and repository stay safe by default', a
       [clinicA, clinicB, 'tenant-a', 'Same visible name', 'tenant-b']);
     await db.query(`INSERT INTO channels ("clinicId", "phoneNumberId", "displayPhoneNumber")
                     VALUES ($1, 'phone-a', '+5400008810')`, [clinicA]);
+    await db.query(`INSERT INTO channels ("clinicId", provider, "phoneNumberId")
+                    VALUES ($1, 'instagram_graph', NULL)`, [clinicA]);
 
-    const migration = fs.readFileSync(path.join(root, 'db/migrations/080_whatsapp_connection_mode.sql'), 'utf8');
-    await db.exec(migration);
-    await db.exec(migration);
+    const migration080 = fs.readFileSync(path.join(root, 'db/migrations/080_whatsapp_connection_mode.sql'), 'utf8');
+    await db.exec(migration080);
+    await db.exec(migration080);
+
+    const modesAfter080 = await db.query(
+      `SELECT provider, "connectionMode" FROM channels ORDER BY provider`
+    );
+    assert.deepEqual(modesAfter080.rows, [
+      { provider: 'instagram_graph', connectionMode: 'API_ONLY' },
+      { provider: 'whatsapp_cloud', connectionMode: 'API_ONLY' }
+    ]);
+
+    const migration081 = fs.readFileSync(
+      path.join(root, 'db/migrations/081_whatsapp_connection_mode_provider_invariant.sql'),
+      'utf8'
+    );
+    await db.exec(migration081);
+    await db.exec(migration081);
 
     require.cache[dbModulePath] = {
       id: dbModulePath,
@@ -76,6 +93,7 @@ test('WhatsApp connection mode migration and repository stay safe by default', a
     const {
       WHATSAPP_CONNECTION_MODE,
       assertWhatsAppConnectionMode,
+      resolveChannelWhatsAppConnectionMode,
       resolveStoredWhatsAppConnectionMode,
       shouldRegisterWhatsAppPhone
     } = require(path.join(root, 'src/whatsapp/whatsapp-connection-mode.js'));
@@ -85,6 +103,10 @@ test('WhatsApp connection mode migration and repository stay safe by default', a
       assert.equal(legacy.connectionMode, WHATSAPP_CONNECTION_MODE.API_ONLY);
       assert.equal(resolveStoredWhatsAppConnectionMode(undefined), WHATSAPP_CONNECTION_MODE.API_ONLY);
       assert.equal(resolveStoredWhatsAppConnectionMode(null), WHATSAPP_CONNECTION_MODE.API_ONLY);
+      assert.equal(
+        resolveChannelWhatsAppConnectionMode('whatsapp_cloud', null),
+        WHATSAPP_CONNECTION_MODE.API_ONLY
+      );
 
       const session = await repository.createOnboardingSession({
         clinicId: clinicA,
@@ -94,6 +116,45 @@ test('WhatsApp connection mode migration and repository stay safe by default', a
         redirectUri: 'https://opturon.test/callback'
       });
       assert.equal(session.requestedConnectionMode, WHATSAPP_CONNECTION_MODE.API_ONLY);
+    });
+
+    await t.test('provider invariant keeps WhatsApp modes out of non-WhatsApp channels', async () => {
+      const instagram = await db.query(
+        `SELECT "connectionMode" FROM channels WHERE provider = 'instagram_graph' LIMIT 1`
+      );
+      assert.equal(instagram.rows[0].connectionMode, null);
+      assert.equal(resolveChannelWhatsAppConnectionMode('instagram_graph', null), null);
+      assert.throws(
+        () => resolveChannelWhatsAppConnectionMode('instagram_graph', WHATSAPP_CONNECTION_MODE.API_ONLY),
+        { code: 'invalid_whatsapp_connection_mode' }
+      );
+
+      await assert.rejects(
+        db.query(
+          `INSERT INTO channels ("clinicId", provider, "phoneNumberId", "connectionMode")
+           VALUES ($1, 'instagram_graph', NULL, 'API_ONLY')`,
+          [clinicA]
+        ),
+        { code: '23514' }
+      );
+      await assert.rejects(
+        db.query(
+          `INSERT INTO channels ("clinicId", provider, "phoneNumberId")
+           VALUES ($1, 'whatsapp_cloud', 'missing-mode')`,
+          [clinicA]
+        ),
+        { code: '23514' }
+      );
+    });
+
+    await t.test('standard WhatsApp upsert writes API_ONLY explicitly', async () => {
+      const inserted = await repository.upsertWhatsAppChannel({
+        clinicId: clinicA,
+        phoneNumberId: 'phone-standard',
+        wabaId: 'waba-standard',
+        accessToken: 'token-standard'
+      });
+      assert.equal(inserted.connectionMode, WHATSAPP_CONNECTION_MODE.API_ONLY);
     });
 
     await t.test('registration contract is mode specific', () => {

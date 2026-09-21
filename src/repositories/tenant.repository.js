@@ -551,6 +551,7 @@ async function upsertInstagramChannel(input, client = null) {
       `UPDATE channels
        SET type = 'instagram',
            provider = 'instagram_graph',
+           "connectionMode" = NULL,
            "externalId" = COALESCE($2, "externalId"),
            "externalPageId" = COALESCE($3, "externalPageId"),
            "externalPageName" = COALESCE($4, "externalPageName"),

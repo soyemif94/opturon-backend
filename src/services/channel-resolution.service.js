@@ -2,6 +2,7 @@ const env = require('../config/env');
 const { query } = require('../db/client');
 const { findChannelByPhoneNumberId } = require('../repositories/tenant.repository');
 const { maybeEncryptSecret } = require('../utils/secret-crypto');
+const { WHATSAPP_CONNECTION_MODE } = require('../whatsapp/whatsapp-connection-mode');
 
 function summarizeChannel(channel) {
   if (!channel) return null;
@@ -56,8 +57,8 @@ async function resolveClinicIdForConfiguredChannel(existingChannels) {
 
 async function upsertConfiguredChannel(clinicId) {
   const result = await query(
-    `INSERT INTO channels ("clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status, "updatedAt")
-     VALUES ($1, 'whatsapp_cloud', $2, $3, $4, 'active', NOW())
+    `INSERT INTO channels ("clinicId", provider, "phoneNumberId", "wabaId", "accessToken", status, "connectionMode", "updatedAt")
+     VALUES ($1, 'whatsapp_cloud', $2, $3, $4, 'active', $5, NOW())
      ON CONFLICT ("phoneNumberId")
      DO UPDATE SET
        "clinicId" = EXCLUDED."clinicId",
@@ -66,7 +67,13 @@ async function upsertConfiguredChannel(clinicId) {
        status = 'active',
        "updatedAt" = NOW()
      RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", status`,
-    [clinicId, env.whatsappPhoneNumberId, env.whatsappWabaId || null, maybeEncryptSecret(env.whatsappAccessToken)]
+    [
+      clinicId,
+      env.whatsappPhoneNumberId,
+      env.whatsappWabaId || null,
+      maybeEncryptSecret(env.whatsappAccessToken),
+      WHATSAPP_CONNECTION_MODE.API_ONLY
+    ]
   );
 
   return result.rows[0] || null;

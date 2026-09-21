@@ -3,6 +3,8 @@ const WHATSAPP_CONNECTION_MODE = Object.freeze({
   COEXISTENCE: 'COEXISTENCE'
 });
 
+const WHATSAPP_CHANNEL_PROVIDER = 'whatsapp_cloud';
+
 const VALID_CONNECTION_MODES = new Set(Object.values(WHATSAPP_CONNECTION_MODE));
 
 function invalidConnectionModeError(value) {
@@ -27,13 +29,27 @@ function resolveStoredWhatsAppConnectionMode(value) {
   return assertWhatsAppConnectionMode(value);
 }
 
+function resolveChannelWhatsAppConnectionMode(provider, value) {
+  if (provider === WHATSAPP_CHANNEL_PROVIDER) {
+    return resolveStoredWhatsAppConnectionMode(value);
+  }
+
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  throw invalidConnectionModeError(value);
+}
+
 function shouldRegisterWhatsAppPhone(connectionMode) {
   return assertWhatsAppConnectionMode(connectionMode) === WHATSAPP_CONNECTION_MODE.API_ONLY;
 }
 
 module.exports = {
+  WHATSAPP_CHANNEL_PROVIDER,
   WHATSAPP_CONNECTION_MODE,
   assertWhatsAppConnectionMode,
+  resolveChannelWhatsAppConnectionMode,
   resolveStoredWhatsAppConnectionMode,
   shouldRegisterWhatsAppPhone
 };
