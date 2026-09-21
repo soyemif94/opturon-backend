@@ -35,6 +35,8 @@ const {
   resolveProductStockPriority
 } = require('./utils/conversational-commerce');
 const conversationRepo = require('./conversations/conversation.repo');
+const { isAutomaticReplyAllowedNow } = require('./conversations/human-takeover.service');
+const { processTakeoverInbound } = require('./conversations/takeover-operational.service');
 const { decideReply } = require('./conversations/conversation.engine');
 const { parseAppointmentText } = require('./conversations/appointment.parser');
 const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
@@ -18431,6 +18433,10 @@ async function sendAndPersistReply({
   let firstMediaSendResult = null;
 
   for (let index = 0; index < safeOutboundMedia.length; index += 1) {
+    if (!(await isAutomaticReplyAllowedNow({ clinicId, conversationId, channelId: channelCredentials.channelId }))) {
+      logInfo('conversation_reply_suppressed_before_send', { requestId, clinicId, conversationId, channelId: channelCredentials.channelId });
+      return null;
+    }
     const mediaMessage = safeOutboundMedia[index];
     const caption = String(mediaMessage.image.caption || '').trim() || (index === 0 ? String(text || '').trim() : '');
     sendSequence.push({
@@ -18498,6 +18504,10 @@ async function sendAndPersistReply({
   if (shouldSendText) {
     const textChunks = splitWhatsAppTextChunks(text);
     for (const textChunk of textChunks) {
+      if (!(await isAutomaticReplyAllowedNow({ clinicId, conversationId, channelId: channelCredentials.channelId }))) {
+        logInfo('conversation_reply_suppressed_before_send', { requestId, clinicId, conversationId, channelId: channelCredentials.channelId });
+        return null;
+      }
       sendSequence.push({
         order: sendSequence.length + 1,
         payloadType: 'text',
@@ -19256,6 +19266,12 @@ async function processInboundJob(job) {
     openHandoff
   });
   if (!botReplyAuthority.allowed) {
+    if (botReplyAuthority.reason === BOT_REPLY_AUTHORITY_REASONS.BOT_DISABLED && inboundMessage) {
+      await processTakeoverInbound({
+        clinicId, channelId, conversationId: conversation.id,
+        contactId: contact.id, inboundMessageId: inboundMessage.id
+      });
+    }
     if (botReplyAuthority.reason === BOT_REPLY_AUTHORITY_REASONS.CONTACT_OPTED_OUT) {
       const leadOpt = await upsertLeadForConversation({
         clinicId,
@@ -19655,6 +19671,12 @@ async function processConversationReplyJobUnlocked(job) {
     openHandoff
   });
   if (!botReplyAuthority.allowed) {
+    if (botReplyAuthority.reason === BOT_REPLY_AUTHORITY_REASONS.BOT_DISABLED) {
+      await processTakeoverInbound({
+        clinicId: conversation.clinicId, channelId, conversationId: conversation.id,
+        contactId: contact.id, inboundMessageId
+      });
+    }
     logInfo('conversation_reply_authority_blocked', {
       requestId,
       jobId: job.id,
@@ -21182,6 +21204,10 @@ async function processConversationReplyJobUnlocked(job) {
 
   let firstMediaSendResult = null;
   for (const mediaMessage of outboundMedia) {
+    if (!(await isAutomaticReplyAllowedNow({ clinicId: conversation.clinicId, conversationId: conversation.id, channelId }))) {
+      logInfo('conversation_reply_suppressed_before_send', { requestId, clinicId: conversation.clinicId, conversationId: conversation.id, channelId });
+      return;
+    }
     try {
       const mediaSendResult = await sendChannelScopedMessage(
         {
@@ -21254,6 +21280,10 @@ async function processConversationReplyJobUnlocked(job) {
   let sendResult = null;
   if (shouldSendTextWithMedia) {
     for (const textChunk of splitWhatsAppTextChunks(replyText)) {
+      if (!(await isAutomaticReplyAllowedNow({ clinicId: conversation.clinicId, conversationId: conversation.id, channelId }))) {
+        logInfo('conversation_reply_suppressed_before_send', { requestId, clinicId: conversation.clinicId, conversationId: conversation.id, channelId });
+        return;
+      }
       const chunkSendResult = await sendChannelScopedMessage(
         { to: contact.waId, text: textChunk },
         {
@@ -21342,6 +21372,18 @@ async function processConversationReplyJob(job) {
 async function processJob(job) {
   processingCount += 1;
   try {
+    if (job.type === 'conversation_operational') {
+      const payload = parseJobPayload(job.payload);
+      await processTakeoverInbound({
+        clinicId: payload.clinicId || job.clinicId,
+        channelId: payload.channelId || job.channelId,
+        conversationId: payload.conversationId,
+        contactId: payload.contactId,
+        inboundMessageId: payload.inboundMessageId
+      });
+      await markJobDone(job.id);
+      return;
+    }
     if (job.type === 'conversation_reply') {
       await processConversationReplyJob(job);
       await markJobDone(job.id);

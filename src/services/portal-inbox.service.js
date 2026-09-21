@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { query } = require('../db/client');
+const { query, withTransaction } = require('../db/client');
 const { findContactByIdAndClinicId, upsertContact } = require('../repositories/contact.repository');
 const { addEvent, listEvents } = require('../repositories/conversation-events.repository');
 const {
@@ -11,6 +11,12 @@ const { findLatestOrderByConversationId, findOrderById } = require('../repositor
 const { findChannelByIdAndClinicId } = require('../repositories/tenant.repository');
 const { getOpenHandoff, resolveOpenHandoffByConversation } = require('../repositories/handoff.repository');
 const conversationRepo = require('../conversations/conversation.repo');
+const {
+  TAKEOVER_SOURCES,
+  buildTakeoverContextPatch,
+  buildResumeContextPatch,
+  activateHumanTakeover
+} = require('../conversations/human-takeover.service');
 const { sendInstagramTextMessage } = require('../integrations/instagram/instagram.service');
 const { sendChannelScopedMessage } = require('../whatsapp/whatsapp.service');
 const graphClient = require('../whatsapp/whatsapp-graph.client');
@@ -344,6 +350,9 @@ const RESETTABLE_CONTEXT_KEEP_KEYS = new Set([
   'portalAssignedToUserId',
   'portalPriority',
   'portalBotEnabled',
+  'portalBotTakeoverSource',
+  'portalBotTakeoverStartedAt',
+  'portalBotLastHumanActivityAt',
   'portalDealStage',
   'portalNotes',
   'portalTasks',
@@ -1154,7 +1163,9 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
       nextContext.botDomainOverride = nextOverride;
     }
   } else if (action === 'toggle_bot') {
-    nextContext.portalBotEnabled = Boolean(safePayload.botEnabled);
+    Object.assign(nextContext, safePayload.botEnabled
+      ? buildResumeContextPatch()
+      : buildTakeoverContextPatch(currentContext, TAKEOVER_SOURCES.MANUAL_PAUSE, new Date().toISOString(), false));
   } else if (action === 'mark_hot') {
     nextContext.portalPriority = 'hot';
   } else if (action === 'unmark_hot') {
@@ -1784,17 +1795,46 @@ async function sendPortalMessage(tenantId, conversationId, text) {
       }
     );
 
-  const outboundWrite = await conversationRepo.insertOutboundMessage({
-    conversationId: conversation.id,
-    waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
-    from: runtimeProvider === 'instagram_graph'
-      ? runtimeChannel.instagramUserId || runtimeChannel.externalId || null
-      : runtimeChannel.phoneNumberId || null,
-    to: contact.waId || null,
-    type: 'text',
-    text: safeText,
-    raw: sendResult && sendResult.raw ? sendResult.raw : {}
-  });
+  const persistPortalOutbound = async (client = null) => {
+    const outboundWrite = await conversationRepo.insertOutboundMessage({
+      conversationId: conversation.id,
+      waMessageId: sendResult && sendResult.messageId ? sendResult.messageId : null,
+      from: runtimeProvider === 'instagram_graph'
+        ? runtimeChannel.instagramUserId || runtimeChannel.externalId || null
+        : runtimeChannel.phoneNumberId || null,
+      to: contact.waId || null,
+      type: 'text',
+      text: safeText,
+      raw: {
+        ...(sendResult && sendResult.raw ? sendResult.raw : {}),
+        actor: 'HUMAN',
+        source: TAKEOVER_SOURCES.OPTURON_INBOX
+      }
+    }, client);
+    if (runtimeProvider !== 'whatsapp_cloud') return { outboundWrite, takeover: null };
+    const takeover = await activateHumanTakeover({
+      clinicId: context.clinic.id,
+      conversationId: conversation.id,
+      source: TAKEOVER_SOURCES.OPTURON_INBOX
+    }, client);
+    if (!takeover) throw new Error('portal_human_takeover_activation_failed_after_send');
+    return { outboundWrite, takeover };
+  };
+  const persisted = runtimeProvider === 'whatsapp_cloud'
+    ? await withTransaction(persistPortalOutbound)
+    : await persistPortalOutbound();
+  const { outboundWrite, takeover } = persisted;
+
+  if (takeover) {
+    logInfo('portal_inbox_human_takeover_activated', {
+      tenantId: context.tenantId,
+      clinicId: context.clinic.id,
+      channelId: runtimeChannel.id,
+      conversationId: conversation.id,
+      source: TAKEOVER_SOURCES.OPTURON_INBOX,
+      activated: takeover.activated
+    });
+  }
 
   await upsertContact({
     clinicId: context.clinic.id,

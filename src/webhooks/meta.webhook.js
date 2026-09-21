@@ -145,6 +145,7 @@ function extractWhatsAppInboundEvents(payload) {
   for (const entryItem of entry) {
     const changes = Array.isArray(entryItem && entryItem.changes) ? entryItem.changes : [];
     for (const change of changes) {
+      if (String(change && change.field || '').trim() === 'smb_message_echoes') continue;
       const value = change && change.value ? change.value : {};
       const metadata = value && value.metadata ? value.metadata : {};
       const phoneNumberId = sanitizeString(metadata.phone_number_id || metadata.phoneNumberId);

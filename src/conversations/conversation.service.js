@@ -12,6 +12,7 @@ const { resolveWhatsAppConversation } = require('./whatsapp-conversation-resolve
 const { extractMetaInboundMessages } = require('../webhooks/meta.webhook');
 const { withTransaction } = require('../db/client');
 const { maybeEnrichInstagramContactProfile } = require('../integrations/instagram/instagram-profile.service');
+const { getInboundProcessingJobType } = require('./human-takeover.service');
 
 function normalizeWaNumber(value) {
   return String(value || '').replace(/[^\d]/g, '');
@@ -151,13 +152,14 @@ async function processInboundMessages({ body, headers, requestId }) {
           text: event.text || '',
           raw: event.raw || {}
         }, client);
+        const jobType = getInboundProcessingJobType(conversation.context);
         if (inboundWrite.inserted && String(channel.provider || '').trim().toLowerCase() === 'whatsapp_cloud') {
-          await repo.enqueueJob('conversation_reply', {
+          await repo.enqueueJob(jobType, {
             clinicId: channel.clinicId, channelId: channel.id, conversationId: conversation.id,
             contactId: contact.id, inboundMessageId: inboundWrite.row.id, waMessageId: event.providerMessageId
           }, client);
         }
-        return { duplicate: !inboundWrite.inserted, contact, conversation, inboundWrite };
+        return { duplicate: !inboundWrite.inserted, contact, conversation, inboundWrite, jobType };
       });
       const { conversation, inboundWrite } = persisted;
 
@@ -190,7 +192,7 @@ async function processInboundMessages({ body, headers, requestId }) {
         conversationId: conversation.id,
         waMessageId: event.providerMessageId || null,
         inboundMessageId: inboundWrite && inboundWrite.row ? inboundWrite.row.id : null,
-        jobType: 'conversation_reply'
+        jobType: persisted.jobType
       });
 
       if (String(channel.provider || '').trim().toLowerCase() !== 'whatsapp_cloud') {
@@ -206,7 +208,7 @@ async function processInboundMessages({ body, headers, requestId }) {
       }
 
       enqueued += 1;
-      logInfo('conversation_reply_enqueued', {
+      logInfo('conversation_inbound_job_enqueued', {
         requestId,
         jobId: null,
         clinicId: channel.clinicId,
@@ -214,6 +216,7 @@ async function processInboundMessages({ body, headers, requestId }) {
         conversationId: conversation.id,
         contactId: persisted.contact.id,
         inboundMessageId: inboundWrite && inboundWrite.row ? inboundWrite.row.id : null,
+        jobType: persisted.jobType,
         waMessageId: event.providerMessageId
       });
     } catch (error) {

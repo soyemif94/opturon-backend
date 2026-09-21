@@ -124,6 +124,20 @@ async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
   return mapChannelTokenRecord(result.rows[0] || null);
 }
 
+async function findCoexistenceChannelByPhoneNumberId(phoneNumberId, client = null) {
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", provider, "phoneNumberId", "displayPhoneNumber", "wabaId", status, "connectionMode"
+     FROM channels
+     WHERE "phoneNumberId" = $1
+       AND provider = 'whatsapp_cloud'
+     ORDER BY id ASC
+     LIMIT 2`,
+    [phoneNumberId]
+  );
+  return result.rows.length === 1 ? result.rows[0] : null;
+}
+
 async function findWhatsAppChannelByPhoneNumberIdIncludingInactive(phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
@@ -955,6 +969,7 @@ async function updateClinicBotConfigById(clinicId, botConfig, client = null) {
 module.exports = {
   BOT_RUNTIME_CONFIG_MUTATION_SOURCES,
   findChannelByPhoneNumberId,
+  findCoexistenceChannelByPhoneNumberId,
   findWhatsAppChannelByPhoneNumberIdIncludingInactive,
   findChannelById,
   findChannelByIdAndClinicId,

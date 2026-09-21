@@ -22,6 +22,8 @@ const { pushWebhookEvent } = require('../debug/webhook-store');
 const {
   reconcileOrderCustomerNotificationStatuses
 } = require('../services/order-customer-notification-status.service');
+const { hasSmbMessageEchoEntries } = require('../webhooks/smb-message-echoes');
+const { processSmbMessageEchoes } = require('../conversations/smb-message-echo.service');
 
 function withRequestMeta(req, meta = {}) {
   return {
@@ -464,6 +466,7 @@ async function persistAndEnqueue(event, req) {
 
 async function handleWebhook(req, res) {
   const payload = req.body || {};
+  const hasSmbEchoes = hasSmbMessageEchoEntries(payload);
   const payloadSummary = summarizeWebhookPayload(payload);
   const topLevelBodyKeys = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? Object.keys(payload)
@@ -492,7 +495,7 @@ async function handleWebhook(req, res) {
     from: payloadSummary.from,
     messageId: payloadSummary.messageId,
     textPreview: payloadSummary.textPreview,
-    rawBody: getSafeRawBody(req, payload)
+    rawBody: hasSmbEchoes ? null : getSafeRawBody(req, payload)
   });
 
   const isMetaPayload = Array.isArray(payload.entry);
@@ -572,7 +575,11 @@ async function handleWebhook(req, res) {
         });
       }
 
+      let echoCounts = { received: 0, persisted: 0, duplicates: 0, ignored: 0, failed: 0 };
       if (provider === 'meta_whatsapp') {
+        if (hasSmbEchoes) {
+          echoCounts = await processSmbMessageEchoes(payload, { requestId: req.requestId || null });
+        }
         try {
           await observeAndAutoReply(req, payload);
         } catch (error) {
@@ -599,10 +606,10 @@ async function handleWebhook(req, res) {
 
       return res.status(200).json({
         success: true,
-        received: processed && Number.isInteger(processed.received) ? processed.received : 0,
+        received: (processed && Number.isInteger(processed.received) ? processed.received : 0) + echoCounts.received,
         enqueued: processed && Number.isInteger(processed.enqueued) ? processed.enqueued : 0,
         unrouted: processed && Number.isInteger(processed.unrouted) ? processed.unrouted : 0,
-        duplicates: processed && Number.isInteger(processed.duplicates) ? processed.duplicates : 0
+        duplicates: (processed && Number.isInteger(processed.duplicates) ? processed.duplicates : 0) + echoCounts.duplicates
       });
     }
 
