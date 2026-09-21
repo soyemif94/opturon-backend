@@ -47,7 +47,8 @@ test('registration migration and repository preserve an encrypted PIN across ret
         id uuid PRIMARY KEY, "clinicId" uuid NOT NULL REFERENCES clinics(id),
         provider text NOT NULL, "phoneNumberId" text UNIQUE NOT NULL, "wabaId" text,
         "accessToken" text, "displayPhoneNumber" text, "verifiedName" text, status text,
-        "connectionSource" text, "connectionMetadata" jsonb
+        "connectionSource" text, "connectionMetadata" jsonb,
+        "connectionMode" text NOT NULL DEFAULT 'API_ONLY'
       );`);
     await db.query('INSERT INTO clinics(id) VALUES ($1), ($2)', [clinicA, clinicB]);
     const migration = fs.readFileSync(path.join(root, 'db/migrations/079_whatsapp_phone_registrations.sql'), 'utf8');

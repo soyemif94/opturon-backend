@@ -250,13 +250,15 @@ async function testFinalizeSuccessPersistsConnection({
   failCompletion = false,
   failRegistration = false,
   alreadyRegistered = false,
-  foreignChannel = false
+  foreignChannel = false,
+  connectionMode = 'API_ONLY'
 }) {
   const redirectUri = 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback';
   const steps = [];
   const logs = [];
   const context = { channel: null };
   let registeredAt = alreadyRegistered ? new Date().toISOString() : null;
+  let registerCallCount = 0;
   let session = {
     id: 'session-success',
     status: 'awaiting_callback',
@@ -264,6 +266,7 @@ async function testFinalizeSuccessPersistsConnection({
     clinicId: 'clinic-1',
     stateToken: 'state-success',
     redirectUri,
+    requestedConnectionMode: connectionMode,
     createdAt: new Date().toISOString()
   };
 
@@ -342,6 +345,7 @@ async function testFinalizeSuccessPersistsConnection({
       assert.strictEqual(data.clinicId, 'clinic-1');
       assert.strictEqual(data.wabaId, 'waba-success');
       assert.strictEqual(data.phoneNumberId, 'phone-success');
+      assert.strictEqual(data.connectionMode, connectionMode);
       steps.push('channel_active');
       context.channel = { ...data, id: 'channel-success', provider: 'whatsapp_cloud' };
       return context.channel;
@@ -375,6 +379,7 @@ async function testFinalizeSuccessPersistsConnection({
   });
   mockModule('src/whatsapp/whatsapp-graph.client.js', {
     registerWhatsAppPhoneNumber: async (options) => {
+      registerCallCount += 1;
       assert.strictEqual(options.phoneNumberId, 'phone-success');
       assert.strictEqual(options.accessToken, 'test-access-token');
       assert.strictEqual(options.pin, '042731');
@@ -462,14 +467,19 @@ async function testFinalizeSuccessPersistsConnection({
     assert.strictEqual(result.ok, true, result.reason);
     assert.strictEqual(result.status, 'connected');
     assert.strictEqual(result.channel.status, 'active');
+    assert.strictEqual(result.channel.connectionMode, connectionMode);
     assert.strictEqual(result.session.status, 'completed');
+    assert.strictEqual(result.session.requestedConnectionMode, connectionMode);
     assert.ok(result.session.completedAt);
     assert.deepStrictEqual(steps, [
       'exchanging_code', 'code_exchanged', 'discovering_assets', 'phone_discovered',
-      'subscribing_app', 'webhook_subscribed', 'registering_phone', 'pin_loaded',
-      ...(alreadyRegistered ? [] : ['phone_registered', 'registration_saved']),
+      'subscribing_app', 'webhook_subscribed',
+      ...(connectionMode === 'API_ONLY'
+        ? ['registering_phone', 'pin_loaded', ...(alreadyRegistered ? [] : ['phone_registered', 'registration_saved'])]
+        : []),
       'persisting_channel', 'channel_active', 'session_completed', 'commit'
     ]);
+    assert.strictEqual(registerCallCount, connectionMode === 'API_ONLY' && !alreadyRegistered ? 1 : 0);
     assert.ok(!JSON.stringify({ result, logs }).includes('042731'), 'successful signup must not expose the PIN');
     const signupStatus = await getPortalWhatsAppSignupStatus('tenant-a');
     assert.strictEqual(signupStatus.onboardingState, 'connected');
@@ -482,6 +492,84 @@ async function testFinalizeSuccessPersistsConnection({
     const status = await getPortalWhatsAppStatus('tenant-a');
     assert.strictEqual(status.channel.connected, true);
     assert.strictEqual(status.channel.channelId, 'channel-success');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+async function testStandardSignupDefaultsApiOnly() {
+  let persistedInput = null;
+  setupCommonMocks({
+    createOnboardingSession: async (input) => {
+      persistedInput = input;
+      return {
+        id: 'session-standard',
+        ...input,
+        createdAt: new Date().toISOString()
+      };
+    }
+  });
+
+  const { createPortalWhatsAppSignupSession } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+  const result = await createPortalWhatsAppSignupSession({
+    tenantId: 'tenant-a',
+    redirectUri: 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback',
+    requestedConnectionMode: 'COEXISTENCE'
+  });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(persistedInput.requestedConnectionMode, 'API_ONLY');
+  assert.strictEqual(result.session.requestedConnectionMode, 'API_ONLY');
+}
+
+async function testDirectRegistrationSkipsCoexistence() {
+  let registerCallCount = 0;
+  const selected = {
+    id: 'channel-coexistence', clinicId: 'clinic-1', provider: 'whatsapp_cloud',
+    phoneNumberId: 'phone-coexistence', connectionMode: 'COEXISTENCE'
+  };
+  setupCommonMocks({
+    findWhatsAppChannelByClinicAndPhoneNumberId: async () => ({ ...selected, accessToken: 'test-token' })
+  }, { channel: selected });
+  mockModule('src/whatsapp/whatsapp-graph.client.js', {
+    request: async () => ({ ok: true, status: 200, data: {} }),
+    registerWhatsAppPhoneNumber: async () => { registerCallCount += 1; return { ok: true }; }
+  });
+
+  const { registerPortalWhatsAppPhoneNumber } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+  const result = await registerPortalWhatsAppPhoneNumber('tenant-a');
+  assert.deepStrictEqual(result, {
+    ok: true, registered: false, skipped: true, connectionMode: 'COEXISTENCE'
+  });
+  assert.strictEqual(registerCallCount, 0);
+}
+
+async function testInvalidSessionModeFailsBeforeGraphWrites() {
+  const redirectUri = 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback';
+  let graphCalls = 0;
+  let failedPayload = null;
+  setupCommonMocks({
+    findOnboardingSessionByStateToken: async () => ({
+      id: 'session-invalid-mode', status: 'awaiting_callback', externalTenantId: 'tenant-a',
+      clinicId: 'clinic-1', redirectUri, requestedConnectionMode: 'UNKNOWN', createdAt: new Date().toISOString()
+    }),
+    markOnboardingSessionFailed: async (_id, payload) => { failedPayload = payload; return payload; }
+  });
+  mockModule('src/whatsapp/whatsapp-graph.client.js', {
+    request: async () => { graphCalls += 1; return { ok: true }; },
+    registerWhatsAppPhoneNumber: async () => { graphCalls += 1; return { ok: true }; }
+  });
+  const originalFetch = global.fetch;
+  global.fetch = async () => { graphCalls += 1; throw new Error('unexpected_graph_call'); };
+  try {
+    const { finalizePortalWhatsAppSignup } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+    const result = await finalizePortalWhatsAppSignup({
+      expectedTenantId: 'tenant-a', stateToken: 'state-invalid', code: 'code-invalid', redirectUri
+    });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, 'invalid_whatsapp_connection_mode');
+    assert.strictEqual(failedPayload.errorCode, 'invalid_whatsapp_connection_mode');
+    assert.strictEqual(graphCalls, 0);
   } finally {
     global.fetch = originalFetch;
   }
@@ -583,6 +671,9 @@ async function testSessionRedirectMustStillMatchExactly() {
 }
 
 async function run() {
+  await testStandardSignupDefaultsApiOnly();
+  await testDirectRegistrationSkipsCoexistence();
+  await testInvalidSessionModeFailsBeforeGraphWrites();
   await testFinalizeRejectsTenantMismatch();
   await testFinalizeRejectsConsumedState();
   await testRefreshCancelsAwaitingCallbackSession();
@@ -596,6 +687,7 @@ async function run() {
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, failRegistration: true });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, alreadyRegistered: true });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, foreignChannel: true });
+  await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, connectionMode: 'COEXISTENCE' });
   await testOAuthExchangeErrorIsSanitized();
   await testOAuthExchangeErrorIsSanitized({ invalidBody: true });
   await testOAuthExchangeErrorIsSanitized({ networkError: true });

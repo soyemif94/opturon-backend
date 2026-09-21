@@ -28,6 +28,11 @@ const {
   withOnboardingTransaction
 } = require('../repositories/whatsapp-onboarding.repository');
 const { createPortalUserAuditEvent } = require('../repositories/portal-user-audit.repository');
+const {
+  WHATSAPP_CONNECTION_MODE,
+  resolveStoredWhatsAppConnectionMode,
+  shouldRegisterWhatsAppPhone
+} = require('../whatsapp/whatsapp-connection-mode');
 
 const DEFAULT_PROVIDER = 'meta_embedded_signup';
 const DEFAULT_GRAPH_VERSION = String(env.getWhatsAppGraphVersion()).trim();
@@ -225,6 +230,7 @@ function summarizeSession(session) {
   return {
     id: session.id,
     status: session.status || null,
+    requestedConnectionMode: resolveStoredWhatsAppConnectionMode(session.requestedConnectionMode),
     externalTenantId: session.externalTenantId || null,
     clinicId: session.clinicId || null,
     stateToken: session.stateToken || null,
@@ -253,6 +259,7 @@ function buildSafeChannelPayload(channel) {
     displayPhoneNumber: channel.displayPhoneNumber || null,
     verifiedName: channel.verifiedName || null,
     status: channel.status || null,
+    connectionMode: resolveStoredWhatsAppConnectionMode(channel.connectionMode),
     connectionSource: channel.connectionSource || null,
     connectionMetadata: channel.connectionMetadata || null,
     updatedAt: channel.updatedAt || null,
@@ -705,6 +712,10 @@ async function registerPortalWhatsAppPhoneNumber(tenantId, options = {}) {
     if (!String(channel.accessToken || '').trim()) {
       throw registrationError('whatsapp_registration_credentials_missing');
     }
+    const connectionMode = resolveStoredWhatsAppConnectionMode(channel.connectionMode);
+    if (!shouldRegisterWhatsAppPhone(connectionMode)) {
+      return { ok: true, registered: false, skipped: true, connectionMode };
+    }
     await ensureWhatsAppPhoneRegistered({
       clinicId, phoneNumberId: channel.phoneNumberId,
       accessToken: channel.accessToken, requestId: options.requestId || null
@@ -769,6 +780,7 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
         createdByUserId: normalizeActorUserId(actorUserId),
         redirectUri: safeRedirectUri,
         graphVersion: DEFAULT_GRAPH_VERSION,
+        requestedConnectionMode: WHATSAPP_CONNECTION_MODE.API_ONLY,
         status: 'awaiting_callback',
         stateToken: randomToken(24),
         nonce: randomToken(16),
@@ -958,6 +970,7 @@ async function finalizePortalWhatsAppSignup({
   }
 
   try {
+    const connectionMode = resolveStoredWhatsAppConnectionMode(session.requestedConnectionMode);
     await markOnboardingSessionProcessing(session.id, {
       status: 'exchanging_code',
       metadata: {
@@ -1053,16 +1066,18 @@ async function finalizePortalWhatsAppSignup({
       });
     }
 
-    await markOnboardingSessionProcessing(session.id, {
-      status: 'registering_phone',
-      metadata: { processing: { stage: 'registering_phone', updatedAt: new Date().toISOString() } }
-    });
-    await ensureWhatsAppPhoneRegistered({
-      clinicId: session.clinicId,
-      phoneNumberId: assets.phoneNumberId,
-      accessToken: token.accessToken,
-      requestId
-    });
+    if (shouldRegisterWhatsAppPhone(connectionMode)) {
+      await markOnboardingSessionProcessing(session.id, {
+        status: 'registering_phone',
+        metadata: { processing: { stage: 'registering_phone', updatedAt: new Date().toISOString() } }
+      });
+      await ensureWhatsAppPhoneRegistered({
+        clinicId: session.clinicId,
+        phoneNumberId: assets.phoneNumberId,
+        accessToken: token.accessToken,
+        requestId
+      });
+    }
 
     const persisted = await withOnboardingTransaction(async (client) => {
       await markOnboardingSessionProcessing(
@@ -1084,6 +1099,7 @@ async function finalizePortalWhatsAppSignup({
           clinicId: session.clinicId,
           phoneNumberId: assets.phoneNumberId,
           wabaId: assets.wabaId,
+          connectionMode,
           accessToken: token.accessToken,
           displayPhoneNumber: assets.displayPhoneNumber,
           verifiedName: assets.verifiedName,
@@ -1392,6 +1408,7 @@ module.exports = {
     isProcessingSessionStatus,
     isActiveSessionStatus,
     isMetaBlockedMessage,
-    buildSessionSafeErrorMessage
+    buildSessionSafeErrorMessage,
+    shouldRegisterWhatsAppPhone
   }
 };

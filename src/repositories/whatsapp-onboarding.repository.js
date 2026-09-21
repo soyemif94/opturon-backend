@@ -1,6 +1,11 @@
 const crypto = require('crypto');
 const { query, withTransaction } = require('../db/client');
 const { maybeDecryptSecret, maybeEncryptSecret } = require('../utils/secret-crypto');
+const {
+  WHATSAPP_CONNECTION_MODE,
+  assertWhatsAppConnectionMode,
+  resolveStoredWhatsAppConnectionMode
+} = require('../whatsapp/whatsapp-connection-mode');
 
 function dbQuery(client, text, params) {
   if (client && typeof client.query === 'function') {
@@ -14,6 +19,7 @@ function mapOnboardingSessionRecord(record) {
 
   return {
     ...record,
+    requestedConnectionMode: resolveStoredWhatsAppConnectionMode(record.requestedConnectionMode),
     metaCode: maybeDecryptSecret(record.metaCode),
     metaAccessToken: maybeDecryptSecret(record.metaAccessToken)
   };
@@ -24,6 +30,7 @@ function mapChannelRecord(record) {
 
   return {
     ...record,
+    connectionMode: resolveStoredWhatsAppConnectionMode(record.connectionMode),
     accessToken: maybeDecryptSecret(record.accessToken)
   };
 }
@@ -41,9 +48,10 @@ async function createOnboardingSession(input, client = null) {
       "createdByUserId",
       "redirectUri",
       "graphVersion",
+      "requestedConnectionMode",
       metadata
     )
-    VALUES ($1, $2, 'whatsapp_embedded_signup', $3, $4, $5, $6, $7, $8, $9)
+    VALUES ($1, $2, 'whatsapp_embedded_signup', $3, $4, $5, $6, $7, $8, $9, $10)
     RETURNING *`,
     [
       input.clinicId,
@@ -54,6 +62,11 @@ async function createOnboardingSession(input, client = null) {
       input.createdByUserId || null,
       input.redirectUri,
       input.graphVersion || null,
+      assertWhatsAppConnectionMode(
+        input.requestedConnectionMode === undefined
+          ? WHATSAPP_CONNECTION_MODE.API_ONLY
+          : input.requestedConnectionMode
+      ),
       input.metadata || null
     ]
   );
@@ -279,6 +292,7 @@ async function findWhatsAppChannelByPhoneNumberId(phoneNumberId, client = null) 
             ch.provider,
             ch."phoneNumberId",
             ch."wabaId",
+            ch."connectionMode",
             ch."accessToken",
             ch."displayPhoneNumber",
             ch."verifiedName",
@@ -303,7 +317,7 @@ async function findWhatsAppChannelByPhoneNumberId(phoneNumberId, client = null) 
 async function findWhatsAppChannelByClinicAndPhoneNumberId(clinicId, phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken",
+    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "connectionMode", "accessToken",
             "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata"
      FROM channels
      WHERE "clinicId" = $1
@@ -396,9 +410,10 @@ async function upsertWhatsAppChannel(input, client = null) {
       status,
       "connectionSource",
       "connectionMetadata",
+      "connectionMode",
       "updatedAt"
     )
-    VALUES ($1, 'whatsapp_cloud', $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+    VALUES ($1, 'whatsapp_cloud', $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
     ON CONFLICT ("phoneNumberId")
     DO UPDATE SET
       "wabaId" = COALESCE(EXCLUDED."wabaId", channels."wabaId"),
@@ -410,7 +425,7 @@ async function upsertWhatsAppChannel(input, client = null) {
       "connectionMetadata" = COALESCE(EXCLUDED."connectionMetadata", channels."connectionMetadata"),
       "updatedAt" = NOW()
     WHERE channels."clinicId" = EXCLUDED."clinicId"
-    RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
+    RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", "connectionMode", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
     [
       input.clinicId,
       input.phoneNumberId,
@@ -420,7 +435,12 @@ async function upsertWhatsAppChannel(input, client = null) {
       input.verifiedName || null,
       input.status || 'active',
       input.connectionSource || 'embedded_signup',
-      input.connectionMetadata || null
+      input.connectionMetadata || null,
+      assertWhatsAppConnectionMode(
+        input.connectionMode === undefined
+          ? WHATSAPP_CONNECTION_MODE.API_ONLY
+          : input.connectionMode
+      )
     ]
   );
 
@@ -443,7 +463,7 @@ async function updateWhatsAppChannelAssetCredentials(channelId, clinicId, input,
      WHERE id = $1
        AND "clinicId" = $2
        AND provider = 'whatsapp_cloud'
-     RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
+     RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", "connectionMode", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
     [
       channelId,
       clinicId,
@@ -474,7 +494,7 @@ async function reassignWhatsAppChannelToClinic(channelId, input, client = null) 
          "connectionMetadata" = COALESCE($9, "connectionMetadata"),
          "updatedAt" = NOW()
      WHERE id = $1
-     RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
+     RETURNING id, "clinicId", provider, "phoneNumberId", "wabaId", "connectionMode", "accessToken", "displayPhoneNumber", "verifiedName", status, "connectionSource", "connectionMetadata", "updatedAt", "createdAt"`,
     [
       channelId,
       input.clinicId,
