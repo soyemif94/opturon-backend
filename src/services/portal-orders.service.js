@@ -51,7 +51,7 @@ const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../util
 const { resolveProductPrice } = require('../utils/commerce-price');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 const { resolveLotStatusAfterRestore } = require('../utils/inventory-lot-state');
-const { releaseOrderReservations } = require('../repositories/takeover-order.repository');
+const { releaseOrderReservations, listCommittedOrderReservations, cancelCommittedOrderReservations } = require('../repositories/takeover-order.repository');
 
 const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
 const LEGACY_ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
@@ -1426,6 +1426,9 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
   if (!currentOrder) {
     return buildError(context.tenantId, 'order_not_found');
   }
+  if (currentOrder.source === 'human_takeover' && requestedOrderStatus === 'confirmed' && currentOrder.status === 'draft') {
+    return buildError(context.tenantId, 'takeover_order_confirmation_requires_closure_candidate');
+  }
 
   let paymentDestination = currentOrder.paymentDestination || null;
   let nextPaymentDestinationId = currentOrder.paymentDestinationId || null;
@@ -1473,17 +1476,23 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
   if (requestedOrderStatus === 'cancelled' && currentOrder.status !== 'cancelled') {
     const releasedTakeoverReservations = await releaseOrderReservations(context.clinic.id, currentOrder.id, client);
     const takeoverReservedItemIds = new Set(releasedTakeoverReservations.map((reservation) => reservation.orderItemId));
+    const committedTakeoverReservations = currentOrder.source === 'human_takeover'
+      ? await listCommittedOrderReservations(context.clinic.id, currentOrder.id, client)
+      : [];
+    const committedByItemId = new Map(committedTakeoverReservations.map((reservation) => [reservation.orderItemId, reservation]));
     const restoreResult = await restoreOrderLotAllocations(context, currentOrder, client);
     if (!restoreResult.ok) {
       return restoreResult;
     }
     for (const item of currentOrder.items || []) {
       if (!item.productId) continue;
-      if (currentOrder.source === 'human_takeover' || takeoverReservedItemIds.has(item.id)) continue;
+      if (currentOrder.source === 'human_takeover' && !committedByItemId.has(item.id)) continue;
+      if (takeoverReservedItemIds.has(item.id)) continue;
       const product = await findProductById(item.productId, context.clinic.id, client);
       if (product && product.inventoryTrackingMode === 'lot_based') continue;
 
-      const updatedProduct = await incrementProductStock(item.productId, context.clinic.id, item.quantity, client);
+      const restoreQuantity = committedByItemId.get(item.id)?.quantity ?? item.quantity;
+      const updatedProduct = await incrementProductStock(item.productId, context.clinic.id, restoreQuantity, client);
       if (!updatedProduct) {
         return buildError(
           context.tenantId,
@@ -1492,6 +1501,7 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
         );
       }
     }
+    if (committedTakeoverReservations.length) await cancelCommittedOrderReservations(context.clinic.id, currentOrder.id, client);
   }
 
   const order = await updateOrderStatus(
@@ -1906,6 +1916,7 @@ module.exports = {
   patchOrderStatusForClinic,
   validatePortalOrderTransferPayment,
   __private__: {
-    restoreOrderLotAllocations
+    restoreOrderLotAllocations,
+    consumeLotBasedOrderItem
   }
 };

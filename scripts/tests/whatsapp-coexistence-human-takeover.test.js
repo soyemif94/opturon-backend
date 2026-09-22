@@ -48,7 +48,7 @@ function fixture(overrides = {}) {
     insertMessage: async (input) => {
       if (state.messages.has(input.waMessageId)) return { inserted: false };
       state.messages.set(input.waMessageId, { ...input, direction: 'outbound' });
-      return { inserted: true };
+      return { inserted: true, row: { id: input.waMessageId } };
     },
     activateTakeover: async (input) => {
       state.takeovers.push(input);
@@ -56,6 +56,7 @@ function fixture(overrides = {}) {
       conversation.context = { ...conversation.context, ...buildTakeoverContextPatch(conversation.context, input.source, input.at) };
       return { activated: true };
     },
+    invalidateCandidate: async () => 0,
     logInfo: () => {}, logWarn: () => {}
   });
   return { state, process };
@@ -135,6 +136,7 @@ test('customer inbound during takeover reaches context and CRM processing withou
   const process = createTakeoverOperationalProcessor({
     upsertLead: async () => { state.leads += 1; },
     processOrder: async () => ({ mutated: false, reason: 'NO_ORDER_OPERATION' }),
+    invalidateCandidate: async () => 0,
     updateConversation: async (input) => { state.updates.push(input); return { id: input.conversationId }; }
   });
   await process({ clinicId: 'tenant-a', channelId: 'channel-a', conversationId: 'conversation-a', contactId: 'contact-a', inboundMessageId: 'inbound-a' });

@@ -1,12 +1,14 @@
 const conversationRepo = require('./conversation.repo');
 const { upsertLeadForConversation } = require('../repositories/lead.repository');
 const { processTakeoverOrder } = require('../services/takeover-order-processing.service');
+const { invalidatePendingForMessage } = require('../repositories/order-closure.repository');
 
 function createTakeoverOperationalProcessor(overrides = {}) {
   const deps = {
     updateConversation: conversationRepo.updateConversationStateForClinic || conversationRepo.updateConversationState,
     upsertLead: upsertLeadForConversation,
     processOrder: processTakeoverOrder,
+    invalidateCandidate: invalidatePendingForMessage,
     ...overrides
   };
   return async function processTakeoverInbound({ clinicId, channelId, conversationId, contactId, inboundMessageId }) {
@@ -14,6 +16,7 @@ function createTakeoverOperationalProcessor(overrides = {}) {
       throw new Error('takeover_operational_scope_missing');
     }
     await deps.upsertLead({ clinicId, channelId, conversationId, contactId, primaryIntent: null });
+    await deps.invalidateCandidate(clinicId, conversationId, inboundMessageId);
     const orderProcessing = await deps.processOrder({ clinicId, channelId, conversationId, contactId, inboundMessageId });
     const updated = await deps.updateConversation({
       clinicId,

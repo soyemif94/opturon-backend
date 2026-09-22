@@ -288,6 +288,22 @@ async function releaseOrderReservations(tenantId, orderId, client) {
   return result.rows;
 }
 
+async function listCommittedOrderReservations(tenantId, orderId, client) {
+  const result = await dbQuery(client,
+    `SELECT id, "orderItemId", "productId", quantity FROM order_stock_reservations
+     WHERE "tenantId" = $1::uuid AND "orderId" = $2::uuid AND status = 'committed'
+     ORDER BY "productId", id FOR UPDATE`, [tenantId, orderId]);
+  return result.rows.map((row) => ({ ...row, quantity: Number(row.quantity) }));
+}
+
+async function cancelCommittedOrderReservations(tenantId, orderId, client) {
+  const result = await dbQuery(client,
+    `UPDATE order_stock_reservations SET status = 'cancelled', "releasedAt" = NOW(), "updatedAt" = NOW()
+     WHERE "tenantId" = $1::uuid AND "orderId" = $2::uuid AND status = 'committed'
+     RETURNING id`, [tenantId, orderId]);
+  return result.rows.length;
+}
+
 module.exports = {
   withTransaction,
   lockConversation,
@@ -305,5 +321,7 @@ module.exports = {
   getActiveReservedQuantity,
   getActiveReservation,
   setReservation,
-  releaseOrderReservations
+  releaseOrderReservations,
+  listCommittedOrderReservations,
+  cancelCommittedOrderReservations
 };

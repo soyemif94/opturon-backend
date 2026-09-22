@@ -2,6 +2,7 @@ const conversationRepo = require('../conversations/conversation.repo');
 const { listProductsByClinicId } = require('../repositories/products.repository');
 const { findContactByIdAndClinicId } = require('../repositories/contact.repository');
 const repository = require('../repositories/takeover-order.repository');
+const { findRecentConfirmedTakeoverOrder } = require('../repositories/order-closure.repository');
 const { logInfo } = require('../utils/logger');
 
 const NUMBER_WORDS = new Map([
@@ -176,6 +177,7 @@ function createTakeoverOrderProcessor(overrides = {}) {
     listMessages: repository.listRecentConversationMessages,
     getMessage: conversationRepo.getMessageById,
     findContact: findContactByIdAndClinicId,
+    findRecentConfirmedTakeoverOrder,
     previewDraft: async (scope) => repository.getDraftSnapshot(scope.clinicId, scope.conversationId),
     ...overrides
   };
@@ -224,6 +226,13 @@ function createTakeoverOrderProcessor(overrides = {}) {
       if (!operationRow) return { ok: true, duplicate: true };
 
       let draft = await deps.repository.findDraftByConversation(scope.clinicId, scope.conversationId, client);
+      if (!draft && await deps.findRecentConfirmedTakeoverOrder(scope.clinicId, scope.conversationId, client)) {
+        await deps.repository.completeOperation(operationRow.id, scope.clinicId, {
+          result: 'skipped', operation: 'AMENDMENT_REQUIRED', productId: decision.product.id,
+          metadata: { confidence: decision.confidence, reason: 'RECENT_CONFIRMED_TAKEOVER_ORDER' }
+        }, client);
+        return { ok: true, mutated: false, reason: 'AMENDMENT_REQUIRED' };
+      }
       const draftCreated = !draft;
       let items = draft ? await deps.repository.listOrderItems(draft.id, client) : [];
       const existingItem = items.find((item) => item.productId === decision.product.id) || null;

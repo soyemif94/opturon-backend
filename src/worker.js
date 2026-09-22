@@ -37,6 +37,7 @@ const {
 const conversationRepo = require('./conversations/conversation.repo');
 const { isAutomaticReplyAllowedNow } = require('./conversations/human-takeover.service');
 const { processTakeoverInbound } = require('./conversations/takeover-operational.service');
+const { orderClosure } = require('./services/order-closure.service');
 const { decideReply } = require('./conversations/conversation.engine');
 const { parseAppointmentText } = require('./conversations/appointment.parser');
 const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
@@ -21372,6 +21373,18 @@ async function processConversationReplyJob(job) {
 async function processJob(job) {
   processingCount += 1;
   try {
+    if (job.type === 'order_closure_confirm') {
+      const payload = parseJobPayload(job.payload);
+      await orderClosure.confirmCandidate({
+        tenantId: job.clinicId,
+        channelId: job.channelId,
+        candidateId: payload.candidateId,
+        conversationId: payload.conversationId,
+        orderId: payload.orderId
+      });
+      await markJobDone(job.id);
+      return;
+    }
     if (job.type === 'conversation_operational') {
       const payload = parseJobPayload(job.payload);
       await processTakeoverInbound({
@@ -21601,6 +21614,13 @@ async function pollOnce() {
       workerId: WORKER_ID,
       now: new Date().toISOString()
     });
+
+    try {
+      const closureScan = await orderClosure.scanCandidates(Math.min(BATCH_SIZE, 25));
+      if (closureScan.created) logInfo('order_closure_scan_result', { workerId: WORKER_ID, ...closureScan });
+    } catch (error) {
+      logWarn('order_closure_scan_failed', { workerId: WORKER_ID, resultCode: String(error?.code || 'scan_failed') });
+    }
 
     const reminderStats = await processDueAppointmentReminders();
     if (reminderStats.candidates || reminderStats.sent || reminderStats.skipped || reminderStats.duplicatesBlocked) {

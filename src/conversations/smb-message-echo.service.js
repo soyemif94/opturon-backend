@@ -2,6 +2,7 @@ const { withTransaction } = require('../db/client');
 const { logInfo, logWarn } = require('../utils/logger');
 const { findCoexistenceChannelByPhoneNumberId } = require('../repositories/tenant.repository');
 const conversationRepo = require('./conversation.repo');
+const { invalidatePendingForMessage } = require('../repositories/order-closure.repository');
 const { resolveWhatsAppConversation } = require('./whatsapp-conversation-resolver');
 const { activateHumanTakeover, TAKEOVER_SOURCES } = require('./human-takeover.service');
 const { extractSmbMessageEchoes, digits } = require('../webhooks/smb-message-echoes');
@@ -27,6 +28,7 @@ function createSmbMessageEchoProcessor(overrides = {}) {
     resolveConversation: resolveWhatsAppConversation,
     insertMessage: conversationRepo.insertOutboundMessage,
     activateTakeover: activateHumanTakeover,
+    invalidateCandidate: invalidatePendingForMessage,
     logInfo,
     logWarn,
     ...overrides
@@ -104,6 +106,7 @@ function createSmbMessageEchoProcessor(overrides = {}) {
             at: new Date(Number(event.timestamp) * 1000).toISOString()
           }, client);
           if (!takeover) throw new Error('smb_message_echo_takeover_failed');
+          await deps.invalidateCandidate(channel.clinicId, conversation.id, write.row.id, client);
           return { duplicate: false, conversationId: conversation.id, takeoverActivated: takeover.activated };
         });
 

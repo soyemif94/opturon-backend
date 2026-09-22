@@ -98,6 +98,7 @@ function createHarness(options = {}) {
     listMessages: async (conversationId) => [...state.messages.values()].filter((item) => item.conversationId === conversationId),
     getMessage: async (messageId) => state.messages.get(messageId) || null,
     findContact: async () => ({ id: 'contact-a', name: 'Juan', phone: '5492910000000' }),
+    findRecentConfirmedTakeoverOrder: async () => options.confirmedOrder || null,
     previewDraft: async (scope) => repo.getDraftSnapshot(scope.clinicId, scope.conversationId)
   });
 
@@ -265,6 +266,7 @@ test('takeover operational path processes orders silently and preserves resume-o
   const process = createTakeoverOperationalProcessor({
     upsertLead: async () => {},
     processOrder: async () => { calls.order += 1; return { mutated: true, operation: 'ORDER_DRAFT_CREATED', orderId: 'order-a' }; },
+    invalidateCandidate: async () => 0,
     updateConversation: async (input) => { calls.updates.push(input); return { id: input.conversationId }; }
   });
   await process({ clinicId: 'tenant-a', channelId: 'channel-a', conversationId: 'conversation-a', contactId: 'contact-a', inboundMessageId: 'message-a' });
@@ -285,6 +287,14 @@ test('manual bot resume changes ownership only and preserves draft plus reservat
   assert.deepEqual(h.activeReservations(), beforeReservations);
 });
 
+test('a new order utterance after recent takeover confirmation requires amendment', async () => {
+  const h = createHarness({ confirmedOrder: { id: 'confirmed-a' } });
+  const result = await h.inbound('message-after-confirmation', 'conversation-a', 'Mandame 3 cajas de 9 DE ORO AGRIDULCE');
+  assert.equal(result.reason, 'AMENDMENT_REQUIRED');
+  assert.equal(h.state.drafts.size, 0);
+  assert.equal(h.activeReservations().length, 0);
+});
+
 test('migration defines reservation integrity, idempotency, and no physical stock mutation', () => {
   const root = path.resolve(__dirname, '..', '..');
   const migration = fs.readFileSync(path.join(root, 'db/migrations/082_human_takeover_order_reservations.sql'), 'utf8');
@@ -298,7 +308,7 @@ test('migration defines reservation integrity, idempotency, and no physical stoc
   assert.match(repository, /pg_advisory_xact_lock/);
   assert.doesNotMatch(repository, /UPDATE products[\s\S]*SET stock/i);
   assert.match(portalOrders, /releaseOrderReservations/);
-  assert.match(portalOrders, /currentOrder\.source === 'human_takeover' \|\| takeoverReservedItemIds\.has\(item\.id\)/);
+  assert.match(portalOrders, /currentOrder\.source === 'human_takeover' && !committedByItemId\.has\(item\.id\)/);
   assert.match(repository, /o\.source = 'human_takeover'/);
   assert.match(repository, /source: 'human_takeover'/);
   assert.match(worker, /job\.type === 'conversation_operational'/);
