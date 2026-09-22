@@ -51,6 +51,7 @@ const { calculateLineAmounts, quantizeDecimal, sumQuantized } = require('../util
 const { resolveProductPrice } = require('../utils/commerce-price');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 const { resolveLotStatusAfterRestore } = require('../utils/inventory-lot-state');
+const { releaseOrderReservations } = require('../repositories/takeover-order.repository');
 
 const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
 const LEGACY_ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
@@ -1470,12 +1471,15 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
   }
 
   if (requestedOrderStatus === 'cancelled' && currentOrder.status !== 'cancelled') {
+    const releasedTakeoverReservations = await releaseOrderReservations(context.clinic.id, currentOrder.id, client);
+    const takeoverReservedItemIds = new Set(releasedTakeoverReservations.map((reservation) => reservation.orderItemId));
     const restoreResult = await restoreOrderLotAllocations(context, currentOrder, client);
     if (!restoreResult.ok) {
       return restoreResult;
     }
     for (const item of currentOrder.items || []) {
       if (!item.productId) continue;
+      if (takeoverReservedItemIds.has(item.id)) continue;
       const product = await findProductById(item.productId, context.clinic.id, client);
       if (product && product.inventoryTrackingMode === 'lot_based') continue;
 

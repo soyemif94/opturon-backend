@@ -134,6 +134,7 @@ test('customer inbound during takeover reaches context and CRM processing withou
   const state = { leads: 0, updates: [], sends: 0 };
   const process = createTakeoverOperationalProcessor({
     upsertLead: async () => { state.leads += 1; },
+    processOrder: async () => ({ mutated: false, reason: 'NO_ORDER_OPERATION' }),
     updateConversation: async (input) => { state.updates.push(input); return { id: input.conversationId }; }
   });
   await process({ clinicId: 'tenant-a', channelId: 'channel-a', conversationId: 'conversation-a', contactId: 'contact-a', inboundMessageId: 'inbound-a' });
