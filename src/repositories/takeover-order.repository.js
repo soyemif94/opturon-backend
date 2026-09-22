@@ -9,6 +9,21 @@ async function lockConversation(conversationId, client) {
   await dbQuery(client, 'SELECT pg_advisory_xact_lock(hashtext($1))', [String(conversationId)]);
 }
 
+async function listRecentConversationMessages(conversationId, tenantId, limit = 30, client = null) {
+  const safeLimit = Math.max(1, Math.min(100, Number(limit) || 30));
+  const result = await dbQuery(
+    client,
+    `SELECT m.id, m."conversationId", m.direction, m.text, m."createdAt"
+     FROM conversation_messages m
+     INNER JOIN conversations c ON c.id = m."conversationId"
+     WHERE m."conversationId" = $1::uuid AND c."clinicId" = $2::uuid
+     ORDER BY m."createdAt" DESC, m.id DESC
+     LIMIT $3`,
+    [conversationId, tenantId, safeLimit]
+  );
+  return result.rows.reverse();
+}
+
 async function beginOperation(input, client) {
   const result = await dbQuery(
     client,
@@ -62,6 +77,7 @@ async function findDraftByConversation(tenantId, conversationId, client) {
      WHERE o."clinicId" = $1::uuid
        AND o."conversationId" = $2::uuid
        AND o.status = 'draft'
+       AND o.source = 'human_takeover'
      ORDER BY o."createdAt" DESC
      LIMIT 1
      FOR UPDATE OF o`,
@@ -99,7 +115,7 @@ async function createDraft(input, client) {
       customerName: input.customerName || null,
       customerPhone: input.customerPhone || null,
       customerType: 'registered_contact',
-      source: 'automation',
+      source: 'human_takeover',
       status: 'draft',
       orderStatus: 'new',
       paymentStatus: 'pending',
@@ -275,6 +291,7 @@ async function releaseOrderReservations(tenantId, orderId, client) {
 module.exports = {
   withTransaction,
   lockConversation,
+  listRecentConversationMessages,
   beginOperation,
   completeOperation,
   findDraftByConversation,

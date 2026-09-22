@@ -1479,7 +1479,7 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
     }
     for (const item of currentOrder.items || []) {
       if (!item.productId) continue;
-      if (takeoverReservedItemIds.has(item.id)) continue;
+      if (currentOrder.source === 'human_takeover' || takeoverReservedItemIds.has(item.id)) continue;
       const product = await findProductById(item.productId, context.clinic.id, client);
       if (product && product.inventoryTrackingMode === 'lot_based') continue;
 

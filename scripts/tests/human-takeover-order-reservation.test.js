@@ -10,6 +10,7 @@ const {
 } = require('../../src/services/takeover-order-processing.service');
 const { createTakeoverOperationalProcessor } = require('../../src/conversations/takeover-operational.service');
 const { buildResumeContextPatch } = require('../../src/conversations/human-takeover.service');
+const takeoverOrderRepository = require('../../src/repositories/takeover-order.repository');
 
 function product(id, name, stock = 20, extra = {}) {
   return { id, clinicId: extra.clinicId || 'tenant-a', name, stock, status: 'active', unitPrice: 100, currency: 'ARS', taxRate: 0, unitOfMeasure: extra.unitOfMeasure || 'caja', attributes: extra.attributes || {}, ...extra };
@@ -52,7 +53,7 @@ function createHarness(options = {}) {
     },
     createDraft: async (input) => {
       const item = { id: `item-${++state.sequence}`, orderId: `order-${state.sequence}`, ...input.item };
-      const draft = { id: item.orderId, clinicId: input.tenantId, conversationId: input.conversationId, contactId: input.contactId, status: 'draft', items: [item] };
+      const draft = { id: item.orderId, clinicId: input.tenantId, conversationId: input.conversationId, contactId: input.contactId, status: 'draft', source: 'human_takeover', items: [item] };
       state.drafts.set(draftKey(input.tenantId, input.conversationId), draft);
       return draft;
     },
@@ -297,9 +298,24 @@ test('migration defines reservation integrity, idempotency, and no physical stoc
   assert.match(repository, /pg_advisory_xact_lock/);
   assert.doesNotMatch(repository, /UPDATE products[\s\S]*SET stock/i);
   assert.match(portalOrders, /releaseOrderReservations/);
-  assert.match(portalOrders, /takeoverReservedItemIds\.has\(item\.id\)/);
+  assert.match(portalOrders, /currentOrder\.source === 'human_takeover' \|\| takeoverReservedItemIds\.has\(item\.id\)/);
+  assert.match(repository, /o\.source = 'human_takeover'/);
+  assert.match(repository, /source: 'human_takeover'/);
   assert.match(worker, /job\.type === 'conversation_operational'/);
   assert.match(worker, /job\.type === 'conversation_reply'/);
+});
+
+test('recent history is tenant scoped and selects the newest messages', async () => {
+  const observed = [];
+  const client = { query: async (sql, params) => {
+    observed.push({ sql, params });
+    return { rows: [{ id: 'new' }, { id: 'old' }] };
+  } };
+  const rows = await takeoverOrderRepository.listRecentConversationMessages('conversation-a', 'tenant-a', 30, client);
+  assert.deepEqual(rows.map((row) => row.id), ['old', 'new']);
+  assert.deepEqual(observed[0].params, ['conversation-a', 'tenant-a', 30]);
+  assert.match(observed[0].sql, /c\."clinicId" = \$2::uuid/);
+  assert.match(observed[0].sql, /ORDER BY m\."createdAt" DESC, m\.id DESC\s+LIMIT \$3/);
 });
 
 test('migration applies cleanly and enforces one operation per source message', async () => {

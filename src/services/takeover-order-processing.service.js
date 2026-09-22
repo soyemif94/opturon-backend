@@ -173,7 +173,7 @@ function createTakeoverOrderProcessor(overrides = {}) {
   const deps = {
     repository,
     listProducts: listProductsByClinicId,
-    listMessages: conversationRepo.listConversationMessagesByClinicId,
+    listMessages: repository.listRecentConversationMessages,
     getMessage: conversationRepo.getMessageById,
     findContact: findContactByIdAndClinicId,
     previewDraft: async (scope) => repository.getDraftSnapshot(scope.clinicId, scope.conversationId),
