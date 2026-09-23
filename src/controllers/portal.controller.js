@@ -5323,7 +5323,9 @@ async function postPortalWhatsAppEmbeddedSignupBootstrap(req, res) {
       tenantId,
       redirectUri,
       actorUserId,
-      metadata: req.body && req.body.metadata ? req.body.metadata : null
+      metadata: req.body && req.body.metadata ? req.body.metadata : null,
+      requestedConnectionMode: req.body && req.body.requestedConnectionMode,
+      stateToken: req.body && req.body.stateToken
     });
 
     if (!result.ok) {

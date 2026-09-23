@@ -21,12 +21,15 @@ function clearModule(relativePath) {
   delete require.cache[modulePath(relativePath)];
 }
 
-function setupCommonMocks(repositoryOverrides = {}, contextOverrides = {}) {
+function setupCommonMocks(repositoryOverrides = {}, contextOverrides = {}, envOverrides = {}) {
   clearModule('src/services/portal-whatsapp-embedded-signup.service.js');
   mockModule('src/config/env.js', {
     whatsappAppId: '3388083341350043',
     metaAppSecret: 'app-secret',
-    getWhatsAppGraphVersion: () => 'v25.0'
+    getWhatsAppGraphVersion: () => 'v25.0',
+    whatsappCoexistenceOnboardingEnabled: false,
+    whatsappCoexistenceOnboardingClinicIds: [],
+    ...envOverrides
   });
   mockModule('src/utils/logger.js', {
     logInfo: () => {},
@@ -251,7 +254,11 @@ async function testFinalizeSuccessPersistsConnection({
   failRegistration = false,
   alreadyRegistered = false,
   foreignChannel = false,
-  connectionMode = 'API_ONLY'
+  existingChannelMode = null,
+  connectionMode = 'API_ONLY',
+  includePhoneId = true,
+  phoneCandidates = [{ id: 'phone-success', display_phone_number: '+10000000000', verified_name: 'Test' }],
+  assetFailureReason = null
 }) {
   const redirectUri = 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback';
   const steps = [];
@@ -324,7 +331,11 @@ async function testFinalizeSuccessPersistsConnection({
       session = { ...session, status: data.status };
       return session;
     },
-    findWhatsAppChannelByPhoneNumberId: async () => foreignChannel ? { id: 'foreign-channel', clinicId: 'clinic-foreign' } : null,
+    findWhatsAppChannelByPhoneNumberId: async () => foreignChannel
+      ? { id: 'foreign-channel', clinicId: 'clinic-foreign', connectionMode }
+      : existingChannelMode
+        ? { id: 'existing-channel', clinicId: 'clinic-1', connectionMode: existingChannelMode }
+        : null,
     getOrCreateRegistrationPin: async ({ clinicId, phoneNumberId }) => {
       assert.strictEqual(clinicId, 'clinic-1');
       assert.strictEqual(phoneNumberId, 'phone-success');
@@ -396,7 +407,7 @@ async function testFinalizeSuccessPersistsConnection({
       assert.strictEqual(options.accessToken, 'test-access-token', 'exchange token must reach asset discovery and subscription');
       if (method === 'GET' && endpoint === '/waba-success/phone_numbers') {
         steps.push('phone_discovered');
-        return { ok: true, status: 200, data: { data: [{ id: 'phone-success', display_phone_number: '+10000000000', verified_name: 'Test' }] } };
+        return { ok: true, status: 200, data: { data: phoneCandidates } };
       }
       assert.strictEqual(method, 'POST');
       assert.strictEqual(endpoint, '/waba-success/subscribed_apps');
@@ -433,17 +444,40 @@ async function testFinalizeSuccessPersistsConnection({
       stateToken: 'state-success',
       code: 'oauth-success',
       redirectUri,
-      metaPayload: withFinishPayload ? { type: 'WA_EMBEDDED_SIGNUP', event: 'FINISH', data: { waba_id: 'waba-success', phone_number_id: 'phone-success' } } : null
+      metaPayload: withFinishPayload ? {
+        type: 'WA_EMBEDDED_SIGNUP',
+        event: connectionMode === 'COEXISTENCE' ? 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING' : 'FINISH',
+        data: {
+          waba_id: 'waba-success',
+          ...(includePhoneId ? { phone_number_id: 'phone-success' } : {})
+        }
+      } : null
     });
-    if (foreignChannel || failRegistration) {
+    if (assetFailureReason) {
       assert.strictEqual(result.ok, false);
-      assert.strictEqual(result.reason, foreignChannel ? 'channel_belongs_to_another_workspace' : 'meta_phone_registration_failed');
+      assert.strictEqual(result.reason, assetFailureReason);
+      assert.strictEqual(context.channel, null);
+      assert.strictEqual(session.status, 'failed');
+      assert.ok(!steps.includes('webhook_subscribed'));
+      assert.ok(!steps.includes('phone_registered'));
+      return;
+    }
+    if (foreignChannel || existingChannelMode || failRegistration) {
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(
+        result.reason,
+        foreignChannel
+          ? 'channel_belongs_to_another_workspace'
+          : existingChannelMode
+            ? 'existing_channel_connection_mode_mismatch'
+            : 'meta_phone_registration_failed'
+      );
       assert.strictEqual(context.channel, null, 'failed registration must not create an active channel');
       assert.strictEqual(session.status, 'failed');
       assert.ok(!steps.includes('channel_active'));
       assert.ok(!steps.includes('session_completed'));
       assert.ok(!steps.includes('registration_saved'));
-      if (foreignChannel) {
+      if (foreignChannel || existingChannelMode) {
         assert.ok(!steps.includes('pin_loaded'), 'foreign channels must not get a registration PIN');
         assert.ok(!steps.includes('webhook_subscribed'), 'foreign channels must not cause Meta mutations');
       }
@@ -513,13 +547,71 @@ async function testStandardSignupDefaultsApiOnly() {
   const { createPortalWhatsAppSignupSession } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
   const result = await createPortalWhatsAppSignupSession({
     tenantId: 'tenant-a',
-    redirectUri: 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback',
-    requestedConnectionMode: 'COEXISTENCE'
+    redirectUri: 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback'
   });
 
   assert.strictEqual(result.ok, true);
   assert.strictEqual(persistedInput.requestedConnectionMode, 'API_ONLY');
   assert.strictEqual(result.session.requestedConnectionMode, 'API_ONLY');
+}
+
+async function testCoexistenceSessionRequiresServerPilotAuthorization() {
+  let persistedInput = null;
+  setupCommonMocks({
+    createOnboardingSession: async (input) => {
+      persistedInput = input;
+      return { id: 'session-coexistence', ...input, createdAt: new Date().toISOString() };
+    }
+  });
+  let service = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+  const denied = await service.createPortalWhatsAppSignupSession({
+    tenantId: 'tenant-a',
+    redirectUri: 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback',
+    requestedConnectionMode: 'COEXISTENCE'
+  });
+  assert.strictEqual(denied.ok, false);
+  assert.strictEqual(denied.reason, 'whatsapp_coexistence_onboarding_not_authorized');
+  assert.strictEqual(persistedInput, null);
+
+  setupCommonMocks({
+    createOnboardingSession: async (input) => {
+      persistedInput = input;
+      return { id: 'session-coexistence', ...input, createdAt: new Date().toISOString() };
+    }
+  }, {}, {
+    whatsappCoexistenceOnboardingEnabled: true,
+    whatsappCoexistenceOnboardingClinicIds: ['clinic-1']
+  });
+  service = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+  const allowed = await service.createPortalWhatsAppSignupSession({
+    tenantId: 'tenant-a',
+    redirectUri: 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback',
+    requestedConnectionMode: 'COEXISTENCE',
+    stateToken: 'a'.repeat(48)
+  });
+  assert.strictEqual(allowed.ok, true);
+  assert.strictEqual(persistedInput.requestedConnectionMode, 'COEXISTENCE');
+  assert.strictEqual(persistedInput.stateToken, 'a'.repeat(48));
+  assert.strictEqual(allowed.session.requestedConnectionMode, 'COEXISTENCE');
+
+  persistedInput = null;
+  setupCommonMocks({
+    createOnboardingSession: async (input) => { persistedInput = input; return input; }
+  }, {
+    channel: { id: 'api-channel', clinicId: 'clinic-1', connectionMode: 'API_ONLY', status: 'active' }
+  }, {
+    whatsappCoexistenceOnboardingEnabled: true,
+    whatsappCoexistenceOnboardingClinicIds: ['clinic-1']
+  });
+  service = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+  const conversionDenied = await service.createPortalWhatsAppSignupSession({
+    tenantId: 'tenant-a',
+    redirectUri: 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback',
+    requestedConnectionMode: 'COEXISTENCE'
+  });
+  assert.strictEqual(conversionDenied.ok, false);
+  assert.strictEqual(conversionDenied.reason, 'existing_channel_connection_mode_mismatch');
+  assert.strictEqual(persistedInput, null);
 }
 
 async function testDirectRegistrationSkipsCoexistence() {
@@ -572,6 +664,49 @@ async function testInvalidSessionModeFailsBeforeGraphWrites() {
     assert.strictEqual(graphCalls, 0);
   } finally {
     global.fetch = originalFetch;
+  }
+}
+
+async function testCompletionEventMustMatchServerSessionMode() {
+  const redirectUri = 'https://www.opturon.com/api/app/integrations/whatsapp/embedded-signup/callback';
+  for (const fixture of [
+    { mode: 'API_ONLY', event: 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING' },
+    { mode: 'COEXISTENCE', event: 'FINISH' },
+    { mode: 'COEXISTENCE', event: null }
+  ]) {
+    let graphCalls = 0;
+    let failedPayload = null;
+    setupCommonMocks({
+      findOnboardingSessionByStateToken: async () => ({
+        id: `session-${fixture.mode}`, status: 'awaiting_callback', externalTenantId: 'tenant-a',
+        clinicId: 'clinic-1', redirectUri, requestedConnectionMode: fixture.mode,
+        createdAt: new Date().toISOString()
+      }),
+      markOnboardingSessionFailed: async (_id, payload) => {
+        failedPayload = payload;
+        return { id: `session-${fixture.mode}`, status: 'failed', ...payload };
+      }
+    });
+    mockModule('src/whatsapp/whatsapp-graph.client.js', {
+      request: async () => { graphCalls += 1; return { ok: true }; },
+      registerWhatsAppPhoneNumber: async () => { graphCalls += 1; return { ok: true }; }
+    });
+    const originalFetch = global.fetch;
+    global.fetch = async () => { graphCalls += 1; throw new Error('unexpected_graph_call'); };
+    try {
+      const { finalizePortalWhatsAppSignup } = require(modulePath('src/services/portal-whatsapp-embedded-signup.service.js'));
+      const result = await finalizePortalWhatsAppSignup({
+        expectedTenantId: 'tenant-a', stateToken: 'state-mode', code: 'code-mode', redirectUri,
+        connectionMode: fixture.mode === 'API_ONLY' ? 'COEXISTENCE' : 'API_ONLY',
+        metaPayload: fixture.event ? { event: fixture.event, data: { waba_id: 'waba-a' } } : null
+      });
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.reason, 'embedded_signup_completion_event_mismatch');
+      assert.strictEqual(failedPayload.errorCode, 'embedded_signup_completion_event_mismatch');
+      assert.strictEqual(graphCalls, 0);
+    } finally {
+      global.fetch = originalFetch;
+    }
   }
 }
 
@@ -672,8 +807,10 @@ async function testSessionRedirectMustStillMatchExactly() {
 
 async function run() {
   await testStandardSignupDefaultsApiOnly();
+  await testCoexistenceSessionRequiresServerPilotAuthorization();
   await testDirectRegistrationSkipsCoexistence();
   await testInvalidSessionModeFailsBeforeGraphWrites();
+  await testCompletionEventMustMatchServerSessionMode();
   await testFinalizeRejectsTenantMismatch();
   await testFinalizeRejectsConsumedState();
   await testRefreshCancelsAwaitingCallbackSession();
@@ -687,7 +824,27 @@ async function run() {
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, failRegistration: true });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, alreadyRegistered: true });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, foreignChannel: true });
+  await testFinalizeSuccessPersistsConnection({
+    withFinishPayload: true,
+    connectionMode: 'COEXISTENCE',
+    existingChannelMode: 'API_ONLY'
+  });
   await testFinalizeSuccessPersistsConnection({ withFinishPayload: true, connectionMode: 'COEXISTENCE' });
+  await testFinalizeSuccessPersistsConnection({
+    withFinishPayload: true,
+    connectionMode: 'COEXISTENCE',
+    includePhoneId: false
+  });
+  await testFinalizeSuccessPersistsConnection({
+    withFinishPayload: true,
+    connectionMode: 'COEXISTENCE',
+    includePhoneId: false,
+    phoneCandidates: [
+      { id: 'phone-a', display_phone_number: '+10000000001' },
+      { id: 'phone-b', display_phone_number: '+10000000002' }
+    ],
+    assetFailureReason: 'meta_phone_number_id_missing'
+  });
   await testOAuthExchangeErrorIsSanitized();
   await testOAuthExchangeErrorIsSanitized({ invalidBody: true });
   await testOAuthExchangeErrorIsSanitized({ networkError: true });

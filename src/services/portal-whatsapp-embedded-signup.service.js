@@ -42,6 +42,56 @@ const RECOVERABLE_SESSION_STATUSES = new Set(['created', 'launching', 'awaiting_
 const PROCESSING_SESSION_STATUSES = new Set(['exchanging_code', 'discovering_assets', 'subscribing_app', 'registering_phone', 'persisting_channel']);
 const ACTIVE_SESSION_STATUSES = new Set([...RECOVERABLE_SESSION_STATUSES, ...PROCESSING_SESSION_STATUSES]);
 const TERMINAL_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled', 'expired']);
+const STANDARD_COMPLETION_EVENT = 'FINISH';
+const COEXISTENCE_COMPLETION_EVENT = 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING';
+const CLIENT_STATE_TOKEN_PATTERN = /^[0-9a-f]{48}$/i;
+
+function isCoexistencePilotEnabledForClinic(clinicId) {
+  if (env.whatsappCoexistenceOnboardingEnabled !== true) return false;
+  const safeClinicId = String(clinicId || '').trim();
+  const allowlist = new Set(
+    (Array.isArray(env.whatsappCoexistenceOnboardingClinicIds)
+      ? env.whatsappCoexistenceOnboardingClinicIds
+      : [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  );
+  return Boolean(safeClinicId && allowlist.size > 0 && allowlist.has(safeClinicId));
+}
+
+function resolveAuthorizedRequestedConnectionMode({ requestedConnectionMode, clinicId }) {
+  const requested = String(requestedConnectionMode || WHATSAPP_CONNECTION_MODE.API_ONLY).trim().toUpperCase();
+  if (!Object.values(WHATSAPP_CONNECTION_MODE).includes(requested)) {
+    const error = new Error('Modo de conexion de WhatsApp invalido.');
+    error.reason = 'invalid_whatsapp_connection_mode';
+    throw error;
+  }
+  if (
+    requested === WHATSAPP_CONNECTION_MODE.COEXISTENCE &&
+    !isCoexistencePilotEnabledForClinic(clinicId)
+  ) {
+    const error = new Error('El onboarding con WhatsApp Business App no esta habilitado para este workspace.');
+    error.reason = 'whatsapp_coexistence_onboarding_not_authorized';
+    throw error;
+  }
+  return requested;
+}
+
+function validateCompletionEvent(connectionMode, metaPayload) {
+  const eventName = normalizeMetaEventPayload(metaPayload).eventName;
+  if (!eventName && connectionMode === WHATSAPP_CONNECTION_MODE.API_ONLY) {
+    return { ok: true, eventName: null, compatibilityFallback: true };
+  }
+  const expectedEvent = connectionMode === WHATSAPP_CONNECTION_MODE.COEXISTENCE
+    ? COEXISTENCE_COMPLETION_EVENT
+    : STANDARD_COMPLETION_EVENT;
+  return {
+    ok: eventName === expectedEvent,
+    eventName,
+    expectedEvent,
+    compatibilityFallback: false
+  };
+}
 
 function buildMetaConfigStatus() {
   const appId = String(env.whatsappAppId || '').trim();
@@ -385,7 +435,10 @@ function buildStatusPayload(context, session) {
     recoverableSession: isRecoverable,
     processingSession: isProcessing,
     canCancel: isRecoverable,
-    canStartNewAttempt
+    canStartNewAttempt,
+    coexistencePilotEnabled: isCoexistencePilotEnabledForClinic(
+      context.clinic && context.clinic.id ? context.clinic.id : null
+    )
   };
 }
 
@@ -585,9 +638,11 @@ async function resolveMetaAssets({ accessToken, metaPayload, requestId = null })
     verifiedName: String(item.verified_name || '').trim() || null
   }));
 
-  const matchedPhone =
-    normalizedPhoneNumbers.find((item) => item.id && phoneNumberId && item.id === phoneNumberId) ||
-    (normalizedPhoneNumbers.length === 1 ? normalizedPhoneNumbers[0] : null);
+  const matchedPhone = phoneNumberId
+    ? normalizedPhoneNumbers.find((item) => item.id === phoneNumberId) || null
+    : normalizedPhoneNumbers.length === 1
+      ? normalizedPhoneNumbers[0]
+      : null;
 
   if (!matchedPhone || !matchedPhone.id) {
     const error = new Error('meta_phone_number_id_missing');
@@ -727,7 +782,14 @@ async function registerPortalWhatsAppPhoneNumber(tenantId, options = {}) {
   }
 }
 
-async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorUserId = null, metadata = null }) {
+async function createPortalWhatsAppSignupSession({
+  tenantId,
+  redirectUri,
+  actorUserId = null,
+  metadata = null,
+  requestedConnectionMode = WHATSAPP_CONNECTION_MODE.API_ONLY,
+  stateToken = null
+}) {
   const safeTenantId = String(tenantId || '').trim();
   const safeRedirectUri = String(redirectUri || '').trim();
   const bootstrapRequestId = `wa_bootstrap_${crypto.randomUUID()}`;
@@ -741,6 +803,29 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
   const context = await resolvePortalTenantContext(safeTenantId);
   if (!context.ok) {
     return context;
+  }
+
+  let authorizedConnectionMode;
+  try {
+    authorizedConnectionMode = resolveAuthorizedRequestedConnectionMode({
+      requestedConnectionMode,
+      clinicId: context.clinic.id
+    });
+  } catch (error) {
+    return withReason(error.reason || 'invalid_whatsapp_connection_mode', error.message);
+  }
+  const proposedStateToken = String(stateToken || '').trim();
+  if (proposedStateToken && !CLIENT_STATE_TOKEN_PATTERN.test(proposedStateToken)) {
+    return withReason('invalid_embedded_signup_state_token', 'El state del onboarding no tiene un formato valido.');
+  }
+  if (
+    context.channel &&
+    resolveStoredWhatsAppConnectionMode(context.channel.connectionMode) !== authorizedConnectionMode
+  ) {
+    return withReason(
+      'existing_channel_connection_mode_mismatch',
+      'El workspace ya tiene un canal conectado con otro modo y requiere una migracion controlada.'
+    );
   }
 
   const metaConfig = buildMetaConfigStatus();
@@ -780,9 +865,9 @@ async function createPortalWhatsAppSignupSession({ tenantId, redirectUri, actorU
         createdByUserId: normalizeActorUserId(actorUserId),
         redirectUri: safeRedirectUri,
         graphVersion: DEFAULT_GRAPH_VERSION,
-        requestedConnectionMode: WHATSAPP_CONNECTION_MODE.API_ONLY,
+        requestedConnectionMode: authorizedConnectionMode,
         status: 'awaiting_callback',
-        stateToken: randomToken(24),
+        stateToken: proposedStateToken || randomToken(24),
         nonce: randomToken(16),
         metadata: metadata || null
       },
@@ -971,6 +1056,29 @@ async function finalizePortalWhatsAppSignup({
 
   try {
     const connectionMode = resolveStoredWhatsAppConnectionMode(session.requestedConnectionMode);
+    const completionEvent = validateCompletionEvent(connectionMode, metaPayload);
+    if (!completionEvent.ok) {
+      const failed = await markOnboardingSessionFailed(session.id, {
+        errorCode: 'embedded_signup_completion_event_mismatch',
+        errorMessage: 'El evento de finalizacion de Meta no coincide con el modo autorizado para esta sesion.',
+        metadata: {
+          expectedEvent: completionEvent.expectedEvent,
+          receivedEvent: completionEvent.eventName || null
+        }
+      });
+      await writeOnboardingAuditEvent({
+        tenantId: session.externalTenantId,
+        clinicId: session.clinicId,
+        actorUserId: session.createdByUserId || null,
+        session: failed || session,
+        reason: 'embedded_signup_completion_event_mismatch',
+        detail: 'completion_event_mismatch'
+      });
+      return withReason(
+        'embedded_signup_completion_event_mismatch',
+        'Meta devolvio un evento que no corresponde al flujo de conexion iniciado.'
+      );
+    }
     await markOnboardingSessionProcessing(session.id, {
       status: 'exchanging_code',
       metadata: {
@@ -1031,6 +1139,21 @@ async function finalizePortalWhatsAppSignup({
       return withReason(
         'channel_belongs_to_another_workspace',
         'El numero conectado ya esta asociado a otro workspace y no se puede vincular automaticamente.'
+      );
+    }
+    if (
+      existingChannel &&
+      existingChannel.clinicId === session.clinicId &&
+      resolveStoredWhatsAppConnectionMode(existingChannel.connectionMode) !== connectionMode
+    ) {
+      await markOnboardingSessionFailed(session.id, {
+        errorCode: 'existing_channel_connection_mode_mismatch',
+        errorMessage: 'El numero ya esta conectado con otro modo y requiere una migracion controlada.',
+        metadata: { phoneNumberId: assets.phoneNumberId }
+      });
+      return withReason(
+        'existing_channel_connection_mode_mismatch',
+        'El numero ya esta conectado con otro modo y no se convertira automaticamente.'
       );
     }
 
@@ -1409,6 +1532,9 @@ module.exports = {
     isActiveSessionStatus,
     isMetaBlockedMessage,
     buildSessionSafeErrorMessage,
-    shouldRegisterWhatsAppPhone
+    shouldRegisterWhatsAppPhone,
+    isCoexistencePilotEnabledForClinic,
+    resolveAuthorizedRequestedConnectionMode,
+    validateCompletionEvent
   }
 };

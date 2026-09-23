@@ -72,6 +72,14 @@ const env = {
   whatsappFromPhone: String(process.env.WHATSAPP_FROM_PHONE || '').trim(),
   whatsappAppId: String(process.env.WHATSAPP_APP_ID || '').trim(),
   whatsappWabaId: String(process.env.WHATSAPP_WABA_ID || '').trim(),
+  whatsappCoexistenceOnboardingEnabled: parseBoolean(
+    process.env.WHATSAPP_COEXISTENCE_ONBOARDING_ENABLED,
+    false
+  ),
+  whatsappCoexistenceOnboardingClinicIds: parseCsvList(
+    process.env.WHATSAPP_COEXISTENCE_ONBOARDING_CLINIC_IDS,
+    []
+  ),
 
   metaAppId: String(process.env.META_APP_ID || '').trim(),
   metaAppSecret: String(process.env.META_APP_SECRET || '').trim(),

@@ -71,6 +71,20 @@ function getSafeRawBody(req, payload) {
   }
 }
 
+function analyzeDeferredCoexistenceFields(payload) {
+  const deferred = new Set(['history', 'smb_app_state_sync']);
+  const entries = Array.isArray(payload && payload.entry) ? payload.entry : [];
+  const allFields = entries.flatMap((entry) =>
+    (Array.isArray(entry && entry.changes) ? entry.changes : [])
+      .map((change) => String(change && change.field || '').trim())
+      .filter(Boolean)
+  );
+  return {
+    fields: Array.from(new Set(allFields.filter((field) => deferred.has(field)))),
+    safeToAcknowledge: allFields.length > 0 && allFields.every((field) => deferred.has(field))
+  };
+}
+
 function verifyWebhook(req, res) {
   const mode = sanitizeString(req.query['hub.mode']);
   const token = sanitizeString(req.query['hub.verify_token']);
@@ -467,6 +481,7 @@ async function persistAndEnqueue(event, req) {
 async function handleWebhook(req, res) {
   const payload = req.body || {};
   const hasSmbEchoes = hasSmbMessageEchoEntries(payload);
+  const deferredCoexistence = analyzeDeferredCoexistenceFields(payload);
   const payloadSummary = summarizeWebhookPayload(payload);
   const topLevelBodyKeys = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? Object.keys(payload)
@@ -486,6 +501,22 @@ async function handleWebhook(req, res) {
       firstChangeField: payloadSummary.firstChangeField
     })
   );
+
+  if (deferredCoexistence.safeToAcknowledge) {
+    logInfo('meta_coexistence_deferred_event_acknowledged', withRequestMeta(req, {
+      fields: deferredCoexistence.fields,
+      persisted: false,
+      processed: false
+    }));
+    return res.status(200).json({
+      success: true,
+      received: 0,
+      enqueued: 0,
+      unrouted: 0,
+      duplicates: 0,
+      acknowledged: deferredCoexistence.fields
+    });
+  }
 
   pushWebhookEvent({
     timestamp: new Date().toISOString(),
