@@ -3,6 +3,7 @@ const { logInfo, logWarn } = require('../utils/logger');
 const { findCoexistenceChannelByPhoneNumberId } = require('../repositories/tenant.repository');
 const conversationRepo = require('./conversation.repo');
 const { invalidatePendingForMessage } = require('../repositories/order-closure.repository');
+const { invalidateForMessage: invalidateAmendmentForMessage } = require('../repositories/order-amendment.repository');
 const { resolveWhatsAppConversation } = require('./whatsapp-conversation-resolver');
 const { activateHumanTakeover, TAKEOVER_SOURCES } = require('./human-takeover.service');
 const { extractSmbMessageEchoes, digits } = require('../webhooks/smb-message-echoes');
@@ -28,7 +29,10 @@ function createSmbMessageEchoProcessor(overrides = {}) {
     resolveConversation: resolveWhatsAppConversation,
     insertMessage: conversationRepo.insertOutboundMessage,
     activateTakeover: activateHumanTakeover,
-    invalidateCandidate: invalidatePendingForMessage,
+    invalidateCandidate: async (...args) => {
+      await invalidatePendingForMessage(...args);
+      await invalidateAmendmentForMessage(...args);
+    },
     logInfo,
     logWarn,
     ...overrides

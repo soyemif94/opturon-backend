@@ -213,10 +213,14 @@ async function lockProduct(productId, tenantId, client) {
 async function getActiveReservedQuantity(productId, tenantId, client, excludeOrderItemId = null) {
   const result = await dbQuery(
     client,
-    `SELECT COALESCE(SUM(quantity), 0) AS quantity
-     FROM order_stock_reservations
-     WHERE "tenantId" = $1::uuid AND "productId" = $2::uuid AND status = 'active'
-       AND ($3::uuid IS NULL OR "orderItemId" <> $3::uuid)`,
+    `SELECT COALESCE(SUM(quantity), 0) AS quantity FROM (
+       SELECT quantity FROM order_stock_reservations
+       WHERE "tenantId" = $1::uuid AND "productId" = $2::uuid AND status = 'active'
+         AND ($3::uuid IS NULL OR "orderItemId" <> $3::uuid)
+       UNION ALL
+       SELECT quantity FROM order_amendment_reservations
+       WHERE "tenantId" = $1::uuid AND "productId" = $2::uuid AND status = 'active'
+     ) reserved`,
     [tenantId, productId, excludeOrderItemId]
   );
   return Number(result.rows[0]?.quantity || 0);

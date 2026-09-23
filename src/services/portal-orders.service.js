@@ -52,6 +52,8 @@ const { resolveProductPrice } = require('../utils/commerce-price');
 const { isOperationalPortalAssigneeRole } = require('../utils/portal-users');
 const { resolveLotStatusAfterRestore } = require('../utils/inventory-lot-state');
 const { releaseOrderReservations, listCommittedOrderReservations, cancelCommittedOrderReservations } = require('../repositories/takeover-order.repository');
+const { lockActiveForOrder: lockActiveOrderAmendments,
+  cancelActiveForOrder: cancelActiveOrderAmendments } = require('../repositories/order-amendment.repository');
 
 const ORDER_STATUSES = new Set(['draft', 'confirmed', 'cancelled']);
 const LEGACY_ORDER_STATUSES = new Set(['new', 'pending_payment', 'paid', 'preparing', 'ready', 'delivered', 'cancelled']);
@@ -60,6 +62,11 @@ const ORDER_PAYMENT_METHODS = new Set(['cash', 'bank_transfer', 'card', 'mercado
 const ORDER_SOURCES = new Set(['manual', 'inbox', 'automation', 'api', 'bot']);
 const ORDER_CUSTOMER_TYPES = new Set(['registered_contact', 'final_consumer']);
 const orderSummarySendsInFlight = new Set();
+
+function shouldCancelActiveAmendment(orderStatus, paymentStatus) {
+  return !['confirmed', 'pending_payment'].includes(String(orderStatus || '').toLowerCase()) ||
+    !['pending', 'unpaid'].includes(String(paymentStatus || '').toLowerCase());
+}
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -1473,6 +1480,10 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
     };
   }
 
+  if (currentOrder.source === 'human_takeover') {
+    await lockActiveOrderAmendments(context.clinic.id, currentOrder.id, client);
+  }
+
   if (requestedOrderStatus === 'cancelled' && currentOrder.status !== 'cancelled') {
     const releasedTakeoverReservations = await releaseOrderReservations(context.clinic.id, currentOrder.id, client);
     const takeoverReservedItemIds = new Set(releasedTakeoverReservations.map((reservation) => reservation.orderItemId));
@@ -1549,6 +1560,11 @@ async function applyOrderStatusPatchForContext(context, orderId, payload, client
     if (!paymentSyncResult.ok) {
       return paymentSyncResult;
     }
+  }
+
+  if (currentOrder.source === 'human_takeover' &&
+      shouldCancelActiveAmendment(orderWithDestination.orderStatus || requestedOrderStatus, nextPaymentStatus)) {
+    await cancelActiveOrderAmendments(context.clinic.id, currentOrder.id, 'ORDER_BECAME_NON_AMENDABLE', client);
   }
 
   const finalizationResult = await prepareOrderCustomerNotification({
@@ -1917,6 +1933,7 @@ module.exports = {
   validatePortalOrderTransferPayment,
   __private__: {
     restoreOrderLotAllocations,
-    consumeLotBasedOrderItem
+    consumeLotBasedOrderItem,
+    shouldCancelActiveAmendment
   }
 };

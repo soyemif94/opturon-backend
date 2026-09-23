@@ -38,6 +38,7 @@ const conversationRepo = require('./conversations/conversation.repo');
 const { isAutomaticReplyAllowedNow } = require('./conversations/human-takeover.service');
 const { processTakeoverInbound } = require('./conversations/takeover-operational.service');
 const { orderClosure } = require('./services/order-closure.service');
+const { orderAmendment } = require('./services/order-amendment.service');
 const { decideReply } = require('./conversations/conversation.engine');
 const { parseAppointmentText } = require('./conversations/appointment.parser');
 const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
@@ -21373,6 +21374,19 @@ async function processConversationReplyJob(job) {
 async function processJob(job) {
   processingCount += 1;
   try {
+    if (job.type === 'order_amendment_confirm') {
+      const payload = parseJobPayload(job.payload);
+      await orderAmendment.confirmCandidate({
+        tenantId: job.clinicId,
+        channelId: job.channelId,
+        amendmentId: payload.amendmentId,
+        conversationId: payload.conversationId,
+        orderId: payload.orderId,
+        revision: payload.revision
+      });
+      await markJobDone(job.id);
+      return;
+    }
     if (job.type === 'order_closure_confirm') {
       const payload = parseJobPayload(job.payload);
       await orderClosure.confirmCandidate({
@@ -21618,6 +21632,10 @@ async function pollOnce() {
     try {
       const closureScan = await orderClosure.scanCandidates(Math.min(BATCH_SIZE, 25));
       if (closureScan.created) logInfo('order_closure_scan_result', { workerId: WORKER_ID, ...closureScan });
+      const amendmentScan = await orderAmendment.scanCandidates(Math.min(BATCH_SIZE, 25));
+      if (amendmentScan.created) logInfo('order_amendment_scan_result', { workerId: WORKER_ID, ...amendmentScan });
+      const amendmentCleanup = await orderAmendment.sweepInvalidated(Math.min(BATCH_SIZE, 25));
+      if (amendmentCleanup.cancelled) logInfo('order_amendment_cleanup_result', { workerId: WORKER_ID, ...amendmentCleanup });
     } catch (error) {
       logWarn('order_closure_scan_failed', { workerId: WORKER_ID, resultCode: String(error?.code || 'scan_failed') });
     }

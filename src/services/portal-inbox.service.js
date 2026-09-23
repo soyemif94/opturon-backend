@@ -12,6 +12,8 @@ const { findChannelByIdAndClinicId } = require('../repositories/tenant.repositor
 const { getOpenHandoff, resolveOpenHandoffByConversation } = require('../repositories/handoff.repository');
 const conversationRepo = require('../conversations/conversation.repo');
 const { invalidatePendingForMessage, invalidatePendingForHumanSend } = require('../repositories/order-closure.repository');
+const { invalidateForMessage: invalidateAmendmentForMessage,
+  invalidateForHumanSend: invalidateAmendmentForHumanSend } = require('../repositories/order-amendment.repository');
 const {
   TAKEOVER_SOURCES,
   buildTakeoverContextPatch,
@@ -1774,6 +1776,7 @@ async function sendPortalMessage(tenantId, conversationId, text, options = {}) {
   const humanInitiated = options.humanInitiated !== false;
   if (humanInitiated && runtimeProvider === 'whatsapp_cloud') {
     await invalidatePendingForHumanSend(context.clinic.id, conversation.id);
+    await invalidateAmendmentForHumanSend(context.clinic.id, conversation.id);
   }
   const sendResult = runtimeProvider === 'instagram_graph'
     ? await sendInstagramTextMessage({
@@ -1827,6 +1830,7 @@ async function sendPortalMessage(tenantId, conversationId, text, options = {}) {
     if (!takeover) throw new Error('portal_human_takeover_activation_failed_after_send');
     if (outboundWrite && outboundWrite.inserted && outboundWrite.row?.id) {
       await invalidatePendingForMessage(context.clinic.id, conversation.id, outboundWrite.row.id, client);
+      await invalidateAmendmentForMessage(context.clinic.id, conversation.id, outboundWrite.row.id, client);
     }
     return { outboundWrite, takeover };
   };

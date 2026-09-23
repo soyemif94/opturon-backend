@@ -53,9 +53,9 @@ function parseRequestedUnit(rawText) {
 function detectOperation(rawText) {
   const text = normalizeText(rawText);
   if (/\b(?:saca|sacame|quita|quitame|elimina|eliminame|no quiero)\b/.test(text)) return 'remove';
-  if (/\b(?:mejor|cambia|cambiame|deja|dejame|corregi|corregime)\b/.test(text)) return 'set';
-  if (/\b(?:agrega|agregame|suma|sumame|anadi|anadime)\b/.test(text)) return 'add';
-  if (/\b(?:manda|mandame|dame|quiero|llevo|pone|poneme)\b/.test(text)) return 'set';
+  if (/\b(?:mejor|cambia|cambiame|deja|dejame|corregi|corregime|al final)\b/.test(text)) return 'set';
+  if (/\b(?:agrega|agregame|sumale|suma|sumame|anadi|anadime)\b/.test(text)) return 'add';
+  if (/\b(?:manda|mandame|dame|quiero|llevo|pone|poneme|haceme)\b/.test(text)) return 'set';
   return null;
 }
 
@@ -178,6 +178,7 @@ function createTakeoverOrderProcessor(overrides = {}) {
     getMessage: conversationRepo.getMessageById,
     findContact: findContactByIdAndClinicId,
     findRecentConfirmedTakeoverOrder,
+    processAmendment: (...args) => require('./order-amendment.service').orderAmendment.processInbound(...args),
     previewDraft: async (scope) => repository.getDraftSnapshot(scope.clinicId, scope.conversationId),
     ...overrides
   };
@@ -211,6 +212,11 @@ function createTakeoverOrderProcessor(overrides = {}) {
     ]);
     const priorMessages = (messages || []).filter((message) => message.id !== scope.inboundMessageId);
     const previewDraft = await deps.previewDraft(scope);
+    const explicitNewOrder = require('./order-amendment-model').isExplicitNewOrder(inbound.text || inbound.body);
+    if (!previewDraft) {
+      const amendment = await deps.processAmendment(scope, inbound, products, priorMessages);
+      if (amendment.handled) return amendment;
+    }
     const decision = buildOrderDecision({ text: inbound.text || inbound.body, products, messages: priorMessages, draftItems: previewDraft?.items || [] });
     if (decision.confidence !== 'HIGH_CONFIDENCE') return recordSkipped(scope, decision);
 
@@ -226,7 +232,7 @@ function createTakeoverOrderProcessor(overrides = {}) {
       if (!operationRow) return { ok: true, duplicate: true };
 
       let draft = await deps.repository.findDraftByConversation(scope.clinicId, scope.conversationId, client);
-      if (!draft && await deps.findRecentConfirmedTakeoverOrder(scope.clinicId, scope.conversationId, client)) {
+      if (!draft && !explicitNewOrder && await deps.findRecentConfirmedTakeoverOrder(scope.clinicId, scope.conversationId, client)) {
         await deps.repository.completeOperation(operationRow.id, scope.clinicId, {
           result: 'skipped', operation: 'AMENDMENT_REQUIRED', productId: decision.product.id,
           metadata: { confidence: decision.confidence, reason: 'RECENT_CONFIRMED_TAKEOVER_ORDER' }
@@ -349,6 +355,7 @@ module.exports = {
   hasExplicitUnknownProductCue,
   unitsPerPackage,
   buildOrderDecision,
+  buildItem,
   createTakeoverOrderProcessor,
   processTakeoverOrder: createTakeoverOrderProcessor()
 };

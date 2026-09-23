@@ -2,13 +2,17 @@ const conversationRepo = require('./conversation.repo');
 const { upsertLeadForConversation } = require('../repositories/lead.repository');
 const { processTakeoverOrder } = require('../services/takeover-order-processing.service');
 const { invalidatePendingForMessage } = require('../repositories/order-closure.repository');
+const { invalidateForMessage: invalidateAmendmentForMessage } = require('../repositories/order-amendment.repository');
 
 function createTakeoverOperationalProcessor(overrides = {}) {
   const deps = {
     updateConversation: conversationRepo.updateConversationStateForClinic || conversationRepo.updateConversationState,
     upsertLead: upsertLeadForConversation,
     processOrder: processTakeoverOrder,
-    invalidateCandidate: invalidatePendingForMessage,
+    invalidateCandidate: async (...args) => {
+      await invalidatePendingForMessage(...args);
+      await invalidateAmendmentForMessage(...args);
+    },
     ...overrides
   };
   return async function processTakeoverInbound({ clinicId, channelId, conversationId, contactId, inboundMessageId }) {

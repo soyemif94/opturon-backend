@@ -72,7 +72,7 @@ function detectClosure({ messages, order, lastOperation }) {
   if (latest.direction === 'outbound' && latest.raw?.actor === 'HUMAN') {
     const explicitCommitment = isHumanCommitment(text);
     const precedingCustomerRequest = relevant.slice(0, -1).some((message) =>
-      message.direction === 'inbound' && /\b(mandame|manda|quiero|llevo|poneme|dame|agregame|suma)\b/.test(normalize(message.text)));
+      message.direction === 'inbound' && /\b(mandame|manda|quiero|llevo|poneme|dame|agregame|sumale|suma|mejor|dejame|sacame|cambiame|corregime)\b/.test(normalize(message.text)));
     return explicitCommitment && precedingCustomerRequest
       ? { status: 'CLOSURE_POSSIBLE', reason: 'human_commitment_after_customer_order', sourceMessageId: latest.id }
       : { status: 'NOT_CLOSING', reason: 'no_resolved_commercial_closure' };

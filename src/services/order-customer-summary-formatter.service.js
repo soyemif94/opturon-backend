@@ -130,7 +130,10 @@ function formatOrderCustomerSummary({ snapshot, customerName = null, settings = 
   const lines = [];
 
   if (greetingName) lines.push(`Hola ${greetingName}.`);
-  lines.push(reference ? `Resumen de tu pedido ${reference}:` : 'Resumen de tu pedido:');
+  const updated = Number(safeSnapshot.finalizationVersion) > 1;
+  lines.push(updated
+    ? (reference ? `Pedido actualizado ${reference}:` : 'Pedido actualizado:')
+    : (reference ? `Resumen de tu pedido ${reference}:` : 'Resumen de tu pedido:'));
   lines.push('');
   visibleItems.forEach((item) => lines.push(formatItemLine(item, currency)));
   if (hiddenItemCount > 0) lines.push(`...y ${hiddenItemCount} productos mas`);

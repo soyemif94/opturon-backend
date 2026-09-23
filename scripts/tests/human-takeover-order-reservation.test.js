@@ -99,6 +99,7 @@ function createHarness(options = {}) {
     getMessage: async (messageId) => state.messages.get(messageId) || null,
     findContact: async () => ({ id: 'contact-a', name: 'Juan', phone: '5492910000000' }),
     findRecentConfirmedTakeoverOrder: async () => options.confirmedOrder || null,
+    processAmendment: options.processAmendment || (async () => ({ handled: false })),
     previewDraft: async (scope) => repo.getDraftSnapshot(scope.clinicId, scope.conversationId)
   });
 
@@ -287,12 +288,26 @@ test('manual bot resume changes ownership only and preserves draft plus reservat
   assert.deepEqual(h.activeReservations(), beforeReservations);
 });
 
-test('a new order utterance after recent takeover confirmation requires amendment', async () => {
-  const h = createHarness({ confirmedOrder: { id: 'confirmed-a' } });
+test('a continuation after recent takeover confirmation routes to amendment without a second draft', async () => {
+  let calls = 0;
+  const h = createHarness({ confirmedOrder: { id: 'confirmed-a' }, processAmendment: async () => {
+    calls += 1;
+    return { handled: true, mutated: true, orderId: 'confirmed-a', operation: 'ORDER_AMENDMENT_PROPOSED' };
+  } });
   const result = await h.inbound('message-after-confirmation', 'conversation-a', 'Mandame 3 cajas de 9 DE ORO AGRIDULCE');
-  assert.equal(result.reason, 'AMENDMENT_REQUIRED');
+  assert.equal(result.operation, 'ORDER_AMENDMENT_PROPOSED');
+  assert.equal(calls, 1);
   assert.equal(h.state.drafts.size, 0);
   assert.equal(h.activeReservations().length, 0);
+});
+
+test('an explicit separate order after confirmation uses a new draft', async () => {
+  const h = createHarness({ confirmedOrder: { id: 'confirmed-a' },
+    processAmendment: async () => ({ handled: false, explicitNewOrder: true }) });
+  const result = await h.inbound('message-new-order', 'conversation-a',
+    'Aparte haceme otro pedido de 2 cajas de 9 DE ORO AGRIDULCE');
+  assert.equal(result.operation, 'ORDER_DRAFT_CREATED');
+  assert.equal(h.state.drafts.size, 1);
 });
 
 test('migration defines reservation integrity, idempotency, and no physical stock mutation', () => {

@@ -189,10 +189,42 @@ async function prepareOrderCustomerNotification({
   };
 }
 
+async function prepareOrderAmendmentNotification({ previousOrder, order, finalizedAt = new Date().toISOString(), client }) {
+  if (!client || typeof client.query !== 'function') throw new Error('Amendment finalization requires a transaction.');
+  if (!previousOrder || !order || previousOrder.id !== order.id ||
+      previousOrder.clinicId !== order.clinicId || previousOrder.status !== 'confirmed' ||
+      order.status !== 'confirmed' || !Number.isInteger(Number(previousOrder.finalizationVersion)) ||
+      Number(previousOrder.finalizationVersion) < 1 ||
+      Number(order.finalizationVersion) !== Number(previousOrder.finalizationVersion)) {
+    throw new Error('Amendment finalization scope mismatch.');
+  }
+  const nextVersion = Number(previousOrder.finalizationVersion) + 1;
+  const finalizedOrder = await markOrderFinalized(order.id, order.clinicId, {
+    finalizedAt, previousFinalizationVersion: Number(previousOrder.finalizationVersion),
+    finalizationVersion: nextVersion
+  }, client);
+  if (!finalizedOrder) throw new Error('Amendment version update failed.');
+  const result = await insertOrderCustomerNotification({
+    clinicId: finalizedOrder.clinicId,
+    orderId: finalizedOrder.id,
+    contactId: finalizedOrder.contactId || null,
+    conversationId: finalizedOrder.conversationId || null,
+    channelId: null,
+    notificationType: ORDER_SUMMARY_NOTIFICATION_TYPE,
+    finalizationVersion: nextVersion,
+    idempotencyKey: `order_amendment_summary:${finalizedOrder.clinicId}:${finalizedOrder.id}:v${nextVersion}`,
+    status: finalizedOrder.contactId ? 'pending' : 'skipped_no_contact',
+    snapshot: buildOrderCustomerNotificationSnapshot(finalizedOrder),
+    availableAt: finalizedAt
+  }, client);
+  return { order: finalizedOrder, notification: result.notification, inserted: result.inserted };
+}
+
 module.exports = {
   ORDER_SUMMARY_NOTIFICATION_TYPE,
   detectNewOrderFinalization,
   buildOrderCustomerNotificationIdempotencyKey,
   buildOrderCustomerNotificationSnapshot,
-  prepareOrderCustomerNotification
+  prepareOrderCustomerNotification,
+  prepareOrderAmendmentNotification
 };
