@@ -19,12 +19,6 @@ function getConfiguredBackUrl() {
   return `${base}/login`;
 }
 
-function maskValuePrefix(value, visible = 7) {
-  const raw = normalizeString(value);
-  if (!raw) return null;
-  return raw.slice(0, visible);
-}
-
 function inferTokenKind(value) {
   const raw = normalizeString(value).toUpperCase();
   if (!raw) return 'missing';
@@ -246,14 +240,10 @@ function getMercadoPagoEnvDiagnostics() {
     },
     token: {
       present: Boolean(accessToken),
-      prefix: maskValuePrefix(accessToken),
-      length: accessToken.length || 0,
       kind: tokenKind
     },
     publicKey: {
-      present: Boolean(publicKey),
-      prefix: maskValuePrefix(publicKey),
-      length: publicKey.length || 0
+      present: Boolean(publicKey)
     },
     environment,
     xScopeStageEnabled: shouldUseMercadoPagoStageScope(),
@@ -263,18 +253,13 @@ function getMercadoPagoEnvDiagnostics() {
   };
 }
 
-async function runMercadoPagoAuthDiagnostics(options = {}) {
-  const planCode = normalizeString(options.planCode) || 'crecimiento';
-  const amount = Number(options.amount);
-  const currency = normalizeString(options.currency).toUpperCase() || 'ARS';
-  const payerEmail = normalizeString(options.payerEmail);
-  const tenantId = normalizeString(options.tenantId) || 'mp-auth-diag';
+async function runMercadoPagoAuthDiagnostics() {
   const envDiagnostics = getMercadoPagoEnvDiagnostics();
 
   const result = {
+    mode: 'read_only',
     env: envDiagnostics,
-    usersMe: null,
-    preapproval: null
+    usersMe: null
   };
 
   try {
@@ -293,65 +278,6 @@ async function runMercadoPagoAuthDiagnostics(options = {}) {
       body: sanitizeMercadoPagoErrorBody(error && error.body)
     };
     return result;
-  }
-
-  if (!payerEmail || !Number.isFinite(amount) || amount <= 0) {
-    return result;
-  }
-
-  const payload = buildCreatePreapprovalPayload({
-    reason: `Opturon ${planCode || 'crecimiento'} - ${tenantId}`,
-    externalReference: `mp-diag:${tenantId}:${Date.now()}`,
-    payerEmail,
-    amount,
-    currency
-  });
-
-  result.preapproval = {
-    attempted: true,
-    payload
-  };
-
-  try {
-    const created = await mercadoPagoFetch('/preapproval', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-    result.preapproval = {
-      ...result.preapproval,
-      ok: true,
-      status: 201,
-      body: sanitizeMercadoPagoErrorBody(created)
-    };
-  } catch (error) {
-    result.preapproval = {
-      ...result.preapproval,
-      ok: false,
-      status: Number.isInteger(Number(error && error.status)) ? Number(error.status) : null,
-      error: normalizeString(error && (error.code || error.message)) || 'mercadopago_preapproval_failed',
-      detail: error && error.message ? error.message : 'mercadopago_preapproval_failed',
-      body: sanitizeMercadoPagoErrorBody(error && error.body)
-    };
-  }
-
-  if (
-    result.usersMe &&
-    result.usersMe.ok &&
-    result.preapproval &&
-    result.preapproval.ok === false &&
-    result.preapproval.status === 403 &&
-    result.preapproval.body &&
-    typeof result.preapproval.body === 'object' &&
-    result.preapproval.body.code === 'PA_UNAUTHORIZED_RESULT_FROM_POLICIES'
-  ) {
-    result.analysis = {
-      rootCause: envDiagnostics.environmentMismatch
-        ? 'production_token_with_test_stage_scope'
-        : 'mercadopago_policy_unauthorized_for_preapproval',
-      message: envDiagnostics.environmentMismatch
-        ? 'Production token detected with MERCADO_PAGO_ENVIRONMENT=test. Backend was sending X-scope: stage to Mercado Pago.'
-        : 'Mercado Pago authenticated the token on /users/me but rejected /preapproval by policy.'
-    };
   }
 
   return result;

@@ -3,32 +3,30 @@ const { runMercadoPagoAuthDiagnostics } = require('../services/mercado-pago.serv
 
 const router = express.Router();
 
-function normalizeString(value) {
-  return String(value || '').trim();
-}
+const MUTATING_DIAGNOSTIC_QUERY_PARAMS = new Set([
+  'preapproval',
+  'payeremail',
+  'tenantid',
+  'plancode',
+  'currency',
+  'amount'
+]);
 
-function normalizeAmount(value, fallback) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Number(parsed.toFixed(2));
+function containsLegacyMutatingQuery(req) {
+  return Object.keys(req.query || {}).some((key) => MUTATING_DIAGNOSTIC_QUERY_PARAMS.has(String(key).trim().toLowerCase()));
 }
 
 router.get('/__mercadopago/diagnostics', async (req, res) => {
-  const runPreapproval = normalizeString(req.query.preapproval) === '1';
-  const payerEmail = normalizeString(req.query.payerEmail);
-  const tenantId = normalizeString(req.query.tenantId) || 'mp-auth-diag';
-  const planCode = normalizeString(req.query.planCode) || 'crecimiento';
-  const currency = normalizeString(req.query.currency) || 'ARS';
-  const amount = normalizeAmount(req.query.amount, 68600);
+  if (containsLegacyMutatingQuery(req)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'mutating_diagnostics_disabled',
+      message: 'Mutating diagnostics are disabled.'
+    });
+  }
 
   try {
-    const diagnostics = await runMercadoPagoAuthDiagnostics({
-      tenantId,
-      planCode,
-      amount,
-      currency,
-      payerEmail: runPreapproval ? payerEmail : ''
-    });
+    const diagnostics = await runMercadoPagoAuthDiagnostics();
     return res.status(200).json({
       ok: true,
       diagnostics
