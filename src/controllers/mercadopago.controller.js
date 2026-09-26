@@ -16,7 +16,37 @@ function normalizePayload(req) {
 }
 
 async function postMercadoPagoWebhook(req, res) {
-  const signatureValid = verifyWebhookSignature(req);
+  let signatureValid = null;
+
+  try {
+    signatureValid = verifyWebhookSignature(req);
+  } catch {
+    logError('mercado_pago_webhook_signature_error', {
+      requestId: req.requestId || req.get('x-request-id') || null
+    });
+    return res.status(401).json({ success: false, error: 'webhook_signature_invalid' });
+  }
+
+  if (signatureValid !== true) {
+    const signatureHeader = String(req.get('x-signature') || '').trim();
+    const logEvent = signatureHeader
+      ? signatureValid === null
+        ? 'mercado_pago_webhook_signature_error'
+        : 'mercado_pago_webhook_signature_invalid'
+      : 'mercado_pago_webhook_signature_missing';
+
+    logWarn(logEvent, {
+      requestId: req.requestId || req.get('x-request-id') || null,
+      signatureValid
+    });
+    return res.status(401).json({ success: false, error: 'webhook_signature_invalid' });
+  }
+
+  logInfo('mercado_pago_webhook_signature_valid', {
+    requestId: req.requestId || req.get('x-request-id') || null,
+    signatureValid: true
+  });
+
   let payload = {};
 
   try {
