@@ -22,6 +22,8 @@ function mapSubscriptionRow(row) {
     mercadoPagoPayerEmail: row.mercadoPagoPayerEmail || null,
     mercadoPagoStatus: row.mercadoPagoStatus || null,
     localStatus: row.localStatus,
+    provisioningState: row.provisioningState || null,
+    providerCallStartedAt: row.providerCallStartedAt || null,
     currentPeriodStart: row.currentPeriodStart || null,
     currentPeriodEnd: row.currentPeriodEnd || null,
     nextBillingDate: row.nextBillingDate || null,
@@ -59,6 +61,7 @@ async function insertSaasSubscription(input, client = null) {
       "externalReference",
       "authorizationUrl",
       metadata,
+      "provisioningState",
       "updatedAt"
     ) VALUES (
       $1::uuid,
@@ -81,6 +84,7 @@ async function insertSaasSubscription(input, client = null) {
       $18,
       $19,
       $20::jsonb,
+      $21,
       NOW()
     )
     RETURNING
@@ -104,6 +108,8 @@ async function insertSaasSubscription(input, client = null) {
       "externalReference",
       "authorizationUrl",
       metadata,
+      "provisioningState",
+      "providerCallStartedAt",
       "createdAt",
       "updatedAt"`,
     [
@@ -126,7 +132,8 @@ async function insertSaasSubscription(input, client = null) {
       input.lastPaymentStatus || null,
       input.externalReference,
       input.authorizationUrl || null,
-      JSON.stringify(input.metadata || {})
+      JSON.stringify(input.metadata || {}),
+      input.provisioningState || null
     ]
   );
 
@@ -155,6 +162,7 @@ async function updateSaasSubscriptionById(id, patch, client = null) {
            WHEN $16::jsonb IS NULL THEN metadata
            ELSE COALESCE(metadata, '{}'::jsonb) || $16::jsonb
          END,
+         "provisioningState" = COALESCE($17, "provisioningState"),
          "updatedAt" = NOW()
      WHERE id = $1::uuid
      RETURNING
@@ -178,6 +186,8 @@ async function updateSaasSubscriptionById(id, patch, client = null) {
       "externalReference",
       "authorizationUrl",
       metadata,
+      "provisioningState",
+      "providerCallStartedAt",
       "createdAt",
       "updatedAt"`,
     [
@@ -196,14 +206,16 @@ async function updateSaasSubscriptionById(id, patch, client = null) {
       patch.lastPaymentId || null,
       patch.lastPaymentStatus || null,
       patch.authorizationUrl || null,
-      patch.metadata ? JSON.stringify(patch.metadata) : null
+      patch.metadata ? JSON.stringify(patch.metadata) : null,
+      patch.provisioningState || null
     ]
   );
 
   return mapSubscriptionRow(result.rows[0] || null);
 }
 
-async function findSaasSubscriptionById(id, client = null) {
+async function findSaasSubscriptionById(id, client = null, options = {}) {
+  const lockClause = options.forUpdate === true ? ' FOR UPDATE' : '';
   const result = await dbQuery(
     client,
     `SELECT
@@ -227,14 +239,48 @@ async function findSaasSubscriptionById(id, client = null) {
       "externalReference",
       "authorizationUrl",
       metadata,
+      "provisioningState",
+      "providerCallStartedAt",
       "createdAt",
       "updatedAt"
      FROM saas_subscriptions
      WHERE id = $1::uuid
-     LIMIT 1`,
+     LIMIT 1${lockClause}`,
     [id]
   );
   return mapSubscriptionRow(result.rows[0] || null);
+}
+
+// Caller holds the canonical clinic row lock until the reservation commits.
+// Inspect all live rows, including legacy duplicates; latest-only is unsafe.
+async function findBlockingSaasSubscriptions(clinicId, externalTenantId, client) {
+  const result = await dbQuery(client, `SELECT * FROM saas_subscriptions
+    WHERE ("clinicId" = $1::uuid OR "externalTenantId" = $2)
+      AND ("localStatus" <> 'canceled'
+        OR "provisioningState" IN (
+          'reserved', 'provider_call_started', 'provider_created', 'reconciliation_required'
+        ))
+    ORDER BY "createdAt" DESC, id
+    LIMIT 2`, [clinicId, externalTenantId]);
+  return result.rows.map(mapSubscriptionRow);
+}
+
+// Only the winner of this durable CAS may perform the remote POST.
+async function claimSaasSubscriptionProviderCall(id, client) {
+  const result = await dbQuery(client, `UPDATE saas_subscriptions
+    SET "provisioningState" = 'provider_call_started',
+        "providerCallStartedAt" = NOW(), "updatedAt" = NOW()
+    WHERE id = $1::uuid AND "provisioningState" = 'reserved'
+      AND "localStatus" = 'pending' AND "mercadoPagoPreapprovalId" IS NULL
+    RETURNING *`, [id]);
+  return mapSubscriptionRow(result.rows[0] || null);
+}
+
+async function markSaasSubscriptionReconciliationRequired(id) {
+  // Never overwrite a verified webhook or a successfully persisted provider response.
+  await query(`UPDATE saas_subscriptions
+    SET "provisioningState" = 'reconciliation_required', "updatedAt" = NOW()
+    WHERE id = $1::uuid AND "provisioningState" = 'provider_call_started'`, [id]);
 }
 
 async function findLatestSaasSubscriptionByTenantId(externalTenantId, client = null) {
@@ -261,6 +307,8 @@ async function findLatestSaasSubscriptionByTenantId(externalTenantId, client = n
       "externalReference",
       "authorizationUrl",
       metadata,
+      "provisioningState",
+      "providerCallStartedAt",
       "createdAt",
       "updatedAt"
      FROM saas_subscriptions
@@ -296,6 +344,8 @@ async function findSaasSubscriptionByPreapprovalId(preapprovalId, client = null)
       "externalReference",
       "authorizationUrl",
       metadata,
+      "provisioningState",
+      "providerCallStartedAt",
       "createdAt",
       "updatedAt"
      FROM saas_subscriptions
@@ -330,6 +380,8 @@ async function findSaasSubscriptionByExternalReference(externalReference, client
       "externalReference",
       "authorizationUrl",
       metadata,
+      "provisioningState",
+      "providerCallStartedAt",
       "createdAt",
       "updatedAt"
      FROM saas_subscriptions
@@ -378,6 +430,8 @@ async function listSaasSubscriptions(filters = {}, client = null) {
       "externalReference",
       "authorizationUrl",
       metadata,
+      "provisioningState",
+      "providerCallStartedAt",
       "createdAt",
       "updatedAt"
      FROM saas_subscriptions
@@ -458,6 +512,9 @@ async function updateSubscriptionEventStatus(id, patch, client = null) {
 }
 
 module.exports = {
+  findBlockingSaasSubscriptions,
+  claimSaasSubscriptionProviderCall,
+  markSaasSubscriptionReconciliationRequired,
   insertSaasSubscription,
   updateSaasSubscriptionById,
   findSaasSubscriptionById,
