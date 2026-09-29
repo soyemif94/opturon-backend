@@ -511,6 +511,15 @@ async function updateSubscriptionEventStatus(id, patch, client = null) {
   return result.rows[0] || null;
 }
 
+async function lockSubscriptionEventByDedupeKey(dedupeKey, client) {
+  const result = await client.query(
+    `SELECT id, "processingStatus" FROM saas_subscription_events
+     WHERE "dedupeKey" = $1 FOR UPDATE`,
+    [dedupeKey]
+  );
+  return result.rows[0] || null;
+}
+
 module.exports = {
   findBlockingSaasSubscriptions,
   claimSaasSubscriptionProviderCall,
@@ -523,5 +532,6 @@ module.exports = {
   findSaasSubscriptionByExternalReference,
   listSaasSubscriptions,
   insertSubscriptionEvent,
+  lockSubscriptionEventByDedupeKey,
   updateSubscriptionEventStatus
 };

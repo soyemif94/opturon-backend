@@ -2,6 +2,15 @@ const { verifyWebhookSignature } = require('../services/mercado-pago.service');
 const { processMercadoPagoWebhook } = require('../services/saas-billing.service');
 const { logError, logInfo, logWarn } = require('../utils/logger');
 
+function logWebhook(logger, event, fields) {
+  // Observability must not change an auth decision or a committed result.
+  try { logger(event, fields); } catch { /* The durable event is authoritative. */ }
+}
+
+function retryableFailure(res) {
+  return res.status(503).json({ success: false, error: 'webhook_processing_failed' });
+}
+
 function normalizePayload(req) {
   if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
     return req.body;
@@ -21,8 +30,9 @@ async function postMercadoPagoWebhook(req, res) {
   try {
     signatureValid = verifyWebhookSignature(req);
   } catch {
-    logError('mercado_pago_webhook_signature_error', {
-      requestId: req.requestId || req.get('x-request-id') || null
+    logWebhook(logError, 'mercado_pago_webhook_signature_error', {
+      requestId: req.requestId || req.get('x-request-id') || null,
+      outcome: 'REJECTED_AUTH'
     });
     return res.status(401).json({ success: false, error: 'webhook_signature_invalid' });
   }
@@ -35,14 +45,15 @@ async function postMercadoPagoWebhook(req, res) {
         : 'mercado_pago_webhook_signature_invalid'
       : 'mercado_pago_webhook_signature_missing';
 
-    logWarn(logEvent, {
+    logWebhook(logWarn, logEvent, {
       requestId: req.requestId || req.get('x-request-id') || null,
-      signatureValid
+      signatureValid,
+      outcome: 'REJECTED_AUTH'
     });
     return res.status(401).json({ success: false, error: 'webhook_signature_invalid' });
   }
 
-  logInfo('mercado_pago_webhook_signature_valid', {
+  logWebhook(logInfo, 'mercado_pago_webhook_signature_valid', {
     requestId: req.requestId || req.get('x-request-id') || null,
     signatureValid: true
   });
@@ -51,10 +62,10 @@ async function postMercadoPagoWebhook(req, res) {
 
   try {
     payload = normalizePayload(req);
-  } catch (error) {
-    logWarn('mercado_pago_webhook_invalid_json', {
+  } catch {
+    logWebhook(logWarn, 'mercado_pago_webhook_invalid_json', {
       requestId: req.requestId || null,
-      error: error.message
+      outcome: 'PERMANENT_NON_RETRYABLE_FAILURE'
     });
     return res.status(200).json({ success: true, ignored: true, error: 'invalid_json' });
   }
@@ -74,7 +85,16 @@ async function postMercadoPagoWebhook(req, res) {
       signatureValid
     });
 
-    logInfo('mercado_pago_webhook_processed', {
+    if (!result || result.ok !== true) {
+      logWebhook(logError, 'mercado_pago_webhook_retryable_failure', {
+        requestId: req.requestId || null, outcome: 'RETRYABLE_PROCESSING_FAILURE'
+      });
+      return retryableFailure(res);
+    }
+
+    const outcome = result.duplicate ? 'ALREADY_PROCESSED'
+      : result.ignored ? 'IGNORED_UNSUPPORTED_EVENT' : 'PROCESSED_SUCCESSFULLY';
+    logWebhook(logInfo, 'mercado_pago_webhook_processed', {
       requestId: req.requestId || null,
       topic,
       action,
@@ -82,6 +102,7 @@ async function postMercadoPagoWebhook(req, res) {
       duplicate: result.duplicate === true,
       ignored: result.ignored === true,
       subscriptionId: result.subscription ? result.subscription.id : null,
+      outcome,
       signatureValid
     });
 
@@ -90,22 +111,13 @@ async function postMercadoPagoWebhook(req, res) {
       duplicate: result.duplicate === true,
       ignored: result.ignored === true
     });
-  } catch (error) {
-    logError('mercado_pago_webhook_failed', {
+  } catch {
+    logWebhook(logError, 'mercado_pago_webhook_retryable_failure', {
       requestId: req.requestId || null,
-      topic: String(payload.type || payload.topic || '').trim().toLowerCase() || null,
-      action: String(payload.action || '').trim().toLowerCase() || null,
-      resourceId:
-        String(
-          (payload.data && payload.data.id) ||
-          payload.resource_id ||
-          payload.resource ||
-          ''
-        ).trim() || null,
       signatureValid,
-      error: error.message
+      outcome: 'RETRYABLE_PROCESSING_FAILURE'
     });
-    return res.status(200).json({ success: true, error: error.message });
+    return retryableFailure(res);
   }
 }
 

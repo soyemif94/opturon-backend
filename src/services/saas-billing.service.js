@@ -13,6 +13,7 @@ const {
   findSaasSubscriptionByExternalReference,
   listSaasSubscriptions,
   insertSubscriptionEvent,
+  lockSubscriptionEventByDedupeKey,
   updateSubscriptionEventStatus
 } = require('../repositories/saas-subscriptions.repository');
 const {
@@ -616,12 +617,28 @@ function buildPaymentWebhookMetadata(payment, payload, meta) {
   };
 }
 
+// Only provider GETs run through this deadline. A late result is discarded and
+// cannot continue into DB mutations after the event transaction has rolled back.
+async function fetchWebhookResource(fetchResource) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(fetchResource),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('webhook_provider_timeout')), 8000);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function processMercadoPagoWebhook(payload, meta = {}) {
   const requestId = normalizeString(meta.requestId);
   const snapshot = buildWebhookEventSnapshot(payload, meta);
   const dedupeKey = deriveWebhookDedupeKey(snapshot);
 
-  const insertedEvent = await insertSubscriptionEvent({
+  await insertSubscriptionEvent({
     subscriptionId: null,
     provider: 'mercado_pago',
     topic: snapshot.topic,
@@ -636,134 +653,145 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
     processingError: null
   });
 
-  if (!insertedEvent) {
-    return { ok: true, duplicate: true };
-  }
-
-  try {
-    const topic = snapshot.topic || '';
-    const action = snapshot.action || '';
-    const resourceId = snapshot.resourceId;
-
-    let subscription = null;
-
-    if (topic === 'subscription_authorized_payment' || topic === 'authorized_payment' || topic === 'payment') {
-      if (!resourceId) {
-        throw new Error('payment_resource_id_missing');
-      }
-      const payment = await getPayment(resourceId);
-      const preapprovalId = resolveSubscriptionIdFromPayment(payment);
-      const externalReference = resolveExternalReferenceFromPayment(payment);
-
-      if (preapprovalId) {
-        subscription = await findSaasSubscriptionByPreapprovalId(preapprovalId);
-      }
-      if (!subscription && externalReference) {
-        subscription = await findSaasSubscriptionByExternalReference(externalReference);
-      }
-
-      if (!subscription) {
-        throw new Error('subscription_not_mapped_from_payment');
-      }
-
-      const clinic = await findClinicByExternalTenantId(subscription.externalTenantId);
-      const recoveryPreapprovalId = subscription.mercadoPagoPreapprovalId || preapprovalId;
-      const remotePreapproval = recoveryPreapprovalId
-        ? await getPreapproval(recoveryPreapprovalId)
-        : null;
-
-      const updated = await withTransaction(async (client) => {
-        const preapprovalPatch = remotePreapproval ? mapPreapprovalToSubscriptionPatch(remotePreapproval) : {};
-        const next = await updateSaasSubscriptionById(
-          subscription.id,
-          {
-            ...preapprovalPatch,
-            provisioningState: subscription.provisioningState && preapprovalPatch.mercadoPagoPreapprovalId ? 'ready' : null,
-            lastPaymentId: normalizeString(payment.id) || subscription.lastPaymentId,
-            lastPaymentStatus: normalizeString(payment.status).toLowerCase() || subscription.lastPaymentStatus,
-            localStatus:
-              mapMercadoPagoPaymentStatus(payment.status) === 'active'
-                ? (preapprovalPatch.localStatus || 'active')
-                : mapMercadoPagoPaymentStatus(payment.status),
-            metadata: {
-              ...buildPaymentWebhookMetadata(payment, payload, meta)
-            }
-          },
-          client
-        );
-        if (clinic) {
-          await syncTenantBillingState(client, clinic, next);
-        }
-        return next;
-      });
-
-      await updateSubscriptionEventStatus(insertedEvent.id, {
-        subscriptionId: updated.id,
-        processingStatus: 'processed',
+  return withTransaction(async (client) => {
+    // Database ownership, shared by every process. A crashed connection releases
+    // the lock; received/failed events remain eligible on the next delivery.
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    const event = await lockSubscriptionEventByDedupeKey(dedupeKey, client);
+    if (!event) throw new Error('webhook_event_missing');
+    if (event.processingStatus === 'processed' || event.processingStatus === 'ignored') {
+      return { ok: true, outcome: 'ALREADY_PROCESSED', duplicate: true, ignored: event.processingStatus === 'ignored' };
+    }
+    await updateSubscriptionEventStatus(event.id, { processingStatus: 'processing' }, client);
+    await client.query('SAVEPOINT webhook_business');
+    try {
+      const result = await applyMercadoPagoWebhook(payload, meta, snapshot, client);
+      const completed = await updateSubscriptionEventStatus(event.id, {
+        subscriptionId: result.subscription ? result.subscription.id : null,
+        processingStatus: result.ignored ? 'ignored' : 'processed',
         processingError: null
-      });
+      }, client);
+      if (!completed) throw new Error('webhook_completion_missing');
+      await client.query('RELEASE SAVEPOINT webhook_business');
+      return result;
+    } catch {
+      // Roll back billing, tenant state AND completion together. Persist failure
+      // while still owning the event lock; never overwrite another attempt.
+      await client.query('ROLLBACK TO SAVEPOINT webhook_business');
+      await updateSubscriptionEventStatus(event.id, {
+        processingStatus: 'failed', processingError: 'webhook_processing_failed'
+      }, client);
+      return { ok: false, outcome: 'RETRYABLE_PROCESSING_FAILURE' };
+    }
+  });
+}
 
-      return { ok: true, duplicate: false, subscription: updated };
+async function applyMercadoPagoWebhook(payload, meta, snapshot, client) {
+  const topic = snapshot.topic || '';
+  const action = snapshot.action || '';
+  const resourceId = snapshot.resourceId;
+
+  let subscription = null;
+
+  if (topic === 'subscription_authorized_payment' || topic === 'authorized_payment' || topic === 'payment') {
+    if (!resourceId) {
+      throw new Error('payment_resource_id_missing');
+    }
+    const payment = await fetchWebhookResource(() => getPayment(resourceId));
+    if (!normalizeString(payment && payment.id) || !normalizeString(payment && payment.status)) {
+      throw new Error('payment_response_incomplete');
+    }
+    const preapprovalId = resolveSubscriptionIdFromPayment(payment);
+    const externalReference = resolveExternalReferenceFromPayment(payment);
+
+    if (preapprovalId) {
+      subscription = await findSaasSubscriptionByPreapprovalId(preapprovalId, client);
+    }
+    if (!subscription && externalReference) {
+      subscription = await findSaasSubscriptionByExternalReference(externalReference, client);
     }
 
-    if (
-      topic === 'subscription_preapproval' ||
-      topic === 'preapproval' ||
-      topic === 'subscription' ||
-      action.includes('preapproval')
-    ) {
-      if (!resourceId) {
-        throw new Error('preapproval_resource_id_missing');
-      }
-
-      subscription = await findSaasSubscriptionByPreapprovalId(resourceId);
-      const remote = await getPreapproval(resourceId);
-      if (!subscription) {
-        const remoteExternalReference = normalizeString(remote && remote.external_reference);
-        if (remoteExternalReference) {
-          subscription = await findSaasSubscriptionByExternalReference(remoteExternalReference);
-        }
-      }
-      if (!subscription) {
-        throw new Error('subscription_not_found_for_preapproval');
-      }
-
-      const clinic = await findClinicByExternalTenantId(subscription.externalTenantId);
-      const patch = {
-        ...mapPreapprovalToSubscriptionPatch(remote),
-        provisioningState: subscription.provisioningState && normalizeString(remote && remote.id) ? 'ready' : null,
-        metadata: buildPreapprovalWebhookMetadata(remote, payload, meta)
-      };
-      const updated = await withTransaction(async (client) => {
-        const next = await updateSaasSubscriptionById(subscription.id, patch, client);
-        if (clinic) {
-          await syncTenantBillingState(client, clinic, next);
-        }
-        return next;
-      });
-
-      await updateSubscriptionEventStatus(insertedEvent.id, {
-        subscriptionId: updated.id,
-        processingStatus: 'processed',
-        processingError: null
-      });
-
-      return { ok: true, duplicate: false, subscription: updated };
+    if (!subscription) {
+      throw new Error('subscription_not_mapped_from_payment');
     }
 
-    await updateSubscriptionEventStatus(insertedEvent.id, {
-      processingStatus: 'ignored',
-      processingError: null
-    });
+    const recoveryPreapprovalId = subscription.mercadoPagoPreapprovalId || preapprovalId;
+    const remotePreapproval = recoveryPreapprovalId
+      ? await fetchWebhookResource(() => getPreapproval(recoveryPreapprovalId))
+      : null;
+    if (recoveryPreapprovalId && (!normalizeString(remotePreapproval && remotePreapproval.id)
+      || !normalizeString(remotePreapproval && remotePreapproval.status))) {
+      throw new Error('preapproval_response_incomplete');
+    }
 
-    return { ok: true, duplicate: false, ignored: true };
-  } catch (error) {
-    await updateSubscriptionEventStatus(insertedEvent.id, {
-      processingStatus: 'failed',
-      processingError: error.message
-    });
-    throw error;
+    subscription = await findSaasSubscriptionById(subscription.id, client, { forUpdate: true });
+    if (!subscription) throw new Error('subscription_not_found');
+    const clinic = await findClinicByExternalTenantId(subscription.externalTenantId, client, { forUpdate: true });
+    if (!clinic) throw new Error('tenant_not_found');
+    const preapprovalPatch = remotePreapproval ? mapPreapprovalToSubscriptionPatch(remotePreapproval) : {};
+    const next = await updateSaasSubscriptionById(
+      subscription.id,
+      {
+        ...preapprovalPatch,
+        provisioningState: subscription.provisioningState && preapprovalPatch.mercadoPagoPreapprovalId ? 'ready' : null,
+        lastPaymentId: normalizeString(payment.id) || subscription.lastPaymentId,
+        lastPaymentStatus: normalizeString(payment.status).toLowerCase() || subscription.lastPaymentStatus,
+        localStatus:
+          mapMercadoPagoPaymentStatus(payment.status) === 'active'
+            ? (preapprovalPatch.localStatus || 'active')
+            : mapMercadoPagoPaymentStatus(payment.status),
+        metadata: {
+          ...buildPaymentWebhookMetadata(payment, payload, meta)
+        }
+      },
+      client
+    );
+    if (!next) throw new Error('subscription_update_missing');
+    await syncTenantBillingState(client, clinic, next);
+    return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
   }
+
+  if (
+    topic === 'subscription_preapproval' ||
+    topic === 'preapproval' ||
+    topic === 'subscription' ||
+    action.includes('preapproval')
+  ) {
+    if (!resourceId) {
+      throw new Error('preapproval_resource_id_missing');
+    }
+
+    subscription = await findSaasSubscriptionByPreapprovalId(resourceId, client);
+    const remote = await fetchWebhookResource(() => getPreapproval(resourceId));
+    if (!normalizeString(remote && remote.id) || !normalizeString(remote && remote.status)) {
+      throw new Error('preapproval_response_incomplete');
+    }
+    if (!subscription) {
+      const remoteExternalReference = normalizeString(remote && remote.external_reference);
+      if (remoteExternalReference) {
+        subscription = await findSaasSubscriptionByExternalReference(remoteExternalReference, client);
+      }
+    }
+    if (!subscription) {
+      throw new Error('subscription_not_found_for_preapproval');
+    }
+
+    subscription = await findSaasSubscriptionById(subscription.id, client, { forUpdate: true });
+    if (!subscription) throw new Error('subscription_not_found');
+    const clinic = await findClinicByExternalTenantId(subscription.externalTenantId, client, { forUpdate: true });
+    if (!clinic) throw new Error('tenant_not_found');
+    const patch = {
+      ...mapPreapprovalToSubscriptionPatch(remote),
+      provisioningState: subscription.provisioningState && normalizeString(remote && remote.id) ? 'ready' : null,
+      metadata: buildPreapprovalWebhookMetadata(remote, payload, meta)
+    };
+    const next = await updateSaasSubscriptionById(subscription.id, patch, client);
+    if (!next) throw new Error('subscription_update_missing');
+    await syncTenantBillingState(client, clinic, next);
+    return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
+  }
+
+  return { ok: true, outcome: 'IGNORED_UNSUPPORTED_EVENT', duplicate: false, ignored: true };
 }
 
 module.exports = {
