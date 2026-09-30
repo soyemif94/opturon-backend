@@ -129,6 +129,60 @@ test('identity contradictions are conflicts; missing identity is unknown', () =>
     assert.equal(resolveLocalBillingContract(other).status, 'CONFLICT');
   }
 });
+test('B2: capture canonicalizes equivalent UUID casing without changing tenant or prefix', () => {
+  const subscriptionId = 'abcdefab-cdef-4abc-8def-abcdefabcdef';
+  const clinic = 'fedcbafe-dcba-4fed-8cba-fedcbafedcba';
+  const input = { plan: legacy().metadata.plan, subscriptionId: subscriptionId.toUpperCase(),
+    clinicId: clinic.toUpperCase(), externalTenantId: 'Tenant-A',
+    externalReference: `opturon:Tenant-A:${subscriptionId.toUpperCase()}`, capturedAt };
+  const before = JSON.stringify(input);
+  const contract = captureLocalBillingContract(input);
+  assert.equal(contract.subscriptionId, subscriptionId);
+  assert.equal(contract.clinicId, clinic);
+  assert.equal(contract.externalTenantId, 'Tenant-A');
+  assert.equal(contract.externalReference, `opturon:Tenant-A:${subscriptionId}`);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test('B2: native and legacy resolution accept independent UUID casing in rows and references', () => {
+  const subscriptionId = 'abcdefab-cdef-4abc-8def-abcdefabcdef';
+  const clinic = 'fedcbafe-dcba-4fed-8cba-fedcbafedcba';
+  for (const useNative of [false, true]) {
+    for (const uppercaseRow of [false, true]) {
+      for (const uppercaseReference of [false, true]) {
+        const row = legacy();
+        row.id = uppercaseRow ? subscriptionId.toUpperCase() : subscriptionId;
+        row.clinicId = uppercaseRow ? clinic.toUpperCase() : clinic;
+        row.externalReference = `opturon:tenant-a:${uppercaseReference ? subscriptionId.toUpperCase() : subscriptionId}`;
+        if (useNative) row.metadata.contract = { ...native().metadata.contract,
+          subscriptionId: uppercaseRow ? subscriptionId : subscriptionId.toUpperCase(),
+          clinicId: uppercaseRow ? clinic : clinic.toUpperCase(),
+          externalReference: `opturon:tenant-a:${uppercaseReference ? subscriptionId : subscriptionId.toUpperCase()}` };
+        const before = JSON.stringify(row);
+        const resolved = resolveLocalBillingContract(row);
+        assert.equal(resolved.status, 'KNOWN');
+        assert.equal(resolved.contract.subscriptionId, subscriptionId);
+        assert.equal(resolved.contract.clinicId, clinic);
+        assert.equal(resolved.contract.externalReference, `opturon:tenant-a:${subscriptionId}`);
+        assert.equal(JSON.stringify(row), before);
+      }
+    }
+  }
+});
+
+test('B2: UUID normalization does not accept another tenant, prefix, subscription or malformed reference', () => {
+  for (const reference of [`Opturon:tenant-a:${id}`, `opturon:Tenant-a:${id}`,
+    `opturon:tenant-b:${id}`, `opturon:tenant-a:${clinicId}`, `opturon:tenant-a:${id}:extra`,
+    `opturon:tenant-a:${id.slice(1)}`, `prefix:opturon:tenant-a:${id}`]) {
+    for (const row of [legacy(), native()]) {
+      row.externalReference = reference;
+      assert.equal(resolveLocalBillingContract(row).status, 'CONFLICT', reference);
+    }
+    const row = native(); row.metadata.contract = { ...row.metadata.contract, externalReference: reference };
+    assert.equal(resolveLocalBillingContract(row).status, 'CONFLICT', reference);
+  }
+});
+
 test('unknown/malformed native contract never downgrades to legacy evidence', () => {
   for (const contract of [null, [], {}, { ...native().metadata.contract, version: 2 },
     { ...native().metadata.contract, currency: '' }, { ...native().metadata.contract, source: 'provider' },

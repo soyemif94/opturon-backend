@@ -26,6 +26,15 @@ function normalizeContractCurrency(value) {
   return CURRENCIES.has(currency) ? currency : null;
 }
 
+function canonicalizeExternalReferenceUuid(value) {
+  const reference = text(value);
+  const separator = reference.lastIndexOf(':');
+  const subscriptionId = reference.slice(separator + 1);
+  if (separator < 0 || !UUID.test(subscriptionId)) return null;
+  // Only UUID casing is equivalent; prefix and tenant remain case-sensitive.
+  return `${reference.slice(0, separator)}:${subscriptionId.toLowerCase()}`;
+}
+
 function localIdentity(subscription) {
   const identity = {
     subscriptionId: text(subscription.id).toLowerCase(),
@@ -38,10 +47,11 @@ function localIdentity(subscription) {
   if (!UUID.test(identity.subscriptionId) || !UUID.test(identity.clinicId)) {
     return { status: 'CONFLICT', reasons: ['invalid_local_identity'] };
   }
-  // The audited snapshot-producing generation used this exact backend reference.
-  if (identity.externalReference !== `opturon:${identity.externalTenantId}:${identity.subscriptionId}`) {
+  const reference = canonicalizeExternalReferenceUuid(identity.externalReference);
+  if (reference !== `opturon:${identity.externalTenantId}:${identity.subscriptionId}`) {
     return { status: 'CONFLICT', reasons: ['external_reference_identity_conflict'] };
   }
+  identity.externalReference = reference;
   return { identity };
 }
 
@@ -88,8 +98,9 @@ function resolveLocalBillingContract(subscription) {
 
   if (native) {
     for (const [key, expected] of Object.entries(checked.identity)) {
-      const actual = key === 'subscriptionId' || key === 'clinicId' ? code(candidate[key]) : text(candidate[key]);
+      let actual = key === 'subscriptionId' || key === 'clinicId' ? code(candidate[key]) : text(candidate[key]);
       if (!actual) return result('UNKNOWN', source, [`missing_contract_${key}`]);
+      if (key === 'externalReference') actual = canonicalizeExternalReferenceUuid(actual);
       if (actual !== expected) return result('CONFLICT', source, [`contract_${key}_conflict`]);
     }
     if (candidate.frequency !== 1 || candidate.frequencyType !== 'months'

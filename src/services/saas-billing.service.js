@@ -27,7 +27,7 @@ const {
   mapMercadoPagoPaymentStatus
 } = require('./mercado-pago.service');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
-const { captureLocalBillingContract } = require('./saas-billing-contract');
+const { captureLocalBillingContract, resolveLocalBillingContract } = require('./saas-billing-contract');
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
@@ -295,7 +295,19 @@ async function createSaasSubscriptionForTenant(input) {
 
   // Separate durable CAS: exactly one process may POST; an uncertain commit
   // must never trigger a call. A retry can resume only a still-reserved row.
-  const claimed = await withTransaction((client) => claimSaasSubscriptionProviderCall(reserved.id, client));
+  const claimResult = await withTransaction(async (client) => {
+    const current = await findSaasSubscriptionById(reserved.id, client, { forUpdate: true });
+    if (!current || current.provisioningState !== 'reserved') return { ok: true, subscription: null };
+    // Re-read durable evidence under the claim lock; legacy projections cannot
+    // authorize a POST and must never be silently backfilled on retry.
+    const resolved = resolveLocalBillingContract(current);
+    if (resolved.status !== 'KNOWN' || resolved.source !== 'contract') {
+      return { ok: false, reason: 'subscription_contract_required', status: 409 };
+    }
+    return { ok: true, subscription: await claimSaasSubscriptionProviderCall(current.id, client) };
+  });
+  if (!claimResult.ok) return claimResult;
+  const claimed = claimResult.subscription;
   if (!claimed) return existingCreationResult(await findSaasSubscriptionById(reserved.id));
 
   let preapproval;

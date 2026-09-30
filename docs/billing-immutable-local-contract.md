@@ -37,9 +37,20 @@ tenant lock. Frontend amount/currency/metadata/reference overrides are not used.
 `createSaasSubscriptionForTenant`, after checking existing blocking subscriptions
 and before `insertSaasSubscription`. Reservation and contract commit together,
 before the durable provider claim and before any create request. Invalid local
-expectations throw before INSERT/provider access. BILL-003/004 retry and recovery
-semantics are unchanged. Existing reservations are not backfilled or assigned a
-new expectation on retry.
+expectations throw before INSERT/provider access.
+
+Before claiming a reserved row, the service re-reads it with `FOR UPDATE` in the
+claim transaction and requires a KNOWN native `metadata.contract`. A legacy
+projection, missing contract, malformed contract or contradictory contract returns
+HTTP 409 / `subscription_contract_required`, with no claim, provider call, new row
+or metadata rewrite. This also checks changes committed after the earlier
+reservation lookup. Existing reservations are never backfilled from the current
+catalogue, provider observations or request metadata.
+
+Valid durable reservations still resume exactly once with the original contract,
+price and capture timestamp. BILL-003 concurrency and BILL-004 recovery of known
+provider IDs remain unchanged. Older reserved rows without a native contract now
+remain blocked; handling those rows requires a separately designed recovery policy.
 
 ## Exact representation
 
@@ -121,8 +132,11 @@ Priority and rules:
 2. Otherwise, legacy KNOWN requires a complete `metadata.plan` with a supported
    code matching the row, nonempty label, valid positive decimal amount, explicit
    recognized currency, local monthly interval, `billingModel=pending_link`, valid
-   local subscription/clinic UUIDs and exact backend-generated reference
-   `opturon:<externalTenantId>:<subscriptionId>`.
+   local subscription/clinic UUIDs and backend-generated reference
+   `opturon:<externalTenantId>:<subscriptionId>`. Only the final UUID component is
+   case-normalized in both native and legacy references; prefix and tenant must
+   still match exactly. Canonicalization returns a new object without rewriting
+   the persisted snapshot.
 3. Those structural provenance checks identify the audited snapshot-producing
    generation (`57e6dec` onward). The initial generation (`82d4f23`) accepted input
    prices and did not store this plan snapshot. No historical deployment timestamp,
@@ -136,9 +150,10 @@ Priority and rules:
    `capturedAt=null`. This is an in-memory description of evidence, not a stored
    version-1 contract or fabricated capture time. It is never backfilled.
 
-UNKNOWN and CONFLICT do not alter billing or lifecycle. No automatic legacy repair,
-new event state, provider comparison, invoice routing, price upgrade or downgrade
-is included.
+UNKNOWN and CONFLICT do not change webhook decisions or persisted lifecycle states.
+For the create path's reserved-row claim, they now prevent the provider POST as
+described above. No automatic legacy repair, new event state, provider comparison,
+invoice routing, price upgrade or downgrade is included.
 
 ## Validation
 
@@ -157,7 +172,17 @@ metadata updates. Cases A-T cover the requested creation, resolver and immutabil
 matrix. Additional pure tests cover exact decimal bounds, currency, provenance,
 identity and invalid-native fallback protection.
 
-Validation: 92/92 PASS (64 existing regression tests plus 28 new, including the
-SQL parent test); node --check for affected CommonJS files; git diff --check.
+B1 regression cases cover concurrent legacy retries with zero provider calls,
+13 invalid/conflicting native contracts, a change between reservation lookup and
+claim, and concurrent valid resumption without repricing or recapture. B2 covers
+UUID casing independently in row IDs, native contract IDs and both references,
+while preserving rejection of different tenants, prefixes, IDs and malformed
+references. G1 explicitly removes `contract` from a full metadata patch and tests
+empty metadata, omitted/undefined/null metadata and an undefined contract key.
+
+Validation: 101/101 PASS (64 existing regression tests plus 37 contract tests,
+including the SQL parent test); node --check for affected CommonJS files;
+git diff --check. Before the fix, the new behavioral tests reproduced three B1
+failures and two B2 failures; G1 deletion/omission cases already passed.
 No TypeScript build/typecheck applies to these CommonJS files. No real Mercado Pago
 requests, production DB operations, migration, deployment or merge.
