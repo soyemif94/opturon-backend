@@ -14,6 +14,7 @@ const {
   listSaasSubscriptions,
   insertSubscriptionEvent,
   lockSubscriptionEventByDedupeKey,
+  persistSubscriptionEventContractOutcome,
   updateSubscriptionEventStatus
 } = require('../repositories/saas-subscriptions.repository');
 const {
@@ -28,6 +29,7 @@ const {
 } = require('./mercado-pago.service');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
 const { captureLocalBillingContract, resolveLocalBillingContract } = require('./saas-billing-contract');
+const { isContractOutcome, validateContractOutcome, durableContractOutcomeResult } = require('./saas-billing-webhook-outcomes');
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
@@ -657,7 +659,7 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
   const snapshot = buildWebhookEventSnapshot(payload, meta);
   const dedupeKey = deriveWebhookDedupeKey(snapshot);
 
-  await insertSubscriptionEvent({
+  return processSubscriptionWebhookEvent({
     subscriptionId: null,
     provider: 'mercado_pago',
     topic: snapshot.topic,
@@ -670,21 +672,45 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
     raw: payload,
     processingStatus: 'received',
     processingError: null
-  });
+  }, client => applyMercadoPagoWebhook(payload, meta, snapshot, client));
+}
+
+// The executor is internal code, never a callback or decision from the HTTP
+// payload. Future validation can return a contract outcome before applying billing.
+async function processSubscriptionWebhookEvent(input, apply) {
+  await insertSubscriptionEvent(input);
 
   return withTransaction(async (client) => {
     // Database ownership, shared by every process. A crashed connection releases
     // the lock; received/failed events remain eligible on the next delivery.
     await client.query("SET LOCAL lock_timeout = '5s'");
-    const event = await lockSubscriptionEventByDedupeKey(dedupeKey, client);
+    const event = await lockSubscriptionEventByDedupeKey(input.dedupeKey, client);
     if (!event) throw new Error('webhook_event_missing');
     if (event.processingStatus === 'processed' || event.processingStatus === 'ignored') {
       return { ok: true, outcome: 'ALREADY_PROCESSED', duplicate: true, ignored: event.processingStatus === 'ignored' };
     }
+    if (isContractOutcome(event)) return durableContractOutcomeResult(event, true);
+    if (!['received', 'failed', 'processing'].includes(event.processingStatus)) {
+      throw new Error('webhook_event_status_invalid');
+    }
     await updateSubscriptionEventStatus(event.id, { processingStatus: 'processing' }, client);
     await client.query('SAVEPOINT webhook_business');
     try {
-      const result = await applyMercadoPagoWebhook(payload, meta, snapshot, client);
+      const result = await apply(client, event);
+      if (isContractOutcome(result)) {
+        const outcome = validateContractOutcome(result);
+        if (outcome.eventId && outcome.eventId.toLowerCase() !== event.id.toLowerCase()) {
+          throw new Error('webhook_outcome_event_mismatch');
+        }
+        // Discard any speculative DB work before recording a semantic outcome.
+        // Only event status + safe metadata may commit on this path.
+        await client.query('ROLLBACK TO SAVEPOINT webhook_business');
+        const completed = await persistSubscriptionEventContractOutcome(event.id, outcome, client);
+        if (!completed) throw new Error('webhook_completion_missing');
+        await client.query('RELEASE SAVEPOINT webhook_business');
+        return durableContractOutcomeResult(completed);
+      }
+      if (!result || result.ok !== true) throw new Error('webhook_processing_incomplete');
       const completed = await updateSubscriptionEventStatus(event.id, {
         subscriptionId: result.subscription ? result.subscription.id : null,
         processingStatus: result.ignored ? 'ignored' : 'processed',
@@ -824,6 +850,7 @@ module.exports = {
   processMercadoPagoWebhook,
   findLatestSaasSubscriptionByTenantId,
   __internal: {
+    processSubscriptionWebhookEvent,
     extractMercadoPagoResourceId,
     extractMercadoPagoWebhookTopic,
     extractMercadoPagoWebhookAction,

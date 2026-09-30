@@ -92,7 +92,8 @@ async function postMercadoPagoWebhook(req, res) {
       return retryableFailure(res);
     }
 
-    const outcome = result.duplicate ? 'ALREADY_PROCESSED'
+    const outcome = ['CONTRACT_REJECTED', 'MANUAL_REVIEW'].includes(result.outcome) ? result.outcome
+      : result.duplicate ? 'ALREADY_PROCESSED'
       : result.ignored ? 'IGNORED_UNSUPPORTED_EVENT' : 'PROCESSED_SUCCESSFULLY';
     logWebhook(logInfo, 'mercado_pago_webhook_processed', {
       requestId: req.requestId || null,
@@ -109,7 +110,9 @@ async function postMercadoPagoWebhook(req, res) {
     return res.status(200).json({
       success: true,
       duplicate: result.duplicate === true,
-      ignored: result.ignored === true
+      ignored: result.ignored === true,
+      ...(['CONTRACT_REJECTED', 'MANUAL_REVIEW'].includes(result.outcome)
+        ? { outcome: result.outcome } : {})
     });
   } catch {
     logWebhook(logError, 'mercado_pago_webhook_retryable_failure', {
