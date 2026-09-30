@@ -27,6 +27,7 @@ const {
   mapMercadoPagoPaymentStatus
 } = require('./mercado-pago.service');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
+const { captureLocalBillingContract } = require('./saas-billing-contract');
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
@@ -263,6 +264,12 @@ async function createSaasSubscriptionForTenant(input) {
       return { ok: true, subscription };
     }
     const subscriptionId = randomUUID();
+    const externalReference = buildExternalReference(clinic.externalTenantId, subscriptionId);
+    const contract = captureLocalBillingContract({
+      plan: planDefinition, subscriptionId, clinicId: clinic.id,
+      externalTenantId: clinic.externalTenantId, externalReference,
+      capturedAt: new Date().toISOString()
+    });
     const subscription = await insertSaasSubscription({
       id: subscriptionId,
       clinicId: clinic.id,
@@ -274,8 +281,8 @@ async function createSaasSubscriptionForTenant(input) {
       mercadoPagoPayerEmail: payerEmail,
       localStatus: 'pending',
       provisioningState: 'reserved',
-      externalReference: buildExternalReference(clinic.externalTenantId, subscriptionId),
-      metadata: { billingModel: 'pending_link', plan: planDefinition }
+      externalReference,
+      metadata: { billingModel: 'pending_link', plan: planDefinition, contract }
     }, client);
     return { ok: true, subscription };
   });

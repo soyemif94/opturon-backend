@@ -141,6 +141,8 @@ async function insertSaasSubscription(input, client = null) {
 }
 
 async function updateSaasSubscriptionById(id, patch, client = null) {
+  // Contract capture is INSERT-only. Filter in the atomic SQL merge so even a
+  // stale/concurrent metadata patch cannot replace, erase or backfill a contract.
   const result = await dbQuery(
     client,
     `UPDATE saas_subscriptions
@@ -159,8 +161,9 @@ async function updateSaasSubscriptionById(id, patch, client = null) {
          "lastPaymentStatus" = COALESCE($14, "lastPaymentStatus"),
          "authorizationUrl" = COALESCE($15, "authorizationUrl"),
          metadata = CASE
-           WHEN $16::jsonb IS NULL THEN metadata
-           ELSE COALESCE(metadata, '{}'::jsonb) || $16::jsonb
+           WHEN jsonb_typeof($16::jsonb) = 'object'
+             THEN COALESCE(metadata, '{}'::jsonb) || ($16::jsonb - 'contract')
+           ELSE metadata
          END,
          "provisioningState" = COALESCE($17, "provisioningState"),
          "updatedAt" = NOW()
