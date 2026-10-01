@@ -8,7 +8,6 @@ const MANUAL_REVIEW_REASON_CODES = Object.freeze([
   'legacy_contract_unknown', 'local_contract_conflict', 'unsupported_charge_type',
   'provider_relationship_unproven'
 ]);
-const OUTCOME_RAW_KEY = '_opturonBillingOutcome';
 const FIELDS = new Set(['amount', 'currency', 'frequency', 'frequencyType', 'billingInterval',
   'externalReference', 'providerId', 'transaction_amount', 'currency_id', 'frequency_type',
   'external_reference', 'preapproval_id', 'subscription_id', 'id']);
@@ -59,9 +58,9 @@ function safeDetails(input = {}) {
   return Object.freeze(result);
 }
 
-function makeOutcome(processingStatus, input) {
+function makeOutcome(type, input) {
   objectWithKeys(input, ['eventId', 'subscriptionId', 'reasonCode', 'details', 'resource']);
-  const reasons = processingStatus === 'contract_rejected'
+  const reasons = type === 'contract_rejected'
     ? CONTRACT_REJECT_REASON_CODES : MANUAL_REVIEW_REASON_CODES;
   if (!reasons.includes(input.reasonCode)) invalid();
   for (const key of ['eventId', 'subscriptionId']) {
@@ -74,31 +73,32 @@ function makeOutcome(processingStatus, input) {
       || !/^[a-zA-Z0-9_-]{1,128}$/.test(input.resource.id)) invalid();
     resource = Object.freeze({ type: input.resource.type, id: input.resource.id });
   }
-  return Object.freeze({ processingStatus, eventId: input.eventId || null,
+  return Object.freeze({ type, eventId: input.eventId || null,
     subscriptionId: input.subscriptionId || null, reasonCode: input.reasonCode,
     details: safeDetails(input.details), resource });
 }
 
 function isContractOutcome(value) {
-  return value?.processingStatus === 'contract_rejected' || value?.processingStatus === 'manual_review';
+  return value?.type === 'contract_rejected' || value?.type === 'manual_review';
 }
 
 // Revalidate at persistence as well as construction. Nothing is trusted because
 // it arrived in webhook raw data or because it resembles an internal result.
 function validateContractOutcome(value) {
   if (!isContractOutcome(value)) invalid();
-  const { processingStatus, ...input } = value;
-  return makeOutcome(processingStatus, input);
+  const { type, ...input } = value;
+  return makeOutcome(type, input);
 }
 
 function durableContractOutcomeResult(event, duplicate = false) {
-  return { ok: true, duplicate, processingStatus: event.processingStatus,
-    outcome: event.processingStatus.toUpperCase(),
-    contractOutcome: event.raw[OUTCOME_RAW_KEY] };
+  if (event.processingStatus !== 'ignored' || !isContractOutcome(event.contractOutcome)) invalid();
+  return { ok: true, duplicate, ignored: true, processingStatus: event.processingStatus,
+    outcome: event.contractOutcome.type.toUpperCase(),
+    contractOutcome: event.contractOutcome };
 }
 
 module.exports = {
-  CONTRACT_REJECT_REASON_CODES, MANUAL_REVIEW_REASON_CODES, OUTCOME_RAW_KEY,
+  CONTRACT_REJECT_REASON_CODES, MANUAL_REVIEW_REASON_CODES,
   contractRejected: input => makeOutcome('contract_rejected', input),
   manualReview: input => makeOutcome('manual_review', input),
   isContractOutcome, validateContractOutcome, durableContractOutcomeResult

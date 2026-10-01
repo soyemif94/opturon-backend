@@ -81,7 +81,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
   const input = { tenantId: 'tenant-contract', planCode: 'inicial', payerEmail: 'payer@example.invalid' };
   await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
     name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-  for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql']) {
+  for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql']) {
     await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
   }
   const row = async () => (await pool.query('SELECT * FROM saas_subscriptions')).rows[0];

@@ -5,6 +5,9 @@ const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
 const { Pool } = require('pg');
+const { execFileSync } = require('node:child_process');
+const { createRequire } = require('node:module');
+const vm = require('node:vm');
 const root = path.resolve(__dirname, '../..');
 const outcomes = require('../../src/services/saas-billing-webhook-outcomes');
 const { captureLocalBillingContract } = require('../../src/services/saas-billing-contract');
@@ -17,12 +20,12 @@ function stub(name, exports) {
   require.cache[id] = { id, filename: id, loaded: true, exports };
 }
 
-test('BILL-006D: safe, allowlisted outcome model', () => {
+test('V/W: BILL-006D safe, allowlisted outcome model', () => {
   for (const reasonCode of outcomes.CONTRACT_REJECT_REASON_CODES) {
-    assert.equal(outcomes.contractRejected({ reasonCode }).processingStatus, 'contract_rejected');
+    assert.equal(outcomes.contractRejected({ reasonCode }).type, 'contract_rejected');
   }
   for (const reasonCode of outcomes.MANUAL_REVIEW_REASON_CODES) {
-    assert.equal(outcomes.manualReview({ reasonCode }).processingStatus, 'manual_review');
+    assert.equal(outcomes.manualReview({ reasonCode }).type, 'manual_review');
   }
   for (const input of [
     { reasonCode: 'raw secret exception' },
@@ -42,6 +45,14 @@ test('BILL-006D: safe, allowlisted outcome model', () => {
       contractVersion: 1, contractSource: 'contract' }, resource: { type: 'payment', id: 'pay-1' } });
   assert.ok(Object.isFrozen(result)); assert.ok(Object.isFrozen(result.details));
   assert.deepEqual(outcomes.validateContractOutcome(result), result);
+  assert.throws(() => outcomes.manualReview({ reasonCode: 'arbitrary_reason' }), /webhook_contract_outcome_invalid/);
+  assert.throws(() => outcomes.validateContractOutcome({ type: 'ignored', reasonCode: 'legacy_contract_unknown' }), /webhook_contract_outcome_invalid/);
+  for (const details of [{ token: 'synthetic' }, { Authorization: 'synthetic' }, { stack: 'synthetic' },
+    { provider: { payload: {} } }, { observedValue: { nested: { secret: 'synthetic' } } }]) {
+    assert.throws(() => outcomes.manualReview({ reasonCode: 'legacy_contract_unknown', details }), /webhook_contract_outcome_invalid/);
+  }
+  assert.throws(() => outcomes.manualReview({ reasonCode: 'legacy_contract_unknown',
+    resource: { type: 'payment', id: 'x'.repeat(129) } }), /webhook_contract_outcome_invalid/);
 });
 
 test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', async (t) => {
@@ -114,12 +125,38 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
   });
   const app = express();
   app.use('/api/webhooks/mercadopago', require('../../src/routes/mercadopago-webhook.routes'));
+  // Load the exact old service, repository and controller from Git in memory.
+  // Shared dependencies are unchanged by 6D; DB/provider boundaries remain the
+  // same local PG and provider stubs. No copied source files or mock status gate.
+  const previousSha = '8928f5ad79d85c4cb162914f5079e302b42b3344';
+  const previousModules = new Map();
+  const previousPaths = ['src/services/saas-billing.service.js',
+    'src/repositories/saas-subscriptions.repository.js', 'src/controllers/mercadopago.controller.js'];
+  function loadPrevious(relative) {
+    if (previousModules.has(relative)) return previousModules.get(relative).exports;
+    const filename = path.join(root, relative);
+    const localRequire = createRequire(filename);
+    const module = { exports: {} };
+    previousModules.set(relative, module);
+    const source = execFileSync('git', ['show', `${previousSha}:${relative}`], { cwd: root, encoding: 'utf8' });
+    const run = vm.runInThisContext(`(function(require,module,exports,__filename,__dirname){\n${source}\n})`, { filename });
+    run(request => {
+      const resolved = localRequire.resolve(request);
+      const previous = previousPaths.find(name => path.join(root, name) === resolved);
+      return previous ? loadPrevious(previous) : localRequire(request);
+    }, module, module.exports, filename, path.dirname(filename));
+    return module.exports;
+  }
+  const previousController = loadPrevious('src/controllers/mercadopago.controller.js');
+  app.post('/audit/previous-runtime', express.raw({ type: '*/*', limit: '2mb' }),
+    (req, _res, next) => { req.rawBody = req.body; next(); }, previousController.postMercadoPagoWebhook);
   server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  async function deliver({ valid = true } = {}) {
+  async function deliver({ valid = true, previous = false } = {}) {
     const requestId = crypto.randomUUID(); const ts = '1727300000'; const dataId = payload.data.id;
     const digest = crypto.createHmac('sha256', secret).update(`id:${dataId};request-id:${requestId};ts:${ts};`).digest('hex');
-    const response = await fetch(`${base}/api/webhooks/mercadopago?data.id=${dataId}`, {
+    const endpoint = previous ? '/audit/previous-runtime' : '/api/webhooks/mercadopago';
+    const response = await fetch(`${base}${endpoint}?data.id=${dataId}`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': requestId,
         'x-signature': `ts=${ts},v1=${valid ? digest : '0'.repeat(64)}` }, body: JSON.stringify(payload)
     });
@@ -173,7 +210,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
   try {
     await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
       name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql']) {
+    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql']) {
       await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
     }
     await pool.query(`CREATE TABLE mutation_audit (kind TEXT NOT NULL);
@@ -191,27 +228,27 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
         decision = (_client, row) => synthetic(status, row.id);
         const response = await deliver(); const row = await event();
         assert.equal(response.status, 200); assert.equal(response.body.outcome, status.toUpperCase());
-        assert.equal(row.processingStatus, status); assert.notEqual(row.processingStatus, 'processed');
+        assert.equal(row.processingStatus, 'ignored'); assert.equal(response.body.ignored, true);
         assert.equal(row.subscriptionId, subscription.id);
-        const saved = row.raw[outcomes.OUTCOME_RAW_KEY];
+        const saved = row.contractOutcome;
         assert.equal(saved.eventId, row.id); assert.equal(saved.subscriptionId, subscription.id);
-        assert.equal(saved.reasonCode, row.processingError); assert.equal(saved.resourceId, 'mp-1');
-        assert.equal(saved.topic, payload.type); assert.equal(saved.processingStatus, status);
+        assert.equal(saved.reasonCode, row.processingError); assert.equal(row.resourceId, 'mp-1');
+        assert.equal(row.topic, payload.type); assert.equal(saved.type, status);
         assert.equal(new Date(saved.recordedAt).getTime(), row.updatedAt.getTime());
         assert.deepEqual(saved.details, synthetic(status).details);
         assert.deepEqual(saved.resource, { type: 'preapproval', id: 'mp-1' });
-        const { [outcomes.OUTCOME_RAW_KEY]: _result, ...raw } = row.raw;
-        assert.deepEqual(raw, payload); assert.deepEqual(await business(), before); await assertMutations(0);
+        assert.deepEqual(row.raw, payload); assert.deepEqual(await business(), before); await assertMutations(0);
         assert.equal(provider.gets, 0); assert.equal(logs.at(-1).fields.outcome, status.toUpperCase());
       });
       await scenario(`${cases[1]}: ${status} SQL failure returns 503, then failed can retry to terminal`, async () => {
         decision = (_client, row) => synthetic(status, row.id);
-        failSqlWhen((sql, params) => sql.startsWith('UPDATE saas_subscription_events') && params[2] === status);
+        failSqlWhen(sql => sql.startsWith('UPDATE saas_subscription_events') && sql.includes('"contractOutcome" ='));
         retryable(await deliver()); const failed = await event();
-        assert.equal(failed.processingStatus, 'failed'); assert.equal(failed.raw[outcomes.OUTCOME_RAW_KEY], undefined);
+        assert.equal(failed.processingStatus, 'failed'); assert.equal(failed.contractOutcome, null);
         await assertMutations(0);
         assert.equal((await deliver()).status, 200);
-        assert.equal((await event()).id, failed.id); assert.equal((await event()).processingStatus, status);
+        assert.equal((await event()).id, failed.id); assert.equal((await event()).processingStatus, 'ignored');
+        assert.equal((await event()).contractOutcome.type, status);
         await assertMutations(0);
       });
       await scenario(`${cases[2]}/O: duplicate ${status} retains original result without executor/provider/business work`, async () => {
@@ -225,7 +262,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
         // Ordinary production route, without a test decision, also short-circuits.
         decision = null;
         const result = await service.processMercadoPagoWebhook(payload, { signatureValid: true });
-        assert.equal(result.duplicate, true); assert.deepEqual(result.contractOutcome, first.raw[outcomes.OUTCOME_RAW_KEY]);
+        assert.equal(result.duplicate, true); assert.deepEqual(result.contractOutcome, first.contractOutcome);
         assert.equal(provider.gets, 0); await assertMutations(0);
       });
       await scenario(`${cases[3]}: concurrent ${status} commits one terminal result`, async () => {
@@ -241,7 +278,8 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
         try { await contender; } finally { release(); }
         const [a, b] = await Promise.all([first, second]);
         assert.equal(a.status, 200); assert.equal(b.status, 200); assert.equal(b.body.duplicate, true);
-        assert.equal(decisions, 1); assert.equal((await event()).processingStatus, status);
+        assert.equal(decisions, 1); assert.equal((await event()).processingStatus, 'ignored');
+        assert.equal((await event()).contractOutcome.type, status);
         assert.equal((await pool.query('SELECT count(*)::int AS n FROM saas_subscription_events')).rows[0].n, 1);
         await assertMutations(0); assert.equal(provider.gets, 0);
       });
@@ -250,13 +288,15 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
         fault.beforeCommit = client => client.query('SELECT 1/0');
         retryable(await deliver());
         assert.equal((await event()).processingStatus, 'received');
-        assert.equal((await event()).raw[outcomes.OUTCOME_RAW_KEY], undefined); await assertMutations(0);
-        fault = {}; assert.equal((await deliver()).status, 200); assert.equal((await event()).processingStatus, status);
+        assert.equal((await event()).contractOutcome, null); await assertMutations(0);
+        fault = {}; assert.equal((await deliver()).status, 200); assert.equal((await event()).processingStatus, 'ignored');
+        assert.equal((await event()).contractOutcome.type, status);
       });
       await scenario(`${status}: lost commit acknowledgement retains durable result on retry`, async () => {
         decision = (_client, row) => synthetic(status, row.id);
         fault.afterCommit = () => { throw new Error(sensitiveError); };
-        retryable(await deliver()); const first = await event(); assert.equal(first.processingStatus, status);
+        retryable(await deliver()); const first = await event(); assert.equal(first.processingStatus, 'ignored');
+        assert.equal(first.contractOutcome.type, status);
         fault = {}; const replay = await deliver();
         assert.equal(replay.status, 200); assert.equal(replay.body.duplicate, true);
         assert.equal(decisions, 1); assert.deepEqual(await event(), first); await assertMutations(0);
@@ -275,10 +315,97 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
           await client.query('UPDATE clinics SET settings=$1 WHERE id=$2', ['{"unintended":true}', clinicId]);
           return synthetic(status, row.id);
         };
-        assert.equal((await deliver()).status, 200); assert.equal((await event()).processingStatus, status);
+        assert.equal((await deliver()).status, 200); assert.equal((await event()).processingStatus, 'ignored');
+        assert.equal((await event()).contractOutcome.type, status);
         assert.deepEqual(await business(), before); await assertMutations(0);
       });
+      await scenario(`P: ${status} preserves a provider _opturonBillingOutcome collision exactly`, async () => {
+        payload._opturonBillingOutcome = { provider: 'original', details: { nested: ['unchanged', null, 42] } };
+        const before = structuredClone(payload);
+        decision = (_client, row) => synthetic(status, row.id);
+        assert.equal((await deliver()).status, 200);
+        const row = await event();
+        assert.deepEqual(row.raw, before); assert.equal(row.contractOutcome.type, status);
+        assert.equal(row.processingStatus, 'ignored'); await assertMutations(0);
+        assert.equal((await deliver()).body.duplicate, true); assert.deepEqual((await event()).raw, before);
+      });
+      await scenario(`Q: ${status} preserves arbitrary raw keys, nested data and database JSONB representation`, async () => {
+        payload._opturonInternal = { provider: ['own', { a: false, b: null }] };
+        payload.contractOutcome = { type: 'provider-owned', details: { deeply: { nested: ['kept'] } } };
+        payload.nested = { list: [1, 'ñ', { unicode: '✓', empty: {} }], other: [] };
+        let before;
+        decision = async (client, row) => {
+          before = (await client.query('SELECT raw, raw::text AS serialized FROM saas_subscription_events WHERE id=$1', [row.id])).rows[0];
+          return synthetic(status, row.id);
+        };
+        assert.equal((await deliver()).status, 200);
+        const after = (await pool.query('SELECT raw, raw::text AS serialized FROM saas_subscription_events')).rows[0];
+        assert.deepEqual(after, before); assert.deepEqual(after.raw, payload); await assertMutations(0);
+      });
+      await scenario(`${status === 'contract_rejected' ? 'S' : 'T'}: exact 8928f5a runtime safely deduplicates corrected ${status}`, async () => {
+        decision = (_client, row) => synthetic(status, row.id);
+        assert.equal((await deliver()).status, 200);
+        const first = await event(); const before = await business();
+        assert.equal(first.processingStatus, 'ignored'); assert.equal(first.contractOutcome.type, status);
+        const oldResponse = await deliver({ previous: true });
+        assert.equal(oldResponse.status, 200);
+        assert.deepEqual(oldResponse.body, { success: true, duplicate: true, ignored: true });
+        assert.equal(provider.gets, 0); assert.equal(decisions, 1);
+        assert.deepEqual(await event(), first); assert.deepEqual(await business(), before); await assertMutations(0);
+      });
     }
+    await scenario('R: legacy ignored with NULL outcome remains terminal and distinct from contract decisions', async () => {
+      payload.type = 'unsupported';
+      const first = await deliver(); assert.equal(first.status, 200);
+      assert.deepEqual(first.body, { success: true, duplicate: false, ignored: true });
+      const original = await event();
+      assert.equal(original.processingStatus, 'ignored'); assert.equal(original.contractOutcome, null);
+      decision = () => { throw new Error('legacy_ignored_must_not_reprocess'); };
+      const replay = await deliver();
+      assert.deepEqual(replay.body, { success: true, duplicate: true, ignored: true });
+      assert.equal(replay.status, 200); assert.equal(decisions, 0); assert.equal(provider.gets, 0);
+      assert.deepEqual(await event(), original); await assertMutations(0);
+    });
+    await scenario('U: additive nullable migration is idempotent and old runtime can insert/process on new schema', async () => {
+      const column = (await pool.query(`SELECT data_type,is_nullable,column_default FROM information_schema.columns
+        WHERE table_schema=$1 AND table_name='saas_subscription_events' AND column_name='contractOutcome'`, [schema])).rows[0];
+      assert.deepEqual(column, { data_type: 'jsonb', is_nullable: 'YES', column_default: null });
+      await pool.query(fs.readFileSync(path.join(root, 'db/migrations/086_saas_subscription_event_contract_outcome.sql'), 'utf8'));
+      assert.equal((await deliver({ previous: true })).status, 200);
+      const processed = await event();
+      assert.equal(processed.processingStatus, 'processed'); assert.equal(processed.contractOutcome, null);
+      assert.equal(provider.gets, 1); await assertMutations(1);
+      assert.equal((await deliver()).body.duplicate, true); assert.equal(provider.gets, 1);
+      assert.deepEqual(await event(), processed); await assertMutations(1);
+    });
+    await scenario('U: migration on existing rows takes AccessExclusiveLock without backfill or heap rewrite', async () => {
+      const client = await pool.connect();
+      const migrationSchema = `migration_test_${crypto.randomUUID().replaceAll('-', '')}`;
+      try {
+        // Commit fixture DDL before observing the ALTER's own lock.
+        await client.query(`CREATE SCHEMA ${migrationSchema}`);
+        await client.query(`CREATE TABLE ${migrationSchema}.saas_subscription_events
+          (id INTEGER PRIMARY KEY, raw JSONB NOT NULL, "processingStatus" TEXT NOT NULL)`);
+        await client.query(`INSERT INTO ${migrationSchema}.saas_subscription_events VALUES
+          (1, '{"_opturonBillingOutcome":{"provider":"original"},"nested":[null,42]}', 'ignored')`);
+        await client.query('BEGIN');
+        await client.query(`SET LOCAL search_path=${migrationSchema}`);
+        const before = (await client.query('SELECT * FROM saas_subscription_events')).rows[0];
+        const physicalBefore = (await client.query(`SELECT pg_relation_filenode('saas_subscription_events'::regclass) AS node`)).rows[0].node;
+        await client.query(fs.readFileSync(path.join(root, 'db/migrations/086_saas_subscription_event_contract_outcome.sql'), 'utf8'));
+        const after = (await client.query('SELECT * FROM saas_subscription_events')).rows[0];
+        assert.deepEqual(after, { ...before, contractOutcome: null });
+        assert.equal((await client.query(`SELECT pg_relation_filenode('saas_subscription_events'::regclass) AS node`)).rows[0].node, physicalBefore);
+        const locks = (await client.query(`SELECT mode FROM pg_locks WHERE pid=pg_backend_pid()
+          AND relation='saas_subscription_events'::regclass AND granted`)).rows;
+        assert.ok(locks.some(row => row.mode === 'AccessExclusiveLock'));
+      } finally {
+        try {
+          await client.query('ROLLBACK');
+          await client.query(`DROP SCHEMA IF EXISTS ${migrationSchema} CASCADE`);
+        } finally { client.release(); }
+      }
+    });
     await scenario('I: successful BILL-005 duplicate remains processed without another business write', async () => {
       assert.equal((await deliver()).status, 200); assert.equal((await deliver()).body.duplicate, true);
       assert.equal((await event()).processingStatus, 'processed'); assert.equal(provider.gets, 1); await assertMutations(1);
@@ -313,37 +440,31 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
     await scenario('failed marker failure rolls back the entire attempt without false terminal data', async () => {
       decision = (_client, row) => synthetic('contract_rejected', row.id);
       fault.beforeQuery = async (client, sql, params) => {
-        if (sql.startsWith('UPDATE saas_subscription_events') && ['contract_rejected', 'failed'].includes(params[2])) {
+        if (sql.startsWith('UPDATE saas_subscription_events') && (sql.includes('"contractOutcome" =') || params[2] === 'failed')) {
           await client.query('SELECT 1/0');
         }
       };
       retryable(await deliver()); assert.equal((await event()).processingStatus, 'received');
-      assert.equal((await event()).raw[outcomes.OUTCOME_RAW_KEY], undefined); await assertMutations(0);
+      assert.equal((await event()).contractOutcome, null); await assertMutations(0);
       fault = {}; assert.equal((await deliver()).status, 200);
     });
     await scenario('untrusted payload cannot select or forge a contract outcome', async () => {
       payload.processingStatus = 'contract_rejected';
-      payload[outcomes.OUTCOME_RAW_KEY] = { processingStatus: 'manual_review', reasonCode: 'legacy_contract_unknown' };
+      payload._opturonBillingOutcome = { type: 'manual_review', reasonCode: 'legacy_contract_unknown' };
+      payload.contractOutcome = { type: 'manual_review', reasonCode: 'legacy_contract_unknown' };
       assert.equal((await deliver()).status, 200); assert.equal((await event()).processingStatus, 'processed');
+      assert.equal((await event()).contractOutcome, null); assert.deepEqual((await event()).raw, payload);
       assert.equal(provider.gets, 1); await assertMutations(1);
-    });
-    await scenario('durable internal metadata replaces a spoofed raw namespace atomically', async () => {
-      payload[outcomes.OUTCOME_RAW_KEY] = { reasonCode: 'forged', details: { token: 'untrusted' } };
-      decision = (_client, row) => synthetic('manual_review', row.id);
-      assert.equal((await deliver()).status, 200);
-      const saved = (await event()).raw[outcomes.OUTCOME_RAW_KEY];
-      assert.equal(saved.reasonCode, 'legacy_contract_unknown'); assert.equal(saved.details.token, undefined);
-      await assertMutations(0);
     });
     await scenario('wrong event ID and malformed internal outcomes remain retryable with no details leakage', async () => {
       for (const result of [
         synthetic('contract_rejected', crypto.randomUUID()),
-        { processingStatus: 'manual_review', reasonCode: sensitiveError },
+        { type: 'manual_review', reasonCode: sensitiveError },
         { ...synthetic('manual_review'), details: { token: sensitiveError } }
       ]) {
         decision = () => result; retryable(await deliver());
         assert.equal((await event()).processingStatus, 'failed');
-        assert.equal((await event()).raw[outcomes.OUTCOME_RAW_KEY], undefined); await assertMutations(0);
+        assert.equal((await event()).contractOutcome, null); await assertMutations(0);
       }
     });
   } finally {

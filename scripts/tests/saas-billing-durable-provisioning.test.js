@@ -201,6 +201,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
       SELECT '${tenantA}', 'legacy', 'inicial', 40600, 'legacy-' || n FROM generate_series(1,2) n`);
     await db.exec(read('db/migrations/085_saas_subscription_provisioning.sql'));
     await db.exec(read('db/migrations/085_saas_subscription_provisioning.sql'));
+    await db.exec(read('db/migrations/086_saas_subscription_event_contract_outcome.sql'));
     assert.equal((await rows()).length, 2);
     assert.ok((await rows()).every((row) => row.provisioningState === null));
     await assert.rejects(db.exec(`UPDATE saas_subscriptions SET "provisioningState" = 'invalid'`));

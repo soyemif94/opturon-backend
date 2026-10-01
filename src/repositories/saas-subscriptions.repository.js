@@ -516,7 +516,7 @@ async function updateSubscriptionEventStatus(id, patch, client = null) {
 
 async function lockSubscriptionEventByDedupeKey(dedupeKey, client) {
   const result = await client.query(
-    `SELECT id, "subscriptionId", "processingStatus", raw FROM saas_subscription_events
+    `SELECT id, "subscriptionId", "processingStatus", "contractOutcome" FROM saas_subscription_events
      WHERE "dedupeKey" = $1 FOR UPDATE`,
     [dedupeKey]
   );
@@ -527,18 +527,17 @@ async function persistSubscriptionEventContractOutcome(id, outcome, client) {
   const result = await client.query(
     `UPDATE saas_subscription_events
      SET "subscriptionId" = COALESCE($2::uuid, "subscriptionId"),
-         "processingStatus" = $3,
-         "processingError" = $4,
-         raw = jsonb_set(raw, '{_opturonBillingOutcome}',
-           $5::jsonb || jsonb_build_object(
+         "processingStatus" = 'ignored',
+         "processingError" = $3,
+         "contractOutcome" = $4::jsonb || jsonb_build_object(
              'eventId', id, 'subscriptionId', COALESCE($2::uuid, "subscriptionId"),
-             'resourceId', "resourceId", 'topic', topic, 'recordedAt', NOW())),
+             'recordedAt', NOW()),
          "updatedAt" = NOW()
      WHERE id = $1::uuid AND "processingStatus" = 'processing'
-       AND jsonb_typeof(raw) = 'object'
-     RETURNING id, "subscriptionId", "processingStatus", raw`,
-    [id, outcome.subscriptionId, outcome.processingStatus, outcome.reasonCode,
-      JSON.stringify({ version: 1, processingStatus: outcome.processingStatus,
+       AND "contractOutcome" IS NULL
+     RETURNING id, "subscriptionId", "processingStatus", "contractOutcome"`,
+    [id, outcome.subscriptionId, outcome.reasonCode,
+      JSON.stringify({ version: 1, type: outcome.type,
         reasonCode: outcome.reasonCode, details: outcome.details, resource: outcome.resource })]
   );
   return result.rows[0] || null;

@@ -153,7 +153,7 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
   try {
     await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
       name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql']) {
+    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql']) {
       await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
     }
     // Transactional trigger counters prove committed effects, including rollback windows.

@@ -687,9 +687,11 @@ async function processSubscriptionWebhookEvent(input, apply) {
     const event = await lockSubscriptionEventByDedupeKey(input.dedupeKey, client);
     if (!event) throw new Error('webhook_event_missing');
     if (event.processingStatus === 'processed' || event.processingStatus === 'ignored') {
+      if (event.processingStatus === 'ignored' && isContractOutcome(event.contractOutcome)) {
+        return durableContractOutcomeResult(event, true);
+      }
       return { ok: true, outcome: 'ALREADY_PROCESSED', duplicate: true, ignored: event.processingStatus === 'ignored' };
     }
-    if (isContractOutcome(event)) return durableContractOutcomeResult(event, true);
     if (!['received', 'failed', 'processing'].includes(event.processingStatus)) {
       throw new Error('webhook_event_status_invalid');
     }
