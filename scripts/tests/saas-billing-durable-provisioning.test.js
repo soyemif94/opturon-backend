@@ -127,14 +127,18 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
       const result = {
         id: `mp-${provider.calls.length}`, external_reference: payload.externalReference,
         payer_email: payload.payerEmail, status: 'pending', init_point: 'https://checkout.example.invalid/subscription',
-        auto_recurring: { transaction_amount: payload.amount, currency_id: payload.currency }
+        auto_recurring: { transaction_amount: payload.amount, currency_id: payload.currency, frequency: 1, frequency_type: 'months' }
       };
       provider.remote = result;
       if (provider.onCreate) return provider.onCreate(payload, result);
       return result;
     },
     getPreapproval: async () => { provider.gets += 1; return provider.remote; },
-    getPayment: async () => provider.payment
+    getPayment: async () => provider.payment,
+    getAuthorizedPayment: async () => ({ id: 'invoice-1', preapproval_id: provider.remote.id, status: 'processed',
+      transaction_amount: 40600, currency_id: 'ARS', payment: { id: provider.payment.id } }),
+    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1 },
+      results: [{ id: 'invoice-1', payment: { id: provider.payment.id } }] })
   });
   global.fetch = (url, ...args) => {
     assert.equal(new URL(url).hostname, '127.0.0.1', 'real provider network calls are forbidden');
@@ -347,7 +351,8 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     await scenario('payment webhook can recover a missing provider ID using the durable external reference', async () => {
       fault.beforeCommit = once((phase) => phase === 'provider');
       await request(); provider.remote.status = 'authorized';
-      provider.payment = { id: 'payment-1', status: 'approved', preapproval_id: provider.remote.id, external_reference: provider.remote.external_reference };
+      provider.payment = { id: 'payment-1', status: 'approved', preapproval_id: provider.remote.id, external_reference: provider.remote.external_reference,
+        transaction_amount: 40600, currency_id: 'ARS' };
       assert.equal((await webhook({ topic: 'payment' })).body.error, undefined);
       const [row] = await rows(); assert.equal(row.provisioningState, 'ready'); assert.equal(row.mercadoPagoPreapprovalId, provider.remote.id);
       assert.equal(provider.calls.length, 1);

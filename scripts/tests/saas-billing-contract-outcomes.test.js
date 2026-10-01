@@ -174,7 +174,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
       plan: { code: 'inicial', amount: 40600, currency: 'ARS' }, capturedAt: new Date().toISOString() });
     subscription = await repository.insertSaasSubscription({ ...input, metadata: { contract } });
     provider.remote = { id: 'mp-1', status: 'authorized', external_reference: subscription.externalReference,
-      auto_recurring: { transaction_amount: 40600, currency_id: 'ARS' } };
+      auto_recurring: { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' } };
     payload = { id: 'notice-6d', type: 'subscription_preapproval', action: 'updated', data: { id: 'mp-1' } };
   }
   const scenario = (name, fn) => t.test(name, async () => { await reset(); await fn(); });
@@ -422,7 +422,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
       assert.equal(await event(), undefined); assert.equal(decisions, 0); assert.equal(provider.gets, 0); await assertMutations(0);
     });
     await scenario('L: BILL-004 recovery still resolves a durable reservation', async () => {
-      await pool.query('UPDATE saas_subscriptions SET "mercadoPagoPreapprovalId"=NULL,"provisioningState"=$1 WHERE id=$2',
+      await pool.query('UPDATE saas_subscriptions SET "mercadoPagoPreapprovalId"=NULL,"provisioningState"=$1,"providerCallStartedAt"=NOW() WHERE id=$2',
         ['provider_call_started', subscription.id]);
       await pool.query('TRUNCATE mutation_audit');
       assert.equal((await deliver()).status, 200);

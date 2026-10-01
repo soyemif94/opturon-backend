@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
 const { Pool } = require('pg');
+const { captureLocalBillingContract } = require('../../src/services/saas-billing-contract');
 
 const root = path.resolve(__dirname, '../..');
 const secret = 'local-only-webhook-secret';
@@ -69,6 +70,10 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
   const realProvider = require(path.join(root, 'src/services/mercado-pago.service.js'));
   stub('src/services/mercado-pago.service.js', {
     ...realProvider,
+    getAuthorizedPayment: async () => ({ id: 'invoice-1', preapproval_id: 'mp-1', status: 'processed',
+      transaction_amount: 40600, currency_id: 'ARS', payment: { id: provider.payment.id } }),
+    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1 },
+      results: [{ id: 'invoice-1', payment: { id: provider.payment.id } }] }),
     createPreapproval() { throw new Error('provider_write_forbidden'); },
     getPreapproval: async () => {
       provider.gets += 1;
@@ -122,11 +127,15 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
     subscription = await repository.insertSaasSubscription({
       id, clinicId, externalTenantId: 'tenant-test', planCode: 'inicial', amount: 40600,
       currency: 'ARS', billingInterval: 'monthly', localStatus: 'pending', mercadoPagoPreapprovalId: 'mp-1',
-      externalReference: `opturon:tenant-test:${id}`
+      externalReference: `opturon:tenant-test:${id}`,
+      metadata: { contract: captureLocalBillingContract({ subscriptionId: id, clinicId, externalTenantId: 'tenant-test',
+        externalReference: `opturon:tenant-test:${id}`, plan: { code: 'inicial', amount: 40600, currency: 'ARS' },
+        capturedAt: new Date().toISOString() }) }
     });
     provider.remote = { id: 'mp-1', status: 'authorized', external_reference: subscription.externalReference,
-      auto_recurring: { transaction_amount: 40600, currency_id: 'ARS' } };
-    provider.payment = { id: 'pay-1', status: 'approved', preapproval_id: 'mp-1', external_reference: subscription.externalReference };
+      auto_recurring: { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' } };
+    provider.payment = { id: 'pay-1', status: 'approved', preapproval_id: 'mp-1', external_reference: subscription.externalReference,
+      transaction_amount: 40600, currency_id: 'ARS' };
     payload = { id: 'notice-1', type: 'subscription_preapproval', action: 'updated', data: { id: 'mp-1' } };
   }
   async function event() { return (await pool.query('SELECT * FROM saas_subscription_events')).rows[0]; }
@@ -236,7 +245,7 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
       assert.equal((await deliver()).body.duplicate, true); assert.equal(provider.gets, 0); await assertMutations(0);
     });
     await scenario('K: valid webhook recovers BILL-004 durable reservation', async () => {
-      await pool.query('UPDATE saas_subscriptions SET "mercadoPagoPreapprovalId"=NULL,"provisioningState"=$1 WHERE id=$2', ['provider_call_started', subscription.id]);
+      await pool.query('UPDATE saas_subscriptions SET "mercadoPagoPreapprovalId"=NULL,"provisioningState"=$1,"providerCallStartedAt"=NOW() WHERE id=$2', ['provider_call_started', subscription.id]);
       await pool.query('TRUNCATE mutation_audit');
       assert.equal((await deliver({ valid: false })).status, 401); assert.equal(provider.gets, 0);
       assert.equal((await deliver()).status, 200);
