@@ -31,6 +31,7 @@ const {
   cancelPreapproval,
   reactivatePreapproval,
   getPayment,
+  getAuthorizedPayment,
   mapMercadoPagoPreapprovalStatus,
   mapMercadoPagoPaymentStatus
 } = require('./mercado-pago.service');
@@ -665,6 +666,42 @@ async function fetchWebhookResource(fetchResource) {
   }
 }
 
+function invoiceIdentity(value) {
+  if (typeof value !== 'string' && !(typeof value === 'number' && Number.isSafeInteger(value))) return null;
+  return normalizeString(value) || null;
+}
+
+async function fetchMercadoPagoChargeResource(kind, resourceId) {
+  if (!resourceId) throw new Error('charge_resource_id_missing');
+  if (kind === 'authorized_payment') {
+    const invoice = await fetchWebhookResource(() => getAuthorizedPayment(resourceId));
+    if (!invoice || typeof invoice !== 'object' || Array.isArray(invoice)
+      || !invoiceIdentity(invoice.id) || !invoiceIdentity(invoice.preapproval_id)
+      || typeof invoice.status !== 'string' || !invoice.status.trim()
+      || (invoice.payment != null && (typeof invoice.payment !== 'object' || Array.isArray(invoice.payment)))
+      || (invoice.payment?.id != null && !invoiceIdentity(invoice.payment.id))) {
+      throw new Error('authorized_payment_response_incomplete');
+    }
+    // Preserve the provider response without amount/status interpretation. These
+    // three IDs describe different resources; preapproval is only a candidate.
+    return {
+      kind, id: invoiceIdentity(invoice.id), invoiceId: invoiceIdentity(invoice.id),
+      paymentId: invoiceIdentity(invoice.payment?.id),
+      preapprovalId: invoiceIdentity(invoice.preapproval_id), data: invoice
+    };
+  }
+  if (kind !== 'payment') throw new Error('charge_resource_kind_unsupported');
+  const payment = await fetchWebhookResource(() => getPayment(resourceId));
+  if (!normalizeString(payment && payment.id) || !normalizeString(payment && payment.status)) {
+    throw new Error('payment_response_incomplete');
+  }
+  return {
+    kind, id: normalizeString(payment.id), invoiceId: null,
+    paymentId: normalizeString(payment.id),
+    preapprovalId: resolveSubscriptionIdFromPayment(payment), data: payment
+  };
+}
+
 async function processMercadoPagoWebhook(payload, meta = {}) {
   await requireGeneration(1);
   const requestId = normalizeString(meta.requestId);
@@ -759,15 +796,21 @@ async function applyMercadoPagoWebhook(payload, meta, snapshot, client) {
 
   let subscription = null;
 
-  if (topic === 'subscription_authorized_payment' || topic === 'authorized_payment' || topic === 'payment') {
-    if (!resourceId) {
-      throw new Error('payment_resource_id_missing');
-    }
-    const payment = await fetchWebhookResource(() => getPayment(resourceId));
-    if (!normalizeString(payment && payment.id) || !normalizeString(payment && payment.status)) {
-      throw new Error('payment_response_incomplete');
-    }
-    const preapprovalId = resolveSubscriptionIdFromPayment(payment);
+  // authorized_payment is an existing, undocumented compatibility alias.
+  if (topic === 'subscription_authorized_payment' || topic === 'authorized_payment') {
+    const resource = await fetchMercadoPagoChargeResource('authorized_payment', resourceId);
+    // BILL-006B only resolves invoice identity. Payment business application
+    // cannot consume an invoice. Acknowledge as ignored (deduplicated, no auto
+    // replay); financial handling and any reconciliation belong to BILL-006C.
+    // The resource remains internal: no provider data in HTTP, logs or event raw.
+    return { ok: true, outcome: 'IGNORED_UNSUPPORTED_EVENT', duplicate: false, ignored: true,
+      reason: 'authorized_payment_semantics_deferred', resource };
+  }
+
+  if (topic === 'payment') {
+    const resource = await fetchMercadoPagoChargeResource('payment', resourceId);
+    const payment = resource.data;
+    const preapprovalId = resource.preapprovalId;
     const externalReference = resolveExternalReferenceFromPayment(payment);
 
     if (preapprovalId) {
@@ -883,6 +926,7 @@ module.exports = {
     deriveWebhookDedupeKey,
     buildPreapprovalWebhookMetadata,
     buildPaymentWebhookMetadata,
+    fetchMercadoPagoChargeResource,
     resolveSubscriptionIdFromPayment,
     resolveExternalReferenceFromPayment
   }

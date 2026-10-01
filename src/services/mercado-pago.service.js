@@ -314,6 +314,12 @@ async function getPayment(paymentId) {
   });
 }
 
+async function getAuthorizedPayment(invoiceId) {
+  return mercadoPagoFetch(`/authorized_payments/${encodeURIComponent(invoiceId)}`, {
+    method: 'GET'
+  });
+}
+
 function parseSignatureHeader(headerValue) {
   const raw = normalizeString(headerValue);
   if (!raw) return { ts: null, v1: null };
@@ -416,6 +422,7 @@ module.exports = {
   cancelPreapproval,
   reactivatePreapproval,
   getPayment,
+  getAuthorizedPayment,
   getMercadoPagoUserMe,
   getMercadoPagoEnvDiagnostics,
   runMercadoPagoAuthDiagnostics,
