@@ -1,5 +1,9 @@
 # BILL-006B: Mercado Pago webhook resource routing
 
+Historical held-6B behavior. The combined candidate supersedes the deferred
+invoice gate and weak Payment correlation in [BILL-006C](billing-provider-contract-validation.md).
+Do not release 6B alone.
+
 Production `/__build` matched the exact implementation base
 `ffa90f8352abe2df515f228bdbe34e59959e732c` before work began.
 Branch: `fix/billing-authorized-payment-routing`.

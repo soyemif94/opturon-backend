@@ -68,12 +68,16 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
       provider.captured.push(structuredClone(row.metadata.contract));
       provider.remote = { id: 'mp-contract', status: 'pending', external_reference: payload.externalReference,
         init_point: 'https://example.invalid/checkout',
-        auto_recurring: { transaction_amount: payload.amount, currency_id: payload.currency } };
+        auto_recurring: { transaction_amount: payload.amount, currency_id: payload.currency, frequency: 1, frequency_type: 'months' } };
       if (provider.onCreate) await provider.onCreate(payload);
       return provider.remote;
     },
     getPreapproval: async () => provider.remote,
-    getPayment: async () => provider.payment
+    getPayment: async () => provider.payment,
+    getAuthorizedPayment: async () => ({ id: 'invoice-1', preapproval_id: provider.remote.id, status: 'processed',
+      transaction_amount: 40600, currency_id: 'ARS', payment: { id: provider.payment.id } }),
+    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1 },
+      results: [{ id: 'invoice-1', payment: { id: provider.payment.id } }] })
   });
   const repository = require(path.join(root, 'src/repositories/saas-subscriptions.repository.js'));
   const service = require(path.join(root, 'src/services/saas-billing.service.js'));
@@ -299,10 +303,11 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
       metadata: { contract: { currency: 'USD' } }, auto_recurring: { transaction_amount: 2, currency_id: 'USD' } };
     assert.equal((await service.refreshSubscriptionFromMercadoPagoByPreapprovalId(provider.remote.id)).ok, true);
     await sameContract(provider.captured[0]);
-    assert.equal((await webhook()).ok, true);
+    assert.equal((await webhook()).outcome, 'CONTRACT_REJECTED');
     await sameContract(provider.captured[0]);
+    provider.remote.auto_recurring = { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' };
     provider.payment = { id: 'payment-contract', status: 'approved', preapproval_id: provider.remote.id,
-      external_reference: provider.remote.external_reference, metadata: { contract: null } };
+      external_reference: provider.remote.external_reference, metadata: { contract: null }, transaction_amount: 40600, currency_id: 'ARS' };
     assert.equal((await webhook('payment')).ok, true);
     await sameContract(provider.captured[0]);
     const saved = await row();

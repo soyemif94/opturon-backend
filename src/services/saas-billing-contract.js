@@ -131,5 +131,6 @@ function resolveLocalBillingContract(subscription) {
 
 module.exports = {
   CONTRACT_VERSION, CONTRACT_SOURCE, canonicalizeContractAmount, normalizeContractCurrency,
+  canonicalizeExternalReferenceUuid,
   captureLocalBillingContract, resolveLocalBillingContract
 };
