@@ -30,6 +30,7 @@ const {
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
 const { captureLocalBillingContract, resolveLocalBillingContract } = require('./saas-billing-contract');
 const { isContractOutcome, validateContractOutcome, durableContractOutcomeResult } = require('./saas-billing-webhook-outcomes');
+const { isBillingContractV2Marker } = require('./saas-billing-rollback-marker');
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
@@ -694,6 +695,13 @@ async function processSubscriptionWebhookEvent(input, apply) {
     }
     if (!['received', 'failed', 'processing'].includes(event.processingStatus)) {
       throw new Error('webhook_event_status_invalid');
+    }
+    // Terminal duplicates keep BILL-005/6D semantics. A future validated worker's
+    // nonterminal event must never fall back into this runtime's older logic.
+    // Inspect under the row lock, before clearing the marker or doing any I/O.
+    if (isBillingContractV2Marker(event.processingError)) {
+      try { logInfo('billing_contract_v2_event_blocked_by_rollback_bridge'); } catch { /* Preserve the durable guard. */ }
+      return { ok: false, outcome: 'RETRYABLE_PROCESSING_FAILURE' };
     }
     await updateSubscriptionEventStatus(event.id, { processingStatus: 'processing' }, client);
     await client.query('SAVEPOINT webhook_business');

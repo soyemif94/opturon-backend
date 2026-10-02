@@ -516,7 +516,7 @@ async function updateSubscriptionEventStatus(id, patch, client = null) {
 
 async function lockSubscriptionEventByDedupeKey(dedupeKey, client) {
   const result = await client.query(
-    `SELECT id, "subscriptionId", "processingStatus", "contractOutcome" FROM saas_subscription_events
+    `SELECT id, "subscriptionId", "processingStatus", "processingError", "contractOutcome" FROM saas_subscription_events
      WHERE "dedupeKey" = $1 FOR UPDATE`,
     [dedupeKey]
   );
