@@ -3,16 +3,16 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { execFileSync } = require('node:child_process');
-const { createRequire } = require('node:module');
-const vm = require('node:vm');
 const express = require('express');
 const { Pool } = require('pg');
 const markerProtocol = require('../../src/services/saas-billing-rollback-marker');
 const { captureLocalBillingContract } = require('../../src/services/saas-billing-contract');
 
 const root = path.resolve(__dirname, '../..');
-const productionBase = 'ffa90f8352abe2df515f228bdbe34e59959e732c';
+// Standalone equality with ffa90f is preserved at bridge commit be5b8f8.
+// This suite now checks the permanent protocol and combined 6BC semantics.
+// See docs/billing-bridge-6bc-test-adaptation.md for the eight-case mapping.
+const paymentReads = ['payment:pay-1', 'search:pay-1', 'invoice:invoice-1', 'preapproval:mp-1'];
 const claimId = '12345678-1234-4234-8234-123456789abc';
 const claim = `billing_contract_v2:claim:${claimId}`;
 const marker = `${claim}:provider_timeout`;
@@ -46,7 +46,7 @@ test('I/J: historical text, malformed UUIDs, false prefixes, normal states and o
   for (const value of invalidMarkers) assert.equal(markerProtocol.isBillingContractV2Marker(value), false, String(value).slice(0, 100));
 });
 
-test('Rollback bridge: real PostgreSQL and signed HTTP; historical production controls', async t => {
+test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and signed HTTP', async t => {
   const url = new URL(process.env.BILLING_TEST_DATABASE_URL);
   assert.equal(url.hostname, '127.0.0.1');
   assert.equal(url.username, 'billing_test');
@@ -92,19 +92,21 @@ test('Rollback bridge: real PostgreSQL and signed HTTP; historical production co
     sendBillingSubscriptionAuthorizationEmail() { throw new Error('email_forbidden'); }
   });
   const realProvider = require('../../src/services/mercado-pago.service');
+  function readProvider(kind, id, expectedId) {
+    provider.gets.push(`${kind}:${id}`);
+    assert.equal(String(id), expectedId, `${kind} must use the canonical resource identity`);
+    assert.equal(trace.some(sql => /^UPDATE (saas_subscriptions|clinics)\b/.test(sql)), false,
+      'business writes must wait until provider proof is complete');
+    if (provider.fail === true || provider.fail === kind) throw new Error('synthetic_provider_failure');
+    return structuredClone(provider[kind]);
+  }
   stub('src/services/mercado-pago.service.js', {
     ...realProvider,
     createPreapproval() { throw new Error('provider_write_forbidden'); },
-    getPayment: async () => {
-      provider.gets.push('payment');
-      if (provider.fail) throw new Error('synthetic_provider_failure');
-      return provider.payment;
-    },
-    getPreapproval: async () => {
-      provider.gets.push('preapproval');
-      if (provider.fail) throw new Error('synthetic_provider_failure');
-      return provider.preapproval;
-    }
+    getPayment: async id => readProvider('payment', id, 'pay-1'),
+    searchAuthorizedPaymentsByPaymentId: async id => readProvider('search', id, 'pay-1'),
+    getAuthorizedPayment: async id => readProvider('invoice', id, 'invoice-1'),
+    getPreapproval: async id => readProvider('preapproval', id, 'mp-1')
   });
   global.fetch = (value, ...args) => {
     assert.equal(new URL(value).hostname, '127.0.0.1', 'external requests forbidden');
@@ -117,32 +119,12 @@ test('Rollback bridge: real PostgreSQL and signed HTTP; historical production co
   });
   const app = express();
   app.use('/api/webhooks/mercadopago', require('../../src/routes/mercadopago-webhook.routes'));
-  // Exact production service/repository/controller control; no copied production
-  // files and no alternate mocked state machine. Both use the same local DB.
-  const previousPaths = ['src/services/saas-billing.service.js', 'src/repositories/saas-subscriptions.repository.js',
-    'src/controllers/mercadopago.controller.js'];
-  const previousModules = new Map();
-  function loadPrevious(relative) {
-    if (previousModules.has(relative)) return previousModules.get(relative).exports;
-    const filename = path.join(root, relative); const localRequire = createRequire(filename);
-    const module = { exports: {} }; previousModules.set(relative, module);
-    const source = execFileSync('git', ['show', `${productionBase}:${relative}`], { cwd: root, encoding: 'utf8' });
-    const run = vm.runInThisContext(`(function(require,module,exports,__filename,__dirname){\n${source}\n})`, { filename });
-    run(request => {
-      const resolved = localRequire.resolve(request);
-      const previous = previousPaths.find(name => path.join(root, name) === resolved);
-      return previous ? loadPrevious(previous) : localRequire(request);
-    }, module, module.exports, filename, path.dirname(filename));
-    return module.exports;
-  }
-  app.post('/audit/production-base', express.raw({ type: '*/*', limit: '2mb' }),
-    (req, _res, next) => { req.rawBody = req.body; next(); }, loadPrevious('src/controllers/mercadopago.controller.js').postMercadoPagoWebhook);
   server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  async function deliver({ valid = true, previous = false } = {}) {
+  async function deliver({ valid = true } = {}) {
     const requestId = crypto.randomUUID(); const ts = '1727300000'; const id = payload.data.id;
     const digest = crypto.createHmac('sha256', secret).update(`id:${id};request-id:${requestId};ts:${ts};`).digest('hex');
-    const response = await fetch(`${base}${previous ? '/audit/production-base' : '/api/webhooks/mercadopago'}?data.id=${id}`, {
+    const response = await fetch(`${base}/api/webhooks/mercadopago?data.id=${id}`, {
       method: 'POST', signal: AbortSignal.timeout(8000), headers: { 'content-type': 'application/json',
         'x-request-id': requestId, 'x-signature': `ts=${ts},v1=${valid ? digest : '0'.repeat(64)}` }, body: JSON.stringify(payload)
     });
@@ -160,8 +142,12 @@ test('Rollback bridge: real PostgreSQL and signed HTTP; historical production co
       plan: { code: 'inicial', amount: 40600, currency: 'ARS' }, capturedAt: new Date().toISOString() });
     subscription = await repository.insertSaasSubscription({ ...input, metadata: { contract } });
     provider.preapproval = { id: 'mp-1', status: 'authorized', external_reference: input.externalReference,
-      auto_recurring: { transaction_amount: 40600, currency_id: 'ARS' } };
-    provider.payment = { id: 'pay-1', status: 'approved', preapproval_id: 'mp-1', external_reference: input.externalReference };
+      auto_recurring: { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' } };
+    provider.payment = { id: 'pay-1', status: 'approved', preapproval_id: 'mp-1', external_reference: input.externalReference,
+      transaction_amount: 40600, currency_id: 'ARS' };
+    provider.search = { paging: { total: 1 }, results: [{ id: 'invoice-1', payment: { id: 'pay-1' } }] };
+    provider.invoice = { id: 'invoice-1', preapproval_id: 'mp-1', status: 'processed', type: 'scheduled',
+      payment: { id: 'pay-1', status: 'approved' }, transaction_amount: '40600.00', currency_id: 'ARS' };
     payload = { id: 'notice-bridge', type: 'payment', action: 'payment.updated', data: { id: 'pay-1' } };
   }
   const event = async () => (await pool.query('SELECT * FROM saas_subscription_events')).rows[0];
@@ -190,6 +176,52 @@ test('Rollback bridge: real PostgreSQL and signed HTTP; historical production co
     assert.equal(JSON.stringify(response).includes('billing_contract_v2:'), false);
     assert.equal(JSON.stringify(logs).includes(claimId), false);
   }
+  function assertNormalPipeline(expectedReads) {
+    assert.equal(logs.some(l => l.event === blockedLog), false, 'unmarked input must not trigger bridge protection');
+    assert.ok(bridgeEntries > 0);
+    assert.deepEqual(provider.gets, expectedReads);
+    assert.ok(provider.gets.length > 0, 'normal provider processing must actually be reached');
+    assert.ok(trace.some(sql => sql.startsWith('UPDATE saas_subscription_events')));
+  }
+  async function assertProcessed(response, expectedReads = paymentReads, payment = true) {
+    assert.equal(response.status, 200); assert.equal(response.body.duplicate, false);
+    const row = await event(); const state = await business();
+    assert.equal(row.processingStatus, 'processed'); assert.equal(row.processingError, null);
+    assert.equal(row.contractOutcome, null); assert.equal(row.subscriptionId, subscription.id);
+    assert.deepEqual(row.raw, payload); assert.equal(state.subscription.localStatus, 'active');
+    assert.deepEqual(state.subscription.metadata.contract, subscription.metadata.contract);
+    assert.equal(state.tenant.settings.portal.billing.subscription.updatedAt, state.subscription.updatedAt.toISOString());
+    if (payment) assert.equal(state.subscription.lastPaymentId, 'pay-1');
+    await assertBusinessMutations(1); assertNormalPipeline(expectedReads);
+  }
+  async function assertProcessedDuplicate() {
+    const before = await event(); const beforeBusiness = await business(); const reads = [...provider.gets];
+    const response = await deliver();
+    assert.equal(response.status, 200); assert.equal(response.body.duplicate, true);
+    assert.deepEqual(await event(), before); assert.deepEqual(await business(), beforeBusiness);
+    assert.deepEqual(provider.gets, reads); await assertBusinessMutations(1);
+    assert.equal(logs.some(l => l.event === blockedLog), false);
+  }
+  async function assertProofOutcome(response, beforeBusiness, type, reason, expectedReads = paymentReads) {
+    assert.equal(response.status, 200); assert.equal(response.body.outcome, type.toUpperCase());
+    const row = await event();
+    assert.equal(row.processingStatus, 'ignored'); assert.equal(row.processingError, reason);
+    assert.equal(row.contractOutcome.type, type); assert.equal(row.contractOutcome.reasonCode, reason);
+    assert.deepEqual(row.raw, payload); assert.deepEqual(await business(), beforeBusiness);
+    await assertBusinessMutations(0); assertNormalPipeline(expectedReads);
+    const reads = [...provider.gets]; const duplicate = await deliver();
+    assert.equal(duplicate.status, 200); assert.equal(duplicate.body.duplicate, true);
+    assert.equal(duplicate.body.outcome, type.toUpperCase());
+    assert.deepEqual(await event(), row); assert.deepEqual(await business(), beforeBusiness);
+    assert.deepEqual(provider.gets, reads); await assertBusinessMutations(0);
+    assert.equal(logs.some(l => l.event === blockedLog), false);
+  }
+  async function seedRecovery() {
+    payload.type = 'subscription_preapproval'; payload.data.id = 'mp-1';
+    await pool.query('UPDATE saas_subscriptions SET "mercadoPagoPreapprovalId"=NULL,"provisioningState"=$1,"providerCallStartedAt"=NOW() WHERE id=$2',
+      ['provider_call_started', subscription.id]);
+    await seedEvent('failed', 'webhook_processing_failed');
+  }
   try {
     await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
       name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
@@ -202,6 +234,7 @@ test('Rollback bridge: real PostgreSQL and signed HTTP; historical production co
       CREATE TRIGGER subscription_effect AFTER UPDATE ON saas_subscriptions FOR EACH ROW EXECUTE FUNCTION count_bridge_mutation('subscription');
       CREATE TRIGGER tenant_effect AFTER UPDATE ON clinics FOR EACH ROW EXECUTE FUNCTION count_bridge_mutation('tenant');
       CREATE TRIGGER event_effect AFTER UPDATE ON saas_subscription_events FOR EACH ROW EXECUTE FUNCTION count_bridge_mutation('event');`);
+    // A. Permanent rollback protocol invariants: unchanged refusal and terminal checks.
     await scenario('Schema: existing TEXT accepts the longest protocol marker without migration', async () => {
       const column = (await pool.query("SELECT data_type,character_maximum_length FROM information_schema.columns WHERE table_schema=$1 AND table_name='saas_subscription_events' AND column_name='processingError'", [schema])).rows[0];
       assert.deepEqual(column, { data_type: 'text', character_maximum_length: null });
@@ -242,26 +275,6 @@ test('Rollback bridge: real PostgreSQL and signed HTTP; historical production co
         assert.deepEqual(await event(), before); assert.deepEqual(provider.gets, []); await assertBusinessMutations(0);
       });
     }
-    for (const [code, status] of [['F', 'failed'], ['G', 'received'], ['G', 'processing']]) {
-      await scenario(`${code}: unmarked ${status} matches exact ffa90f runtime`, async () => {
-        async function run(previous) {
-          await reset(); await seedEvent(status, status === 'failed' ? 'webhook_processing_failed' : null);
-          const contract = subscription.metadata.contract;
-          const response = await deliver({ previous }); const row = await event(); const state = await business();
-          await assertBusinessMutations(1); assert.deepEqual(state.subscription.metadata.contract, contract);
-          // Independent transactions necessarily have different timestamps. Check
-          // each snapshot against its own row, then compare all remaining fields.
-          const snapshot = state.tenant.settings.portal.billing.subscription;
-          assert.equal(snapshot.updatedAt, state.subscription.updatedAt.toISOString());
-          delete snapshot.updatedAt;
-          return { response, gets: [...provider.gets], status: row.processingStatus, error: row.processingError,
-            localStatus: state.subscription.localStatus, lastPaymentId: state.subscription.lastPaymentId, settings: state.tenant.settings };
-        }
-        const baseline = await run(true); const bridge = await run(false);
-        assert.equal(bridge.response.status, 200); assert.equal(bridge.status, 'processed');
-        assert.deepEqual(bridge, baseline);
-      });
-    }
     await scenario('H: invalid signature stops before any bridge service/DB access', async () => {
       await seedEvent('failed', marker); const before = await event();
       assert.equal((await deliver({ valid: false })).status, 401);
@@ -269,13 +282,6 @@ test('Rollback bridge: real PostgreSQL and signed HTTP; historical production co
       assert.deepEqual(await event(), before); await assertBusinessMutations(0);
       assert.equal(logs.some(l => l.event === blockedLog), false);
     });
-    for (const [label, value] of [['I', claim.replace(claimId, 'bad-uuid')], ['J', marker.replace('v2:', 'v20:')]]) {
-      await scenario(`${label}: invalid marker fixture retains ordinary historical processing`, async () => {
-        await seedEvent('failed', value); assert.equal((await deliver()).status, 200);
-        assert.equal((await event()).processingStatus, 'processed'); assert.deepEqual(provider.gets, ['payment', 'preapproval']);
-        await assertBusinessMutations(1); assert.equal(logs.some(l => l.event === blockedLog), false);
-      });
-    }
     await scenario('K: concurrent marked deliveries hold independent DB connections and complete bounded', async () => {
       await seedEvent('failed', marker); const before = await event(); const beforeBusiness = await business();
       const connections = new Set();
@@ -302,27 +308,104 @@ test('Rollback bridge: real PostgreSQL and signed HTTP; historical production co
       const before = await event(); const beforeBusiness = await business();
       await assertBlocked(await deliver(), before, beforeBusiness);
     });
-    await scenario('Provider payload cannot create an internal marker', async () => {
+    // B. Combined-runtime compatibility: no false bridge guard and no bypass of 6C.
+    for (const [code, status] of [['F', 'failed'], ['G', 'received'], ['G', 'processing']]) {
+      await scenario(`${code}: unmarked ${status} passes the full 6C chain and applies once`, async () => {
+        await seedEvent(status, status === 'failed' ? 'webhook_processing_failed' : null);
+        const before = await event();
+        await assertProcessed(await deliver()); assert.equal((await event()).id, before.id);
+        await assertProcessedDuplicate();
+      });
+      for (const missing of ['native contract', 'cadence', 'matching amount']) {
+        await scenario(`${code}: unmarked ${status} cannot bypass 6C without ${missing}`, async () => {
+          if (missing === 'native contract') {
+            await pool.query('UPDATE saas_subscriptions SET metadata=metadata-\'contract\' WHERE id=$1', [subscription.id]);
+          } else if (missing === 'cadence') {
+            delete provider.preapproval.auto_recurring.frequency;
+          } else {
+            provider.payment.transaction_amount = 1;
+          }
+          await seedEvent(status, status === 'failed' ? 'webhook_processing_failed' : null);
+          const before = await event(); const beforeBusiness = await business();
+          await assertProofOutcome(await deliver(), beforeBusiness,
+            missing === 'matching amount' ? 'contract_rejected' : 'manual_review',
+            missing === 'native contract' ? 'legacy_contract_unknown'
+              : missing === 'cadence' ? 'provider_relationship_unproven' : 'contract_amount_mismatch');
+          assert.equal((await event()).id, before.id);
+        });
+      }
+    }
+    for (const [label, value] of [['I', claim.replace(claimId, 'bad-uuid')], ['J', marker.replace('v2:', 'v20:')]]) {
+      await scenario(`${label}: invalid marker proceeds through full 6C proof without false protection`, async () => {
+        await seedEvent('failed', value);
+        await assertProcessed(await deliver()); await assertProcessedDuplicate();
+      });
+      await scenario(`${label}: invalid marker cannot bypass missing cadence review`, async () => {
+        delete provider.preapproval.auto_recurring.frequency_type;
+        await seedEvent('failed', value); const beforeBusiness = await business();
+        await assertProofOutcome(await deliver(), beforeBusiness, 'manual_review', 'provider_relationship_unproven');
+      });
+    }
+    await scenario('Provider payload cannot create an internal marker or skip the full 6C chain', async () => {
       payload.processingError = marker; payload.metadata = { processingError: marker };
-      assert.equal((await deliver()).status, 200); assert.equal((await event()).processingStatus, 'processed');
-      assert.equal((await event()).processingError, null); await assertBusinessMutations(1);
-      assert.equal(logs.some(l => l.event === blockedLog), false);
+      await assertProcessed(await deliver()); await assertProcessedDuplicate();
+    });
+    await scenario('Provider payload marker cannot bypass a proven contract contradiction', async () => {
+      payload.processingError = marker; payload.metadata = { processingError: marker };
+      provider.payment.transaction_amount = 1;
+      const beforeBusiness = await business();
+      await assertProofOutcome(await deliver(), beforeBusiness, 'contract_rejected', 'contract_amount_mismatch');
     });
     await scenario('N: unmarked BILL-004 reservation recovery remains available', async () => {
-      payload.type = 'subscription_preapproval'; payload.data.id = 'mp-1';
-      await pool.query('UPDATE saas_subscriptions SET "mercadoPagoPreapprovalId"=NULL,"provisioningState"=$1,"providerCallStartedAt"=NOW() WHERE id=$2',
-        ['provider_call_started', subscription.id]);
-      await seedEvent('failed', 'webhook_processing_failed');
-      assert.equal((await deliver()).status, 200); const row = (await business()).subscription;
-      assert.equal(row.provisioningState, 'ready'); assert.equal(row.mercadoPagoPreapprovalId, 'mp-1'); await assertBusinessMutations(1);
+      // Original intent is successful recovery of a claimed ordinary monthly subscription.
+      await seedRecovery(); const before = await business();
+      await assertProcessed(await deliver(), ['preapproval:mp-1'], false);
+      const row = (await business()).subscription;
+      assert.equal(row.provisioningState, 'ready'); assert.equal(row.mercadoPagoPreapprovalId, 'mp-1');
+      assert.deepEqual(row.providerCallStartedAt, before.subscription.providerCallStartedAt);
+      await assertProcessedDuplicate();
     });
-    await scenario('O: unmarked BILL-005 transient failure retries to one successful application', async () => {
-      provider.fail = true;
-      assert.equal((await deliver()).status, 503); const before = await event();
-      assert.equal(before.processingStatus, 'failed'); assert.equal(before.processingError, 'webhook_processing_failed'); await assertBusinessMutations(0);
-      provider.fail = false; assert.equal((await deliver()).status, 200);
-      assert.equal((await event()).id, before.id); assert.equal((await event()).processingStatus, 'processed'); await assertBusinessMutations(1);
-      assert.equal((await deliver()).body.duplicate, true); await assertBusinessMutations(1);
+    await scenario('N: incomplete recovery proof preserves the claim and requires manual review', async () => {
+      delete provider.preapproval.auto_recurring.frequency;
+      await seedRecovery(); const beforeBusiness = await business();
+      await assertProofOutcome(await deliver(), beforeBusiness, 'manual_review', 'provider_relationship_unproven', ['preapproval:mp-1']);
+    });
+    for (const kind of ['payment', 'search']) {
+      await scenario(`O: unmarked BILL-005 transient ${kind} failure retries to one proven application`, async () => {
+        provider.fail = kind; const beforeBusiness = await business();
+        assert.equal((await deliver()).status, 503); const before = await event();
+        assert.equal(before.processingStatus, 'failed'); assert.equal(before.processingError, 'webhook_processing_failed');
+        assert.equal(before.contractOutcome, null); assert.deepEqual(before.raw, payload);
+        assert.deepEqual(await business(), beforeBusiness); await assertBusinessMutations(0);
+        const failedReads = kind === 'payment' ? ['payment:pay-1'] : ['payment:pay-1', 'search:pay-1'];
+        assertNormalPipeline(failedReads);
+        provider.fail = false;
+        await assertProcessed(await deliver(), [...failedReads, ...paymentReads]);
+        assert.equal((await event()).id, before.id); await assertProcessedDuplicate();
+      });
+    }
+    await scenario('Unrelated Payment: weak matching metadata cannot replace a missing authorized invoice', async () => {
+      // Deliberately unrelated: do not fabricate a canonical invoice for weak local-looking hints.
+      provider.search = { paging: { total: 0 }, results: [] }; provider.invoice = null;
+      provider.payment.metadata = { preapproval_id: 'mp-1', subscription_id: subscription.id };
+      const beforeBusiness = await business();
+      const response = await deliver(); const row = await event();
+      assert.equal(response.status, 503); assert.equal(row.processingStatus, 'failed');
+      assert.equal(row.processingError, 'authorized_invoice_not_found'); assert.equal(row.contractOutcome, null);
+      assert.deepEqual(row.raw, payload); assert.deepEqual(await business(), beforeBusiness);
+      await assertBusinessMutations(0); assertNormalPipeline(['payment:pay-1', 'search:pay-1']);
+    });
+    for (const resource of ['invoice', 'payment']) {
+      await scenario(`Incomplete ${resource} currency cannot authorize an unmarked Payment`, async () => {
+        delete provider[resource].currency_id;
+        const beforeBusiness = await business();
+        await assertProofOutcome(await deliver(), beforeBusiness, 'manual_review', 'provider_relationship_unproven');
+      });
+    }
+    await scenario('Canonical invoice identity contradiction cannot authorize an unmarked Payment', async () => {
+      provider.invoice.payment.id = 'other-payment'; const beforeBusiness = await business();
+      await assertProofOutcome(await deliver(), beforeBusiness, 'contract_rejected', 'provider_identity_mismatch',
+        ['payment:pay-1', 'search:pay-1', 'invoice:invoice-1']);
     });
   } finally {
     global.fetch = originalFetch;
