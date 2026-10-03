@@ -68,11 +68,11 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
     sendBillingSubscriptionAuthorizationEmail() { throw new Error('email_forbidden'); }
   });
   const realProvider = require(path.join(root, 'src/services/mercado-pago.service.js'));
-  stub('src/services/mercado-pago.service.js', {
+  stub('src/services/mercado-pago.service.js', require('./helpers/billing-v2-fixture').canonicalReads({
     ...realProvider,
     getAuthorizedPayment: async () => ({ id: 'invoice-1', preapproval_id: 'mp-1', status: 'processed',
       transaction_amount: 40600, currency_id: 'ARS', payment: { id: provider.payment.id } }),
-    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1 },
+    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { offset: 0, limit: 2, total: 1 },
       results: [{ id: 'invoice-1', payment: { id: provider.payment.id } }] }),
     createPreapproval() { throw new Error('provider_write_forbidden'); },
     getPreapproval: async () => {
@@ -85,7 +85,7 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
       if (provider.onPayment) return provider.onPayment();
       return provider.payment;
     }
-  });
+  }, {}));
   global.fetch = (value, ...args) => {
     assert.equal(new URL(value).hostname, '127.0.0.1', 'external requests forbidden');
     return originalFetch(value, ...args);
@@ -109,7 +109,7 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
   const base = `http://127.0.0.1:${server.address().port}`;
   const clinicId = '00000000-0000-4000-8000-000000000001';
   async function deliver({ valid = true, body = JSON.stringify(payload) } = {}) {
-    const requestId = crypto.randomUUID();
+    const requestId = 'fixture-request';
     const dataId = payload.data.id;
     const ts = '1727300000';
     const digest = crypto.createHmac('sha256', secret).update(`id:${dataId};request-id:${requestId};ts:${ts};`).digest('hex');
@@ -134,7 +134,7 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
     });
     provider.remote = { id: 'mp-1', status: 'authorized', external_reference: subscription.externalReference,
       auto_recurring: { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' } };
-    provider.payment = { id: 'pay-1', status: 'approved', preapproval_id: 'mp-1', external_reference: subscription.externalReference,
+    provider.payment = { date_created: new Date().toISOString(), id: 'pay-1', status: 'approved', preapproval_id: 'mp-1', external_reference: subscription.externalReference,
       transaction_amount: 40600, currency_id: 'ARS' };
     payload = { id: 'notice-1', type: 'subscription_preapproval', action: 'updated', data: { id: 'mp-1' } };
   }
@@ -162,8 +162,9 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
   try {
     await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
       name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql']) {
+    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql', '087_saas_billing_runtime_state.sql', '088_saas_billing_effects_reconciliation.sql']) {
       await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
+      if (name.startsWith('088_')) await require('./helpers/billing-v2-fixture').activateFixture(pool);
     }
     // Transactional trigger counters prove committed effects, including rollback windows.
     await pool.query(`CREATE TABLE mutation_audit (kind TEXT NOT NULL);
@@ -189,7 +190,7 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
       provider.onGet = () => { throw new Error(sensitiveError); };
       retryable(await deliver()); const failed = await event();
       assert.equal(failed.processingStatus, 'failed');
-      assert.equal(failed.processingError, 'webhook_processing_failed'); await assertMutations(0);
+      assert.equal(require('../../src/services/saas-billing-rollback-marker').isBillingContractV2Marker(failed.processingError), true); await assertMutations(0);
       provider.onGet = null;
       assert.equal((await deliver()).status, 200);
       assert.equal((await event()).id, failed.id); await assertMutations(1);
@@ -221,10 +222,10 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
         };
         const first = deliver(); await entered;
         const second = deliver();
-        try { await contender; } finally { release(); }
-        const [a, b] = await Promise.all([first, second]);
-        assert.equal(a.status, firstFails ? 503 : 200); assert.equal(b.status, 200);
-        assert.equal(b.body.duplicate, !firstFails); await assertMutations(1);
+        let b; try { await contender; b = await second; assert.equal(b.status, 503); assert.equal(provider.gets, 1); } finally { release(); }
+        const a = await first; assert.equal(a.status, firstFails ? 503 : 200);
+        if (firstFails) { provider.onGet = null; assert.equal((await deliver()).status, 200); }
+        await assertMutations(1);
         assert.equal((await event()).processingStatus, 'processed');
       });
     }
@@ -233,13 +234,13 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
       retryable(await deliver()); assert.equal(await event(), undefined); assert.equal(provider.gets, 0);
       assert.equal((await deliver()).status, 200); await assertMutations(1);
     });
-    await scenario('I/H: failure before processing leaves received event reprocessable', async () => {
+    await scenario('I/H: failure before claim leaves no event and remains reprocessable', async () => {
       fault.beforeBegin = once(() => { throw new Error(sensitiveError); });
-      retryable(await deliver()); assert.equal((await event()).processingStatus, 'received');
+      retryable(await deliver()); assert.equal(await event(), undefined);
       assert.equal(provider.gets, 0); assert.equal((await deliver()).status, 200); await assertMutations(1);
     });
     await scenario('J: unsupported event ignored durably without provider or business effects', async () => {
-      payload.type = 'unsupported';
+      payload.type = 'unsupported'; payload.data.id = 'plan-1';
       const result = await deliver(); assert.equal(result.status, 200); assert.equal(result.body.ignored, true);
       assert.equal((await event()).processingStatus, 'ignored');
       assert.equal((await deliver()).body.duplicate, true); assert.equal(provider.gets, 0); await assertMutations(0);
@@ -271,17 +272,19 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
     await scenario('failed marker write failure cannot leave a false success marker', async () => {
       provider.onGet = () => { throw new Error(sensitiveError); };
       failSqlWhen((sql, params) => sql.startsWith('UPDATE saas_subscription_events') && params[2] === 'failed');
-      retryable(await deliver()); assert.equal((await event()).processingStatus, 'received'); await assertMutations(0);
-      provider.onGet = null;
+      retryable(await deliver()); assert.equal((await event()).processingStatus, 'processing');
+      assert.match((await event()).processingError, /:claim_active$/); await assertMutations(0);
+      provider.onGet = null; retryable(await deliver());
+      await pool.query(`UPDATE saas_subscription_events SET "updatedAt"=NOW()-interval '1 minute'`);
       assert.equal((await deliver()).status, 200); await assertMutations(1);
     });
-    await scenario('business COMMIT failure leaves received event and no committed billing effects', async () => {
-      fault.beforeCommit = once(async client => { await client.query('SELECT 1/0'); });
-      retryable(await deliver()); await assertMutations(0); assert.equal((await event()).processingStatus, 'received');
+    await scenario('business COMMIT failure leaves a marked failed event and no committed billing effects', async () => {
+      fault.beforeCommit = async client => { const row = (await client.query('SELECT "processingStatus" FROM saas_subscription_events')).rows[0]; if (row?.processingStatus === 'processed') { fault.beforeCommit = null; await client.query('SELECT 1/0'); } };
+      retryable(await deliver()); await assertMutations(0); assert.equal((await event()).processingStatus, 'failed');
       assert.equal((await deliver()).status, 200); await assertMutations(1);
     });
     await scenario('lost COMMIT acknowledgement remains durably deduplicated', async () => {
-      fault.afterCommit = once(() => { throw new Error(sensitiveError); });
+      let commits = 0; fault.afterCommit = () => { if (++commits === 2) throw new Error(sensitiveError); };
       retryable(await deliver()); await assertMutations(1); assert.equal((await event()).processingStatus, 'processed');
       const replay = await deliver(); assert.equal(replay.status, 200); assert.equal(replay.body.duplicate, true); await assertMutations(1);
     });
@@ -318,13 +321,13 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
       assert.equal(await event(), undefined); assert.equal(provider.gets, 0); await assertMutations(0);
     });
     await scenario('processor exposes distinct result classes', async () => {
-      const first = await service.processMercadoPagoWebhook(payload, { signatureValid: true });
+      const first = await service.processMercadoPagoWebhook(payload, require('./helpers/billing-v2-fixture').delivery(payload, secret, 'fixture-' + payload.id));
       assert.equal(first.outcome, 'PROCESSED_SUCCESSFULLY');
-      assert.equal((await service.processMercadoPagoWebhook(payload)).outcome, 'ALREADY_PROCESSED');
-      payload.id = 'unsupported'; payload.type = 'unsupported';
-      assert.equal((await service.processMercadoPagoWebhook(payload)).outcome, 'IGNORED_UNSUPPORTED_EVENT');
-      payload.id = 'failed'; payload.type = 'preapproval'; provider.onGet = () => { throw new Error(sensitiveError); };
-      assert.equal((await service.processMercadoPagoWebhook(payload)).outcome, 'RETRYABLE_PROCESSING_FAILURE');
+      assert.equal((await service.processMercadoPagoWebhook(payload, require('./helpers/billing-v2-fixture').delivery(payload, secret, 'fixture-' + payload.id))).outcome, 'ALREADY_PROCESSED');
+      payload.id = 'unsupported'; payload.type = 'unsupported'; payload.data.id = 'plan-1';
+      assert.equal((await service.processMercadoPagoWebhook(payload, require('./helpers/billing-v2-fixture').delivery(payload, secret, 'fixture-' + payload.id))).outcome, 'IGNORED_NO_ACTION');
+      payload.id = 'failed'; payload.type = 'preapproval'; payload.data.id = 'mp-1'; provider.onGet = () => { throw new Error(sensitiveError); };
+      assert.equal((await service.processMercadoPagoWebhook(payload, require('./helpers/billing-v2-fixture').delivery(payload, secret, 'fixture-' + payload.id))).outcome, 'RETRYABLE_PROCESSING_FAILURE');
     });
   } finally {
     global.fetch = originalFetch;

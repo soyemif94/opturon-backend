@@ -64,9 +64,12 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     const kind = request.pathname === '/authorized_payments/search' ? 'search'
       : request.pathname.startsWith('/authorized_payments/') ? 'invoice'
       : request.pathname.startsWith('/v1/payments/') ? 'payment'
-      : request.pathname.startsWith('/preapproval/') ? 'preapproval' : null;
+      : request.pathname.startsWith('/preapproval/') ? 'preapproval'
+      : request.pathname.startsWith('/preapproval_plan/') ? 'plan' : null;
     assert.ok(kind, 'unexpected provider endpoint');
-    assert.equal(request.search, kind === 'search' ? '?payment_id=19951521071' : '');
+    assert.equal(request.search, kind === 'search' ? '?payment_id=19951521071&offset=0&limit=2' : '');
+    const endpointId = { payment: '19951521071', invoice: '6114264375', preapproval: 'mp-1', plan: 'plan-1' };
+    if (kind !== 'search' && request.pathname.split('/').pop() !== (provider.endpointId?.[kind] || endpointId[kind])) return new Response('{}', { status: 404 });
     if (provider.beforeFetch) await provider.beforeFetch(kind);
     if (provider.error?.kind === kind) {
       if (provider.error.network) throw new Error(provider.error.message);
@@ -83,7 +86,7 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
   const base = `http://127.0.0.1:${server.address().port}`;
   const clinicId = '00000000-0000-4000-8000-000000000001';
   async function deliver(valid = true) {
-    const requestId = crypto.randomUUID(); const ts = '1727300000'; const id = payload.data.id;
+    const requestId = 'fixture-' + (payload.id || 'without-notification'); const ts = '1727300000'; const id = payload.data.id;
     const digest = crypto.createHmac('sha256', secret).update(`id:${id};request-id:${requestId};ts:${ts};`).digest('hex');
     const response = await fetch(`${base}/api/webhooks/mercadopago?data.id=${encodeURIComponent(id)}`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': requestId,
@@ -104,15 +107,15 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     subscription = await repository.insertSaasSubscription({ ...input, metadata: { contract } });
     provider.preapproval = { id: 'mp-1', status: 'authorized', external_reference: input.externalReference,
       auto_recurring: { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' } };
-    provider.payment = { id: 19951521071, status: 'approved', preapproval_id: 'mp-1', external_reference: input.externalReference,
+    provider.payment = { date_created: new Date().toISOString(), id: 19951521071, status: 'approved', preapproval_id: 'mp-1', external_reference: input.externalReference,
       transaction_amount: 40600, currency_id: 'ARS' };
-    provider.search = { paging: { total: 1 }, results: [{ id: 6114264375, payment: { id: 19951521071 } }] };
+    provider.search = { paging: { offset: 0, limit: 2, total: 1 }, results: [{ id: 6114264375, payment: { id: 19951521071 } }] };
     provider.invoice = { id: 6114264375, preapproval_id: 'mp-1', transaction_amount: '40600.00', currency_id: 'ARS',
       status: 'processed', summarized: 'done', payment: { id: 19951521071, status: 'approved' }, external_reference: input.externalReference };
     payload = { id: 'notice-6b', type: 'subscription_authorized_payment', action: 'updated', data: { id: '6114264375' } };
   }
   const scenario = (name, fn) => t.test(name, async () => { await reset(); await fn(); });
-  const event = async () => (await pool.query('SELECT * FROM saas_subscription_events')).rows[0];
+  const event = async () => (await pool.query('SELECT * FROM saas_subscription_events WHERE "notificationId" IS NOT DISTINCT FROM $1', [payload.id == null ? null : String(payload.id)])).rows[0];
   const business = async () => ({ subscription: (await pool.query('SELECT * FROM saas_subscriptions')).rows[0],
     tenant: (await pool.query('SELECT * FROM clinics')).rows[0] });
   async function assertMutations(n) {
@@ -126,19 +129,21 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     assert.equal(row.processingStatus, 'processed'); assert.equal(row.contractOutcome, null);
     assert.equal(row.subscriptionId, subscription.id); assert.deepEqual(row.raw, payload); await assertMutations(1);
   }
-  async function assertRetryable(response) {
+  async function assertRetryable(response, reason) {
     assert.deepEqual(response, { status: 503, body: { success: false, error: 'webhook_processing_failed' } });
     const row = await event();
     assert.equal(row.processingStatus, 'failed'); assert.equal(row.contractOutcome, null);
-    assert.equal(row.processingError, 'webhook_processing_failed'); assert.deepEqual(row.raw, payload);
+    assert.equal(require('../../src/services/saas-billing-rollback-marker').isBillingContractV2Marker(row.processingError), true); assert.deepEqual(row.raw, payload);
+    assert.equal(row.processingError.split(':').at(-1), reason);
     await assertMutations(0);
   }
   function paymentTopic() { payload.type = 'payment'; payload.data.id = '19951521071'; }
   try {
     await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
       name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql']) {
+    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql', '087_saas_billing_runtime_state.sql', '088_saas_billing_effects_reconciliation.sql']) {
       await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
+      if (name.startsWith('088_')) await require('./helpers/billing-v2-fixture').activateFixture(pool);
     }
     await pool.query(`CREATE TABLE mutation_audit (kind TEXT NOT NULL);
       CREATE FUNCTION count_routing_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -165,9 +170,9 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     }
     async function assertNoAction(reason) {
       const before = await business();
-      assert.equal((await deliver()).status, 503);
+      assert.equal((await deliver()).status, 200);
       const row = await event();
-      assert.equal(row.processingStatus, 'failed'); assert.equal(row.contractOutcome, null);
+      assert.equal(row.processingStatus, 'ignored'); assert.equal(row.contractOutcome, null);
       assert.equal(row.processingError, reason); assert.deepEqual(row.raw, payload);
       assert.deepEqual(await business(), before); await assertMutations(0);
     }
@@ -184,7 +189,7 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
       const row = (await business()).subscription;
       assert.equal(row.localStatus, 'active'); assert.equal(row.lastPaymentId, '19951521071');
       assert.deepEqual(row.metadata.contract, subscription.metadata.contract);
-      assert.deepEqual(calls, ['/authorized_payments/6114264375', '/preapproval/mp-1', '/v1/payments/19951521071']);
+      assert.deepEqual(calls, ['/v1/payments/6114264375', '/authorized_payments/6114264375', '/preapproval/6114264375', '/preapproval_plan/6114264375', '/preapproval/mp-1', '/v1/payments/19951521071']);
     });
     await scenario('CASE B: unknown legacy contract requires durable manual review, never mutable row authority', async () => {
       await contractPatch({});
@@ -219,20 +224,21 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     await scenario('CASE M: missing invoice preapproval is insufficient proof, not a mismatch', async () => {
       delete provider.invoice.preapproval_id;
       await assertDecision('manual_review', 'provider_relationship_unproven');
-      assert.deepEqual(calls, ['/authorized_payments/6114264375']);
+      assert.deepEqual(calls, ['/v1/payments/6114264375', '/authorized_payments/6114264375', '/preapproval/6114264375', '/preapproval_plan/6114264375']);
     });
-    await scenario('CASE O: missing Payment remains retryable and later complete invoice succeeds', async () => {
+    await scenario('CASE O: missing Payment is acknowledged; a later notification with complete invoice succeeds', async () => {
       delete provider.invoice.payment;
       await assertNoAction('invoice_payment_pending'); const before = await event();
-      provider.invoice.payment = { id: 19951521071 };
-      await assertProcessed(await deliver()); assert.equal((await event()).id, before.id);
+      provider.invoice.payment = { id: 19951521071 }; payload.id = 'later-invoice';
+      await assertProcessed(await deliver()); assert.notEqual((await event()).id, before.id);
     });
     for (const status of ['pending', 'in_process', 'rejected', 'cancelled', 'authorized', 'in_mediation']) {
-      await scenario('CASE T/U/AE: ' + status + ' is nonterminal; same notification can later be approved', async () => {
+      await scenario('CASE T/U/AE: ' + status + ' is terminal no-action; a new notification can later be approved', async () => {
         provider.payment.status = status;
-        await assertNoAction('payment_not_approved'); const before = await event();
-        provider.payment.status = 'approved';
-        await assertProcessed(await deliver()); assert.equal((await event()).id, before.id);
+        await assertNoAction(`payment_${status}`); const before = await event();
+        assert.equal((await deliver()).body.duplicate, true);
+        provider.payment.status = 'approved'; payload.id = 'later-approved';
+        await assertProcessed(await deliver()); assert.notEqual((await event()).id, before.id);
       });
     }
     for (const status of ['refunded', 'charged_back', 'unexpected_status']) {
@@ -272,25 +278,25 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
       paymentTopic();
       provider.payment.metadata = { preapproval_id: 'mp-1', external_reference: subscription.externalReference };
       provider.payment.subscription_id = 'mp-1';
-      provider.search = { paging: { total: 0 }, results: [] };
+      provider.search = { paging: { offset: 0, limit: 2, total: 0 }, results: [] };
       await assertNoAction('authorized_invoice_not_found');
-      assert.deepEqual(calls, ['/v1/payments/19951521071', '/authorized_payments/search?payment_id=19951521071']);
+      assert.deepEqual(calls, ['/v1/payments/19951521071', '/authorized_payments/19951521071', '/preapproval/19951521071', '/preapproval_plan/19951521071', '/authorized_payments/search?payment_id=19951521071&offset=0&limit=2']);
     });
     await scenario('CASE X: one invoice proves generic Payment despite absent weak metadata', async () => {
       paymentTopic(); delete provider.payment.preapproval_id; delete provider.payment.external_reference;
       await assertProcessed(await deliver());
-      assert.deepEqual(calls, ['/v1/payments/19951521071', '/authorized_payments/search?payment_id=19951521071',
+      assert.deepEqual(calls, ['/v1/payments/19951521071', '/authorized_payments/19951521071', '/preapproval/19951521071', '/preapproval_plan/19951521071', '/authorized_payments/search?payment_id=19951521071&offset=0&limit=2',
         '/authorized_payments/6114264375', '/preapproval/mp-1']);
     });
     await scenario('CASE Y: multiple invoices require review; never choose first', async () => {
       paymentTopic(); provider.search.paging.total = 2;
       provider.search.results.push({ id: 999, payment: { id: 19951521071 } });
       await assertDecision('manual_review', 'provider_relationship_unproven');
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 5);
     });
     await scenario('CASE Z/AD: search transient failure is retryable with same event', async () => {
       paymentTopic(); provider.error = { kind: 'search', status: 503 };
-      await assertRetryable(await deliver()); const failed = await event();
+      await assertRetryable(await deliver(), 'provider_5xx'); const failed = await event();
       provider.error = null; await assertProcessed(await deliver()); assert.equal((await event()).id, failed.id);
     });
     for (const [type, reason] of [['contract_rejected', 'contract_amount_mismatch'], ['manual_review', 'legacy_contract_unknown']]) {
@@ -313,13 +319,14 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
         if (topic === 'payment') paymentTopic();
         if (!withNotification) delete payload.id;
         provider.payment.status = 'pending';
-        await assertNoAction('payment_not_approved');
-        if (withNotification) payload.id = 'notice-future-approved';
+        await assertNoAction('payment_pending');
+        if (!withNotification) { assert.equal((await deliver()).body.duplicate, true); await assertMutations(0); }
+        payload.id = 'notice-future-approved';
         provider.payment.status = 'approved';
         assert.equal((await deliver()).status, 200);
         assert.equal((await business()).subscription.localStatus, 'active');
         const rows = (await pool.query('SELECT * FROM saas_subscription_events')).rows;
-        assert.equal(rows.length, withNotification ? 2 : 1);
+        assert.equal(rows.length, 2);
         assert.equal(rows.filter(row => row.processingStatus === 'processed').length, 1);
         await assertMutations(1);
       });
@@ -331,7 +338,7 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     });
     await scenario('CASE AG: provider timeout cannot acknowledge or perform late business writes', async () => {
       let release; provider.beforeFetch = kind => kind === 'invoice' ? new Promise(resolve => { release = resolve; }) : undefined;
-      await assertRetryable(await deliver());
+      await assertRetryable(await deliver(), 'provider_timeout');
       release(); provider.beforeFetch = null;
       await assertProcessed(await deliver());
     });
@@ -342,7 +349,7 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
           fault.query = null; await client.query('SELECT 1/0');
         }
       };
-      await assertRetryable(await deliver());
+      await assertRetryable(await deliver(), 'db_retryable');
       await assertDecision('contract_rejected', 'contract_amount_mismatch');
     });
     await scenario('CASE AK: valid second tenant external reference never retargets bound subscription', async () => {
@@ -380,15 +387,15 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     });
     await scenario('CASE AM: concurrent identical invoices mutate once under database ownership', async () => {
       const responses = await Promise.all([deliver(), deliver(), deliver()]);
-      assert.ok(responses.every(r => r.status === 200));
-      assert.equal(responses.filter(r => r.body.duplicate).length, 2);
-      assert.equal(calls.length, 3); await assertMutations(1);
+      assert.ok(responses.every(r => [200, 503].includes(r.status)));
+      assert.equal(responses.filter(r => r.status === 200 && !r.body.duplicate).length, 1);
+      assert.equal(calls.length, 6); await assertMutations(1);
     });
     await scenario('CASE AO: plan topic cannot fall through via preapproval.updated action', async () => {
-      payload.type = 'subscription_preapproval_plan'; payload.action = 'preapproval.updated';
+      payload.type = 'subscription_preapproval_plan'; payload.data.id = 'plan-1'; provider.plan = { id: 'plan-1', status: 'active' }; payload.action = 'preapproval.updated';
       assert.equal((await deliver()).status, 200);
       assert.equal((await event()).processingStatus, 'ignored');
-      assert.equal(calls.length, 0); await assertMutations(0);
+      assert.deepEqual(calls, ['/v1/payments/plan-1','/authorized_payments/plan-1','/preapproval/plan-1','/preapproval_plan/plan-1']); await assertMutations(0);
     });
     await scenario('CASE AP: compatibility alias enforces full financial validation', async () => {
       payload.type = 'authorized_payment'; provider.payment.transaction_amount = 2;
@@ -483,15 +490,15 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     await scenario('Generic search candidate must match Payment identity and canonical invoice linkage', async () => {
       paymentTopic(); provider.search.results[0].payment.id = 'wrong-payment';
       await assertDecision('contract_rejected', 'provider_identity_mismatch');
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 5);
     });
     await scenario('Canonical invoice cannot switch Payment after search', async () => {
       paymentTopic(); provider.invoice.payment.id = 'wrong-payment';
       await assertDecision('contract_rejected', 'provider_identity_mismatch');
-      assert.equal(calls.length, 3);
+      assert.equal(calls.length, 6);
     });
-    for (const search of [{}, { results: [], paging: { total: 1 } },
-      { results: [{ id: 1 }], paging: { total: 2 } }, { results: [], paging: { total: -1 } }]) {
+    for (const search of [{}, { results: [], paging: { offset: 0, limit: 2, total: 1 } },
+      { results: [{ id: 1 }], paging: { offset: 0, limit: 2, total: 2 } }, { results: [], paging: { offset: 0, limit: 2, total: -1 } }]) {
       await scenario('Incomplete or paginated search never chooses an arbitrary invoice: ' + JSON.stringify(search), async () => {
         paymentTopic(); provider.search = search;
         await assertDecision('manual_review', 'provider_relationship_unproven');
@@ -501,7 +508,7 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
       await scenario('Provider 404 ' + kind + ' is retryable, never a contract mismatch', async () => {
         if (kind === 'search') paymentTopic();
         provider.error = { kind, status: 404 };
-        await assertRetryable(await deliver());
+        await assertRetryable(await deliver(), 'provider_not_found');
       });
     }
 

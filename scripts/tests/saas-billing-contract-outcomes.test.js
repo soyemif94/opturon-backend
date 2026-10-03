@@ -94,7 +94,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
     sendBillingSubscriptionAuthorizationEmail() { throw new Error('email_forbidden'); }
   });
   const realProvider = require('../../src/services/mercado-pago.service');
-  stub('src/services/mercado-pago.service.js', {
+  stub('src/services/mercado-pago.service.js', require('./helpers/billing-v2-fixture').canonicalReads({
     ...realProvider,
     createPreapproval() { throw new Error('provider_write_forbidden'); },
     getPayment() { throw new Error('unexpected_payment_fetch'); },
@@ -103,7 +103,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
       if (provider.fail) throw new Error(sensitiveError);
       return provider.remote;
     }
-  });
+  }, {}));
   global.fetch = (value, ...args) => {
     assert.equal(new URL(value).hostname, '127.0.0.1', 'external requests forbidden');
     return originalFetch(value, ...args);
@@ -118,7 +118,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
       if (!decision) return service.processMercadoPagoWebhook(body, meta);
       const snapshot = service.__internal.buildWebhookEventSnapshot(body, meta);
       return service.__internal.processSubscriptionWebhookEvent({
-        ...snapshot, dedupeKey: service.__internal.deriveWebhookDedupeKey(snapshot), raw: body,
+        ...snapshot, dedupeKey: (payload.legacyIdentityFixture ? service.__internal.deriveWebhookDedupeKey(snapshot) : realProvider.signedDeliveryIdentity(meta.verifiedDelivery)), raw: body,
         provider: 'mercado_pago', processingStatus: 'received'
       }, async (client, event) => { decisions += 1; return decision(client, event); });
     }
@@ -153,7 +153,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
   server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   async function deliver({ valid = true, previous = false } = {}) {
-    const requestId = crypto.randomUUID(); const ts = '1727300000'; const dataId = payload.data.id;
+    const requestId = 'fixture-request'; const ts = '1727300000'; const dataId = payload.data.id;
     const digest = crypto.createHmac('sha256', secret).update(`id:${dataId};request-id:${requestId};ts:${ts};`).digest('hex');
     const endpoint = previous ? '/audit/previous-runtime' : '/api/webhooks/mercadopago';
     const response = await fetch(`${base}${endpoint}?data.id=${dataId}`, {
@@ -210,8 +210,9 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
   try {
     await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
       name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql']) {
+    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql', '087_saas_billing_runtime_state.sql', '088_saas_billing_effects_reconciliation.sql']) {
       await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
+      if (name.startsWith('088_')) await require('./helpers/billing-v2-fixture').activateFixture(pool);
     }
     await pool.query(`CREATE TABLE mutation_audit (kind TEXT NOT NULL);
       CREATE FUNCTION count_outcome_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -261,7 +262,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
         assert.deepEqual(await event(), first);
         // Ordinary production route, without a test decision, also short-circuits.
         decision = null;
-        const result = await service.processMercadoPagoWebhook(payload, { signatureValid: true });
+        const result = await service.processMercadoPagoWebhook(payload, require('./helpers/billing-v2-fixture').delivery(payload, secret));
         assert.equal(result.duplicate, true); assert.deepEqual(result.contractOutcome, first.contractOutcome);
         assert.equal(provider.gets, 0); await assertMutations(0);
       });
@@ -285,16 +286,19 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
       });
       await scenario(`${status}: COMMIT failure never acknowledges an uncommitted terminal result`, async () => {
         decision = (_client, row) => synthetic(status, row.id);
-        fault.beforeCommit = client => client.query('SELECT 1/0');
+        fault.beforeCommit = async client => {
+          const row = (await client.query('SELECT "processingStatus" FROM saas_subscription_events')).rows[0];
+          if (row?.processingStatus === 'ignored') await client.query('SELECT 1/0');
+        };
         retryable(await deliver());
-        assert.equal((await event()).processingStatus, 'received');
+        assert.equal((await event()).processingStatus, 'failed');
         assert.equal((await event()).contractOutcome, null); await assertMutations(0);
         fault = {}; assert.equal((await deliver()).status, 200); assert.equal((await event()).processingStatus, 'ignored');
         assert.equal((await event()).contractOutcome.type, status);
       });
       await scenario(`${status}: lost commit acknowledgement retains durable result on retry`, async () => {
         decision = (_client, row) => synthetic(status, row.id);
-        fault.afterCommit = () => { throw new Error(sensitiveError); };
+        let commits = 0; fault.afterCommit = () => { if (++commits === 2) throw new Error(sensitiveError); };
         retryable(await deliver()); const first = await event(); assert.equal(first.processingStatus, 'ignored');
         assert.equal(first.contractOutcome.type, status);
         fault = {}; const replay = await deliver();
@@ -343,6 +347,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
         assert.deepEqual(after, before); assert.deepEqual(after.raw, payload); await assertMutations(0);
       });
       await scenario(`${status === 'contract_rejected' ? 'S' : 'T'}: exact 8928f5a runtime safely deduplicates corrected ${status}`, async () => {
+        payload.legacyIdentityFixture = true;
         decision = (_client, row) => synthetic(status, row.id);
         assert.equal((await deliver()).status, 200);
         const first = await event(); const before = await business();
@@ -355,7 +360,7 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
       });
     }
     await scenario('R: legacy ignored with NULL outcome remains terminal and distinct from contract decisions', async () => {
-      payload.type = 'unsupported';
+      payload.type = 'unsupported'; payload.data.id = 'plan-1';
       const first = await deliver(); assert.equal(first.status, 200);
       assert.deepEqual(first.body, { success: true, duplicate: false, ignored: true });
       const original = await event();
@@ -375,7 +380,9 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
       const processed = await event();
       assert.equal(processed.processingStatus, 'processed'); assert.equal(processed.contractOutcome, null);
       assert.equal(provider.gets, 1); await assertMutations(1);
-      assert.equal((await deliver()).body.duplicate, true); assert.equal(provider.gets, 1);
+      const snapshot = service.__internal.buildWebhookEventSnapshot(payload, { signatureValid: true });
+      const replay = await service.__internal.processSubscriptionWebhookEvent({ ...snapshot, raw: payload, provider: 'mercado_pago', dedupeKey: service.__internal.deriveWebhookDedupeKey(snapshot) }, () => { throw new Error('legacy_duplicate_reprocessed'); });
+      assert.equal(replay.duplicate, true); assert.equal(provider.gets, 1);
       assert.deepEqual(await event(), processed); await assertMutations(1);
     });
     await scenario('U: migration on existing rows takes AccessExclusiveLock without backfill or heap rewrite', async () => {
@@ -444,9 +451,12 @@ test('BILL-006D: signed HTTP, real PostgreSQL terminal outcomes and retries', as
           await client.query('SELECT 1/0');
         }
       };
-      retryable(await deliver()); assert.equal((await event()).processingStatus, 'received');
+      retryable(await deliver()); assert.equal((await event()).processingStatus, 'processing');
+      assert.match((await event()).processingError, /:claim_active$/);
       assert.equal((await event()).contractOutcome, null); await assertMutations(0);
-      fault = {}; assert.equal((await deliver()).status, 200);
+      fault = {}; retryable(await deliver());
+      await pool.query(`UPDATE saas_subscription_events SET "updatedAt"=NOW()-interval '1 minute'`);
+      assert.equal((await deliver()).status, 200);
     });
     await scenario('untrusted payload cannot select or forge a contract outcome', async () => {
       payload.processingStatus = 'contract_rejected';

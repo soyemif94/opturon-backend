@@ -498,7 +498,7 @@ async function insertSubscriptionEvent(input, client = null) {
   return result.rows[0] || null;
 }
 
-async function updateSubscriptionEventStatus(id, patch, client = null) {
+async function updateSubscriptionEventStatus(id, patch, client = null, expectedClaim = null) {
   const result = await dbQuery(
     client,
     `UPDATE saas_subscription_events
@@ -507,23 +507,36 @@ async function updateSubscriptionEventStatus(id, patch, client = null) {
          "processingError" = $4,
          "updatedAt" = NOW()
      WHERE id = $1::uuid
+       AND ($5::text IS NULL OR ("processingStatus" = 'processing' AND "processingError" = $5))
      RETURNING id, "subscriptionId", "dedupeKey", "processingStatus", "processingError", "updatedAt"`,
-    [id, patch.subscriptionId || null, patch.processingStatus || null, patch.processingError || null]
+    [id, patch.subscriptionId || null, patch.processingStatus || null, patch.processingError || null, expectedClaim]
   );
 
   return result.rows[0] || null;
 }
 
-async function lockSubscriptionEventByDedupeKey(dedupeKey, client) {
+async function lockSubscriptionEventByDedupeKey(dedupeKey, client, staleAfterMs = 30000) {
   const result = await client.query(
-    `SELECT id, "subscriptionId", "processingStatus", "processingError", "contractOutcome" FROM saas_subscription_events
+    `SELECT id, "subscriptionId", "processingStatus", "processingError", "contractOutcome", "updatedAt",
+       ("updatedAt" < clock_timestamp() - ($2::int * interval '1 millisecond')) AS "claimStale"
+     FROM saas_subscription_events
      WHERE "dedupeKey" = $1 FOR UPDATE`,
-    [dedupeKey]
+    [dedupeKey, staleAfterMs]
   );
   return result.rows[0] || null;
 }
 
-async function persistSubscriptionEventContractOutcome(id, outcome, client) {
+async function lockClaimedSubscriptionEvent(id, dedupeKey, marker, client) {
+  const result = await client.query(
+    `SELECT id, "subscriptionId", "processingStatus", "processingError", "contractOutcome"
+     FROM saas_subscription_events WHERE id = $1::uuid AND "dedupeKey" = $2
+       AND "processingStatus" = 'processing' AND "processingError" = $3 FOR UPDATE`,
+    [id, dedupeKey, marker]
+  );
+  return result.rows[0] || null;
+}
+
+async function persistSubscriptionEventContractOutcome(id, outcome, client, expectedClaim = null) {
   const result = await client.query(
     `UPDATE saas_subscription_events
      SET "subscriptionId" = COALESCE($2::uuid, "subscriptionId"),
@@ -535,10 +548,11 @@ async function persistSubscriptionEventContractOutcome(id, outcome, client) {
          "updatedAt" = NOW()
      WHERE id = $1::uuid AND "processingStatus" = 'processing'
        AND "contractOutcome" IS NULL
+       AND ($5::text IS NULL OR "processingError" = $5)
      RETURNING id, "subscriptionId", "processingStatus", "contractOutcome"`,
     [id, outcome.subscriptionId, outcome.reasonCode,
       JSON.stringify({ version: 1, type: outcome.type,
-        reasonCode: outcome.reasonCode, details: outcome.details, resource: outcome.resource })]
+        reasonCode: outcome.reasonCode, details: outcome.details, resource: outcome.resource }), expectedClaim]
   );
   return result.rows[0] || null;
 }
@@ -556,6 +570,7 @@ module.exports = {
   listSaasSubscriptions,
   insertSubscriptionEvent,
   lockSubscriptionEventByDedupeKey,
+  lockClaimedSubscriptionEvent,
   persistSubscriptionEventContractOutcome,
   updateSubscriptionEventStatus
 };

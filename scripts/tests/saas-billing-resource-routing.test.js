@@ -62,9 +62,12 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
     const kind = request.pathname === '/authorized_payments/search' ? 'search'
       : request.pathname.startsWith('/authorized_payments/') ? 'invoice'
       : request.pathname.startsWith('/v1/payments/') ? 'payment'
-      : request.pathname.startsWith('/preapproval/') ? 'preapproval' : null;
+      : request.pathname.startsWith('/preapproval/') ? 'preapproval'
+      : request.pathname.startsWith('/preapproval_plan/') ? 'plan' : null;
     assert.ok(kind, 'unexpected provider endpoint');
-    assert.equal(request.search, kind === 'search' ? '?payment_id=19951521071' : '');
+    assert.equal(request.search, kind === 'search' ? '?payment_id=19951521071&offset=0&limit=2' : '');
+    const endpointId = { payment: '19951521071', invoice: '6114264375', preapproval: 'mp-1', plan: 'plan-1' };
+    if (kind !== 'search' && request.pathname.split('/').pop() !== (provider.endpointId?.[kind] || endpointId[kind])) return new Response('{}', { status: 404 });
     if (provider.error?.kind === kind) {
       if (provider.error.network) throw new Error(provider.error.message);
       return new Response(JSON.stringify(provider.error.body || { message: 'mock provider error' }),
@@ -81,7 +84,7 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
   const base = `http://127.0.0.1:${server.address().port}`;
   const clinicId = '00000000-0000-4000-8000-000000000001';
   async function deliver(valid = true) {
-    const requestId = crypto.randomUUID(); const ts = '1727300000'; const id = payload.data.id;
+    const requestId = 'fixture-' + (payload.id || 'without-notification'); const ts = '1727300000'; const id = payload.data.id;
     const digest = crypto.createHmac('sha256', secret).update(`id:${id};request-id:${requestId};ts:${ts};`).digest('hex');
     const response = await fetch(`${base}/api/webhooks/mercadopago?data.id=${encodeURIComponent(id)}`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': requestId,
@@ -102,9 +105,9 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
     subscription = await repository.insertSaasSubscription({ ...input, metadata: { contract } });
     provider.preapproval = { id: 'mp-1', status: 'authorized', external_reference: input.externalReference,
       auto_recurring: { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' } };
-    provider.payment = { id: 19951521071, status: 'approved', preapproval_id: 'mp-1', external_reference: input.externalReference,
+    provider.payment = { date_created: new Date().toISOString(), id: 19951521071, status: 'approved', preapproval_id: 'mp-1', external_reference: input.externalReference,
       transaction_amount: 40600, currency_id: 'ARS' };
-    provider.search = { paging: { total: 1 }, results: [{ id: 6114264375, payment: { id: 19951521071 } }] };
+    provider.search = { paging: { offset: 0, limit: 2, total: 1 }, results: [{ id: 6114264375, payment: { id: 19951521071 } }] };
     provider.invoice = { id: 6114264375, preapproval_id: 'mp-1', transaction_amount: '40600.00', currency_id: 'ARS',
       status: 'processed', summarized: 'done', payment: { id: 19951521071, status: 'approved' }, external_reference: input.externalReference };
     payload = { id: 'notice-6b', type: 'subscription_authorized_payment', action: 'updated', data: { id: '6114264375' } };
@@ -124,19 +127,21 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
     assert.equal(row.processingStatus, 'processed'); assert.equal(row.contractOutcome, null);
     assert.equal(row.subscriptionId, subscription.id); assert.deepEqual(row.raw, payload); await assertMutations(1);
   }
-  async function assertRetryable(response) {
+  async function assertRetryable(response, reason) {
     assert.deepEqual(response, { status: 503, body: { success: false, error: 'webhook_processing_failed' } });
     const row = await event();
     assert.equal(row.processingStatus, 'failed'); assert.equal(row.contractOutcome, null);
-    assert.equal(row.processingError, 'webhook_processing_failed'); assert.deepEqual(row.raw, payload);
+    assert.equal(require('../../src/services/saas-billing-rollback-marker').isBillingContractV2Marker(row.processingError), true); assert.deepEqual(row.raw, payload);
+    assert.equal(row.processingError.split(':').at(-1), reason);
     await assertMutations(0);
   }
   function paymentTopic() { payload.type = 'payment'; payload.data.id = '19951521071'; }
   try {
     await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
       name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql']) {
+    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql', '087_saas_billing_runtime_state.sql', '088_saas_billing_effects_reconciliation.sql']) {
       await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
+      if (name.startsWith('088_')) await require('./helpers/billing-v2-fixture').activateFixture(pool);
     }
     await pool.query(`CREATE TABLE mutation_audit (kind TEXT NOT NULL);
       CREATE FUNCTION count_routing_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -149,12 +154,12 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
 
     await scenario('A/P: invoice ID goes to authorized_payments, Payment ID goes to v1/payments after 6C proof', async () => {
       await assertProcessed(await deliver());
-      assert.deepEqual(calls, ['/authorized_payments/6114264375', '/preapproval/mp-1', '/v1/payments/19951521071']);
+      assert.deepEqual(calls, ['/v1/payments/6114264375', '/authorized_payments/6114264375', '/preapproval/6114264375', '/preapproval_plan/6114264375', '/preapproval/mp-1', '/v1/payments/19951521071']);
     });
     await scenario('B/P: Payment ID goes to v1/payments, preserving existing preapproval read and effects', async () => {
       paymentTopic();
       assert.equal((await deliver()).status, 200);
-      assert.deepEqual(calls, ['/v1/payments/19951521071', '/authorized_payments/search?payment_id=19951521071',
+      assert.deepEqual(calls, ['/v1/payments/19951521071', '/authorized_payments/19951521071', '/preapproval/19951521071', '/preapproval_plan/19951521071', '/authorized_payments/search?payment_id=19951521071&offset=0&limit=2',
         '/authorized_payments/6114264375', '/preapproval/mp-1']);
       assert.equal((await event()).processingStatus, 'processed'); await assertMutations(1);
       assert.equal((await business()).subscription.lastPaymentId, '19951521071');
@@ -175,7 +180,7 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
       await scenario(`${label}: transient ${kind} failure is retryable; same event later succeeds`, async () => {
         if (kind === 'payment') paymentTopic();
         provider.error = { kind, status: 503 };
-        await assertRetryable(await deliver()); const failed = await event();
+        await assertRetryable(await deliver(), 'provider_5xx'); const failed = await event();
         provider.error = null;
         assert.equal((await deliver()).status, 200); assert.equal((await event()).id, failed.id);
         assert.equal((await event()).processingStatus, 'processed'); await assertMutations(1);
@@ -183,7 +188,7 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
       await scenario(`404 ${kind} remains retryable, never a financial rejection`, async () => {
         if (kind === 'payment') paymentTopic();
         provider.error = { kind, status: 404 };
-        await assertRetryable(await deliver());
+        await assertRetryable(await deliver(), 'provider_not_found');
       });
     }
     for (const status of ['pending', 'rejected', 'in_process', 'approved']) {
@@ -195,7 +200,7 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
     for (const summarized of ['pending', 'done', 'semaphore', null, { charged_amount: 500 }]) {
       await scenario(`H: summarized ${JSON.stringify(summarized)} is opaque`, async () => {
         provider.invoice.summarized = summarized;
-        const result = await service.processMercadoPagoWebhook(payload, { signatureValid: true });
+        const result = await service.processMercadoPagoWebhook(payload, require('./helpers/billing-v2-fixture').delivery(payload, secret, 'fixture-' + (payload.id || 'without-notification')));
         assert.equal(result.outcome, 'PROCESSED_SUCCESSFULLY');
         await assertMutations(1);
       });
@@ -212,20 +217,20 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
     });
     await scenario('Optional nested payment and external reference may be absent', async () => {
       delete provider.invoice.payment; delete provider.invoice.external_reference;
-      const result = await service.processMercadoPagoWebhook(payload, { signatureValid: true });
-      assert.equal(result.outcome, 'RETRYABLE_PROCESSING_FAILURE');
+      const result = await service.processMercadoPagoWebhook(payload, require('./helpers/billing-v2-fixture').delivery(payload, secret, 'fixture-' + (payload.id || 'without-notification')));
+      assert.equal(result.outcome, 'IGNORED_NO_ACTION');
       assert.equal((await event()).processingError, 'invoice_payment_pending'); await assertMutations(0);
     });
     await scenario('J: duplicate invoice is durable; raw and timestamps unchanged; no refetch', async () => {
       await assertProcessed(await deliver()); const before = await event();
       const duplicate = await deliver(); assert.equal(duplicate.status, 200); assert.equal(duplicate.body.duplicate, true);
-      assert.deepEqual(await event(), before); assert.equal(calls.length, 3); await assertMutations(1);
+      assert.deepEqual(await event(), before); assert.equal(calls.length, 6); await assertMutations(1);
     });
     await scenario('J: simultaneous invoice deliveries share one durable event and provider fetch', async () => {
       const results = await Promise.all([deliver(), deliver()]);
-      assert.ok(results.every(result => result.status === 200));
-      assert.equal(results.filter(result => result.body.duplicate).length, 1);
-      assert.equal(calls.length, 3); await assertMutations(1);
+      assert.ok(results.every(result => [200, 503].includes(result.status)));
+      assert.equal(results.filter(result => result.status === 200 && !result.body.duplicate).length, 1);
+      assert.equal(calls.length, 6); await assertMutations(1);
     });
     await scenario('K: invalid signature rejects before event insertion and provider fetch', async () => {
       assert.equal((await deliver(false)).status, 401);
@@ -235,7 +240,7 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
       await scenario(`L: existing ${type} prevents invoice fetch and preserves terminal outcome`, async () => {
         const snapshot = service.__internal.buildWebhookEventSnapshot(payload, { signatureValid: true });
         const input = { ...snapshot, provider: 'mercado_pago', raw: payload,
-          dedupeKey: service.__internal.deriveWebhookDedupeKey(snapshot), processingStatus: 'received' };
+          dedupeKey: require('./helpers/billing-v2-fixture').delivery(payload, secret, 'fixture-' + (payload.id || 'without-notification')).dedupeKey, processingStatus: 'received' };
         await service.__internal.processSubscriptionWebhookEvent(input, () => type === 'contract_rejected'
           ? outcomes.contractRejected({ reasonCode: 'contract_amount_mismatch' })
           : outcomes.manualReview({ reasonCode: 'legacy_contract_unknown' }));
@@ -265,28 +270,29 @@ test('BILL-006B: resource routing, signed HTTP and isolated PostgreSQL', async (
     });
     await scenario('O: unrelated generic Payment cannot mutate an existing subscription', async () => {
       paymentTopic(); provider.payment = { id: 19951521071, status: 'approved', preapproval_id: 'unrelated', external_reference: 'unmapped' };
-      provider.search = { paging: { total: 0 }, results: [] };
-      const before = await business(); assert.equal((await deliver()).status, 503); assert.deepEqual(await business(), before);
+      provider.search = { paging: { offset: 0, limit: 2, total: 0 }, results: [] };
+      const before = await business(); assert.equal((await deliver()).status, 200); assert.deepEqual(await business(), before);
       assert.equal((await event()).processingError, 'authorized_invoice_not_found');
-      assert.deepEqual(calls, ['/v1/payments/19951521071', '/authorized_payments/search?payment_id=19951521071']);
+      assert.deepEqual(calls, ['/v1/payments/19951521071', '/authorized_payments/19951521071', '/preapproval/19951521071', '/preapproval_plan/19951521071', '/authorized_payments/search?payment_id=19951521071&offset=0&limit=2']);
     });
     await scenario('Legacy authorized_payment alias is retained but follows the invoice gate', async () => {
       payload.type = 'authorized_payment'; payload.action = 'preapproval.updated';
       await assertProcessed(await deliver());
-      assert.deepEqual(calls, ['/authorized_payments/6114264375', '/preapproval/mp-1', '/v1/payments/19951521071']);
+      assert.deepEqual(calls, ['/v1/payments/6114264375', '/authorized_payments/6114264375', '/preapproval/6114264375', '/preapproval_plan/6114264375', '/preapproval/mp-1', '/v1/payments/19951521071']);
     });
     await scenario('Q: errors and success never expose provider credentials, body, or invoice in HTTP/logs/raw', async () => {
       const privateValue = 'provider-private-body';
       provider.error = { kind: 'invoice', status: 500, body: { message: privateValue, access_token: token } };
-      const failed = await deliver(); await assertRetryable(failed);
+      const failed = await deliver(); await assertRetryable(failed, 'provider_5xx');
       provider.error = { kind: 'invoice', network: true, message: `${token} ${secret} ${privateValue}` };
-      const network = await deliver(); await assertRetryable(network);
+      const network = await deliver(); await assertRetryable(network, 'provider_network_error');
       provider.error = null; provider.invoice.private = privateValue;
       const success = await deliver(); await assertProcessed(success);
       const outputs = JSON.stringify({ logs, failed, network, success, event: await event() });
       for (const value of [token, secret, privateValue, 'transaction_amount']) assert.equal(outputs.includes(value), false);
     });
     await scenario('Dedicated service encodes invoice ID and shares configured auth', async () => {
+      provider.endpointId = { invoice: 'invoice%2Fwith%3Fcharacters' };
       await mp.getAuthorizedPayment('invoice/with?characters');
       assert.deepEqual(calls, ['/authorized_payments/invoice%2Fwith%3Fcharacters']);
     });

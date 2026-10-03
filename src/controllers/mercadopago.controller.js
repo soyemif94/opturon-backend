@@ -1,4 +1,4 @@
-const { verifyWebhookSignature } = require('../services/mercado-pago.service');
+const { verifyWebhookSignature, getVerifiedWebhookContext } = require('../services/mercado-pago.service');
 const { processMercadoPagoWebhook } = require('../services/saas-billing.service');
 const { logError, logInfo, logWarn } = require('../utils/logger');
 
@@ -82,7 +82,8 @@ async function postMercadoPagoWebhook(req, res) {
       ).trim() || null;
     const result = await processMercadoPagoWebhook(payload, {
       requestId: req.requestId || req.get('x-request-id') || null,
-      signatureValid
+      signatureValid,
+      verifiedDelivery: getVerifiedWebhookContext(req)
     });
 
     if (!result || result.ok !== true) {

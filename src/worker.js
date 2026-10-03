@@ -21756,6 +21756,7 @@ function waitForDrain(timeoutMs = 30000) {
   });
 }
 
+let stopBillingReconciliation = null;
 async function shutdown(signal) {
   if (stopped) {
     return;
@@ -21774,7 +21775,7 @@ async function shutdown(signal) {
     processingCount
   });
 
-  await waitForDrain();
+  await Promise.all([waitForDrain(), stopBillingReconciliation?.()]);
 
   logInfo('worker_stopped', {
     workerId: WORKER_ID,
@@ -21793,6 +21794,7 @@ function startWorker() {
   }
 
   started = true;
+  stopBillingReconciliation = require('./services/saas-billing-reconciliation.service').startBillingReconciliationWorker();
   const dbInfo = sanitizeDatabaseUrl(env.databaseUrl || '');
   logInfo('worker_env_loaded', {
     dbSource: 'DATABASE_URL',

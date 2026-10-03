@@ -46,14 +46,14 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
       finally { client.release(); }
     }
   });
-  stub('src/config/env.js', { nodeEnv: 'test' });
+  stub('src/config/env.js', { nodeEnv: 'test', mercadoPagoWebhookSecret: 'local-contract-secret' });
   stub('src/utils/logger.js', { logInfo() {}, logWarn() {}, logError() {} });
   stub('src/services/saas-billing-email.service.js', {
     sendBillingSubscriptionAuthorizationEmail() { throw new Error('email_forbidden'); }
   });
   let provider;
   const realProvider = require(path.join(root, 'src/services/mercado-pago.service.js'));
-  stub('src/services/mercado-pago.service.js', {
+  stub('src/services/mercado-pago.service.js', require('./helpers/billing-v2-fixture').canonicalReads({
     ...realProvider,
     createPreapproval: async (payload) => {
       provider.calls.push(payload);
@@ -76,17 +76,18 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     getPayment: async () => provider.payment,
     getAuthorizedPayment: async () => ({ id: 'invoice-1', preapproval_id: provider.remote.id, status: 'processed',
       transaction_amount: 40600, currency_id: 'ARS', payment: { id: provider.payment.id } }),
-    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1 },
+    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1, offset: 0, limit: 2 },
       results: [{ id: 'invoice-1', payment: { id: provider.payment.id } }] })
-  });
+  }, { getPreapproval: 'mp-contract', getPayment: 'payment-contract' }));
   const repository = require(path.join(root, 'src/repositories/saas-subscriptions.repository.js'));
   const service = require(path.join(root, 'src/services/saas-billing.service.js'));
   const clinicId = '00000000-0000-4000-8000-000000000001';
   const input = { tenantId: 'tenant-contract', planCode: 'inicial', payerEmail: 'payer@example.invalid' };
   await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
     name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-  for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql']) {
+  for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql', '087_saas_billing_runtime_state.sql', '088_saas_billing_effects_reconciliation.sql']) {
     await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
+      if (name.startsWith('088_')) await require('./helpers/billing-v2-fixture').activateFixture(pool);
   }
   const row = async () => (await pool.query('SELECT * FROM saas_subscriptions')).rows[0];
   const create = (extra = {}) => service.createSaasSubscriptionForTenant({ ...input, ...extra });
@@ -113,8 +114,8 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     return repository.insertSaasSubscription(seed);
   }
   async function webhook(topic = 'subscription_preapproval') {
-    return service.processMercadoPagoWebhook({ id: crypto.randomUUID(), type: topic, action: 'updated',
-      data: { id: topic === 'payment' ? provider.payment.id : provider.remote.id } }, { signatureValid: true });
+    const body = { id: crypto.randomUUID(), type: topic, action: 'updated', data: { id: topic === 'payment' ? provider.payment.id : provider.remote.id } };
+    return service.processMercadoPagoWebhook(body, require('./helpers/billing-v2-fixture').delivery(body, 'local-contract-secret'));
   }
 
   await scenario('CASE A: initial plan contract is committed before provider and retained', async () => {
@@ -306,7 +307,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     assert.equal((await webhook()).outcome, 'CONTRACT_REJECTED');
     await sameContract(provider.captured[0]);
     provider.remote.auto_recurring = { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' };
-    provider.payment = { id: 'payment-contract', status: 'approved', preapproval_id: provider.remote.id,
+    provider.payment = { date_created: new Date().toISOString(), id: 'payment-contract', status: 'approved', preapproval_id: provider.remote.id,
       external_reference: provider.remote.external_reference, metadata: { contract: null }, transaction_amount: 40600, currency_id: 'ARS' };
     assert.equal((await webhook('payment')).ok, true);
     await sameContract(provider.captured[0]);

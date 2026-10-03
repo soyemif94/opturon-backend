@@ -3,7 +3,7 @@ const { withTransaction } = require('../db/client');
 const { requireGeneration } = require('../repositories/saas-billing-runtime.repository');
 async function withBillingTransaction(fn) {
   return withTransaction(async client => {
-    await requireGeneration(1, client, { lock: true });
+    await requireGeneration(2, client, { lock: true });
     return fn(client);
   });
 }
@@ -17,15 +17,13 @@ const {
   findSaasSubscriptionById,
   findLatestSaasSubscriptionByTenantId,
   findSaasSubscriptionByPreapprovalId,
-  listSaasSubscriptions,
-  insertSubscriptionEvent,
-  lockSubscriptionEventByDedupeKey,
-  persistSubscriptionEventContractOutcome,
-  updateSubscriptionEventStatus
+  listSaasSubscriptions
 } = require('../repositories/saas-subscriptions.repository');
 const {
   createPreapproval,
   getPreapproval,
+  getPreapprovalPlan,
+  signedDeliveryIdentity,
   pausePreapproval,
   cancelPreapproval,
   reactivatePreapproval,
@@ -37,9 +35,10 @@ const {
 } = require('./mercado-pago.service');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
 const { captureLocalBillingContract, resolveLocalBillingContract, canonicalizeExternalReferenceUuid } = require('./saas-billing-contract');
-const { isContractOutcome, validateContractOutcome, durableContractOutcomeResult, contractRejected, manualReview } = require('./saas-billing-webhook-outcomes');
+const { contractRejected, manualReview } = require('./saas-billing-webhook-outcomes');
 const contractProof = require('./saas-billing-provider-contract');
-const { isBillingContractV2Marker } = require('./saas-billing-rollback-marker');
+const { reserveEffect } = require('./saas-billing-effects');
+const { processSubscriptionWebhookEvent } = require('./saas-billing-webhook-claims');
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
@@ -383,7 +382,7 @@ async function listSaasSubscriptionsForAdmin(filters = {}) {
 }
 
 async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
-  await requireGeneration(1);
+  await requireGeneration(2);
   const tenantId = normalizeString(input && input.tenantId);
   if (!tenantId) return { ok: false, reason: 'missing_tenant_id', status: 400 };
 
@@ -475,7 +474,7 @@ async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
 }
 
 async function executeSubscriptionAction(subscriptionId, action) {
-  await requireGeneration(1);
+  await requireGeneration(2);
   const subscription = await findSaasSubscriptionById(subscriptionId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
 
@@ -509,7 +508,7 @@ async function executeSubscriptionAction(subscriptionId, action) {
 }
 
 async function refreshSubscriptionFromMercadoPagoByPreapprovalId(preapprovalId) {
-  await requireGeneration(1);
+  await requireGeneration(2);
   const subscription = await findSaasSubscriptionByPreapprovalId(preapprovalId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
   const clinic = await findClinicByExternalTenantId(subscription.externalTenantId);
@@ -564,7 +563,7 @@ function extractMercadoPagoWebhookAction(payload) {
 }
 
 function extractMercadoPagoWebhookNotificationId(payload) {
-  return normalizeString(payload && payload.id) || null;
+  return contractProof.resourceId(payload && payload.id);
 }
 
 function extractMercadoPagoWebhookResourceId(payload) {
@@ -651,31 +650,16 @@ function buildPaymentWebhookMetadata(payment, payload, meta) {
   };
 }
 
-// Only provider GETs run through this deadline. A late result is discarded and
-// cannot continue into DB mutations after the event transaction has rolled back.
-async function fetchWebhookResource(fetchResource) {
-  let timer;
-  try {
-    return await Promise.race([
-      Promise.resolve().then(fetchResource),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('webhook_provider_timeout')), 8000);
-      })
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function invoiceIdentity(value) {
   if (typeof value !== 'string' && !(typeof value === 'number' && Number.isSafeInteger(value))) return null;
   return normalizeString(value) || null;
 }
 
-async function fetchMercadoPagoChargeResource(kind, resourceId) {
+async function fetchMercadoPagoChargeResource(kind, resourceId, signal) {
+  signal?.throwIfAborted();
   if (!resourceId) throw new Error('charge_resource_id_missing');
   if (kind === 'authorized_payment') {
-    const invoice = await fetchWebhookResource(() => getAuthorizedPayment(resourceId));
+    const invoice = await getAuthorizedPayment(resourceId, { signal });
     if (!invoice || typeof invoice !== 'object' || Array.isArray(invoice)
       || !invoiceIdentity(invoice.id)
       || (invoice.payment != null && (typeof invoice.payment !== 'object' || Array.isArray(invoice.payment)))
@@ -691,7 +675,7 @@ async function fetchMercadoPagoChargeResource(kind, resourceId) {
     };
   }
   if (kind !== 'payment') throw new Error('charge_resource_kind_unsupported');
-  const payment = await fetchWebhookResource(() => getPayment(resourceId));
+  const payment = await getPayment(resourceId, { signal });
   if (!normalizeString(payment && payment.id) || !normalizeString(payment && payment.status)) {
     throw new Error('payment_response_incomplete');
   }
@@ -703,10 +687,11 @@ async function fetchMercadoPagoChargeResource(kind, resourceId) {
 }
 
 async function processMercadoPagoWebhook(payload, meta = {}) {
-  await requireGeneration(1);
+  await requireGeneration(2);
   const requestId = normalizeString(meta.requestId);
   const snapshot = buildWebhookEventSnapshot(payload, meta);
-  const dedupeKey = deriveWebhookDedupeKey(snapshot);
+  const dedupeKey = signedDeliveryIdentity(meta.verifiedDelivery);
+  snapshot.resourceId = meta.verifiedDelivery.resourceId;
 
   return processSubscriptionWebhookEvent({
     subscriptionId: null,
@@ -721,82 +706,15 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
     raw: payload,
     processingStatus: 'received',
     processingError: null
-  }, client => applyMercadoPagoWebhook(payload, meta, snapshot, client));
-}
-
-// The executor is internal code, never a callback or decision from the HTTP
-// payload. Future validation can return a contract outcome before applying billing.
-async function processSubscriptionWebhookEvent(input, apply) {
-  await insertSubscriptionEvent(input);
-
-  return withTransaction(async (client) => {
-    // Database ownership, shared by every process. A crashed connection releases
-    // the lock; received/failed events remain eligible on the next delivery.
-    await client.query("SET LOCAL lock_timeout = '5s'");
-    const event = await lockSubscriptionEventByDedupeKey(input.dedupeKey, client);
-    if (!event) throw new Error('webhook_event_missing');
-    if (event.processingStatus === 'processed' || event.processingStatus === 'ignored') {
-      if (event.processingStatus === 'ignored' && isContractOutcome(event.contractOutcome)) {
-        return durableContractOutcomeResult(event, true);
-      }
-      return { ok: true, outcome: 'ALREADY_PROCESSED', duplicate: true, ignored: event.processingStatus === 'ignored' };
-    }
-    if (!['received', 'failed', 'processing'].includes(event.processingStatus)) {
-      throw new Error('webhook_event_status_invalid');
-    }
-    // Terminal duplicates keep BILL-005/6D semantics. A future validated worker's
-    // nonterminal event must never fall back into this runtime's older logic.
-    // Inspect under the row lock, before clearing the marker or doing any I/O.
-    if (isBillingContractV2Marker(event.processingError)) {
-      try { logInfo('billing_contract_v2_event_blocked_by_rollback_bridge'); } catch { /* Preserve the durable guard. */ }
-      return { ok: false, outcome: 'RETRYABLE_PROCESSING_FAILURE' };
-    }
-    await updateSubscriptionEventStatus(event.id, { processingStatus: 'processing' }, client);
-    await client.query('SAVEPOINT webhook_business');
-    try {
-      const result = await apply(client, event);
-      if (result?.type === 'NO_ACTION' && ['invoice_payment_pending', 'payment_not_approved',
-        'authorized_invoice_not_found'].includes(result.reasonCode)) {
-        // An ordinary non-approved state is not a contract rejection. Keep the
-        // same notification (including the no-notification fallback) retryable.
-        await client.query('ROLLBACK TO SAVEPOINT webhook_business');
-        await updateSubscriptionEventStatus(event.id, {
-          processingStatus: 'failed', processingError: result.reasonCode
-        }, client);
-        await client.query('RELEASE SAVEPOINT webhook_business');
-        return { ok: false, outcome: 'RETRYABLE_PROCESSING_FAILURE' };
-      }
-      if (isContractOutcome(result)) {
-        const outcome = validateContractOutcome(result);
-        if (outcome.eventId && outcome.eventId.toLowerCase() !== event.id.toLowerCase()) {
-          throw new Error('webhook_outcome_event_mismatch');
-        }
-        // Discard any speculative DB work before recording a semantic outcome.
-        // Only event status + safe metadata may commit on this path.
-        await client.query('ROLLBACK TO SAVEPOINT webhook_business');
-        const completed = await persistSubscriptionEventContractOutcome(event.id, outcome, client);
-        if (!completed) throw new Error('webhook_completion_missing');
-        await client.query('RELEASE SAVEPOINT webhook_business');
-        return durableContractOutcomeResult(completed);
-      }
-      if (!result || result.ok !== true) throw new Error('webhook_processing_incomplete');
-      const completed = await updateSubscriptionEventStatus(event.id, {
-        subscriptionId: result.subscription ? result.subscription.id : null,
-        processingStatus: result.ignored ? 'ignored' : 'processed',
-        processingError: null
-      }, client);
-      if (!completed) throw new Error('webhook_completion_missing');
-      await client.query('RELEASE SAVEPOINT webhook_business');
-      return result;
-    } catch {
-      // Roll back billing, tenant state AND completion together. Persist failure
-      // while still owning the event lock; never overwrite another attempt.
-      await client.query('ROLLBACK TO SAVEPOINT webhook_business');
-      await updateSubscriptionEventStatus(event.id, {
-        processingStatus: 'failed', processingError: 'webhook_processing_failed'
-      }, client);
-      return { ok: false, outcome: 'RETRYABLE_PROCESSING_FAILURE' };
-    }
+  }, (client, event, prepared) => applyPreparedWebhook(prepared, payload, meta, client, { eventId: event.id }),
+  async signal => {
+    const prepared = await prepareMercadoPagoWebhook(snapshot, signal);
+    signal.throwIfAborted();
+    // Preliminary validation uses ordinary reads; finalization repeats local
+    // authority checks under locks. This snapshot never authorizes a write.
+    await validatePreparedWebhook(prepared, null);
+    signal.throwIfAborted();
+    return prepared;
   });
 }
 
@@ -807,11 +725,9 @@ function providerDecision(result, resource, subscription = null) {
     subscriptionId: subscription?.id || null, resource });
 }
 
-// Provider responses are fetched before business-row locks. Event ownership is
-// already locked (BILL-005): terminal duplicates must cause zero provider calls.
-// Resolve AND validate from the freshly locked row; never mutate from a snapshot.
+// Phase B reads without locks. Phase C re-reads and locks the same local
+// authority; only its result may authorize a mutation. No provider I/O here.
 async function lockProviderSubscription(client, preapprovalId, preapproval) {
-  await requireGeneration(1, client, { lock: true });
   if (!contractProof.resourceId(preapproval?.id) || typeof preapproval?.status !== 'string' || !preapproval.status.trim()) {
     throw new Error('preapproval_response_incomplete');
   }
@@ -823,42 +739,97 @@ async function lockProviderSubscription(client, preapprovalId, preapproval) {
     }
   }
   if (!candidate) return { decision: contractProof.review() };
-  const subscription = await findSaasSubscriptionById(candidate.id, client, { forUpdate: true });
+  const subscription = await findSaasSubscriptionById(candidate.id, client, { forUpdate: Boolean(client) });
   if (!subscription) throw new Error('subscription_not_found');
   const expected = contractProof.resolveExpectedContract(subscription);
   if (expected.type !== 'VALID') return { subscription, decision: expected };
-  const clinic = await findClinicByExternalTenantId(subscription.externalTenantId, client, { forUpdate: true });
+  const clinic = await findClinicByExternalTenantId(subscription.externalTenantId, client, { forUpdate: Boolean(client) });
   const decision = contractProof.validatePreapproval({ subscription, clinic, preapproval,
     preapprovalId, contract: expected.contract });
   return { subscription, clinic, contract: expected.contract, decision };
 }
 
-async function applyValidatedInvoice({ invoiceId, knownPayment = null, expectedPaymentId = null,
-  payload, meta, client }) {
+async function prepareInvoice(invoiceId, signal, knownPayment = null, expectedPaymentId = null, knownInvoice = null) {
+  signal.throwIfAborted();
   const resource = { type: 'authorized_payment', id: invoiceId };
-  const fetched = await fetchMercadoPagoChargeResource('authorized_payment', invoiceId);
-  const invoice = fetched.data;
-  const invoiceIdentityCheck = contractProof.identity(invoice.id, invoiceId);
-  if (invoiceIdentityCheck.type !== 'VALID') return providerDecision(invoiceIdentityCheck, resource);
+  const invoice = knownInvoice || (await fetchMercadoPagoChargeResource('authorized_payment', invoiceId, signal)).data;
+  const checked = contractProof.identity(invoice.id, invoiceId);
+  if (checked.type !== 'VALID') return { decision: providerDecision(checked, resource) };
   const preapprovalId = contractProof.resourceId(invoice.preapproval_id);
-  if (!preapprovalId) return providerDecision(contractProof.review(), resource);
+  if (!preapprovalId) return { decision: providerDecision(contractProof.review(), resource) };
   const paymentId = contractProof.resourceId(invoice.payment?.id);
   if (expectedPaymentId) {
-    const checked = contractProof.identity(paymentId, expectedPaymentId);
-    if (checked.type !== 'VALID') return providerDecision(checked, resource);
+    const relationship = contractProof.identity(paymentId, expectedPaymentId);
+    if (relationship.type !== 'VALID') return { decision: providerDecision(relationship, resource) };
   }
-  const preapproval = await fetchWebhookResource(() => getPreapproval(preapprovalId));
-  const payment = paymentId
-    ? knownPayment || await fetchWebhookResource(() => getPayment(paymentId)) : null;
-  const proof = await lockProviderSubscription(client, preapprovalId, preapproval);
-  if (proof.decision.type !== 'VALID') return providerDecision(proof.decision, resource, proof.subscription);
-  const { subscription, clinic, contract } = proof;
-  const decision = contractProof.validateCharge({ invoice, invoiceId, payment, paymentId, preapprovalId, contract });
-  if (decision.type !== 'VALID') return providerDecision(decision, resource, subscription);
-  // Same intended downstream policy as the original Payment path (BILL-007 is
-  // separate), now reachable only for a canonical approved, exact-contract charge.
+  signal.throwIfAborted();
+  const preapproval = await getPreapproval(preapprovalId, { signal });
+  signal.throwIfAborted();
+  const payment = paymentId ? knownPayment || await getPayment(paymentId, { signal }) : null;
+  return { kind: 'invoice', resource, invoiceId, invoice, preapprovalId, preapproval, paymentId, payment };
+}
+
+async function prepareMercadoPagoWebhook(snapshot, signal) {
+  const resourceId = contractProof.resourceId(snapshot.resourceId);
+  if (!resourceId) throw new Error('signed_resource_id_required');
+  const candidates = [];
+  let malformed = null;
+  for (const [kind, read] of [['payment', getPayment], ['invoice', getAuthorizedPayment],
+    ['preapproval', getPreapproval], ['plan', getPreapprovalPlan]]) {
+    signal.throwIfAborted();
+    let data;
+    try { data = await read(resourceId, { signal }); }
+    catch (error) { if (error?.status === 404) continue; throw error; }
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !contractProof.resourceId(data.id)
+      || (kind === 'invoice' && ((data.payment != null && (typeof data.payment !== 'object' || Array.isArray(data.payment)))
+        || (data.payment?.id != null && !contractProof.resourceId(data.payment.id))))) throw new Error('canonical_response_incomplete');
+    const identity = contractProof.identity(data?.id, resourceId);
+    if (identity.type !== 'VALID') { malformed = identity; continue; }
+    if (typeof data?.status !== 'string' || !data.status.trim()) throw new Error('canonical_response_incomplete');
+    candidates.push({ kind, data });
+  }
+  const resource = { type: 'payment', id: resourceId };
+  if (candidates.length > 1 || (candidates.length && malformed)) return { decision: providerDecision(contractProof.review(), resource) };
+  if (!candidates.length) {
+    if (malformed) return { decision: providerDecision(malformed, resource) };
+    throw Object.assign(new Error('canonical_resource_not_found'), { status: 404 });
+  }
+  const { kind, data } = candidates[0];
+  if (kind === 'plan') return { decision: contractProof.noAction('preapproval_plan_unsupported') };
+  if (kind === 'preapproval') return { kind, resource: { type: kind, id: resourceId }, preapprovalId: resourceId, preapproval: data };
+  if (kind === 'invoice') return prepareInvoice(resourceId, signal, null, null, data);
+  const search = await searchAuthorizedPaymentsByPaymentId(resourceId, { signal });
+  const relationship = contractProof.validateAuthorizedPaymentSearch(search, resourceId);
+  if (relationship.type !== 'VALID') return { decision: providerDecision(relationship, resource) };
+  return prepareInvoice(relationship.invoiceId, signal, data, resourceId);
+}
+
+async function validatePreparedWebhook(prepared, client) {
+  if (prepared.decision) return { decision: prepared.decision };
+  const proof = await lockProviderSubscription(client, prepared.preapprovalId, prepared.preapproval);
+  if (proof.decision.type !== 'VALID') return {
+    decision: providerDecision(proof.decision, prepared.resource, proof.subscription)
+  };
+  if (prepared.kind === 'invoice') {
+    const decision = contractProof.validateCharge({ ...prepared, contract: proof.contract });
+    if (decision.type !== 'VALID') return { decision: providerDecision(decision, prepared.resource, proof.subscription) };
+  }
+  return { ...proof, decision: null };
+}
+
+async function applyPreparedWebhook(prepared, payload, meta, client, source) {
+  const runtimeState = await requireGeneration(2, client, { lock: true });
+  const proof = await validatePreparedWebhook(prepared, client);
+  if (proof.decision) return proof.decision;
+  const { subscription, clinic } = proof;
+  const { preapproval, payment, paymentId } = prepared;
+  if (prepared.kind === 'invoice') {
+    const effectDecision = await reserveEffect(client, prepared, subscription, runtimeState, source);
+    if (effectDecision) return effectDecision;
+  }
+  // Existing downstream activation/payment policy is unchanged (BILL-007).
   const preapprovalPatch = mapPreapprovalToSubscriptionPatch(preapproval);
-  const next = await updateSaasSubscriptionById(subscription.id, {
+  const patch = prepared.kind === 'invoice' ? {
     ...preapprovalPatch,
     provisioningState: subscription.provisioningState && preapprovalPatch.mercadoPagoPreapprovalId ? 'ready' : null,
     lastPaymentId: paymentId,
@@ -866,76 +837,15 @@ async function applyValidatedInvoice({ invoiceId, knownPayment = null, expectedP
     localStatus: mapMercadoPagoPaymentStatus(payment.status) === 'active'
       ? (preapprovalPatch.localStatus || 'active') : mapMercadoPagoPaymentStatus(payment.status),
     metadata: buildPaymentWebhookMetadata(payment, payload, meta)
-  }, client);
+  } : {
+    ...preapprovalPatch,
+    provisioningState: subscription.provisioningState && normalizeString(preapproval && preapproval.id) ? 'ready' : null,
+    metadata: buildPreapprovalWebhookMetadata(preapproval, payload, meta)
+  };
+  const next = await updateSaasSubscriptionById(subscription.id, patch, client);
   if (!next) throw new Error('subscription_update_missing');
   await syncTenantBillingState(client, clinic, next);
   return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
-}
-
-async function applyMercadoPagoWebhook(payload, meta, snapshot, client) {
-  const topic = snapshot.topic || '';
-  const action = snapshot.action || '';
-  const resourceId = contractProof.resourceId(snapshot.resourceId);
-
-  // A plan is not a subscription. Never let the legacy action fallback fetch it
-  // via /preapproval or use plan data as local subscription authority.
-  if (topic === 'subscription_preapproval_plan') {
-    return { ok: true, outcome: 'IGNORED_UNSUPPORTED_EVENT', duplicate: false, ignored: true };
-  }
-
-  // authorized_payment is an existing, undocumented compatibility alias.
-  if (topic === 'subscription_authorized_payment' || topic === 'authorized_payment') {
-    if (!resourceId) throw new Error('invoice_resource_id_invalid');
-    return applyValidatedInvoice({ invoiceId: resourceId, payload, meta, client });
-  }
-
-  if (topic === 'payment') {
-    if (!resourceId) throw new Error('payment_resource_id_invalid');
-    const payment = (await fetchMercadoPagoChargeResource('payment', resourceId)).data;
-    const resource = { type: 'payment', id: resourceId };
-    const checked = contractProof.identity(payment.id, resourceId);
-    if (checked.type !== 'VALID') return providerDecision(checked, resource);
-    const search = await fetchWebhookResource(() => searchAuthorizedPaymentsByPaymentId(resourceId));
-    if (!Array.isArray(search?.results) || !Number.isSafeInteger(search?.paging?.total)
-      || search.paging.total < 0 || search.results.length > search.paging.total) {
-      return providerDecision(contractProof.review(), resource);
-    }
-    if (search.paging.total === 0) return contractProof.noAction('authorized_invoice_not_found');
-    if (search.paging.total !== 1 || search.results.length !== 1) return providerDecision(contractProof.review(), resource);
-    const invoiceId = contractProof.resourceId(search.results[0]?.id);
-    if (!invoiceId) return providerDecision(contractProof.review(), resource);
-    const relationship = contractProof.identity(search.results[0]?.payment?.id, resourceId);
-    if (relationship.type !== 'VALID') return providerDecision(relationship, resource);
-    return applyValidatedInvoice({ invoiceId, knownPayment: payment, expectedPaymentId: resourceId, payload, meta, client });
-  }
-
-  if (
-    topic === 'subscription_preapproval' ||
-    topic === 'preapproval' ||
-    topic === 'subscription' ||
-    action.includes('preapproval')
-  ) {
-    if (!resourceId) {
-      throw new Error('preapproval_resource_id_missing');
-    }
-
-    const remote = await fetchWebhookResource(() => getPreapproval(resourceId));
-    const proof = await lockProviderSubscription(client, resourceId, remote);
-    if (proof.decision.type !== 'VALID') return providerDecision(proof.decision,
-      { type: 'preapproval', id: resourceId }, proof.subscription);
-    const { subscription, clinic } = proof;
-    const patch = {
-      ...mapPreapprovalToSubscriptionPatch(remote),
-      provisioningState: subscription.provisioningState && normalizeString(remote && remote.id) ? 'ready' : null,
-      metadata: buildPreapprovalWebhookMetadata(remote, payload, meta)
-    };
-    const next = await updateSaasSubscriptionById(subscription.id, patch, client);
-    if (!next) throw new Error('subscription_update_missing');
-    await syncTenantBillingState(client, clinic, next);
-    return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
-  }
-
-  return { ok: true, outcome: 'IGNORED_UNSUPPORTED_EVENT', duplicate: false, ignored: true };
 }
 
 module.exports = {
@@ -949,6 +859,7 @@ module.exports = {
   processMercadoPagoWebhook,
   findLatestSaasSubscriptionByTenantId,
   __internal: {
+    prepareMercadoPagoWebhook, validatePreparedWebhook, applyPreparedWebhook,
     processSubscriptionWebhookEvent,
     extractMercadoPagoResourceId,
     extractMercadoPagoWebhookTopic,

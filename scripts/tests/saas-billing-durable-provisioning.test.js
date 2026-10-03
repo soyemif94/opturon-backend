@@ -113,7 +113,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     stub(`src/services/${name}.service.js`, {});
   }
   const realMp = require(file('src/services/mercado-pago.service.js'));
-  stub('src/services/mercado-pago.service.js', {
+  stub('src/services/mercado-pago.service.js', require('./helpers/billing-v2-fixture').canonicalReads({
     ...realMp,
     createPreapproval: async (payload) => {
       provider.calls.push(payload);
@@ -137,9 +137,9 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     getPayment: async () => provider.payment,
     getAuthorizedPayment: async () => ({ id: 'invoice-1', preapproval_id: provider.remote.id, status: 'processed',
       transaction_amount: 40600, currency_id: 'ARS', payment: { id: provider.payment.id } }),
-    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1 },
+    searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1, offset: 0, limit: 2 },
       results: [{ id: 'invoice-1', payment: { id: provider.payment.id } }] })
-  });
+  }, { getPayment: 'payment-1' }));
   global.fetch = (url, ...args) => {
     assert.equal(new URL(url).hostname, '127.0.0.1', 'real provider network calls are forbidden');
     return originalFetch(url, ...args);
@@ -206,6 +206,9 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     await db.exec(read('db/migrations/085_saas_subscription_provisioning.sql'));
     await db.exec(read('db/migrations/085_saas_subscription_provisioning.sql'));
     await db.exec(read('db/migrations/086_saas_subscription_event_contract_outcome.sql'));
+    await db.exec(read('db/migrations/087_saas_billing_runtime_state.sql'));
+    await db.exec(read('db/migrations/088_saas_billing_effects_reconciliation.sql'));
+    await db.exec("WITH activation AS (SELECT clock_timestamp() AS at) UPDATE saas_billing_runtime_state SET generation=2,\"billingContractV2CutoverActive\"=true,\"cutoverAt\"=at,\"autoApplyNotBefore\"=at+interval '24 hours' FROM activation");
     assert.equal((await rows()).length, 2);
     assert.ok((await rows()).every((row) => row.provisioningState === null));
     await assert.rejects(db.exec(`UPDATE saas_subscriptions SET "provisioningState" = 'invalid'`));
@@ -351,7 +354,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     await scenario('payment webhook can recover a missing provider ID using the durable external reference', async () => {
       fault.beforeCommit = once((phase) => phase === 'provider');
       await request(); provider.remote.status = 'authorized';
-      provider.payment = { id: 'payment-1', status: 'approved', preapproval_id: provider.remote.id, external_reference: provider.remote.external_reference,
+      provider.payment = { date_created: new Date().toISOString(), id: 'payment-1', status: 'approved', preapproval_id: provider.remote.id, external_reference: provider.remote.external_reference,
         transaction_amount: 40600, currency_id: 'ARS' };
       assert.equal((await webhook({ topic: 'payment' })).body.error, undefined);
       const [row] = await rows(); assert.equal(row.provisioningState, 'ready'); assert.equal(row.mercadoPagoPreapprovalId, provider.remote.id);

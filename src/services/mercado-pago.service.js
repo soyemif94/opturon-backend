@@ -283,9 +283,9 @@ async function runMercadoPagoAuthDiagnostics() {
   return result;
 }
 
-async function getPreapproval(preapprovalId) {
+async function getPreapproval(preapprovalId, { signal } = {}) {
   return mercadoPagoFetch(`/preapproval/${encodeURIComponent(preapprovalId)}`, {
-    method: 'GET'
+    method: 'GET', signal
   });
 }
 
@@ -308,21 +308,21 @@ async function reactivatePreapproval(preapprovalId) {
   return updatePreapproval(preapprovalId, { status: 'pending' });
 }
 
-async function getPayment(paymentId) {
+async function getPayment(paymentId, { signal } = {}) {
   return mercadoPagoFetch(`/v1/payments/${encodeURIComponent(paymentId)}`, {
-    method: 'GET'
+    method: 'GET', signal
   });
 }
 
-async function getAuthorizedPayment(invoiceId) {
+async function getAuthorizedPayment(invoiceId, { signal } = {}) {
   return mercadoPagoFetch(`/authorized_payments/${encodeURIComponent(invoiceId)}`, {
-    method: 'GET'
+    method: 'GET', signal
   });
 }
 
-async function searchAuthorizedPaymentsByPaymentId(paymentId) {
-  return mercadoPagoFetch(`/authorized_payments/search?payment_id=${encodeURIComponent(paymentId)}`, {
-    method: 'GET'
+async function searchAuthorizedPaymentsByPaymentId(paymentId, { signal } = {}) {
+  return mercadoPagoFetch(`/authorized_payments/search?payment_id=${encodeURIComponent(paymentId)}&offset=0&limit=2`, {
+    method: 'GET', signal
   });
 }
 
@@ -366,30 +366,38 @@ function buildWebhookManifest(req, ts) {
   return parts.join('');
 }
 
+const verifiedRequests = new WeakMap();
+const verifiedContexts = new WeakSet();
 function verifyWebhookSignature(req) {
-  if (!env.mercadoPagoWebhookSecret) {
-    return null;
-  }
-
-  const { ts, v1 } = parseSignatureHeader(req.get('x-signature'));
-  if (!ts || !v1) return false;
-
-  const manifest = buildWebhookManifest(req, ts);
-  if (!manifest) {
-    return false;
-  }
-  const expected = crypto
-    .createHmac('sha256', env.mercadoPagoWebhookSecret)
-    .update(manifest)
-    .digest('hex');
-
-  const expectedBuffer = Buffer.from(expected);
-  const receivedBuffer = Buffer.from(v1);
-  if (expectedBuffer.length !== receivedBuffer.length) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
+  verifiedRequests.delete(req);
+  if (!env.mercadoPagoWebhookSecret) return null;
+  const header = req.get('x-signature');
+  const requestId = req.get('x-request-id');
+  const rawId = req.query?.['data.id'] ?? req.query?.id;
+  if (typeof header !== 'string' || header.length > 256 || typeof requestId !== 'string'
+    || !/^[a-zA-Z0-9_-]{1,128}$/.test(requestId.trim()) || typeof rawId !== 'string'
+    || !/^[a-zA-Z0-9_-]{1,128}$/.test(rawId.trim())) return false;
+  const parts = header.split(',').map(x => x.trim().split('='));
+  if (parts.length !== 2 || parts.some(x => x.length !== 2)
+    || new Set(parts.map(x => x[0].trim())).size !== 2) return false;
+  const fields = Object.fromEntries(parts.map(([k,v]) => [k.trim(),v.trim()]));
+  if (!/^\d{1,16}$/.test(fields.ts || '') || !/^[0-9a-f]{64}$/.test(fields.v1 || '')) return false;
+  const manifest = buildWebhookManifest(req, fields.ts);
+  const expected = crypto.createHmac('sha256', env.mercadoPagoWebhookSecret).update(manifest).digest('hex');
+  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(fields.v1))) return false;
+  const context = Object.freeze({ manifest, resourceId: normalizeWebhookQueryDataId(rawId),
+    requestId: requestId.trim(), timestamp: fields.ts });
+  verifiedRequests.set(req, context); verifiedContexts.add(context);
+  return true;
+}
+function getVerifiedWebhookContext(req) { return verifiedRequests.get(req) || null; }
+function signedDeliveryIdentity(context) {
+  if (!context || !verifiedContexts.has(context)) throw new Error('verified_delivery_context_required');
+  return 'mp:delivery:v1:' + crypto.createHash('sha256')
+    .update(JSON.stringify(['mercado_pago', 'delivery:v1', context.manifest]), 'utf8').digest('hex');
+}
+async function getPreapprovalPlan(id, { signal } = {}) {
+  return mercadoPagoFetch('/preapproval_plan/' + encodeURIComponent(id), { method: 'GET', signal });
 }
 
 function mapMercadoPagoPreapprovalStatus(status) {
@@ -423,6 +431,9 @@ function mapMercadoPagoPaymentStatus(status) {
 module.exports = {
   createPreapproval,
   getPreapproval,
+  getPreapprovalPlan,
+  getVerifiedWebhookContext,
+  signedDeliveryIdentity,
   updatePreapproval,
   pausePreapproval,
   cancelPreapproval,

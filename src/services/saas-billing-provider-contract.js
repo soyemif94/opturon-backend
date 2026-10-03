@@ -99,7 +99,7 @@ function validateCharge({ invoice, invoiceId, payment, paymentId, preapprovalId,
   const status = text(payment.status).toLowerCase();
   if (['refunded', 'charged_back'].includes(status)) return review('unsupported_charge_type');
   if (['pending', 'in_process', 'rejected', 'cancelled', 'canceled', 'authorized', 'in_mediation'].includes(status)) {
-    return noAction('payment_not_approved');
+    return noAction(`payment_${status}`);
   }
   if (status !== 'approved') return review('unsupported_charge_type');
   // A partial refund may coexist with an approved status. It cannot be applied
@@ -113,5 +113,18 @@ function validateCharge({ invoice, invoiceId, payment, paymentId, preapprovalId,
   return paymentMoney.type === 'VALID' ? valid() : paymentMoney;
 }
 
-module.exports = { resourceId, resolveExpectedContract, exactMinorUnits, identity,
+function validateAuthorizedPaymentSearch(search, paymentId) {
+  const { total, offset, limit } = search?.paging || {};
+  if (!Array.isArray(search?.results) || !Number.isSafeInteger(total) || total < 0
+    || offset !== 0 || search.results.length > total
+    || (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit < search.results.length))) return review();
+  if (total === 0 && search.results.length === 0) return noAction('authorized_invoice_not_found');
+  if (total !== 1 || search.results.length !== 1) return review();
+  const invoiceId = resourceId(search.results[0]?.id);
+  if (!invoiceId) return review();
+  const relationship = identity(search.results[0]?.payment?.id, paymentId);
+  return relationship.type === 'VALID' ? { type: 'VALID', invoiceId } : relationship;
+}
+
+module.exports = { resourceId, resolveExpectedContract, exactMinorUnits, identity, validateAuthorizedPaymentSearch,
   financialFields, validatePreapproval, validateCharge, review, noAction };

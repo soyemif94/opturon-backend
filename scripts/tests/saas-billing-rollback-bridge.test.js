@@ -57,7 +57,7 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
   const pool = new Pool({ connectionString: url.href, options: `-c search_path=${schema}`, max: 8 });
   const modules = new Map(); const originalFetch = global.fetch;
   let server; let payload; let subscription; let provider; let logs; let trace; let beforeQuery; let throwLog;
-  let bridgeEntries = 0;
+  let bridgeEntries = 0; let useBridge = true;
   const secret = 'local-only-rollback-bridge-signature';
   const clinicId = '00000000-0000-4000-8000-000000000001';
   function stub(name, exports) {
@@ -100,29 +100,37 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
     if (provider.fail === true || provider.fail === kind) throw new Error('synthetic_provider_failure');
     return structuredClone(provider[kind]);
   }
-  stub('src/services/mercado-pago.service.js', {
+  stub('src/services/mercado-pago.service.js', require('./helpers/billing-v2-fixture').canonicalReads({
     ...realProvider,
     createPreapproval() { throw new Error('provider_write_forbidden'); },
     getPayment: async id => readProvider('payment', id, 'pay-1'),
     searchAuthorizedPaymentsByPaymentId: async id => readProvider('search', id, 'pay-1'),
     getAuthorizedPayment: async id => readProvider('invoice', id, 'invoice-1'),
     getPreapproval: async id => readProvider('preapproval', id, 'mp-1')
-  });
+  }, {}));
   global.fetch = (value, ...args) => {
     assert.equal(new URL(value).hostname, '127.0.0.1', 'external requests forbidden');
     return originalFetch(value, ...args);
   };
   const repository = require('../../src/repositories/saas-subscriptions.repository');
   const service = require('../../src/services/saas-billing.service');
+  // Compile the deployed rollback bridge unchanged; never ask the new runtime
+  // to emulate an older runtime's refusal to retry its own claims.
+  const bridgePath = path.join(root, 'src/services/saas-billing.service.js');
+  const bridgeModule = new (require('node:module'))(bridgePath, module);
+  bridgeModule.filename = bridgePath; bridgeModule.paths = module.paths;
+  bridgeModule._compile(require('node:child_process').execFileSync('git',
+    ['show', 'be5b8f8a7d7b147a5f8a9a69659f4007091e1aee:src/services/saas-billing.service.js'], { cwd: root, encoding: 'utf8' }), bridgePath);
   stub('src/services/saas-billing.service.js', {
-    ...service, processMercadoPagoWebhook: (...args) => { bridgeEntries += 1; return service.processMercadoPagoWebhook(...args); }
+    ...service, processMercadoPagoWebhook: (...args) => { bridgeEntries += 1;
+      return (useBridge ? bridgeModule.exports : service).processMercadoPagoWebhook(...args); }
   });
   const app = express();
   app.use('/api/webhooks/mercadopago', require('../../src/routes/mercadopago-webhook.routes'));
   server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   async function deliver({ valid = true } = {}) {
-    const requestId = crypto.randomUUID(); const ts = '1727300000'; const id = payload.data.id;
+    const requestId = 'fixture-request'; const ts = '1727300000'; const id = payload.data.id;
     const digest = crypto.createHmac('sha256', secret).update(`id:${id};request-id:${requestId};ts:${ts};`).digest('hex');
     const response = await fetch(`${base}/api/webhooks/mercadopago?data.id=${id}`, {
       method: 'POST', signal: AbortSignal.timeout(8000), headers: { 'content-type': 'application/json',
@@ -143,9 +151,9 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
     subscription = await repository.insertSaasSubscription({ ...input, metadata: { contract } });
     provider.preapproval = { id: 'mp-1', status: 'authorized', external_reference: input.externalReference,
       auto_recurring: { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' } };
-    provider.payment = { id: 'pay-1', status: 'approved', preapproval_id: 'mp-1', external_reference: input.externalReference,
+    provider.payment = { date_created: new Date().toISOString(), id: 'pay-1', status: 'approved', preapproval_id: 'mp-1', external_reference: input.externalReference,
       transaction_amount: 40600, currency_id: 'ARS' };
-    provider.search = { paging: { total: 1 }, results: [{ id: 'invoice-1', payment: { id: 'pay-1' } }] };
+    provider.search = { paging: { offset: 0, limit: 2, total: 1 }, results: [{ id: 'invoice-1', payment: { id: 'pay-1' } }] };
     provider.invoice = { id: 'invoice-1', preapproval_id: 'mp-1', status: 'processed', type: 'scheduled',
       payment: { id: 'pay-1', status: 'approved' }, transaction_amount: '40600.00', currency_id: 'ARS' };
     payload = { id: 'notice-bridge', type: 'payment', action: 'payment.updated', data: { id: 'pay-1' } };
@@ -156,7 +164,7 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
   const scenario = (name, fn) => t.test(name, async () => { await reset(); await fn(); });
   async function seedEvent(status, error, outcome = null) {
     const snapshot = service.__internal.buildWebhookEventSnapshot(payload, { signatureValid: true });
-    await repository.insertSubscriptionEvent({ ...snapshot, dedupeKey: service.__internal.deriveWebhookDedupeKey(snapshot),
+    await repository.insertSubscriptionEvent({ ...snapshot, dedupeKey: (useBridge ? service.__internal.deriveWebhookDedupeKey(snapshot) : require('./helpers/billing-v2-fixture').delivery(payload, secret).dedupeKey),
       raw: payload, processingStatus: status, processingError: error });
     if (outcome) await pool.query('UPDATE saas_subscription_events SET "contractOutcome"=$1::jsonb', [JSON.stringify(outcome)]);
     await pool.query('TRUNCATE mutation_audit'); trace = [];
@@ -225,8 +233,9 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
   try {
     await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
       name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
-    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql', '087_saas_billing_runtime_state.sql']) {
+    for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql', '087_saas_billing_runtime_state.sql', '088_saas_billing_effects_reconciliation.sql']) {
       await pool.query(fs.readFileSync(path.join(root, 'db/migrations', name), 'utf8'));
+      if (name.startsWith('088_')) await require('./helpers/billing-v2-fixture').activateFixture(pool);
     }
     await pool.query(`CREATE TABLE mutation_audit (kind TEXT NOT NULL);
       CREATE FUNCTION count_bridge_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -308,10 +317,12 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
       const before = await event(); const beforeBusiness = await business();
       await assertBlocked(await deliver(), before, beforeBusiness);
     });
+    useBridge = false;
     // B. Combined-runtime compatibility: no false bridge guard and no bypass of 6C.
     for (const [code, status] of [['F', 'failed'], ['G', 'received'], ['G', 'processing']]) {
       await scenario(`${code}: unmarked ${status} passes the full 6C chain and applies once`, async () => {
         await seedEvent(status, status === 'failed' ? 'webhook_processing_failed' : null);
+        if (status === 'processing') await pool.query(`UPDATE saas_subscription_events SET "updatedAt"=NOW()-interval '1 minute'`);
         const before = await event();
         await assertProcessed(await deliver()); assert.equal((await event()).id, before.id);
         await assertProcessedDuplicate();
@@ -326,6 +337,7 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
             provider.payment.transaction_amount = 1;
           }
           await seedEvent(status, status === 'failed' ? 'webhook_processing_failed' : null);
+        if (status === 'processing') await pool.query(`UPDATE saas_subscription_events SET "updatedAt"=NOW()-interval '1 minute'`);
           const before = await event(); const beforeBusiness = await business();
           await assertProofOutcome(await deliver(), beforeBusiness,
             missing === 'matching amount' ? 'contract_rejected' : 'manual_review',
@@ -374,7 +386,7 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
       await scenario(`O: unmarked BILL-005 transient ${kind} failure retries to one proven application`, async () => {
         provider.fail = kind; const beforeBusiness = await business();
         assert.equal((await deliver()).status, 503); const before = await event();
-        assert.equal(before.processingStatus, 'failed'); assert.equal(before.processingError, 'webhook_processing_failed');
+        assert.equal(before.processingStatus, 'failed'); assert.equal(require('../../src/services/saas-billing-rollback-marker').isBillingContractV2Marker(before.processingError), true);
         assert.equal(before.contractOutcome, null); assert.deepEqual(before.raw, payload);
         assert.deepEqual(await business(), beforeBusiness); await assertBusinessMutations(0);
         const failedReads = kind === 'payment' ? ['payment:pay-1'] : ['payment:pay-1', 'search:pay-1'];
@@ -386,11 +398,11 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
     }
     await scenario('Unrelated Payment: weak matching metadata cannot replace a missing authorized invoice', async () => {
       // Deliberately unrelated: do not fabricate a canonical invoice for weak local-looking hints.
-      provider.search = { paging: { total: 0 }, results: [] }; provider.invoice = null;
+      provider.search = { paging: { offset: 0, limit: 2, total: 0 }, results: [] }; provider.invoice = null;
       provider.payment.metadata = { preapproval_id: 'mp-1', subscription_id: subscription.id };
       const beforeBusiness = await business();
       const response = await deliver(); const row = await event();
-      assert.equal(response.status, 503); assert.equal(row.processingStatus, 'failed');
+      assert.equal(response.status, 200); assert.equal(row.processingStatus, 'ignored');
       assert.equal(row.processingError, 'authorized_invoice_not_found'); assert.equal(row.contractOutcome, null);
       assert.deepEqual(row.raw, payload); assert.deepEqual(await business(), beforeBusiness);
       await assertBusinessMutations(0); assertNormalPipeline(['payment:pay-1', 'search:pay-1']);
