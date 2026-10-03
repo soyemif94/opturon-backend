@@ -1,5 +1,12 @@
 const { randomUUID } = require('crypto');
 const { withTransaction } = require('../db/client');
+const { requireGeneration } = require('../repositories/saas-billing-runtime.repository');
+async function withBillingTransaction(fn) {
+  return withTransaction(async client => {
+    await requireGeneration(1, client, { lock: true });
+    return fn(client);
+  });
+}
 const { findClinicByExternalTenantId } = require('../repositories/tenant.repository');
 const {
   insertSaasSubscription,
@@ -221,7 +228,7 @@ function existingCreationResult(subscription) {
 }
 
 async function finishSubscriptionProvisioning(subscriptionId) {
-  const subscription = await withTransaction(async (client) => {
+  const subscription = await withBillingTransaction(async (client) => {
     const current = await findSaasSubscriptionById(subscriptionId, client, { forUpdate: true });
     if (current && current.provisioningState === 'ready') return current;
     if (!current || current.provisioningState !== 'provider_created' || !current.mercadoPagoPreapprovalId) {
@@ -252,7 +259,7 @@ async function createSaasSubscriptionForTenant(input) {
   if (!amount) return { ok: false, reason: 'invalid_amount', status: 400 };
 
   // Transaction A must COMMIT before a provider call can even be claimed.
-  const reservation = await withTransaction(async (client) => {
+  const reservation = await withBillingTransaction(async (client) => {
     const clinic = await findClinicByExternalTenantId(tenantId, client, { forUpdate: true });
     if (!clinic) return { ok: false, reason: 'tenant_not_found', status: 404 };
     const existing = await findBlockingSaasSubscriptions(clinic.id, clinic.externalTenantId, client);
@@ -298,7 +305,7 @@ async function createSaasSubscriptionForTenant(input) {
 
   // Separate durable CAS: exactly one process may POST; an uncertain commit
   // must never trigger a call. A retry can resume only a still-reserved row.
-  const claimResult = await withTransaction(async (client) => {
+  const claimResult = await withBillingTransaction(async (client) => {
     const current = await findSaasSubscriptionById(reserved.id, client, { forUpdate: true });
     if (!current || current.provisioningState !== 'reserved') return { ok: true, subscription: null };
     // Re-read durable evidence under the claim lock; legacy projections cannot
@@ -329,7 +336,7 @@ async function createSaasSubscriptionForTenant(input) {
     // Includes timeouts and malformed success: neither proves that MP did not
     // create an object. Keep the durable attempt blocked, without another POST.
     try {
-      await markSaasSubscriptionReconciliationRequired(claimed.id);
+      await withBillingTransaction(client => markSaasSubscriptionReconciliationRequired(claimed.id, client));
     } catch {
       // provider_call_started is already durable and also blocks every retry.
       logError('billing_subscription_reconciliation_update_failed', { subscriptionId: claimed.id });
@@ -344,7 +351,7 @@ async function createSaasSubscriptionForTenant(input) {
 
   // Persist the provider identity independently of policy/snapshot completion.
   // A webhook may already have completed this reservation; never regress it.
-  await withTransaction(async (client) => {
+  await withBillingTransaction(async (client) => {
     const current = await findSaasSubscriptionById(claimed.id, client, { forUpdate: true });
     if (current.mercadoPagoPreapprovalId && current.mercadoPagoPreapprovalId !== normalizeString(preapproval.id)) {
       throw new Error('subscription_provider_identity_conflict');
@@ -374,6 +381,7 @@ async function listSaasSubscriptionsForAdmin(filters = {}) {
 }
 
 async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
+  await requireGeneration(1);
   const tenantId = normalizeString(input && input.tenantId);
   if (!tenantId) return { ok: false, reason: 'missing_tenant_id', status: 400 };
 
@@ -417,7 +425,7 @@ async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
     });
 
     const sentAt = new Date().toISOString();
-    const updated = await updateSaasSubscriptionById(subscription.id, {
+    const updated = await withBillingTransaction(client => updateSaasSubscriptionById(subscription.id, {
       metadata: {
         billingLinkEmail: {
           lastSentAt: sentAt,
@@ -427,7 +435,7 @@ async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
           status: 'sent'
         }
       }
-    });
+    }, client));
 
     logInfo('billing_subscription_authorization_email_sent', {
       tenantId,
@@ -465,6 +473,7 @@ async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
 }
 
 async function executeSubscriptionAction(subscriptionId, action) {
+  await requireGeneration(1);
   const subscription = await findSaasSubscriptionById(subscriptionId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
 
@@ -488,7 +497,7 @@ async function executeSubscriptionAction(subscriptionId, action) {
 
   const patch = mapPreapprovalToSubscriptionPatch(remote);
 
-  const updated = await withTransaction(async (client) => {
+  const updated = await withBillingTransaction(async (client) => {
     const next = await updateSaasSubscriptionById(subscription.id, patch, client);
     await syncTenantBillingState(client, clinic, next);
     return next;
@@ -498,6 +507,7 @@ async function executeSubscriptionAction(subscriptionId, action) {
 }
 
 async function refreshSubscriptionFromMercadoPagoByPreapprovalId(preapprovalId) {
+  await requireGeneration(1);
   const subscription = await findSaasSubscriptionByPreapprovalId(preapprovalId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
   const clinic = await findClinicByExternalTenantId(subscription.externalTenantId);
@@ -505,7 +515,7 @@ async function refreshSubscriptionFromMercadoPagoByPreapprovalId(preapprovalId) 
 
   const remote = await getPreapproval(preapprovalId);
   const patch = mapPreapprovalToSubscriptionPatch(remote);
-  const updated = await withTransaction(async (client) => {
+  const updated = await withBillingTransaction(async (client) => {
     const next = await updateSaasSubscriptionById(subscription.id, patch, client);
     await syncTenantBillingState(client, clinic, next);
     return next;
@@ -656,6 +666,7 @@ async function fetchWebhookResource(fetchResource) {
 }
 
 async function processMercadoPagoWebhook(payload, meta = {}) {
+  await requireGeneration(1);
   const requestId = normalizeString(meta.requestId);
   const snapshot = buildWebhookEventSnapshot(payload, meta);
   const dedupeKey = deriveWebhookDedupeKey(snapshot);
@@ -779,6 +790,7 @@ async function applyMercadoPagoWebhook(payload, meta, snapshot, client) {
       throw new Error('preapproval_response_incomplete');
     }
 
+    await requireGeneration(1, client, { lock: true });
     subscription = await findSaasSubscriptionById(subscription.id, client, { forUpdate: true });
     if (!subscription) throw new Error('subscription_not_found');
     const clinic = await findClinicByExternalTenantId(subscription.externalTenantId, client, { forUpdate: true });
@@ -831,6 +843,7 @@ async function applyMercadoPagoWebhook(payload, meta, snapshot, client) {
       throw new Error('subscription_not_found_for_preapproval');
     }
 
+    await requireGeneration(1, client, { lock: true });
     subscription = await findSaasSubscriptionById(subscription.id, client, { forUpdate: true });
     if (!subscription) throw new Error('subscription_not_found');
     const clinic = await findClinicByExternalTenantId(subscription.externalTenantId, client, { forUpdate: true });
