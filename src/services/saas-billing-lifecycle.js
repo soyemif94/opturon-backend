@@ -4,7 +4,7 @@ const { exactMinorUnits, noAction, resourceId } = require('./saas-billing-provid
 const { manualReview } = require('./saas-billing-webhook-outcomes');
 
 // Existing product mapping, not a price/catalog lookup. The contract selects it.
-const PLAN_MAP = Object.freeze({ inicial: 'basic', crecimiento: 'growth', empresa: 'enterprise' });
+const { lifecyclePlan } = require('./plan-catalog');
 const persistedDecisions = new WeakSet();
 const retainLifecycle = result => { persistedDecisions.add(result); return result; };
 const hasPersistedLifecycle = result => Boolean(result && persistedDecisions.has(result));
@@ -53,6 +53,10 @@ async function syncBillingSnapshot(client, clinic, subscription, state, entitlem
     }
   }
   if (entitlement) {
+    if (Object.hasOwn(entitlement, 'profile')) {
+      if (entitlement.profile) nextPortal.entitlements = entitlement.profile;
+      else delete nextPortal.entitlements;
+    }
     nextPortal.policy = { ...object(portal.policy), planCode: entitlement.planCode };
     nextPortal.lifecycle = { ...object(portal.lifecycle) };
     if (entitlement.statusPresent) nextPortal.lifecycle.status = entitlement.status;
@@ -120,7 +124,7 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
     }
     return retainLifecycle(noAction(`payment_${status}`));
   }
-  const planCode = PLAN_MAP[contract.planCode];
+  const planCode = lifecyclePlan(contract);
   if (!planCode) return review(prepared, subscription, 'local_contract_conflict');
   const previousEffect = (await client.query('SELECT * FROM saas_billing_effects WHERE "effectKey"=$1', [effectKey(payment.id)])).rows[0];
   if (!previousEffect && (await client.query('SELECT 1 FROM saas_billing_reversals WHERE provider=\'mercado_pago\' AND "canonicalPaymentId"=$1', [paymentId])).rowCount) {
@@ -171,7 +175,8 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
     activationPaymentId: state.activationPaymentId || paymentId,
     previousEntitlement: state.previousEntitlement || { planCode: typeof currentPlan === 'string' ? currentPlan : null,
       status: object(current.lifecycle).status ?? null, statusPresent: Object.hasOwn(object(current.lifecycle), 'status'),
-      billingEntitlement: object(current.billing).entitlement || null },
+      billingEntitlement: object(current.billing).entitlement || null,
+      profile: current.entitlements || null },
     lastSuccessfulPaymentId: paymentId, lastSuccessfulPaymentAt: payment.date_created,
     reviewReason: state.cancellationAt ? 'cancellation_expiry_unproven' : null,
     entitlementRevision: String(BigInt(clinic.billingEntitlementRevision) + 1n) };
@@ -185,7 +190,9 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
     localStatus: state.cancellationAt ? 'canceled' : 'active', lastPaymentId: paymentId, lastPaymentStatus: 'approved' }, client);
   if (!next) throw new Error('subscription_update_missing');
   nextState.entitlementRevision = await syncBillingSnapshot(client, clinic, next, nextState,
-    first || reactivating ? { planCode, status: 'active', statusPresent: true } : null, true);
+    first || reactivating ? { planCode, status: 'active', statusPresent: true,
+      ...(contract.entitlementProfileVersion ? { profile: { planKey: contract.planCode,
+        entitlementProfileVersion: contract.entitlementProfileVersion, source: 'billing' } } : {}) } : null, true);
   await saveLifecycle(client, subscription.id, nextState);
   return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
 }
@@ -229,7 +236,7 @@ async function applyRejectedPayment(client, proof, prepared, state) {
     reviewReason: phase === 'unproven' ? 'collection_state_unproven' : state.reviewReason || null };
   const alreadySuspended = state.entitlementState === 'suspended_for_nonpayment';
   const ownsEntitlement = state.activatedAt && ['active', 'suspended_for_nonpayment'].includes(state.entitlementState)
-    && object(object(object(clinic.settings).portal).policy).planCode === PLAN_MAP[contract.planCode]
+    && object(object(object(clinic.settings).portal).policy).planCode === lifecyclePlan(contract)
     && String(clinic.billingEntitlementRevision) === state.entitlementRevision;
   const suspend = finalUnpaid && ownsEntitlement && !alreadySuspended
     && await historicalEligible(client, subscription, payment);
@@ -248,7 +255,7 @@ async function applyRejectedPayment(client, proof, prepared, state) {
       localStatus: state.cancellationAt ? 'canceled' : 'suspended', lastPaymentId: paymentId, lastPaymentStatus: 'rejected'
     }, client);
     nextState.entitlementRevision = await syncBillingSnapshot(client, clinic, next, nextState,
-      { planCode: PLAN_MAP[contract.planCode], status: 'suspended', statusPresent: true });
+      { planCode: lifecyclePlan(contract), status: 'suspended', statusPresent: true });
   }
   await saveLifecycle(client, subscription.id, nextState);
   return retainLifecycle(outcome());
@@ -273,7 +280,7 @@ async function applyReversal(client, proof, prepared, state, source, refundMinor
     && typeof previous?.planCode === 'string' && previous.planCode.length > 0
     && !otherEffects
     && String(clinic.billingEntitlementRevision) === state.entitlementRevision
-    && object(object(object(clinic.settings).portal).policy).planCode === PLAN_MAP[contract.planCode];
+    && object(object(object(clinic.settings).portal).policy).planCode === lifecyclePlan(contract);
   const reason = kind === 'chargeback' ? 'payment_chargeback' : 'payment_refunded';
   const inserted = await client.query(`INSERT INTO saas_billing_reversals
     (provider,"canonicalPaymentId",kind,"subscriptionId","originalEffectId","sourceEventId",

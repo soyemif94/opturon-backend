@@ -27,7 +27,7 @@ test('BILL-007 nonpayment: existing module/capability gates consume durable enti
   try {
     for (const state of [null, 'active', 'payment_retrying', 'subscription_cancelled', 'suspended_for_nonpayment']) {
       await t.test(`state=${state}: only explicit nonpayment suspension denies paid modules`, async () => {
-        settings = { portal: { accountScope: 'client', policy: { planCode: 'growth',
+        settings = { portal: { accountScope: 'client', entitlements: { source: 'billing', planKey: 'distribution', entitlementProfileVersion: 1 }, policy: { planCode: 'growth',
           capabilities: ['inventory'], enabledModules: { inventory: true } }, billing: { entitlement: state
           ? { state, paidAccessAllowed: state !== 'suspended_for_nonpayment', subscriptionId: 'fixture' } : null } } };
         const before = structuredClone(settings);

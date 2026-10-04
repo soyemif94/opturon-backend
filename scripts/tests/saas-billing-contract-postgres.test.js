@@ -82,7 +82,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
   const repository = require(path.join(root, 'src/repositories/saas-subscriptions.repository.js'));
   const service = require(path.join(root, 'src/services/saas-billing.service.js'));
   const clinicId = '00000000-0000-4000-8000-000000000001';
-  const input = { tenantId: 'tenant-contract', planCode: 'inicial', payerEmail: 'payer@example.invalid' };
+  const input = { tenantId: 'tenant-contract', planCode: 'core', payerEmail: 'payer@example.invalid' };
   await pool.query(`CREATE TABLE clinics (id UUID PRIMARY KEY, "externalTenantId" TEXT UNIQUE,
     name TEXT, timezone TEXT, settings JSONB DEFAULT '{}', "updatedAt" TIMESTAMPTZ DEFAULT NOW())`);
   for (const name of ['050_saas_subscriptions_phase1.sql', '085_saas_subscription_provisioning.sql', '086_saas_subscription_event_contract_outcome.sql', '087_saas_billing_runtime_state.sql', '088_saas_billing_effects_reconciliation.sql']) {
@@ -106,7 +106,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
       provisioningState: 'reserved', mercadoPagoPayerEmail: input.payerEmail,
       externalReference: `opturon:${input.tenantId}:${id}`,
       metadata: { billingModel: 'pending_link',
-        plan: { code: input.planCode, label: 'Plan Inicial', amount: 10000, currency: 'ARS' } } };
+        plan: { code: input.planCode, label: 'Core', amount: 10000, currency: 'ARS', entitlementProfileVersion: 1 } } };
     seed.metadata.contract = captureLocalBillingContract({ plan: seed.metadata.plan, subscriptionId: id,
       clinicId, externalTenantId: seed.externalTenantId, externalReference: seed.externalReference,
       capturedAt: '2026-09-01T00:00:00.000Z' });
@@ -123,7 +123,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     assert.equal(result.ok, true);
     const contract = provider.captured[0];
     assert.deepEqual(contract, {
-      version: 1, source: 'backend_plan_catalog', planCode: 'inicial', amount: '40600.00', currency: 'ARS',
+      version: 1, source: 'backend_plan_catalog', planCode: 'core', entitlementProfileVersion: 1, amount: '40600.00', currency: 'ARS',
       frequency: 1, frequencyType: 'months', billingInterval: 'monthly', capturedAt: contract.capturedAt,
       subscriptionId: result.subscription.id, clinicId, externalTenantId: input.tenantId,
       externalReference: `opturon:${input.tenantId}:${result.subscription.id}`, profile: 'ordinary_recurring'
@@ -133,9 +133,9 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     assert.equal((await row()).metadata.plan.amount, 40600);
   });
   await scenario('CASE B: second plan captures its own backend catalogue values', async () => {
-    assert.equal((await create({ planCode: 'crecimiento' })).ok, true);
+    assert.equal((await create({ planCode: 'growth' })).ok, true);
     assert.equal(provider.captured[0].amount, '68600.00');
-    assert.equal(provider.captured[0].planCode, 'crecimiento');
+    assert.equal(provider.captured[0].planCode, 'growth');
     await sameContract(provider.captured[0]);
   });
   await scenario('CASE C: frontend cannot override expected values or contract identity', async () => {
@@ -164,7 +164,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     await repository.updateSaasSubscriptionById(created.subscription.id, { metadata: { mercadoPagoPreapproval: { observed: true }, note: 'local' } });
     const saved = await row();
     assert.deepEqual(saved.metadata.mercadoPagoPreapproval, { observed: true });
-    assert.equal(saved.metadata.plan.code, 'inicial');
+    assert.equal(saved.metadata.plan.code, 'core');
     await sameContract(provider.captured[0]);
   });
   await scenario('CASE G: uncertain provider failure retains durable expectation and prevents another POST', async () => {
@@ -195,11 +195,11 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     assert.equal(provider.calls.length, 1);
   });
   await scenario('B1: pre-6A reserved row stays unchanged and cannot POST or backfill on concurrent retries', async () => {
-    const seeded = await seedReserved(seed => { delete seed.metadata.contract; });
+    const seeded = await seedReserved(seed => { delete seed.metadata.contract; seed.planCode = 'inicial'; seed.metadata.plan.code = 'inicial'; delete seed.metadata.plan.entitlementProfileVersion; });
     assert.equal(resolveLocalBillingContract(seeded).status, 'KNOWN');
     assert.equal(resolveLocalBillingContract(seeded).source, 'legacy_metadata_plan');
     const before = await row();
-    const results = await Promise.all(Array.from({ length: 6 }, () => create({ metadata: {
+    const results = await Promise.all(Array.from({ length: 6 }, () => create({ planCode: 'inicial', metadata: {
       contract: { version: 1, source: 'backend_plan_catalog' } } })));
     assert.ok(results.every(result => result.status === 409 && result.reason === 'subscription_contract_required'));
     assert.equal(provider.calls.length, 0);

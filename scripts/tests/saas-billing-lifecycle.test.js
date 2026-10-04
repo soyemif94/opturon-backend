@@ -202,10 +202,11 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       await pool.query('TRUNCATE saas_subscriptions CASCADE');
       provider.allowCreate = true;
       const result = await service.createSaasSubscriptionForTenant({ tenantId: 'tenant-routing',
-        planCode: 'crecimiento', payerEmail: 'fixture@example.invalid' });
+        planCode: 'growth', payerEmail: 'fixture@example.invalid' });
       assert.equal(result.ok, true); subscription = result.subscription;
       assert.equal(subscription.localStatus, 'pending');
-      assert.equal(subscription.metadata.contract.planCode, 'crecimiento');
+      assert.equal(subscription.metadata.contract.planCode, 'growth');
+      assert.equal(subscription.metadata.contract.entitlementProfileVersion, 1);
       assert.equal(await plan(), 'basic'); assert.equal(await planWrites(), 0);
       assert.equal((await lifecycle()).billingState, 'awaiting_payment');
       assert.equal((await effects()).length, 0); assert.equal(calls.filter(x => x === 'mock_create').length, 1);
@@ -526,6 +527,43 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       assert.equal(await plan(), 'growth'); assert.equal(portal.lifecycle.status, 'suspended');
       assert.deepEqual(portal.billing.entitlement, previousAccess);
       assert.equal(portal.billing.entitlement.paidAccessAllowed, false);
+    });
+    await scenario('BILL-008 AC/AD/AE/AF/AG: canonical plan activation, dedupe, suspension and restoration', async () => {
+      const { resolveEffectiveEntitlements, canCapability } = require('../../src/services/effective-entitlements');
+      const contract = captureLocalBillingContract({ subscriptionId: subscription.id, clinicId,
+        externalTenantId: subscription.externalTenantId, externalReference: subscription.externalReference,
+        plan: { code: 'distribution', amount: 40600, currency: 'ARS', entitlementProfileVersion: 1 },
+        capturedAt: new Date().toISOString() });
+      // Fixture setup only: production contracts are never rewritten.
+      await pool.query(`UPDATE saas_subscriptions SET "planCode"='distribution',metadata=$2::jsonb WHERE id=$1`,
+        [subscription.id, JSON.stringify({ contract })]);
+      const effective = async () => resolveEffectiveEntitlements((await business()).tenant.settings);
+      assert.equal(canCapability(await effective(), 'inventory'), false);
+      await fresh(); const activated = await effective();
+      assert.equal(activated.planKey, 'distribution'); assert.equal(activated.entitlementProfileVersion, 1);
+      assert.equal(canCapability(activated, 'inventory'), true);
+      await clearAudit(); await fresh(); await assertMutations(0);
+      assert.deepEqual(await effective(), activated);
+      renewal(); collection('processed'); await fresh();
+      assert.equal(canCapability(await effective(), 'inventory'), false);
+      assert.deepEqual((await business()).subscription.metadata.contract, contract);
+      renewal(); provider.payment.status = 'approved'; provider.invoice.payment.status = 'approved'; await fresh();
+      assert.equal(canCapability(await effective(), 'inventory'), true);
+      assert.equal((await effective()).planKey, 'distribution');
+      await clearAudit(); await fresh(); await assertMutations(0);
+    });
+    await scenario('BILL-008 AH: older reversal cannot replace a later canonical profile', async () => {
+      await deliver(); const oldProvider = structuredClone(provider), oldSubscription = subscription;
+      await anotherContract();
+      const contract = captureLocalBillingContract({ subscriptionId: subscription.id, clinicId,
+        externalTenantId: subscription.externalTenantId, externalReference: subscription.externalReference,
+        plan: { code: 'distribution', amount: 40600, currency: 'ARS', entitlementProfileVersion: 1 },
+        capturedAt: new Date().toISOString() });
+      await pool.query(`UPDATE saas_subscriptions SET "planCode"='distribution',metadata=$2::jsonb WHERE id=$1`, [subscription.id, JSON.stringify({ contract })]);
+      await fresh(); const before = (await business()).tenant.settings.portal.entitlements;
+      provider = oldProvider; subscription = oldSubscription; refund(); await clearAudit();
+      assert.equal((await fresh()).body.outcome, 'MANUAL_REVIEW'); await assertMutations(0);
+      assert.deepEqual((await business()).tenant.settings.portal.entitlements, before);
     });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));

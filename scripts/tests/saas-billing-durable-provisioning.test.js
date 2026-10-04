@@ -12,7 +12,7 @@ const originalFetch = global.fetch;
 const secret = 'local-test-webhook-secret';
 const tenantA = '00000000-0000-4000-8000-000000000001';
 const tenantB = '00000000-0000-4000-8000-000000000002';
-const input = { tenantId: 'tenant-a', planCode: 'inicial', payerEmail: 'payer@example.invalid' };
+const input = { tenantId: 'tenant-a', planCode: 'core', payerEmail: 'payer@example.invalid' };
 const modules = new Map();
 
 function stub(name, exports) {

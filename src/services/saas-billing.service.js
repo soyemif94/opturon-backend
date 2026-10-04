@@ -33,6 +33,7 @@ const {
   mapMercadoPagoPreapprovalStatus
 } = require('./mercado-pago.service');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
+const { PUBLIC_PLANS, LEGACY_BILLING_PLANS, canonicalKey } = require('./plan-catalog');
 const { captureLocalBillingContract, resolveLocalBillingContract, canonicalizeExternalReferenceUuid } = require('./saas-billing-contract');
 const { contractRejected, manualReview } = require('./saas-billing-webhook-outcomes');
 const contractProof = require('./saas-billing-provider-contract');
@@ -41,7 +42,7 @@ const { processSubscriptionWebhookEvent } = require('./saas-billing-webhook-clai
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
-const ALLOWED_PLAN_CODES = new Set(['inicial', 'crecimiento', 'empresa']);
+const ALLOWED_PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLANS), ...Object.keys(PUBLIC_PLANS)]);
 const ALLOWED_LOCAL_STATUSES = new Set(['pending', 'active', 'paused', 'canceled', 'payment_failed', 'suspended']);
 
 function normalizeString(value) {
@@ -175,9 +176,7 @@ async function createSaasSubscriptionForTenant(input) {
 
   if (!tenantId) return { ok: false, reason: 'missing_tenant_id', status: 400 };
   if (!planCode) return { ok: false, reason: 'invalid_plan_code', status: 400 };
-  if (!planDefinition) return { ok: false, reason: 'plan_definition_not_found', status: 400 };
   if (!payerEmail) return { ok: false, reason: 'invalid_payer_email', status: 400 };
-  if (!amount) return { ok: false, reason: 'invalid_amount', status: 400 };
 
   // Transaction A must COMMIT before a provider call can even be claimed.
   const reservation = await withBillingTransaction(async (client) => {
@@ -195,6 +194,10 @@ async function createSaasSubscriptionForTenant(input) {
       return { ok: true, subscription };
     }
     const subscriptionId = randomUUID();
+    // Old reservations may resume with their original immutable contract, but
+    // every NEW sale must choose an explicitly versioned public plan.
+    if (!canonicalKey(planCode)) return { ok: false, reason: 'legacy_plan_requires_selection', status: 409 };
+    if (!amount) return { ok: false, reason: 'plan_price_decision_required', status: 409 };
     const externalReference = buildExternalReference(clinic.externalTenantId, subscriptionId);
     const contract = captureLocalBillingContract({
       plan: planDefinition, subscriptionId, clinicId: clinic.id,

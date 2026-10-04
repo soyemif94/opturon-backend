@@ -1,7 +1,8 @@
 // Local expectations only. No provider access, catalogue lookup or persistence.
 const CONTRACT_VERSION = 1;
 const CONTRACT_SOURCE = 'backend_plan_catalog';
-const PLAN_CODES = new Set(['inicial', 'crecimiento', 'empresa']);
+const { PUBLIC_PLANS, LEGACY_BILLING_PLANS, canonicalKey, resolveProfile } = require('./plan-catalog');
+const PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLANS), ...Object.keys(PUBLIC_PLANS)]);
 const CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -59,6 +60,8 @@ function captureLocalBillingContract({ plan, subscriptionId, clinicId, externalT
   const amount = canonicalizeContractAmount(plan && plan.amount);
   const currency = normalizeContractCurrency(plan && plan.currency);
   const planCode = code(plan && plan.code);
+  const profileVersion = plan && plan.entitlementProfileVersion;
+  if (canonicalKey(planCode) && !resolveProfile(planCode, profileVersion)) throw new Error('invalid_entitlement_profile');
   const checked = localIdentity({ id: subscriptionId, clinicId, externalTenantId, externalReference });
   const timestamp = text(capturedAt);
   if (!amount || !currency || !PLAN_CODES.has(planCode) || !checked.identity
@@ -68,6 +71,7 @@ function captureLocalBillingContract({ plan, subscriptionId, clinicId, externalT
   }
   return Object.freeze({
     version: CONTRACT_VERSION, source: CONTRACT_SOURCE, planCode, amount, currency,
+    ...(canonicalKey(planCode) ? { entitlementProfileVersion: profileVersion } : {}),
     frequency: 1, frequencyType: 'months', billingInterval: 'monthly', capturedAt: timestamp,
     ...checked.identity, profile: 'ordinary_recurring'
   });
@@ -110,7 +114,7 @@ function resolveLocalBillingContract(subscription) {
     try {
       // Return a fresh canonical object; callers cannot mutate the input snapshot.
       const contract = captureLocalBillingContract({
-        plan: { code: planCode, amount, currency }, ...checked.identity, capturedAt: candidate.capturedAt
+        plan: { code: planCode, amount, currency, entitlementProfileVersion: candidate.entitlementProfileVersion }, ...checked.identity, capturedAt: candidate.capturedAt
       });
       return result('KNOWN', source, [], contract);
     } catch {
@@ -119,6 +123,7 @@ function resolveLocalBillingContract(subscription) {
   }
 
   // Structural provenance of the audited legacy pending-link generation.
+  if (canonicalKey(planCode)) return result('UNKNOWN', source, ['canonical_profile_required']);
   // No current prices, mutable row amounts or provider snapshots are consulted.
   if (metadata.billingModel !== 'pending_link' || !text(candidate.label)) {
     return result('UNKNOWN', source, ['unproven_legacy_snapshot_generation']);

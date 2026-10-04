@@ -7,6 +7,11 @@ async function activateFixture(pool) {
     await pool.query(require('fs').readFileSync(require('path').resolve(__dirname,
       '../../../db/migrations/089_saas_billing_entitlement_lifecycle.sql'), 'utf8'));
   }
+  const planConstraint = (await pool.query("SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='saas_subscriptions'::regclass AND conname='chk_saas_subscriptions_plan_code'")).rows[0];
+  if (!planConstraint || !planConstraint.definition.includes("'core'")) {
+    await pool.query(require('fs').readFileSync(require('path').resolve(__dirname,
+      '../../../db/migrations/090_canonical_plan_entitlements.sql'), 'utf8'));
+  }
   const client = await pool.connect();
   try { await activateCutover(client, { apply: true }); } finally { client.release(); }
 }
