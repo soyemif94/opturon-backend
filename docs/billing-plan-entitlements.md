@@ -2,7 +2,7 @@
 
 ## Canonical source
 
-`src/services/plan-catalog.js` is the server-side source for public plan DTOs, billing definitions, profile resolution, and the closed capability registry. Public plans are `core`, `growth`, `distribution`, and `enterprise`. The capability registry is version 1 and contains 28 boolean capabilities plus `bot.tier` (`none | standard | advanced | custom`). `custom_integrations` and `custom_workflows` are deliberately absent: the inspected product has no implemented integration-adapter or custom-workflow entitlement surface.
+`src/services/plan-catalog.js` is the server-side source for public plan DTOs, billing definitions, profile resolution, and the closed capability registry. Public plans are `core`, `growth`, `distribution`, and `enterprise`. The capability registry is version 1 and contains 29 boolean capabilities plus `bot.tier` (`none | standard | advanced | custom`). `custom_integrations` and `custom_workflows` are deliberately absent: the inspected product has no implemented integration-adapter or custom-workflow entitlement surface.
 
 Profiles are flattened when the catalog loads. Growth inherits Core; Distribution inherits Growth; Enterprise inherits Distribution. Contracts for new canonical plans record `entitlementProfileVersion: 1`. Existing immutable contracts without that field continue through the BILL-007 legacy lifecycle mapping; their permissions come only from the explicit frozen `legacy_090` profile, never from a plan-name guess.
 
