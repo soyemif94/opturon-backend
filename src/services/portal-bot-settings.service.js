@@ -37,12 +37,12 @@ function buildReason(reason, detail = null, extra = null) {
   };
 }
 
-function mapBotSettings(tenantId, clinic, botMode) {
+function mapBotSettings(tenantId, clinic, botMode, effectiveEntitlements = null) {
   const botSettings = clinic && clinic.botSettings && typeof clinic.botSettings === 'object'
     ? clinic.botSettings
     : {};
 
-  const entitlements = resolveEffectiveEntitlements(clinic.settings);
+  const entitlements = effectiveEntitlements || resolveEffectiveEntitlements(clinic.settings);
   const botConfig = normalizeBotConfig(botSettings.config, DEFAULT_BOT_CONFIG);
   if (!canCapability(entitlements, 'bot.ai_custom_instructions')) botConfig.businessInstructions = '';
   return {
@@ -93,7 +93,7 @@ async function getPortalBotSettings(tenantId) {
     ok: true,
     tenantId: safeTenantId,
     clinicId: clinic.id,
-    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode)
+    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode, context.entitlements)
   };
 }
 
@@ -201,7 +201,7 @@ async function updatePortalBotSettings(tenantId, payload) {
 
   if (Object.hasOwn(payload, 'botActive')) clinic = await updateClinicBotActiveById(context.clinic.id, payload.botActive);
   return { ok: true, tenantId: safeTenantId, clinicId: clinic.id,
-    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode) };
+    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode, context.entitlements) };
 }
 
 async function getPortalBotTransferConfig(tenantId) {

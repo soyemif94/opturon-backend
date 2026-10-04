@@ -1,5 +1,6 @@
 const { query } = require('../db/client');
 const { resolveEffectiveEntitlements, canCapability } = require('./effective-entitlements');
+const { listActiveCommercialEntitlementKeys } = require('./commercial-entitlements.service');
 const { MODULE_CAPABILITIES, LEGACY_CAPABILITY_MAP } = require('./plan-catalog');
 const { createTenantPolicyAuditEvent } = require('../repositories/tenant-policy-audit.repository');
 const {
@@ -92,7 +93,7 @@ function sameValue(left, right) {
   return stableSerialize(left) === stableSerialize(right);
 }
 
-function buildTenantPolicyFromSettings(settings) {
+function buildTenantPolicyFromSettings(settings, options = {}) {
   const safeSettings = parseSettings(settings);
   const portal = safeSettings.portal && typeof safeSettings.portal === 'object' ? safeSettings.portal : {};
   const businessProfile = safeSettings.businessProfile && typeof safeSettings.businessProfile === 'object'
@@ -111,7 +112,7 @@ function buildTenantPolicyFromSettings(settings) {
       }
   );
   const operatingCapabilities = normalizeCapabilities(policy.capabilities || businessProfile.capabilities);
-  const entitlements = resolveEffectiveEntitlements(safeSettings);
+  const entitlements = resolveEffectiveEntitlements(safeSettings, options.authorizedCommercialAddons);
   const capabilities = Object.entries(LEGACY_CAPABILITY_MAP).filter(([, key]) => canCapability(entitlements, key)).map(([key]) => key);
   const legacyMode = !hasExplicitOperatingConfiguration(policy);
   const enabledModules = Object.fromEntries(Object.entries(MODULE_CAPABILITIES).map(([key, capability]) => [key, canCapability(entitlements, capability)]));
@@ -220,13 +221,16 @@ function buildClinicBasicsPatch(input, currentClinic) {
 
 async function resolveTenantPolicyByClinicId(clinicId, client = null) {
   const result = await getDbClient(client).query(
-    `SELECT settings
+    `SELECT id, settings
      FROM clinics
      WHERE id = $1::uuid
      LIMIT 1`,
     [clinicId]
   );
-  return buildTenantPolicyFromSettings(result.rows[0] && result.rows[0].settings);
+  const clinic = result.rows[0];
+  if (!clinic) return buildTenantPolicyFromSettings({});
+  const authorizedCommercialAddons = await listActiveCommercialEntitlementKeys(clinic.id, client);
+  return buildTenantPolicyFromSettings(clinic.settings, { authorizedCommercialAddons });
 }
 
 async function resolveTenantPolicyByExternalTenantId(externalTenantId, client = null) {
@@ -267,6 +271,7 @@ async function resolveTenantPolicyByExternalTenantId(externalTenantId, client = 
   if (!clinic) {
     return { ok: false, reason: 'tenant_not_found', tenantId: safeTenantId || null };
   }
+  const authorizedCommercialAddons = await listActiveCommercialEntitlementKeys(clinic.id, client);
   return {
     ok: true,
     tenantId: clinic.externalTenantId,
@@ -278,7 +283,7 @@ async function resolveTenantPolicyByExternalTenantId(externalTenantId, client = 
       settings: clinic.settings || {}
     },
     primaryEmail: clinic.primaryEmail || null,
-    policy: buildTenantPolicyFromSettings(clinic.settings)
+    policy: buildTenantPolicyFromSettings(clinic.settings, { authorizedCommercialAddons })
   };
 }
 
@@ -293,7 +298,8 @@ async function listTenantPolicies() {
             c."updatedAt",
             membership."activePortalUsers",
             membership."activeOwners",
-            primary_user.email AS "primaryEmail"
+            primary_user.email AS "primaryEmail",
+            commercial_addons.keys AS "commercialAddons"
      FROM clinics c
      LEFT JOIN LATERAL (
        SELECT COUNT(*)::INT AS "activePortalUsers",
@@ -304,6 +310,16 @@ async function listTenantPolicies() {
          AND su.email IS NOT NULL
          AND su.active = TRUE
      ) membership ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT COALESCE(jsonb_agg(latest.entitlement_key), '[]'::jsonb) AS keys
+       FROM (
+         SELECT DISTINCT ON (entitlement_key) entitlement_key, action
+         FROM tenant_commercial_entitlement_events
+         WHERE clinic_id = c.id
+         ORDER BY entitlement_key, id DESC
+       ) latest
+       WHERE latest.action = 'granted'
+     ) commercial_addons ON TRUE
      LEFT JOIN LATERAL (
        SELECT su.email
        FROM staff_users su
@@ -347,7 +363,7 @@ async function listTenantPolicies() {
           createdAt: clinic.createdAt || null,
           updatedAt: clinic.updatedAt || null,
           lifecycle,
-          policy: buildTenantPolicyFromSettings(clinic.settings)
+          policy: buildTenantPolicyFromSettings(clinic.settings, { authorizedCommercialAddons: clinic.commercialAddons })
         };
       })
       .filter((tenant) => tenant.lifecycle.visible)
@@ -556,7 +572,8 @@ async function updateTenantPolicyByExternalTenantId(externalTenantId, payload, o
   const clinic = result.rows[0] || null;
   if (!clinic) return { ok: false, reason: 'tenant_not_found', tenantId: safeTenantId };
 
-  const savedPolicy = buildTenantPolicyFromSettings(clinic.settings);
+  const authorizedCommercialAddons = await listActiveCommercialEntitlementKeys(current.clinic.id, options.client);
+  const savedPolicy = buildTenantPolicyFromSettings(clinic.settings, { authorizedCommercialAddons });
   await createTenantPolicyAuditEvent({
     clinicId: current.clinic.id,
     tenantId: safeTenantId,

@@ -4,6 +4,7 @@ const { listAutomationsByClinicId } = require('../repositories/automations.repos
 const { query } = require('../db/client');
 const { logInfo, logWarn } = require('../utils/logger');
 const { buildTenantPolicyFromSettings } = require('./tenant-policy.service');
+const { listActiveCommercialEntitlementKeys } = require('./commercial-entitlements.service');
 
 function summarizeClinic(clinic) {
   if (!clinic) return null;
@@ -163,7 +164,7 @@ async function resolvePortalTenantContext(externalTenantId) {
     };
   }
 
-  const [channels, products, automations, conversationsResult] = await Promise.all([
+  const [channels, products, automations, conversationsResult, authorizedCommercialAddons] = await Promise.all([
     listWhatsAppChannelsByClinicId(clinic.id),
     listProductsByClinicId(clinic.id),
     listAutomationsByClinicId(clinic.id),
@@ -172,7 +173,8 @@ async function resolvePortalTenantContext(externalTenantId) {
        FROM conversations
        WHERE "clinicId" = $1::uuid`,
       [clinic.id]
-    )
+    ),
+    listActiveCommercialEntitlementKeys(clinic.id)
   ]);
   const channelSelection = pickPortalChannel(channels, clinic);
   const activeProducts = (Array.isArray(products) ? products : []).filter(
@@ -180,7 +182,7 @@ async function resolvePortalTenantContext(externalTenantId) {
   );
   const activeAutomations = (Array.isArray(automations) ? automations : []).filter((automation) => automation && automation.enabled !== false);
   const conversationsCount = Number(conversationsResult.rows[0] && conversationsResult.rows[0].total ? conversationsResult.rows[0].total : 0);
-  const policy = buildTenantPolicyFromSettings(clinic.settings);
+  const policy = buildTenantPolicyFromSettings(clinic.settings, { authorizedCommercialAddons });
 
   if (!channelSelection.channel && channelSelection.reason !== 'mapped_clinic_without_whatsapp_channel') {
     logWarn('portal_channel_selection_ambiguous', {

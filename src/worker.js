@@ -6,7 +6,7 @@ const { execSync } = require('child_process');
 const env = require('./config/env');
 const { pool, withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
-const { botAllowedNow, toolAllowedNow, guardedBotTool, guardedProducts } = require('./services/bot-entitlement-guard');
+const { loadEntitlements, botAllowedNow, toolAllowedNow, guardedBotTool, guardedProducts } = require('./services/bot-entitlement-guard');
 const { resolveEffectiveEntitlements, canBotTool, canCapability } = require('./services/effective-entitlements');
 const {
   findChannelById,
@@ -20180,6 +20180,9 @@ async function processConversationReplyJobUnlocked(job) {
           signal: aiAssistInvocation.signal || null
         });
       }
+      const aiEntitlements = await loadEntitlements(conversation.clinicId);
+      const aiBotConfig = getClinicBotConfig(clinic);
+      aiBotConfig.botTier = aiEntitlements.capabilities['bot.tier'];
       const aiAssistResult = await classifyCommerceAiAssist({
         clinicId: conversation.clinicId,
         conversationId: conversation.id,
@@ -20188,7 +20191,7 @@ async function processConversationReplyJobUnlocked(job) {
         recentMessages: Array.isArray(recentMessages)
           ? recentMessages.map((item) => item && (item.text || item.body || item.message || '')).filter(Boolean)
           : [],
-        botConfig: getClinicBotConfig(clinic),
+        botConfig: aiBotConfig,
         assistantMode,
         reason: aiAssistInvocation.reason
       });

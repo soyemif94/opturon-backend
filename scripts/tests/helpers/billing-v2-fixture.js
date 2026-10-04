@@ -12,6 +12,13 @@ async function activateFixture(pool) {
     await pool.query(require('fs').readFileSync(require('path').resolve(__dirname,
       '../../../db/migrations/090_canonical_plan_entitlements.sql'), 'utf8'));
   }
+  if (!(await pool.query("SELECT to_regclass('tenant_commercial_entitlement_events') AS name")).rows[0].name) {
+    await pool.query(`CREATE TABLE IF NOT EXISTS staff_users (
+      id UUID PRIMARY KEY, "clinicId" UUID, name TEXT, email TEXT, role TEXT, active BOOLEAN NOT NULL DEFAULT TRUE
+    )`);
+    await pool.query(require('fs').readFileSync(require('path').resolve(__dirname,
+      '../../../db/migrations/091_opturon_commercial_entitlement_events.sql'), 'utf8'));
+  }
   const client = await pool.connect();
   try { await activateCutover(client, { apply: true }); } finally { client.release(); }
 }

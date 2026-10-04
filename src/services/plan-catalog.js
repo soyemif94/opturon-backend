@@ -26,12 +26,26 @@ const MODULE_CAPABILITIES = Object.freeze({
   orders: 'orders', invoices: 'receipts', payments: 'payments', cash: 'cash', loyalty: 'loyalty',
   automations: 'automations', metrics: 'metrics', inventory: 'inventory'
 });
+// Commercial grants are controlled by Opturon and stored separately from
+// tenant-editable settings. Only explicitly supported grants may add access.
+const COMMERCIAL_ADDONS = Object.freeze({
+  bot_standard: Object.freeze({
+    eligiblePlanKeys: Object.freeze(['growth']),
+    capabilities: Object.freeze({
+      'bot.enabled': true,
+      'bot.tier': 'standard',
+      'bot.ai_catalog': true,
+      'bot.ai_orders': true
+    })
+  })
+});
 const granted = keys => Object.fromEntries(keys.map(key => [key, true]));
 const PROFILE_DEFINITIONS = Object.freeze({
   core: { capabilities: { ...granted(['channels.whatsapp', 'inbox', 'crm', 'pipeline', 'agenda']), 'bot.tier': 'none' } },
-  growth: { extends: 'core', capabilities: { ...granted(['channels.instagram', 'bot.enabled', 'bot.ai_catalog', 'bot.ai_orders',
-    'automations', 'catalog', 'orders', 'payments', 'cash', 'receipts', 'loyalty', 'metrics']), 'bot.tier': 'standard' } },
-  distribution: { extends: 'growth', capabilities: { ...granted(['bot.ai_inventory', 'bot.ai_customer_history',
+  growth: { extends: 'core', capabilities: { ...granted(['channels.instagram',
+    'automations', 'catalog', 'orders', 'payments', 'cash', 'receipts', 'loyalty', 'metrics']), 'bot.tier': 'none' } },
+  distribution: { extends: 'growth', capabilities: { ...granted(['bot.enabled', 'bot.ai_catalog', 'bot.ai_orders',
+    'bot.ai_inventory', 'bot.ai_customer_history',
     'inventory', 'purchases', 'suppliers', 'sellers', 'advanced_reports', 'inventory_lots', 'expiration_tracking',
     'operational_alerts']), 'bot.tier': 'advanced' } },
   enterprise: { extends: 'distribution', capabilities: { ...granted(['bot.ai_custom_instructions', 'advanced_permissions']), 'bot.tier': 'custom' } }
@@ -61,9 +75,9 @@ const LEGACY_BILLING_PLANS = Object.freeze(Object.fromEntries([
 ].map(([code, label, amount]) => [code, Object.freeze({ code, label, amount, currency: 'ARS' })])));
 const PUBLIC_PLANS = Object.freeze({
   core: { displayName: 'Core', description: 'Atención y seguimiento comercial.', priceSource: 'inicial', highlights: ['WhatsApp e Inbox', 'CRM, ventas y agenda'] },
-  growth: { displayName: 'Growth', description: 'Automatización y operación comercial.', priceSource: 'crecimiento', highlights: ['Todo Core', 'Bot, catálogo, pedidos y cobros'] },
-  distribution: { displayName: 'Distribución', description: 'Stock y operación de distribución.', highlights: ['Todo Growth', 'Inventario, compras y proveedores'] },
-  enterprise: { displayName: 'Enterprise', description: 'Operación con configuración avanzada.', highlights: ['Todo Distribución', 'Instrucciones y permisos avanzados'] }
+  growth: { displayName: 'Growth', description: 'Automatización y operación comercial.', priceSource: 'crecimiento', highlights: ['Todo Core', 'Instagram, catálogo, pedidos y cobros'] },
+  distribution: { displayName: 'Distribución', description: 'Stock y operación de distribución.', highlights: ['Todo Growth', 'Bot avanzado, inventario, compras y proveedores'] },
+  enterprise: { displayName: 'Enterprise', description: 'Operación con configuración avanzada.', highlights: ['Todo Distribución', 'Bot a medida, instrucciones y permisos avanzados'] }
 });
 function publicPlanCatalog() {
   return Object.entries(PUBLIC_PLANS).map(([key, plan]) => {
@@ -87,5 +101,5 @@ function billingPlan(key) {
 const LEGACY_LIFECYCLE_PLAN_MAP = Object.freeze({ inicial: 'basic', crecimiento: 'growth', empresa: 'enterprise' });
 function lifecyclePlan(contract) { return contract.entitlementProfileVersion ? canonicalKey(contract.planCode) : LEGACY_LIFECYCLE_PLAN_MAP[contract.planCode] || null; }
 module.exports = { PROFILE_VERSION, BOT_TIERS, CAPABILITY_REGISTRY, BOOLEAN_CAPABILITIES, LEGACY_CAPABILITY_MAP,
-  MODULE_CAPABILITIES, PROFILE_DEFINITIONS, emptyCapabilities, validCapabilities, flattenProfile, resolveProfile,
+  MODULE_CAPABILITIES, COMMERCIAL_ADDONS, PROFILE_DEFINITIONS, emptyCapabilities, validCapabilities, flattenProfile, resolveProfile,
   LEGACY_BILLING_PLANS, PUBLIC_PLANS, publicPlanCatalog, canonicalKey, billingPlan, lifecyclePlan };

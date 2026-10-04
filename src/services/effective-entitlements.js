@@ -1,10 +1,13 @@
 const { emptyCapabilities, validCapabilities, resolveProfile, MODULE_CAPABILITIES, LEGACY_CAPABILITY_MAP,
-  CAPABILITY_REGISTRY } = require('./plan-catalog');
+  CAPABILITY_REGISTRY, COMMERCIAL_ADDONS } = require('./plan-catalog');
 const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const INACTIVE = new Set(['unactivated', 'inactive', 'suspended', 'suspended_for_nonpayment', 'reversed', 'archived', 'deleted']);
+const BOT_TIER_RANK = Object.freeze({ none: 0, standard: 1, advanced: 2, custom: 3 });
 
 // No cache: every backend guard/tool resolves the current durable clinic settings.
-function resolveEffectiveEntitlements(settings = {}) {
+// authorizedCommercialAddons must come from the Opturon-controlled persistence
+// service, never from tenant settings or request payloads.
+function resolveEffectiveEntitlements(settings = {}, authorizedCommercialAddons = []) {
   const safeSettings = object(settings);
   const portal = object(safeSettings.portal), stored = object(portal.entitlements);
   const billing = object(object(portal.billing).entitlement), policy = object(portal.policy);
@@ -15,6 +18,21 @@ function resolveEffectiveEntitlements(settings = {}) {
   const inactive = INACTIVE.has(billing.state) || billing.paidAccessAllowed === false
     || INACTIVE.has(object(portal.lifecycle).status);
   const capabilities = { ...(profile && !inactive ? profile : emptyCapabilities()) };
+  const appliedAddons = [];
+  if (profile && !inactive && stored.source === 'billing' && Array.isArray(authorizedCommercialAddons)) {
+    for (const key of new Set(authorizedCommercialAddons.filter(value => typeof value === 'string'))) {
+      const addon = COMMERCIAL_ADDONS[key];
+      if (!addon || !addon.eligiblePlanKeys.includes(stored.planKey)) continue;
+      for (const [capability, value] of Object.entries(addon.capabilities)) {
+        if (capability === 'bot.tier') {
+          if ((BOT_TIER_RANK[value] ?? -1) > (BOT_TIER_RANK[capabilities['bot.tier']] ?? -1)) capabilities[capability] = value;
+        } else if (CAPABILITY_REGISTRY[capability]?.type === 'boolean' && value === true) {
+          capabilities[capability] = true;
+        }
+      }
+      appliedAddons.push(key);
+    }
+  }
   // A settings switch is restrictive only. It can never create an entitlement.
   for (const [module, capability] of Object.entries(MODULE_CAPABILITIES)) {
     if (object(policy.enabledModules)[module] === false) capabilities[capability] = false;
@@ -31,7 +49,8 @@ function resolveEffectiveEntitlements(settings = {}) {
     entitlementProfileVersion: profile ? stored.entitlementProfileVersion : null,
     state: !profile ? 'unactivated' : inactive ? 'inactive' : 'active',
     reason: !profile ? 'entitlement_profile_required' : inactive ? 'billing_entitlement_inactive' : null,
-    botActive: safeSettings.botActive === true, capabilities: Object.freeze(capabilities) });
+    botActive: safeSettings.botActive === true, commercialAddons: Object.freeze(appliedAddons),
+    capabilities: Object.freeze(capabilities) });
 }
 function canCapability(entitlements, key) {
   return Object.hasOwn(CAPABILITY_REGISTRY, key) && CAPABILITY_REGISTRY[key].type === 'boolean'
