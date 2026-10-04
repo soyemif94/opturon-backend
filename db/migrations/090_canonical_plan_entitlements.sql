@@ -1,5 +1,5 @@
--- BILL-008. Preserve contracts and freeze existing effective operating permissions.
--- Profiles live in existing clinic JSONB; no new catalog tables or provider calls.
+-- BILL-008. Preserve contracts; normalize recognized legacy entitlement plans.
+-- Unknown legacy plans retain a restricted settings snapshot; no provider calls.
 ALTER TABLE saas_subscriptions DROP CONSTRAINT IF EXISTS chk_saas_subscriptions_plan_code;
 ALTER TABLE saas_subscriptions ADD CONSTRAINT chk_saas_subscriptions_plan_code
   CHECK ("planCode" IN ('inicial','crecimiento','empresa','core','growth','distribution','enterprise'));
@@ -20,7 +20,14 @@ WITH source AS (
   SELECT *, (policy->>'policyVersion' ~ '^[1-9][0-9]*$'
     OR jsonb_typeof(policy->'operatingProfile')='object'
     OR (jsonb_typeof(policy->'capabilities')='array' AND policy->'capabilities'<>'[]'::jsonb)
-    OR (jsonb_typeof(policy->'enabledModules')='object' AND policy->'enabledModules'<>'{}'::jsonb)) IS TRUE AS explicit
+    OR (jsonb_typeof(policy->'enabledModules')='object' AND policy->'enabledModules'<>'{}'::jsonb)) IS TRUE AS explicit,
+    CASE lower(btrim(COALESCE(policy->>'planCode', portal->>'planCode', 'unknown')))
+      WHEN 'inicial' THEN 'core' WHEN 'basic' THEN 'core' WHEN 'core' THEN 'core'
+      WHEN 'crecimiento' THEN 'growth' WHEN 'growth' THEN 'growth'
+      WHEN 'distribution' THEN 'distribution'
+      WHEN 'empresa' THEN 'enterprise' WHEN 'enterprise' THEN 'enterprise'
+      ELSE NULL
+    END AS canonical_plan_key
   FROM source
 ), modules AS (
   SELECT s.*, m.enabled FROM configured s CROSS JOIN LATERAL (
@@ -37,9 +44,13 @@ WITH source AS (
 ), profiles AS (
   SELECT *, enabled || jsonb_build_object(
     'channels.whatsapp',true,'channels.instagram',true,
-    'bot.enabled',true,'bot.tier','custom',
-    'bot.ai_catalog',true,'bot.ai_orders',true,'bot.ai_inventory',true,
-    'bot.ai_customer_history',true,'bot.ai_custom_instructions',true,
+    'bot.enabled',COALESCE(canonical_plan_key IN ('growth','distribution','enterprise'),false),
+    'bot.tier',CASE canonical_plan_key WHEN 'growth' THEN 'standard' WHEN 'distribution' THEN 'advanced' WHEN 'enterprise' THEN 'custom' ELSE 'none' END,
+    'bot.ai_catalog',COALESCE(canonical_plan_key IN ('growth','distribution','enterprise'),false),
+    'bot.ai_orders',COALESCE(canonical_plan_key IN ('growth','distribution','enterprise'),false),
+    'bot.ai_inventory',COALESCE(canonical_plan_key IN ('distribution','enterprise'),false),
+    'bot.ai_customer_history',COALESCE(canonical_plan_key IN ('distribution','enterprise'),false),
+    'bot.ai_custom_instructions',COALESCE(canonical_plan_key='enterprise',false),
     'purchases',enabled->'inventory','suppliers',enabled->'inventory',
     'sellers',true,'advanced_reports',true,'advanced_permissions',true,'operational_alerts',true,
     'inventory_lots',enabled->'inventory','expiration_tracking',enabled->'inventory') AS capabilities

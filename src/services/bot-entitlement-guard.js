@@ -1,13 +1,9 @@
 const { resolveEffectiveEntitlements, canBotRespond, canBotTool, canCapability } = require('./effective-entitlements');
-const { listActiveCommercialEntitlementKeys } = require('./commercial-entitlements.service');
 
 async function loadEntitlements(clinicId) {
   const { query } = require('../db/client');
-  const [rowResult, authorizedAddons] = await Promise.all([
-    query('SELECT settings FROM clinics WHERE id=$1', [clinicId]),
-    listActiveCommercialEntitlementKeys(clinicId)
-  ]);
-  return resolveEffectiveEntitlements(rowResult.rows[0]?.settings, authorizedAddons);
+  const rowResult = await query('SELECT settings FROM clinics WHERE id=$1', [clinicId]);
+  return resolveEffectiveEntitlements(rowResult.rows[0]?.settings);
 }
 async function botAllowedNow(clinicId, channel) {
   return canBotRespond(await loadEntitlements(clinicId), channel, clinicId);

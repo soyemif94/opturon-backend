@@ -26,24 +26,11 @@ const MODULE_CAPABILITIES = Object.freeze({
   orders: 'orders', invoices: 'receipts', payments: 'payments', cash: 'cash', loyalty: 'loyalty',
   automations: 'automations', metrics: 'metrics', inventory: 'inventory'
 });
-// Commercial grants are controlled by Opturon and stored separately from
-// tenant-editable settings. Only explicitly supported grants may add access.
-const COMMERCIAL_ADDONS = Object.freeze({
-  bot_standard: Object.freeze({
-    eligiblePlanKeys: Object.freeze(['growth']),
-    capabilities: Object.freeze({
-      'bot.enabled': true,
-      'bot.tier': 'standard',
-      'bot.ai_catalog': true,
-      'bot.ai_orders': true
-    })
-  })
-});
 const granted = keys => Object.fromEntries(keys.map(key => [key, true]));
 const PROFILE_DEFINITIONS = Object.freeze({
   core: { capabilities: { ...granted(['channels.whatsapp', 'inbox', 'crm', 'pipeline', 'agenda']), 'bot.tier': 'none' } },
-  growth: { extends: 'core', capabilities: { ...granted(['channels.instagram',
-    'automations', 'catalog', 'orders', 'payments', 'cash', 'receipts', 'loyalty', 'metrics']), 'bot.tier': 'none' } },
+  growth: { extends: 'core', capabilities: { ...granted(['channels.instagram', 'bot.enabled', 'bot.ai_catalog', 'bot.ai_orders',
+    'automations', 'catalog', 'orders', 'payments', 'cash', 'receipts', 'loyalty', 'metrics']), 'bot.tier': 'standard' } },
   distribution: { extends: 'growth', capabilities: { ...granted(['bot.enabled', 'bot.ai_catalog', 'bot.ai_orders',
     'bot.ai_inventory', 'bot.ai_customer_history',
     'inventory', 'purchases', 'suppliers', 'sellers', 'advanced_reports', 'inventory_lots', 'expiration_tracking',
@@ -75,7 +62,7 @@ const LEGACY_BILLING_PLANS = Object.freeze(Object.fromEntries([
 ].map(([code, label, amount]) => [code, Object.freeze({ code, label, amount, currency: 'ARS' })])));
 const PUBLIC_PLANS = Object.freeze({
   core: { displayName: 'Core', description: 'Atención y seguimiento comercial.', priceSource: 'inicial', highlights: ['WhatsApp e Inbox', 'CRM, ventas y agenda'] },
-  growth: { displayName: 'Growth', description: 'Automatización y operación comercial.', priceSource: 'crecimiento', highlights: ['Todo Core', 'Instagram, catálogo, pedidos y cobros'] },
+  growth: { displayName: 'Growth', description: 'Automatización y operación comercial.', priceSource: 'crecimiento', highlights: ['Todo Core', 'Bot estándar, Instagram, catálogo y pedidos'] },
   distribution: { displayName: 'Distribución', description: 'Stock y operación de distribución.', highlights: ['Todo Growth', 'Bot avanzado, inventario, compras y proveedores'] },
   enterprise: { displayName: 'Enterprise', description: 'Operación con configuración avanzada.', highlights: ['Todo Distribución', 'Bot a medida, instrucciones y permisos avanzados'] }
 });
@@ -100,6 +87,19 @@ function billingPlan(key) {
 // Historical lifecycle labels are retained solely for old immutable contracts.
 const LEGACY_LIFECYCLE_PLAN_MAP = Object.freeze({ inicial: 'basic', crecimiento: 'growth', empresa: 'enterprise' });
 function lifecyclePlan(contract) { return contract.entitlementProfileVersion ? canonicalKey(contract.planCode) : LEGACY_LIFECYCLE_PLAN_MAP[contract.planCode] || null; }
+// Entitlement normalization is deliberately separate from BILL-007's historical
+// lifecycle codes; it never rewrites immutable subscription or contract rows.
+const LEGACY_ENTITLEMENT_PLAN_MAP = Object.freeze({
+  inicial: 'core', basic: 'core', core: 'core',
+  crecimiento: 'growth', growth: 'growth',
+  distribution: 'distribution',
+  empresa: 'enterprise', enterprise: 'enterprise'
+});
+function legacyEntitlementPlan(value) {
+  const code = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return LEGACY_ENTITLEMENT_PLAN_MAP[code] || null;
+}
 module.exports = { PROFILE_VERSION, BOT_TIERS, CAPABILITY_REGISTRY, BOOLEAN_CAPABILITIES, LEGACY_CAPABILITY_MAP,
-  MODULE_CAPABILITIES, COMMERCIAL_ADDONS, PROFILE_DEFINITIONS, emptyCapabilities, validCapabilities, flattenProfile, resolveProfile,
-  LEGACY_BILLING_PLANS, PUBLIC_PLANS, publicPlanCatalog, canonicalKey, billingPlan, lifecyclePlan };
+  MODULE_CAPABILITIES, PROFILE_DEFINITIONS, emptyCapabilities, validCapabilities, flattenProfile, resolveProfile,
+  LEGACY_BILLING_PLANS, PUBLIC_PLANS, publicPlanCatalog, canonicalKey, billingPlan, lifecyclePlan,
+  LEGACY_ENTITLEMENT_PLAN_MAP, legacyEntitlementPlan };
