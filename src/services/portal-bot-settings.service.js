@@ -1,6 +1,7 @@
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   getClinicBotSettingsById,
+  updateClinicBotActiveById,
   updateClinicBotModeById,
   updateClinicBotConfigById,
   updateClinicBotTransferConfigById
@@ -12,6 +13,7 @@ const {
   validateTransferConfig
 } = require('../utils/transfer-config');
 const { DEFAULT_BOT_CONFIG, normalizeBotConfig, validateBotConfig } = require('../utils/bot-config');
+const { resolveEffectiveEntitlements, canCapability } = require('./effective-entitlements');
 
 const ALLOWED_BOT_MODES = new Set(['automatic', 'sales', 'agenda']);
 
@@ -40,12 +42,17 @@ function mapBotSettings(tenantId, clinic, botMode) {
     ? clinic.botSettings
     : {};
 
+  const entitlements = resolveEffectiveEntitlements(clinic.settings);
+  const botConfig = normalizeBotConfig(botSettings.config, DEFAULT_BOT_CONFIG);
+  if (!canCapability(entitlements, 'bot.ai_custom_instructions')) botConfig.businessInstructions = '';
   return {
     tenantId,
     clinicId: clinic.id,
     clinicName: clinic.name || null,
     mode: normalizeBotMode(botMode, 'automatic'),
-    botConfig: normalizeBotConfig(botSettings.config, DEFAULT_BOT_CONFIG)
+    botActive: clinic.settings?.botActive === true,
+    entitlements,
+    botConfig
   };
 }
 
@@ -91,6 +98,13 @@ async function getPortalBotSettings(tenantId) {
 }
 
 async function updatePortalBotSettings(tenantId, payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || Object.keys(payload).some(key => !['mode', 'botConfig', 'botActive'].includes(key))
+    || (Object.hasOwn(payload, 'botActive') && typeof payload.botActive !== 'boolean')
+    || (Object.hasOwn(payload, 'botConfig') && (!payload.botConfig || Array.isArray(payload.botConfig)
+      || typeof payload.botConfig !== 'object' || Object.keys(payload.botConfig).some(key => !Object.hasOwn(DEFAULT_BOT_CONFIG, key))))) {
+    return buildReason('invalid_bot_settings_payload', 'La configuración contiene campos no permitidos.');
+  }
   const safeTenantId = normalizeString(tenantId);
   if (!safeTenantId) {
     return buildReason('missing_tenant_id', 'No recibimos el tenant para guardar la configuracion del bot.');
@@ -103,7 +117,7 @@ async function updatePortalBotSettings(tenantId, payload) {
 
   const hasModePayload = payload && Object.prototype.hasOwnProperty.call(payload, 'mode');
   const hasBotConfigPayload = Boolean(payload && payload.botConfig && typeof payload.botConfig === 'object');
-  if (!hasModePayload && !hasBotConfigPayload) {
+  if (!hasModePayload && !hasBotConfigPayload && !Object.hasOwn(payload, 'botActive')) {
     return buildReason('invalid_bot_settings_payload', 'No recibimos cambios para guardar en la configuracion del bot.', {
       tenantId: safeTenantId
     });
@@ -117,6 +131,24 @@ async function updatePortalBotSettings(tenantId, payload) {
   }
 
   let clinic = currentClinic;
+  // Validate the entire request before its first write.
+  if (hasModePayload && !ALLOWED_BOT_MODES.has(normalizeBotMode(payload.mode, ''))) return buildReason('invalid_bot_mode');
+  let validatedBotConfig = null;
+  if (hasBotConfigPayload) {
+    validatedBotConfig = validateBotConfig({
+      ...normalizeBotConfig(currentClinic.botSettings?.config, DEFAULT_BOT_CONFIG),
+      ...payload.botConfig
+    });
+    if (!validatedBotConfig.ok) {
+      return buildReason(
+        'invalid_bot_config',
+        validatedBotConfig.errors.name || validatedBotConfig.errors.tone || validatedBotConfig.errors.treatment ||
+          validatedBotConfig.errors.businessProfilePreset || validatedBotConfig.errors.commercialObjective ||
+          validatedBotConfig.errors.salesMode || validatedBotConfig.errors.businessInstructions || 'La configuracion del bot no es valida.',
+        { tenantId: safeTenantId, fieldErrors: validatedBotConfig.errors }
+      );
+    }
+  }
   if (hasModePayload) {
     const nextMode = normalizeBotMode(payload && payload.mode, '');
     if (!ALLOWED_BOT_MODES.has(nextMode)) {
@@ -137,11 +169,10 @@ async function updatePortalBotSettings(tenantId, payload) {
     const botSettings = clinic && clinic.botSettings && typeof clinic.botSettings === 'object'
       ? clinic.botSettings
       : {};
-    const mergedBotConfig = {
+    const validation = validatedBotConfig || validateBotConfig({
       ...normalizeBotConfig(botSettings.config, DEFAULT_BOT_CONFIG),
       ...payload.botConfig
-    };
-    const validation = validateBotConfig(mergedBotConfig);
+    });
     if (!validation.ok) {
       return buildReason(
         'invalid_bot_config',
@@ -168,12 +199,9 @@ async function updatePortalBotSettings(tenantId, payload) {
     }
   }
 
-  return {
-    ok: true,
-    tenantId: safeTenantId,
-    clinicId: clinic.id,
-    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode)
-  };
+  if (Object.hasOwn(payload, 'botActive')) clinic = await updateClinicBotActiveById(context.clinic.id, payload.botActive);
+  return { ok: true, tenantId: safeTenantId, clinicId: clinic.id,
+    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode) };
 }
 
 async function getPortalBotTransferConfig(tenantId) {

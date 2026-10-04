@@ -218,13 +218,14 @@ async function resolvePortalTenantContext(externalTenantId) {
       hasChannel: Boolean(channelSelection.channel && String(channelSelection.channel.status || '').trim().toLowerCase() === 'active'),
       hasProducts: activeProducts.length > 0,
       hasMessages: conversationsCount > 0,
-      botEnabled: activeAutomations.length > 0,
+      botEnabled: policy.entitlements.capabilities['bot.enabled'] === true && policy.entitlements.botActive === true,
       productsCount: activeProducts.length,
       conversationsCount,
       automationsCount: activeAutomations.length
     },
     botMode: resolveClinicBotMode(clinic),
     policy,
+    entitlements: policy.entitlements,
     reason: channelSelection.reason
   };
 }

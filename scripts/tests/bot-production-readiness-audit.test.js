@@ -84,6 +84,8 @@ const clinicA = {
   id: 'tenant-a',
   timezone: 'America/Argentina/Buenos_Aires',
   settings: {
+    botActive: true,
+    portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } },
     businessProfile: {
       address: 'Av. Audit 123, CABA',
       openingHours: 'Lunes a viernes de 9 a 18 hs',
@@ -101,7 +103,11 @@ const clinicA = {
   }
 };
 
-const clinicNoData = { id: 'tenant-a', settings: { businessProfile: {}, bot: {} } };
+const clinicNoData = { id: 'tenant-a', settings: {
+  botActive: true,
+  portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } },
+  businessProfile: {}, bot: {}
+} };
 const clinicB = {
   ...clinicA,
   id: 'tenant-b',

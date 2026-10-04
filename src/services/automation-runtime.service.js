@@ -5,7 +5,8 @@ const {
   updateAutomation
 } = require('../repositories/automations.repository');
 const { logInfo } = require('../utils/logger');
-const { listProductsByClinicId, findProductById } = require('../repositories/products.repository');
+const { guardedProducts, toolAllowedNow } = require('./bot-entitlement-guard');
+const { listProductsByClinicId, findProductById } = guardedProducts(require('../repositories/products.repository'));
 const { openHandoff, assignHandoff, getOpenHandoff } = require('../repositories/handoff.repository');
 const { getDefaultAssignee } = require('../repositories/staff.repository');
 const { addEvent } = require('../repositories/conversation-events.repository');
@@ -1003,6 +1004,7 @@ async function evaluateConversationAutomation({ clinicId, conversation, contact,
 }
 
 async function resolveAutomationReplyForInbound({ clinic, conversation, inboundText, recentMessages = [] }) {
+  if (!await toolAllowedNow(clinic.id, 'automations')) return null;
   const decision = await evaluateConversationAutomation({
     clinicId: clinic && clinic.id ? clinic.id : null,
     conversation,

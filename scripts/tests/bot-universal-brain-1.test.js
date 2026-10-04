@@ -98,6 +98,8 @@ const {
 const clinic = {
   id: 'clinic-1',
   settings: {
+    botActive: true,
+    portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } },
     businessProfile: {
       address: 'Av. Siempre Viva 123, CABA',
       openingHours: 'Lunes a viernes de 9 a 18 hs',

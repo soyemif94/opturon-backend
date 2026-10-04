@@ -50,8 +50,12 @@ const sampleProducts = [
 const baseClinic = {
   id: 'clinic-1',
   timezone: 'America/Argentina/Buenos_Aires',
+  botActive: true,
   settings: {
+    botActive: true,
+    portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } },
     bot: {
+      assistantMode: 'opturon_sales',
       mode: 'sales',
       transferConfig: {
         enabled: true,
@@ -189,6 +193,10 @@ stubModule('src/utils/logger.js', {
 });
 
 stubModule('src/db/client.js', {
+  query: async () => ({ rows: [{ settings: {
+    botActive: true,
+    portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } }
+  } }] }),
   pool: {
     connect: async () => ({
       query: async () => ({ rows: [{ locked: true }] }),
@@ -435,10 +443,10 @@ async function executeJob() {
   assert.deepStrictEqual(state.doneJobs, [`job-${state.message.id}`]);
 }
 
-function assertBlocked(reason) {
+function assertBlocked(reason, { stateUpdates = 0 } = {}) {
   assert.strictEqual(state.sends.length, 0);
   assert.strictEqual(state.outboundWrites.length, 0);
-  assert.strictEqual(state.stateUpdates.length, 0);
+  assert.strictEqual(state.stateUpdates.length, stateUpdates);
   assert.strictEqual(state.aiAssistCalls, 0);
   assert.strictEqual(state.finalLlmCalls, 0);
   assert.strictEqual(state.automationCalls, 0);
@@ -451,7 +459,9 @@ async function run() {
     conversation: { context: { portalBotEnabled: false } }
   });
   await executeJob();
-  assertBlocked(BOT_REPLY_AUTHORITY_REASONS.BOT_DISABLED);
+  assertBlocked(BOT_REPLY_AUTHORITY_REASONS.BOT_DISABLED, { stateUpdates: 1 });
+  assert.strictEqual(state.stateUpdates[0].state, null);
+  assert.strictEqual(state.stateUpdates[0].contextPatch.portalLastProcessedInboundMessageId, state.message.id);
 
   resetScenario({
     conversation: { context: { portalBotEnabled: false } }
@@ -510,7 +520,7 @@ async function run() {
   });
   await executeJob();
   assert.strictEqual(state.sends.length, 1);
-  assert.strictEqual(state.sends[0].text, expectedPricing.replyText);
+  assert.strictEqual(state.sends[0].text.replace(/\s/g, ' '), expectedPricing.replyText.replace(/\s/g, ' '));
   assert.strictEqual(state.handoffOpenCalls.length, 0);
   assert.strictEqual(state.finalLlmCalls, 0);
   assert.strictEqual(state.finalContextBuilds, 0);

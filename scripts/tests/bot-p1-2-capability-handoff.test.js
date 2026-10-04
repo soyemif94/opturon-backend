@@ -66,6 +66,7 @@ function buildClinic(id = 'tenant-a') {
       businessProfile: {},
       bot: {},
       portal: {
+        entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 },
         policy: {
           policyVersion: 1,
           capabilities: allCapabilities,

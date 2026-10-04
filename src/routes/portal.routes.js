@@ -454,6 +454,11 @@ router.use(
 router.get('/product-images/:tenantId/:fileName', getPortalProductImagePublic);
 router.get('/loyalty-reward-images/:tenantId/:fileName', getPortalLoyaltyRewardImagePublic);
 router.get('/tenants/:tenantId/context', getPortalTenantContext);
+// Module-specific role checks below remain in force in addition to entitlements.
+router.use('/tenants/:tenantId/suppliers', requirePortalCapability('suppliers'));
+router.use('/tenants/:tenantId/purchase-receipts', requirePortalCapability('purchases'));
+router.use('/tenants/:tenantId/seller-metrics', requirePortalCapability('advanced_reports'));
+router.use('/tenants/:tenantId/operational-alerts', requirePortalCapability('operational_alerts'));
 router.get('/tenants/:tenantId/policy', requireAdminInternalActor, getPortalTenantPolicy);
 router.post('/tenants/:tenantId/provision', requireAdminInternalActor, postPortalTenantProvision);
 router.patch('/tenants/:tenantId/policy', requireAdminInternalActor, patchPortalTenantPolicy);
@@ -462,7 +467,7 @@ router.patch('/tenants/:tenantId/conversations/archive', inboxModule, patchPorta
 router.patch('/tenants/:tenantId/conversations/restore', inboxModule, patchPortalConversationsRestore);
 router.get('/tenants/:tenantId/conversations/:conversationId', inboxModule, getPortalConversation);
 router.get('/tenants/:tenantId/conversations/:conversationId/messages/:messageId/media', inboxModule, getPortalConversationMessageMedia);
-router.patch('/tenants/:tenantId/conversations/:conversationId/assign-seller', inboxModule, patchPortalConversationAssignSeller);
+router.patch('/tenants/:tenantId/conversations/:conversationId/assign-seller', inboxModule, requirePortalCapability('sellers'), patchPortalConversationAssignSeller);
 router.patch('/tenants/:tenantId/conversations/:conversationId/lead-status', inboxModule, patchPortalConversationLeadStatusController);
 router.patch('/tenants/:tenantId/conversations/:conversationId/next-action', inboxModule, patchPortalConversationNextActionController);
 router.patch('/tenants/:tenantId/conversations/:conversationId', inboxModule, updatePortalConversation);
@@ -635,14 +640,14 @@ router.get('/tenants/:tenantId/operational-alerts/history/:instanceId', requireP
 router.get('/tenants/:tenantId/whatsapp/embedded-signup/status', requirePortalInternalAuth, getPortalWhatsAppEmbeddedSignupStatus);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/refresh', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupRefresh);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/cancel', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupCancel);
-router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupBootstrap);
+router.post('/tenants/:tenantId/whatsapp/embedded-signup/bootstrap', requirePortalInternalAuth, requirePortalCapability('channels.whatsapp'), postPortalWhatsAppEmbeddedSignupBootstrap);
 router.post('/tenants/:tenantId/whatsapp/embedded-signup/finalize', requirePortalInternalAuth, postPortalWhatsAppEmbeddedSignupFinalize);
 router.post('/tenants/:tenantId/whatsapp/register', requirePortalInternalAuth, requireWhatsAppCanaryWrite, postPortalWhatsAppRegister);
 router.post('/tenants/:tenantId/whatsapp/manual-connect', requirePortalInternalAuth, postPortalWhatsAppManualConnect);
 router.post('/tenants/:tenantId/whatsapp/discover-assets', requirePortalInternalAuth, postPortalWhatsAppDiscoverAssets);
 router.get('/tenants/:tenantId/whatsapp/status', requirePortalInternalAuth, getPortalWhatsAppStatusController);
 router.get('/tenants/:tenantId/instagram/status', requirePortalInternalAuth, getPortalInstagramStatus);
-router.post('/tenants/:tenantId/instagram/connect', requirePortalInternalAuth, postPortalInstagramConnect);
+router.post('/tenants/:tenantId/instagram/connect', requirePortalInternalAuth, requirePortalCapability('channels.instagram'), postPortalInstagramConnect);
 router.post('/tenants/:tenantId/instagram/disconnect', requirePortalInternalAuth, postPortalInstagramDisconnect);
 router.get('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalAuth, getPortalWhatsAppDefaultChannel);
 router.patch('/tenants/:tenantId/whatsapp/default-channel', requirePortalInternalAuth, patchPortalWhatsAppDefaultChannel);
@@ -660,10 +665,10 @@ router.post(
   postPortalWhatsAppTemplatesSync
 );
 router.get('/tenants/:tenantId/users', requirePortalInternalAuth, getPortalUsers);
-router.post('/tenants/:tenantId/users', requirePortalInternalAuth, postPortalUser);
-router.patch('/tenants/:tenantId/users/primary', requirePortalInternalAuth, patchPortalPrimaryUser);
-router.patch('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, patchPortalUser);
-router.delete('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, destroyPortalUser);
+router.post('/tenants/:tenantId/users', requirePortalInternalAuth, requirePortalCapability('advanced_permissions'), postPortalUser);
+router.patch('/tenants/:tenantId/users/primary', requirePortalInternalAuth, requirePortalCapability('advanced_permissions'), patchPortalPrimaryUser);
+router.patch('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, requirePortalCapability('advanced_permissions'), patchPortalUser);
+router.delete('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, requirePortalCapability('advanced_permissions'), destroyPortalUser);
 router.get('/auth/invitations', getPortalInvitation);
 router.post('/auth/invitations/accept', postPortalInvitationAccept);
 router.post('/auth/login', postPortalAuthLogin);

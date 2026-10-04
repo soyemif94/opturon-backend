@@ -137,8 +137,8 @@ function testBuildTenantPolicyLegacyFallback() {
 
   assert.strictEqual(policy.policyVersion, 0);
   assert.strictEqual(policy.source, 'legacy_fallback');
-  assert.strictEqual(policy.enabledModules.orders, true);
-  assert.strictEqual(policy.enabledModules.metrics, true);
+  assert.strictEqual(policy.enabledModules.orders, false);
+  assert.strictEqual(policy.enabledModules.metrics, false);
 }
 
 function testBuildTenantPolicyExplicitRestrictions() {
@@ -162,13 +162,13 @@ function testBuildTenantPolicyExplicitRestrictions() {
   });
 
   assert.strictEqual(policy.policyVersion, 1);
-  assert.strictEqual(policy.enabledModules.contacts, true);
+  assert.strictEqual(policy.enabledModules.contacts, false);
   assert.strictEqual(policy.enabledModules.agenda, false);
   assert.strictEqual(policy.enabledModules.orders, false);
   assert.strictEqual(policy.enabledModules.inventory, false);
 }
 
-function testBuildTenantPolicyInventoryCapabilityEnablesInventoryModule() {
+function testBuildTenantPolicyLegacyCapabilityCannotGrantInventoryWithoutPlanEntitlement() {
   const { service } = buildServiceHarness();
   const policy = service.buildTenantPolicyFromSettings({
     portal: {
@@ -185,7 +185,7 @@ function testBuildTenantPolicyInventoryCapabilityEnablesInventoryModule() {
     }
   });
 
-  assert.strictEqual(policy.enabledModules.inventory, true);
+  assert.strictEqual(policy.enabledModules.inventory, false);
 }
 
 async function testTenantPatchCannotEscalateCapabilities() {
@@ -215,7 +215,7 @@ async function testTenantPatchCannotEscalateCapabilities() {
 
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.clinic.name, 'Tenant One');
-  assert.deepStrictEqual(result.policy.capabilities, ['contacts', 'appointments', 'payments']);
+  assert.deepStrictEqual(result.policy.capabilities, []);
   assert.strictEqual(result.policy.enabledModules.orders, false);
   assert.strictEqual(result.policy.enabledModules.agenda, false);
   assert.strictEqual(result.policy.operatingProfile.industryProfile, 'appointment_services');
@@ -254,7 +254,7 @@ async function testIdempotentPatchSkipsAudit() {
 async function run() {
   testBuildTenantPolicyLegacyFallback();
   testBuildTenantPolicyExplicitRestrictions();
-  testBuildTenantPolicyInventoryCapabilityEnablesInventoryModule();
+  testBuildTenantPolicyLegacyCapabilityCannotGrantInventoryWithoutPlanEntitlement();
   await testTenantPatchCannotEscalateCapabilities();
   await testIdempotentPatchSkipsAudit();
   console.log('tenant-policy-operating-profile.test.js: ok');

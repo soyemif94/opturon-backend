@@ -1661,6 +1661,13 @@ async function sendPortalMessage(tenantId, conversationId, text, options = {}) {
   }
 
   const runtimeProvider = String(runtimeChannel.provider || '').trim().toLowerCase();
+  const { loadEntitlements } = require('./bot-entitlement-guard');
+  const { canCapability } = require('./effective-entitlements');
+  const entitlements = await loadEntitlements(context.clinic.id);
+  const channelCapability = runtimeProvider === 'whatsapp_cloud' ? 'channels.whatsapp' : 'channels.instagram';
+  if (!canCapability(entitlements, 'inbox') || !canCapability(entitlements, channelCapability)) {
+    return { ok: false, tenantId: context.tenantId, reason: 'tenant_capability_disabled' };
+  }
   if (runtimeProvider !== 'whatsapp_cloud' && runtimeProvider !== 'instagram_graph') {
     return {
       ok: false,

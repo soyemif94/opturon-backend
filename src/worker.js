@@ -6,6 +6,8 @@ const { execSync } = require('child_process');
 const env = require('./config/env');
 const { pool, withTransaction } = require('./db/client');
 const { logInfo, logWarn, logError } = require('./utils/logger');
+const { botAllowedNow, toolAllowedNow, guardedBotTool, guardedProducts } = require('./services/bot-entitlement-guard');
+const { resolveEffectiveEntitlements, canBotTool, canCapability } = require('./services/effective-entitlements');
 const {
   findChannelById,
   findPreferredWhatsAppChannelByClinicId,
@@ -35,14 +37,20 @@ const {
   resolveProductStockPriority
 } = require('./utils/conversational-commerce');
 const conversationRepo = require('./conversations/conversation.repo');
-const { isAutomaticReplyAllowedNow } = require('./conversations/human-takeover.service');
+const { isAutomaticReplyAllowedNow: conversationReplyAllowedNow } = require('./conversations/human-takeover.service');
+async function isAutomaticReplyAllowedNow(scope) {
+  const channel = await findChannelById(scope.channelId);
+  return await botAllowedNow(scope.clinicId, channel) && await conversationReplyAllowedNow(scope);
+}
 const { processTakeoverInbound } = require('./conversations/takeover-operational.service');
 const { orderClosure } = require('./services/order-closure.service');
 const { orderAmendment } = require('./services/order-amendment.service');
 const { decideReply } = require('./conversations/conversation.engine');
 const { parseAppointmentText } = require('./conversations/appointment.parser');
-const { listProductsByClinicId, findProductById } = require('./repositories/products.repository');
-const { createOrderForClinic, patchOrderStatusForClinic } = require('./services/portal-orders.service');
+const { listProductsByClinicId, findProductById } = guardedProducts(require('./repositories/products.repository'));
+const orderTools = require('./services/portal-orders.service');
+const createOrderForClinic = guardedBotTool(orderTools.createOrderForClinic, 'orders', id => id, () => ({ ok: false, reason: 'bot_tool_not_entitled' }));
+const patchOrderStatusForClinic = guardedBotTool(orderTools.patchOrderStatusForClinic, 'orders', id => id, () => ({ ok: false, reason: 'bot_tool_not_entitled' }));
 const { findCommercialKnowledgeMatch } = require('./ai/commercial-knowledge-base');
 const {
   upsertLeadForConversation,
@@ -52,13 +60,16 @@ const {
 } = require('./repositories/lead.repository');
 const {
   getOrCreateCalendarRules,
-  holdSlot,
-  bookHeldSlot,
+  holdSlot: rawHoldSlot,
+  bookHeldSlot: rawBookHeldSlot,
   releaseExpiredHolds,
   getClinic,
   findBookedAppointmentByConversation,
-  cancelAppointment
+  cancelAppointment: rawCancelAppointment
 } = require('./repositories/calendar.repository');
+const holdSlot = guardedBotTool(rawHoldSlot, 'agenda', clinicId => clinicId);
+const bookHeldSlot = guardedBotTool(rawBookHeldSlot, 'agenda', clinicId => clinicId);
+const cancelAppointment = guardedBotTool(rawCancelAppointment, 'agenda', clinicId => clinicId);
 const { getDefaultAssignee } = require('./repositories/staff.repository');
 const { openHandoff, assignHandoff, getOpenHandoff } = require('./repositories/handoff.repository');
 const {
@@ -69,12 +80,15 @@ const {
 const { claimJobs, markJobDone, requeueOrFailJob } = require('./repositories/job.repository');
 const { resolveAutomationReplyForInbound } = require('./services/automation-runtime.service');
 const { getAutomationEnablementState } = require('./services/automation-enablement.service');
-const { classifyCommerceAiAssist } = require('./services/ai-assist.service');
-const {
-  suggestClinicAgendaSlots,
-  createClinicAgendaBotReservation
-} = require('./services/portal-agenda.service');
-const { getLoyaltyWhatsAppSnapshotByClinicId } = require('./services/portal-loyalty.service');
+const classifyCommerceAiAssist = guardedBotTool(require('./services/ai-assist.service').classifyCommerceAiAssist,
+  'ai_assist', input => input.clinicId, () => ({ ok: false, skipped: true, reason: 'bot_tool_not_entitled' }));
+const agendaTools = require('./services/portal-agenda.service');
+const suggestClinicAgendaSlots = guardedBotTool(agendaTools.suggestClinicAgendaSlots, 'agenda', input => input.clinicId,
+  () => ({ ok: false, reason: 'bot_tool_not_entitled', suggestions: [] }));
+const createClinicAgendaBotReservation = guardedBotTool(agendaTools.createClinicAgendaBotReservation, 'agenda', input => input.clinicId,
+  () => ({ ok: false, reason: 'bot_tool_not_entitled' }));
+const getLoyaltyWhatsAppSnapshotByClinicId = guardedBotTool(require('./services/portal-loyalty.service').getLoyaltyWhatsAppSnapshotByClinicId,
+  'loyalty', id => id);
 const {
   listDueAgendaReminderCandidates,
   claimAgendaItemReminder,
@@ -1064,7 +1078,10 @@ function getClinicBotConfig(clinic) {
   const config = settings && settings.bot && settings.bot.config && typeof settings.bot.config === 'object'
     ? settings.bot.config
     : null;
-  return normalizeBotConfig(config, DEFAULT_BOT_CONFIG);
+  const result = normalizeBotConfig(config, DEFAULT_BOT_CONFIG);
+  const entitlement = resolveEffectiveEntitlements(settings);
+  if (!canBotTool(entitlement, 'custom_instructions')) result.businessInstructions = '';
+  return { ...result, botTier: entitlement.capabilities['bot.tier'] };
 }
 
 function hasCustomBotConfigValue(value) {
@@ -1804,9 +1821,15 @@ const PLAN_PENDING_ACTION_COMPARE_CURRENT = 'compare_current_plan_with_plan';
 
 function buildCommerceEligibleProducts(products) {
   return buildCommerceCatalogProducts(products).filter((product) => {
+    if (product.stockVisible === false) return true;
     const stock = Number(product && product.stock ? product.stock : 0);
     return stock > 0;
   });
+}
+
+function isKnownOutOfStock(product) {
+  if (!product || product.stockVisible === false) return false;
+  return Number(product.stock || 0) <= 0;
 }
 
 function buildCommerceCatalogProducts(products) {
@@ -1895,7 +1918,8 @@ function buildCommerceCatalogPage(products, {
       name: product.name,
       price: resolvedPrice.valid ? resolvedPrice.value : null,
       currency: String(product.currency || 'ARS').toUpperCase() || 'ARS',
-      stock: Number(product.stock || 0),
+      stock: product.stockVisible === false ? null : Number(product.stock || 0),
+      stockVisible: product.stockVisible !== false,
       sku: product.sku || null,
       description: product.description || null,
       image: product.image || null,
@@ -8771,6 +8795,7 @@ function buildPaymentMethodsReply({ paymentMethods, transferConfig, activePlanNa
 
 function buildStockAvailabilityReply(product) {
   const safeProduct = product && typeof product === 'object' ? product : null;
+  if (safeProduct?.stockVisible === false) return 'El equipo puede confirmar la disponibilidad de este producto.';
   if (!safeProduct) {
     return 'Puedo revisar stock real desde el catálogo. Decime cuál producto o plan querés consultar y te digo la disponibilidad.';
   }
@@ -11695,6 +11720,7 @@ function getActiveGeneratedBotConfig(clinic) {
 
 function getClinicTransferConfig(clinic) {
   const settings = parseClinicSettingsObject(clinic);
+  if (!canBotTool(resolveEffectiveEntitlements(settings), 'payments')) return null;
   const config = settings && settings.bot && settings.bot.transferConfig && typeof settings.bot.transferConfig === 'object'
     ? settings.bot.transferConfig
     : null;
@@ -12087,7 +12113,7 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
       type: wantsPrice && wantsStock ? 'tenant_catalog_price_and_stock' : `tenant_catalog_${commercialIntent.type}`,
       replyText: replyParts.filter(Boolean).join('\n\n'),
       newState: 'WAITING_PRODUCT_SELECTION',
-      contextPatch: referencedProduct && Number(referencedProduct.stock || 0) <= 0
+      contextPatch: isKnownOutOfStock(referencedProduct)
         ? buildTenantCatalogOutOfStockContextPatch(conversation, referencedProduct)
         : referencedProduct
           ? {
@@ -12175,7 +12201,7 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
       : [];
     const selectedSimilar = findCatalogItemByStoredId(activeProducts, similarIds[numericSelection - 1]);
     if (selectedSimilar) {
-      if (Number(selectedSimilar.stock || 0) <= 0) {
+      if (isKnownOutOfStock(selectedSimilar)) {
         return {
           type: 'tenant_catalog_similar_product_unavailable',
           replyText: `${buildProductPricingReply([selectedSimilar], selectedSimilar.name)}\n\n${buildStockAvailabilityReply(selectedSimilar)}`,
@@ -12206,7 +12232,7 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
         type: 'tenant_catalog_direct_search',
         replyText: `${pricing}\n\n${buildStockAvailabilityReply(matchedProduct)}`,
         newState: 'WAITING_PRODUCT_SELECTION',
-        contextPatch: Number(matchedProduct.stock || 0) <= 0
+        contextPatch: isKnownOutOfStock(matchedProduct)
           ? buildTenantCatalogOutOfStockContextPatch(conversation, matchedProduct)
           : {
             commerceCatalogBrowseMode: 'tenant_catalog',
@@ -12226,7 +12252,7 @@ async function resolveTenantCatalogBrowseDecision({ clinic, conversation, contac
     const selectedProduct = catalogFromContext.find((product) => Number(product.index) === numericSelection) || null;
     if (selectedProduct) {
       const persistedProduct = findCatalogItemByStoredId(activeProducts, selectedProduct.productId || selectedProduct.id) || selectedProduct;
-      if (Number(persistedProduct.stock || 0) <= 0) {
+      if (isKnownOutOfStock(persistedProduct)) {
         return {
           type: 'tenant_catalog_product_unavailable',
           replyText: `${buildProductPricingReply([persistedProduct], persistedProduct.name)}\n\n${buildStockAvailabilityReply(persistedProduct)}`,
@@ -12387,7 +12413,7 @@ async function buildTenantBusinessIntentReplyCore({
         type: 'tenant_catalog_direct_search',
         replyText: `${buildProductPricingReply([unambiguousProduct], unambiguousProduct.name)}\n\n${buildStockAvailabilityReply(unambiguousProduct)}`,
         newState: 'WAITING_PRODUCT_SELECTION',
-        contextPatch: Number(unambiguousProduct.stock || 0) <= 0
+        contextPatch: isKnownOutOfStock(unambiguousProduct)
           ? {
             ...buildTenantCatalogBrowseContextPatch({
               clinicId: conversation.clinicId,
@@ -12487,7 +12513,7 @@ async function buildTenantBusinessIntentReplyCore({
     return {
       type: wantsPrice && wantsStock ? 'price_and_stock' : commercialIntent.type,
       replyText: replyParts.filter(Boolean).join('\n\n'),
-      contextPatch: referencedProduct && Number(referencedProduct.stock || 0) <= 0
+      contextPatch: isKnownOutOfStock(referencedProduct)
         ? {
           ...buildTenantCatalogBrowseContextPatch({
             clinicId: conversation.clinicId,
@@ -15249,7 +15275,7 @@ async function resolveCommerceCartAddition({
     };
   }
 
-  if (Number(latestProduct.stock || 0) < quantity) {
+  if (latestProduct.stockVisible !== false && Number(latestProduct.stock || 0) < quantity) {
     logInfo('commerce_order_create_failed_stock', {
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
@@ -15286,7 +15312,7 @@ async function resolveCommerceCartAddition({
   const existingItem = cartItems.find((item) => String(item.productId || '') === String(latestProduct.id));
   const effectiveQuantity = isPlanProduct(latestProduct) ? 1 : quantity;
   const requestedCartQuantity = Number(existingItem && existingItem.quantity ? existingItem.quantity : 0) + effectiveQuantity;
-  if (Number(latestProduct.stock || 0) < requestedCartQuantity) {
+  if (latestProduct.stockVisible !== false && Number(latestProduct.stock || 0) < requestedCartQuantity) {
     logInfo('commerce_order_create_failed_stock', {
       conversationId: conversation.id,
       clinicId: conversation.clinicId,
@@ -15413,7 +15439,7 @@ async function resolveCommerceMultiCartAddition({
 
     const existingItem = updatedCartItems.find((item) => String(item.productId || '') === String(latestProduct.id));
     const requestedCartQuantity = Number(existingItem && existingItem.quantity ? existingItem.quantity : 0) + 1;
-    if (Number(latestProduct.stock || 0) < requestedCartQuantity) {
+    if (latestProduct.stockVisible !== false && Number(latestProduct.stock || 0) < requestedCartQuantity) {
       ignoredSelections.push(selection);
       continue;
     }
@@ -17052,7 +17078,7 @@ async function resolveCommerceDecision({ conversation, clinic, contact, inboundT
         contextPatch: { commerceCartItems: cartItems }
       };
     }
-    if (Number(latestProduct.stock || 0) < contextualCartAction.quantity) {
+    if (latestProduct.stockVisible !== false && Number(latestProduct.stock || 0) < contextualCartAction.quantity) {
       return {
         replyText: 'No me alcanza el stock de ese producto para esa cantidad. Tu carrito no cambió.',
         newState: 'WAITING_PRODUCT_SELECTION',
@@ -18574,6 +18600,9 @@ async function sendAndPersistReply({
 }
 
 async function sendAgendaReminderMessage({ clinicId, channel, conversationId, contact, text, requestId, agendaItemId }) {
+  if (!await botAllowedNow(clinicId, channel) || !await toolAllowedNow(clinicId, 'agenda')) {
+    throw new Error('bot_entitlement_required');
+  }
   const channelCredentials = normalizeChannelSendContext(channel, {
     conversationId: conversationId || null,
     requestId,
@@ -18632,6 +18661,7 @@ async function processDueAppointmentReminders() {
   const stats = { candidates: candidates.length, sent: 0, skipped: 0, duplicatesBlocked: 0 };
 
   for (const item of candidates) {
+    if (!await toolAllowedNow(item.clinicId, 'agenda')) { stats.skipped += 1; continue; }
     const claimed = await claimAgendaItemReminder(item.clinicId, item.id, staleBefore);
     if (!claimed) {
       stats.duplicatesBlocked += 1;
@@ -19227,6 +19257,7 @@ async function processInboundJob(job) {
   if (!clinic) {
     throw new Error('Clinic not found for job');
   }
+  if (!await botAllowedNow(clinicId, channel)) return;
 
   const dbMessageId = payload.dbMessageId || null;
   const inboundMessage = dbMessageId ? await getMessageById(dbMessageId) : null;
@@ -19324,6 +19355,13 @@ async function processInboundJob(job) {
     const booked = await findBookedAppointmentByConversation(clinicId, conversation.id);
     const agendaBooked = !booked ? await findLatestActiveAgendaAppointmentByConversation(clinicId, conversation.id) : null;
     if (booked) {
+      if (!await toolAllowedNow(clinicId, 'agenda')) {
+        await sendAndPersistReply({ clinicId, channel, conversationId: conversation.id, contact,
+          text: 'No puedo gestionar turnos automáticamente en este momento. Voy a pedirle al equipo que te ayude.',
+          automation: inboundAutomationMeta ? { ...inboundAutomationMeta, source: 'appointment_cancellation' } : null,
+          requestId, correlationMessageId: messageId });
+        return;
+      }
       await cancelAppointment(clinicId, booked.id, 'cancelled_by_patient');
       await updateLeadStatus(lead.id, 'qualifying', 'appointment_cancelled');
       await addEvent({
@@ -19348,6 +19386,13 @@ async function processInboundJob(job) {
       return;
     }
     if (agendaBooked) {
+      if (!await toolAllowedNow(clinicId, 'agenda')) {
+        await sendAndPersistReply({ clinicId, channel, conversationId: conversation.id, contact,
+          text: 'No puedo gestionar turnos automáticamente en este momento. Voy a pedirle al equipo que te ayude.',
+          automation: inboundAutomationMeta ? { ...inboundAutomationMeta, source: 'appointment_cancellation' } : null,
+          requestId, correlationMessageId: messageId });
+        return;
+      }
       await updateAgendaItemById(clinicId, agendaBooked.id, {
         status: 'cancelled',
         resultNote: 'Cancelado por paciente desde WhatsApp'
@@ -19664,6 +19709,7 @@ async function processConversationReplyJobUnlocked(job) {
   if (!clinic) {
     throw new Error('Clinic not found for conversation_reply job');
   }
+  if (!await botAllowedNow(conversation.clinicId, channel)) return;
 
   const openHandoff = await getOpenHandoff(conversation.clinicId, conversation.id);
   const botReplyAuthority = resolveBotReplyAuthority({
@@ -19754,7 +19800,8 @@ async function processConversationReplyJobUnlocked(job) {
     jobId: job.id
   };
   const hasNewerInbound = await conversationRepo.hasNewerInboundMessage(conversation.id, inboundMessage.id);
-  const recentMessages = await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5);
+  const recentMessages = await toolAllowedNow(conversation.clinicId, 'customer_history')
+    ? await conversationRepo.listConversationMessagesByClinicId(conversation.id, conversation.clinicId, 5) : [];
 
   logInfo('automation_runtime_start', {
     requestId,
@@ -20552,7 +20599,7 @@ async function processConversationReplyJobUnlocked(job) {
           }
         };
       }
-    } else if (latestAppointment) {
+    } else if (latestAppointment && await toolAllowedNow(conversation.clinicId, 'agenda')) {
       const cancelled = await conversationRepo.cancelAppointmentById({
         appointmentId: latestAppointment.id
       });
@@ -20582,7 +20629,7 @@ async function processConversationReplyJobUnlocked(job) {
           }
         };
       }
-    } else {
+    } else if (latestAgendaAppointment && await toolAllowedNow(conversation.clinicId, 'agenda')) {
       const cancelledAgenda = await updateAgendaItemById(conversation.clinicId, latestAgendaAppointment.id, {
         status: 'cancelled',
         resultNote: 'Cancelado por paciente desde WhatsApp'
@@ -20613,6 +20660,12 @@ async function processConversationReplyJobUnlocked(job) {
           }
         };
       }
+    } else {
+      decision = {
+        replyText: 'No puedo gestionar este turno automáticamente ahora. Contactá al equipo para cancelarlo o cambiarlo.',
+        newState: 'READY',
+        contextPatch: buildEmptyAppointmentSuggestionPatch()
+      };
     }
 
     if (decision) {
@@ -21374,6 +21427,10 @@ async function processConversationReplyJob(job) {
 async function processJob(job) {
   processingCount += 1;
   try {
+    if (['order_amendment_confirm', 'order_closure_confirm', 'conversation_operational'].includes(job.type)) {
+      const entitlements = await loadEntitlements(job.clinicId);
+      if (!canCapability(entitlements, 'orders')) { await markJobDone(job.id); return; }
+    }
     if (job.type === 'order_amendment_confirm') {
       const payload = parseJobPayload(job.payload);
       await orderAmendment.confirmCandidate({

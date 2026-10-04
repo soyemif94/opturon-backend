@@ -1,4 +1,6 @@
 const { query } = require('../db/client');
+const { resolveEffectiveEntitlements, canCapability } = require('./effective-entitlements');
+const { MODULE_CAPABILITIES, LEGACY_CAPABILITY_MAP } = require('./plan-catalog');
 const { createTenantPolicyAuditEvent } = require('../repositories/tenant-policy-audit.repository');
 const {
   POLICY_VERSION,
@@ -11,7 +13,7 @@ const {
   buildEnabledModules,
   hasExplicitOperatingConfiguration
 } = require('./tenant-operating-profile.service');
-const PLAN_CODES = new Set(['basic', 'growth', 'pro', 'enterprise']);
+const PLAN_CODES = new Set(['basic', 'core', 'growth', 'distribution', 'pro', 'enterprise']);
 const MODULES = IMPLEMENTED_MODULES;
 
 const DEFAULT_LIMITS = {
@@ -108,13 +110,11 @@ function buildTenantPolicyFromSettings(settings) {
         businessSubtype: businessProfile.businessSubtype || null
       }
   );
-  const capabilities = normalizeCapabilities(policy.capabilities || businessProfile.capabilities);
+  const operatingCapabilities = normalizeCapabilities(policy.capabilities || businessProfile.capabilities);
+  const entitlements = resolveEffectiveEntitlements(safeSettings);
+  const capabilities = Object.entries(LEGACY_CAPABILITY_MAP).filter(([, key]) => canCapability(entitlements, key)).map(([key]) => key);
   const legacyMode = !hasExplicitOperatingConfiguration(policy);
-  const enabledModules = buildEnabledModules({
-    capabilities,
-    explicitModules: pickBooleanModules(policy.enabledModules),
-    legacyMode
-  });
+  const enabledModules = Object.fromEntries(Object.entries(MODULE_CAPABILITIES).map(([key, capability]) => [key, canCapability(entitlements, capability)]));
 
   return {
     policyVersion: Number(policy.policyVersion) >= POLICY_VERSION ? POLICY_VERSION : 0,
@@ -134,6 +134,8 @@ function buildTenantPolicyFromSettings(settings) {
     operatingProfile,
     recommendedCapabilities: buildRecommendedCapabilities(operatingProfile.presetKey),
     capabilities,
+    operatingCapabilities,
+    entitlements,
     enabledModules,
     billingEntitlement: portal.billing?.entitlement || null,
     implementedModules: MODULES,
@@ -594,6 +596,7 @@ async function updateTenantPolicyByExternalTenantId(externalTenantId, payload, o
 
 function isModuleEnabled(policy, moduleName) {
   const key = normalizeString(moduleName);
+  if (policy?.entitlements) return canCapability(policy.entitlements, MODULE_CAPABILITIES[key]);
   if (!key || !MODULES.includes(key)) return true;
   const safePolicy = policy && typeof policy === 'object' ? policy : {};
   const enabledModules = buildEnabledModules({

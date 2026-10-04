@@ -30,6 +30,10 @@ stub('src/repositories/products.repository.js', {
   }
 });
 stub('src/db/client.js', {
+  query: async () => ({ rows: [{ settings: {
+    botActive: true,
+    portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } }
+  } }] }),
   pool: {
     connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} })
   },
@@ -136,7 +140,15 @@ let passed = 0;
 const check = (label, condition) => { assert.ok(condition, label); passed += 1; };
 
 function clinic(id, methods, alias, enabled = true) {
-  return { id, settings: { businessProfile: { paymentMethods: methods }, bot: { transferConfig: { enabled, alias, cbu: enabled ? `${id === 'saas' ? '1' : '2'}`.repeat(22) : '' } } } };
+  return { id, settings: {
+    botActive: true,
+    portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } },
+    businessProfile: { paymentMethods: methods },
+    bot: {
+      assistantMode: id === 'saas' ? 'opturon_sales' : 'tenant_business',
+      transferConfig: { enabled, alias, cbu: enabled ? `${id === 'saas' ? '1' : '2'}`.repeat(22) : '' }
+    }
+  } };
 }
 
 function persistedConversation(id, clinicId, state = 'READY', context = { activeBotDomain: 'commerce' }) {
@@ -336,7 +348,7 @@ async function main() {
   await withFakeNow(new Date(realSequenceBaseMs).toISOString(), async () => {
     const selected = await fullRuntimeTurn(exactRuntimeStored, saasClinic, 'Dame más detalles del Plan Crecimiento', 'exact-select');
     exactRuntimeStored = selected.next;
-    check('exact runtime turn 1 selects Plan Crecimiento', Boolean(
+    check(`exact runtime turn 1 selects Plan Crecimiento; reply=${selected.replyText}; context=${JSON.stringify(exactRuntimeStored.context)}`, Boolean(
       exactRuntimeStored.context.commercialShortMemory || exactRuntimeStored.context.commercialPlanContext
     ));
   });
@@ -558,9 +570,10 @@ async function main() {
   check('media decision preserves referent context', Boolean(mediaDecision.contextPatch.commercialShortMemory || mediaDecision.contextPatch.commercialPlanContext));
   sentPayloads.length = 0;
   persistedOutbound.length = 0;
+  runtimeConversations.set('media', { id: 'media', clinicId: 'saas', channelId: 'channel-saas', context: {} });
   await worker.sendAndPersistReply({
     clinicId: 'saas',
-    channel: { id: 'channel-a', clinicId: 'saas', accessToken: 'test-only', phoneNumberId: 'phone-a', provider: 'whatsapp_cloud', status: 'active' },
+    channel: { id: 'channel-saas', clinicId: 'saas', accessToken: 'test-only', phoneNumberId: 'phone-saas', provider: 'whatsapp_cloud', status: 'active' },
     conversationId: 'media', contact, text: mediaDecision.replyText, requestId: 'qa-order',
     outboundMedia: mediaDecision.outboundMedia, sendTextWithMedia: mediaDecision.sendTextWithMedia
   });

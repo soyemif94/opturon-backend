@@ -966,7 +966,17 @@ async function updateClinicBotConfigById(clinicId, botConfig, client = null) {
   return result.rows[0] || null;
 }
 
+async function updateClinicBotActiveById(clinicId, botActive) {
+  if (typeof botActive !== 'boolean') throw new Error('invalid_bot_active');
+  const result = await query(`UPDATE clinics SET settings = jsonb_set(COALESCE(settings,'{}'::jsonb),
+    '{botActive}', $2::jsonb, true), "updatedAt"=NOW() WHERE id=$1
+    RETURNING id,name,settings,settings->'bot' AS "botSettings",settings#>>'{bot,mode}' AS "botMode"`,
+  [clinicId, JSON.stringify(botActive)]);
+  return result.rows[0] || null;
+}
+
 module.exports = {
+  updateClinicBotActiveById,
   BOT_RUNTIME_CONFIG_MUTATION_SOURCES,
   findChannelByPhoneNumberId,
   findCoexistenceChannelByPhoneNumberId,

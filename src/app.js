@@ -53,6 +53,10 @@ function createApp() {
   app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
   });
+  app.get('/api/public/plans', (req, res) => {
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json({ plans: require('./services/plan-catalog').publicPlanCatalog() });
+  });
 
   app.use('/webhook', webhookLimiter, webhookRoutes);
   app.use('/api/webhooks/mercadopago', webhookLimiter, mercadoPagoWebhookRoutes);

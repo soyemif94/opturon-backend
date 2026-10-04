@@ -70,6 +70,8 @@ const clinic = {
   id: 'tenant-p1',
   timezone: 'America/Argentina/Buenos_Aires',
   settings: {
+    botActive: true,
+    portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } },
     businessProfile: {
       deliveryZones: 'CABA y GBA',
       paymentMethods: 'Transferencia, efectivo y tarjeta'

@@ -16,6 +16,7 @@ const clinics = {
     id: 'clinic-a',
     name: 'Tenant A',
     botMode: 'automatic',
+    settings: { botActive: true, portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 }, billing: { entitlement: { state: 'active', paidAccessAllowed: true } } } },
     botSettings: {
       mode: 'automatic',
       config: null
@@ -25,6 +26,7 @@ const clinics = {
     id: 'clinic-b',
     name: 'Tenant B',
     botMode: 'automatic',
+    settings: { botActive: true, portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 }, billing: { entitlement: { state: 'active', paidAccessAllowed: true } } } },
     botSettings: {
       mode: 'automatic',
       config: {
@@ -121,6 +123,12 @@ async function run() {
   assert.strictEqual(updated.settings.botConfig.commercialObjective, 'order_generation');
   assert.strictEqual(updated.settings.botConfig.salesMode, 'proactive');
   assert.strictEqual(updated.settings.botConfig.businessInstructions, 'Ofrece solamente productos disponibles en el catalogo real.');
+
+  clinics['clinic-a'].settings.portal.entitlements.planKey = 'growth';
+  assert.strictEqual((await getPortalBotSettings('tenant-a')).settings.botConfig.businessInstructions, '');
+  clinics['clinic-a'].settings.portal.entitlements.planKey = 'enterprise';
+  assert.strictEqual((await getPortalBotSettings('tenant-a')).settings.botConfig.businessInstructions,
+    'Ofrece solamente productos disponibles en el catalogo real.');
 
   const untouchedTenant = await getPortalBotSettings('tenant-b');
   assert.strictEqual(untouchedTenant.ok, true);

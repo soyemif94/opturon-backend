@@ -80,6 +80,8 @@ function clinic(id, assistantMode = ASSISTANT_MODES.TENANT_BUSINESS) {
   return {
     id,
     settings: {
+      botActive: true,
+      portal: { entitlements: { source: 'billing', planKey: 'enterprise', entitlementProfileVersion: 1 } },
       bot: {
         assistantMode,
         config: {

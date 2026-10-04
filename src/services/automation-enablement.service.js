@@ -5,6 +5,7 @@ const {
   findTenantAutomationTemplateByClinicIdAndKey
 } = require('../repositories/automation-templates.repository');
 const { buildTenantPolicyFromSettings } = require('./tenant-policy.service');
+const { canCapability } = require('./effective-entitlements');
 
 const BUSINESS_TYPES = new Set(['dental_clinic', 'medical_clinic', 'retail_products', 'services_general', 'beauty_salon']);
 const BUSINESS_CAPABILITIES = new Set([
@@ -100,7 +101,9 @@ async function buildResolvedCapabilities({ clinic, capabilitiesHint = [] }) {
     }
   }
 
-  return Array.from(resolved);
+  const canonical = { whatsapp: 'channels.whatsapp', contacts: 'crm', crm: 'crm', agenda: 'agenda',
+    catalog: 'catalog', automations: 'automations', sales: 'pipeline', payments: 'payments', payments_transfer: 'payments', loyalty: 'loyalty' };
+  return Array.from(resolved).filter(key => canCapability(policy.entitlements, canonical[key]));
 }
 
 function evaluateTemplateCompatibility({ template, businessType, resolvedCapabilities }) {
