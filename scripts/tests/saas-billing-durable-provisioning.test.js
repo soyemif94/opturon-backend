@@ -136,7 +136,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     getPreapproval: async () => { provider.gets += 1; return provider.remote; },
     getPayment: async () => provider.payment,
     getAuthorizedPayment: async () => ({ id: 'invoice-1', preapproval_id: provider.remote.id, status: 'processed',
-      transaction_amount: 40600, currency_id: 'ARS', payment: { id: provider.payment.id } }),
+      transaction_amount: Number(provider.remote.auto_recurring.transaction_amount), currency_id: 'ARS', payment: { id: provider.payment.id } }),
     searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1, offset: 0, limit: 2 },
       results: [{ id: 'invoice-1', payment: { id: provider.payment.id } }] })
   }, { getPayment: 'payment-1' }));
@@ -219,7 +219,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
       assert.equal(result.status, 201);
       assert.equal(result.body.data.subscription.provisioningState, 'ready');
       assert.equal(provider.calls.length, 1);
-      assert.equal(provider.calls[0].amount, 40600);
+      assert.equal(provider.calls[0].amount, 49900);
       assert.equal(provider.calls[0].currency, 'ARS');
       assert.equal((await rows()).length, 1);
       assert.deepEqual(trace.filter((event) => event.commit).map((event) => event.commit), ['reserve', 'claim', 'provider', 'finish']);
@@ -356,7 +356,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
       fault.beforeCommit = once((phase) => phase === 'provider');
       await request(); provider.remote.status = 'authorized';
       provider.payment = { date_created: new Date().toISOString(), id: 'payment-1', status: 'approved', preapproval_id: provider.remote.id, external_reference: provider.remote.external_reference,
-        transaction_amount: 40600, currency_id: 'ARS' };
+        transaction_amount: 49900, currency_id: 'ARS' };
       assert.equal((await webhook({ topic: 'payment' })).body.error, undefined);
       const [row] = await rows(); assert.equal(row.provisioningState, 'ready'); assert.equal(row.mercadoPagoPreapprovalId, provider.remote.id);
       assert.equal(provider.calls.length, 1);

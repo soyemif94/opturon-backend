@@ -33,7 +33,7 @@ const {
   mapMercadoPagoPreapprovalStatus
 } = require('./mercado-pago.service');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
-const { PUBLIC_PLANS, LEGACY_BILLING_PLANS, canonicalKey } = require('./plan-catalog');
+const { PUBLIC_PLANS, LEGACY_BILLING_PLAN_CODES, canonicalKey } = require('./plan-catalog');
 const { captureLocalBillingContract, resolveLocalBillingContract, canonicalizeExternalReferenceUuid } = require('./saas-billing-contract');
 const { contractRejected, manualReview } = require('./saas-billing-webhook-outcomes');
 const contractProof = require('./saas-billing-provider-contract');
@@ -42,7 +42,7 @@ const { processSubscriptionWebhookEvent } = require('./saas-billing-webhook-clai
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
-const ALLOWED_PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLANS), ...Object.keys(PUBLIC_PLANS)]);
+const ALLOWED_PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLAN_CODES), ...Object.keys(PUBLIC_PLANS)]);
 const ALLOWED_LOCAL_STATUSES = new Set(['pending', 'active', 'paused', 'canceled', 'payment_failed', 'suspended']);
 
 function normalizeString(value) {

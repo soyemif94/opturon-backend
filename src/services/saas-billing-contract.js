@@ -1,8 +1,8 @@
 // Local expectations only. No provider access, catalogue lookup or persistence.
 const CONTRACT_VERSION = 1;
 const CONTRACT_SOURCE = 'backend_plan_catalog';
-const { PUBLIC_PLANS, LEGACY_BILLING_PLANS, canonicalKey, resolveProfile } = require('./plan-catalog');
-const PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLANS), ...Object.keys(PUBLIC_PLANS)]);
+const { PUBLIC_PLANS, LEGACY_BILLING_PLAN_CODES, canonicalKey, resolveProfile } = require('./plan-catalog');
+const PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLAN_CODES), ...Object.keys(PUBLIC_PLANS)]);
 const CURRENCIES = new Set(Intl.supportedValuesOf('currency'));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);

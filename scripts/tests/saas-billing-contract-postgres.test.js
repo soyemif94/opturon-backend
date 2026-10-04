@@ -75,7 +75,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     getPreapproval: async () => provider.remote,
     getPayment: async () => provider.payment,
     getAuthorizedPayment: async () => ({ id: 'invoice-1', preapproval_id: provider.remote.id, status: 'processed',
-      transaction_amount: 40600, currency_id: 'ARS', payment: { id: provider.payment.id } }),
+      transaction_amount: Number(provider.remote.auto_recurring.transaction_amount), currency_id: 'ARS', payment: { id: provider.payment.id } }),
     searchAuthorizedPaymentsByPaymentId: async () => ({ paging: { total: 1, offset: 0, limit: 2 },
       results: [{ id: 'invoice-1', payment: { id: provider.payment.id } }] })
   }, { getPreapproval: 'mp-contract', getPayment: 'payment-contract' }));
@@ -118,30 +118,53 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     return service.processMercadoPagoWebhook(body, require('./helpers/billing-v2-fixture').delivery(body, 'local-contract-secret'));
   }
 
-  await scenario('CASE A: initial plan contract is committed before provider and retained', async () => {
+  await scenario('PRICE E: new Core contract uses canonical 49900 ARS monthly', async () => {
     const result = await create();
     assert.equal(result.ok, true);
     const contract = provider.captured[0];
     assert.deepEqual(contract, {
-      version: 1, source: 'backend_plan_catalog', planCode: 'core', entitlementProfileVersion: 1, amount: '40600.00', currency: 'ARS',
+      version: 1, source: 'backend_plan_catalog', planCode: 'core', entitlementProfileVersion: 1, amount: '49900.00', currency: 'ARS',
       frequency: 1, frequencyType: 'months', billingInterval: 'monthly', capturedAt: contract.capturedAt,
       subscriptionId: result.subscription.id, clinicId, externalTenantId: input.tenantId,
       externalReference: `opturon:${input.tenantId}:${result.subscription.id}`, profile: 'ordinary_recurring'
     });
     assert.ok(Number.isFinite(Date.parse(contract.capturedAt)));
     await sameContract(contract);
-    assert.equal((await row()).metadata.plan.amount, 40600);
+    assert.equal((await row()).metadata.plan.amount, 49900);
   });
-  await scenario('CASE B: second plan captures its own backend catalogue values', async () => {
+  await scenario('PRICE F: new Growth contract uses canonical 69900 ARS monthly', async () => {
     assert.equal((await create({ planCode: 'growth' })).ok, true);
-    assert.equal(provider.captured[0].amount, '68600.00');
+    assert.equal(provider.captured[0].amount, '69900.00');
     assert.equal(provider.captured[0].planCode, 'growth');
     await sameContract(provider.captured[0]);
+  });
+  await scenario('PRICE G: new Distribution contract uses canonical 89900 ARS monthly', async () => {
+    assert.equal((await create({ planCode: 'distribution' })).ok, true);
+    assert.equal(provider.captured[0].amount, '89900.00');
+    assert.equal(provider.captured[0].currency, 'ARS');
+    assert.equal(provider.captured[0].planCode, 'distribution');
+    assert.equal(provider.captured[0].frequency, 1);
+    assert.equal(provider.captured[0].frequencyType, 'months');
+    await sameContract(provider.captured[0]);
+  });
+  await scenario('PRICE D: Enterprise custom pricing cannot create an automatic provider charge', async () => {
+    const result = await create({ planCode: 'enterprise', amount: 1 });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'plan_price_decision_required');
+    assert.equal(provider.calls.length, 0);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM saas_subscriptions')).rows[0].n, 0);
+  });
+  await scenario('legacy pricing identifier cannot create a new billing contract', async () => {
+    const result = await create({ planCode: 'crecimiento' });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'legacy_plan_requires_selection');
+    assert.equal(provider.calls.length, 0);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM saas_subscriptions')).rows[0].n, 0);
   });
   await scenario('CASE C: frontend cannot override expected values or contract identity', async () => {
     await create({ amount: 1, currency: 'USD', externalTenantId: 'other', externalReference: 'forged',
       metadata: { contract: { amount: '1.00', externalTenantId: 'other' } } });
-    assert.equal(provider.captured[0].amount, '40600.00');
+    assert.equal(provider.captured[0].amount, '49900.00');
     assert.equal(provider.captured[0].currency, 'ARS');
     assert.equal(provider.captured[0].externalTenantId, input.tenantId);
     assert.equal(provider.captured[0].clinicId, clinicId);
@@ -150,7 +173,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     provider.onCreate = async () => { provider.remote.auto_recurring.transaction_amount = 1; };
     await create();
     assert.equal(Number((await row()).amount), 1);
-    assert.equal(provider.captured[0].amount, '40600.00');
+    assert.equal(provider.captured[0].amount, '49900.00');
     await sameContract(provider.captured[0]);
   });
   await scenario('CASE E: provider currency may change compatibility field, never the contract', async () => {
@@ -158,6 +181,12 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     await create();
     assert.equal((await row()).currency, 'USD');
     await sameContract(provider.captured[0]);
+  });
+  await scenario('PRICE I: submitted amount cannot select or reprice the canonical plan ID', async () => {
+    await create({ planCode: 'core', amount: 89900 });
+    assert.equal(provider.captured[0].planCode, 'core');
+    assert.equal(provider.captured[0].amount, '49900.00');
+    assert.equal((await row()).planCode, 'core');
   });
   await scenario('CASE F: metadata merge preserves contract, plan and remote observations', async () => {
     const created = await create();
@@ -306,9 +335,9 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     await sameContract(provider.captured[0]);
     assert.equal((await webhook()).outcome, 'CONTRACT_REJECTED');
     await sameContract(provider.captured[0]);
-    provider.remote.auto_recurring = { transaction_amount: 40600, currency_id: 'ARS', frequency: 1, frequency_type: 'months' };
+    provider.remote.auto_recurring = { transaction_amount: 49900, currency_id: 'ARS', frequency: 1, frequency_type: 'months' };
     provider.payment = { date_created: new Date().toISOString(), id: 'payment-contract', status: 'approved', preapproval_id: provider.remote.id,
-      external_reference: provider.remote.external_reference, metadata: { contract: null }, transaction_amount: 40600, currency_id: 'ARS' };
+      external_reference: provider.remote.external_reference, metadata: { contract: null }, transaction_amount: 49900, currency_id: 'ARS' };
     assert.equal((await webhook('payment')).ok, true);
     await sameContract(provider.captured[0]);
     const saved = await row();

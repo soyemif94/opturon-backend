@@ -15,6 +15,10 @@ test('public plan catalog endpoint serves only canonical commercial DTO fields',
   assert.match(response.headers.get('cache-control'), /max-age=300/);
   const payload = await response.json();
   assert.deepEqual(payload.plans.map(plan => plan.key), ['core', 'growth', 'distribution', 'enterprise']);
+  assert.deepEqual(payload.plans.slice(0, 3).map(plan => [plan.amount, plan.currency, plan.billingCadence]), [
+    [49900, 'ARS', 'monthly'], [69900, 'ARS', 'monthly'], [89900, 'ARS', 'monthly']
+  ]);
+  assert.deepEqual([payload.plans[3].pricingMode, payload.plans[3].amount, payload.plans[3].currency, payload.plans[3].ctaMode], ['contact', null, null, 'contact']);
   for (const plan of payload.plans) {
     assert.deepEqual(Object.keys(plan).sort(), [
       'key', 'displayName', 'description', 'pricingMode', 'amount', 'currency',

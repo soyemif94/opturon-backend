@@ -165,10 +165,28 @@ test('Public plan DTOs preserve canonical keys, API shape and the included Growt
   assert.match(plans.find(p => p.key === 'growth').highlights.join(' '), /bot estándar/i);
   assert.match(plans.find(p => p.key === 'distribution').highlights.join(' '), /bot avanzado/i);
 });
-test('Prices and provider billing amounts are unchanged', () => {
-  assert.deepEqual(Object.values(catalog.LEGACY_BILLING_PLANS).map(p => [p.amount,p.currency]), [[40600,'ARS'],[68600,'ARS'],[208600,'ARS']]);
-  assert.equal(catalog.billingPlan('core').amount, 40600); assert.equal(catalog.billingPlan('growth').amount, 68600);
-  assert.equal(catalog.billingPlan('distribution'), null); assert.equal(catalog.billingPlan('enterprise'), null);
+test('A-D canonical public prices are monthly ARS and Enterprise is custom priced', () => {
+  const plans = Object.fromEntries(catalog.publicPlanCatalog().map(plan => [plan.key, plan]));
+  assert.deepEqual([plans.core.amount, plans.core.currency, plans.core.billingCadence], [49900, 'ARS', 'monthly']);
+  assert.deepEqual([plans.growth.amount, plans.growth.currency, plans.growth.billingCadence], [69900, 'ARS', 'monthly']);
+  assert.deepEqual([plans.distribution.amount, plans.distribution.currency, plans.distribution.billingCadence], [89900, 'ARS', 'monthly']);
+  assert.deepEqual([plans.enterprise.pricingMode, plans.enterprise.amount, plans.enterprise.currency, plans.enterprise.ctaMode], ['contact', null, null, 'contact']);
+  assert.equal(catalog.billingPlan('enterprise').customPricing, true);
+  assert.equal(catalog.billingPlan('enterprise').amount, null);
+});
+test('I-J canonical public, internal and billing catalogs share one plan-ID pricing source', () => {
+  const { PLAN_CATALOG, resolveSaasPlanDefinition } = require('../../src/services/saas-billing-plans.service');
+  assert.strictEqual(PLAN_CATALOG, catalog.CANONICAL_PLAN_CATALOG);
+  const publicPlans = Object.fromEntries(catalog.publicPlanCatalog().map(plan => [plan.key, plan]));
+  for (const key of ['core', 'growth', 'distribution']) {
+    const source = catalog.CANONICAL_PLAN_CATALOG[key];
+    assert.equal(publicPlans[key].amount, source.amount);
+    assert.equal(catalog.billingPlan(key).amount, source.amount);
+    assert.equal(resolveSaasPlanDefinition(key).amount, source.amount);
+  }
+  assert.equal(catalog.CANONICAL_PLAN_CATALOG.enterprise.customPricing, true);
+  assert.equal(resolveSaasPlanDefinition('core').code, 'core');
+  for (const legacy of Object.values(catalog.LEGACY_BILLING_PLAN_CODES)) assert.equal(Object.hasOwn(legacy, 'amount'), false);
 });
 test('Case-normalized canonical key is a safe alias; historical Empresa is mapped only for entitlements', () => {
   assert.equal(catalog.canonicalKey(' GROWTH '), 'growth'); assert.equal(catalog.canonicalKey('empresa'), null);

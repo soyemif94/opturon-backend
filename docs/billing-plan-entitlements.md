@@ -2,7 +2,7 @@
 
 ## Canonical source
 
-`src/services/plan-catalog.js` is the server-side source for public plan DTOs, billing definitions, profile resolution, and the closed capability registry. Public plans are `core`, `growth`, `distribution`, and `enterprise`. The capability registry is version 1 and contains 29 boolean capabilities plus `bot.tier` (`none | standard | advanced | custom`). `custom_integrations` and `custom_workflows` are deliberately absent: the inspected product has no implemented integration-adapter or custom-workflow entitlement surface.
+`src/services/plan-catalog.js` is the server-side source for public plan DTOs, internal commercial definitions, new billing contracts, profile resolution, and the closed capability registry. Public plan IDs are `core`, `growth`, `distribution`, and `enterprise`; prices are keyed only by those IDs and are never inferred from an amount. Core is ARS 49,900/month, Growth ARS 69,900/month, Distribution ARS 89,900/month, and Enterprise is custom priced with no automatic provider amount. The capability registry is version 1 and contains 29 boolean capabilities plus `bot.tier` (`none | standard | advanced | custom`). `custom_integrations` and `custom_workflows` are deliberately absent: the inspected product has no implemented integration-adapter or custom-workflow entitlement surface.
 
 Profiles are flattened when the catalog loads. Growth inherits Core; Distribution inherits Growth; Enterprise inherits Distribution. Contracts for new canonical plans record `entitlementProfileVersion: 1`. Existing immutable contracts without that field continue through the BILL-007 legacy lifecycle mapping; their permissions come only from the explicit frozen `legacy_090` profile, never from a plan-name guess.
 
@@ -22,15 +22,13 @@ Manual Inbox/WhatsApp remains independent from Bot activation. Bot catalog/order
 
 Migration `090_canonical_plan_entitlements.sql` writes a complete `legacy_090` snapshot for valid object-shaped settings without a stored entitlement profile, preserves tenant settings and policy data, keeps `botActive` as a separate preference, and does not advance existing BILL-007 entitlement revisions. Recognized legacy plan labels resolve through the canonical profile (`inicial/basic` → Core, `crecimiento/growth` → Growth, `distribution` → Distribution, `empresa/enterprise` → Enterprise); this changes effective entitlements without rewriting immutable subscription or contract rows. Unknown legacy labels keep their frozen non-Bot snapshot and fail closed for Bot. Malformed root settings remain untouched and resolve to no paid access; malformed capability containers are treated as empty.
 
-The old billing codes and amounts remain available for historical contracts: `inicial` = ARS 40,600/month, `crecimiento` = ARS 68,600/month, and `empresa` = ARS 208,600/month. BILL-007 lifecycle matching continues to use the old codes; entitlement resolution separately normalizes the label to a canonical profile without changing contract history. New Core/Growth definitions retain the first two current amounts. Distribution and Enterprise have no authorized provider amount and new subscription creation fails closed until commercial pricing is decided. The USD 29/49/79 values seen in visual references are not used.
-
-`PRICE_DECISION_REQUIRED=true`: decide the public display price, amount, currency, billing cadence, and provider charge authority for Distribution and Enterprise, and confirm the Core/Growth commercial labels and retained ARS amounts before presenting the values as final.
+Legacy plan identifiers (`inicial`, `crecimiento`, `empresa`) remain recognizable for historical lifecycle and contract reads, but have no price in the runtime catalog and cannot authorize a new sale. New subscription creation accepts a canonical plan ID and captures its price from the canonical catalog; submitted amounts do not select or override that plan. Historical immutable contracts and their old amounts remain unchanged.
 
 ## Guards and client contract
 
 The existing authenticated tenant context returns normalized `policy.entitlements`, its restrictive `enabledModules` projection, and `botEnabled`. Existing frontend policy/navigation code can continue using that projection; backend module middleware remains authoritative. Backend routes guard Inbox, CRM/contacts, pipeline, agenda, catalog, orders, receipts, payments, cash, loyalty, automations, inventory, purchases, suppliers, seller assignment/reporting, operational alerts, WhatsApp/Instagram connection, and advanced user-permission writes. Existing role checks remain in force after entitlement checks.
 
-`GET /api/public/plans` returns `{ plans: [...] }` from `publicPlanCatalog()` and only exposes `key`, `displayName`, `description`, `pricingMode`, `amount`, `currency`, `billingCadence`, `highlights`, `recommended`, and `ctaMode`. It has a five-minute public cache. The Home can consume canonical plan keys directly; this task does not change the frontend repository or checkout.
+`GET /api/public/plans` returns `{ plans: [...] }` from `publicPlanCatalog()` and only exposes `key`, `displayName`, `description`, `pricingMode`, `amount`, `currency`, `billingCadence`, `highlights`, `recommended`, and `ctaMode`. It has a five-minute public cache. The Home can consume canonical plan keys directly; subscription creation and checkout preparation use the same canonical price source.
 
 Tenant Bot settings accept only the existing mode/config fields plus strict boolean `botActive`; unknown fields such as entitlement profiles, tier, plan, or capabilities are rejected before writes. The client BFF resolves the tenant from its authenticated workspace session before making the server-to-server backend request. A Bot preference never changes the profile.
 
@@ -44,4 +42,4 @@ AI Assist limits are `AI_ASSIST_MAX_CALLS_PER_CONVERSATION` (default 50, counts 
 
 ## Local release gates
 
-Run the complete `scripts/tests/saas-billing*.test.js` and `scripts/tests/mercado-pago*.test.js` suites with the local PostgreSQL test URL, plus the affected policy, portal module-gate, and Bot-settings tests. No production migration, deploy, push, real Mercado Pago mutation, or checkout action is part of BILL-008.
+Run the complete `scripts/tests/saas-billing*.test.js` and `scripts/tests/mercado-pago*.test.js` suites with the local PostgreSQL test URL, plus the affected policy, portal module-gate, and Bot-settings tests. Production release requires the separately tracked BILL-008 gates; no provider mutation is part of local validation.

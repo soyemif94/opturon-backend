@@ -56,23 +56,36 @@ const RESOLVED_PROFILES = Object.freeze(Object.fromEntries(Object.keys(PROFILE_D
 function resolveProfile(key, version) {
   return version === PROFILE_VERSION && Object.hasOwn(RESOLVED_PROFILES, key) ? RESOLVED_PROFILES[key] : null;
 }
-// These existing ARS charges are retained. USD 29/49/79 were never provider authority.
-const LEGACY_BILLING_PLANS = Object.freeze(Object.fromEntries([
-  ['inicial', 'Plan Inicial', 40600], ['crecimiento', 'Plan Crecimiento', 68600], ['empresa', 'Plan Empresa', 208600]
-].map(([code, label, amount]) => [code, Object.freeze({ code, label, amount, currency: 'ARS' })])));
-const PUBLIC_PLANS = Object.freeze({
-  core: { displayName: 'Core', description: 'Atención y seguimiento comercial.', priceSource: 'inicial', highlights: ['WhatsApp e Inbox', 'CRM, ventas y agenda'] },
-  growth: { displayName: 'Growth', description: 'Automatización y operación comercial.', priceSource: 'crecimiento', highlights: ['Todo Core', 'Bot estándar, Instagram, catálogo y pedidos'] },
-  distribution: { displayName: 'Distribución', description: 'Stock y operación de distribución.', highlights: ['Todo Growth', 'Bot avanzado, inventario, compras y proveedores'] },
-  enterprise: { displayName: 'Enterprise', description: 'Operación con configuración avanzada.', highlights: ['Todo Distribución', 'Bot a medida, instrucciones y permisos avanzados'] }
+// One canonical source feeds public DTOs, internal commercial lookups and new
+// billing contracts. Legacy financial terms stay only in historical records.
+const CANONICAL_PLAN_CATALOG = Object.freeze({
+  core: Object.freeze({ code: 'core', label: 'Core', displayName: 'Core', description: 'Atención y seguimiento comercial.',
+    amount: 49900, currency: 'ARS', billingCadence: 'monthly', customPricing: false,
+    highlights: ['WhatsApp e Inbox', 'CRM, ventas y agenda'] }),
+  growth: Object.freeze({ code: 'growth', label: 'Growth', displayName: 'Growth', description: 'Automatización y operación comercial.',
+    amount: 69900, currency: 'ARS', billingCadence: 'monthly', customPricing: false,
+    highlights: ['Todo Core', 'Bot estándar, Instagram, catálogo y pedidos'] }),
+  distribution: Object.freeze({ code: 'distribution', label: 'Distribución', displayName: 'Distribución', description: 'Stock y operación de distribución.',
+    amount: 89900, currency: 'ARS', billingCadence: 'monthly', customPricing: false,
+    highlights: ['Todo Growth', 'Bot avanzado, inventario, compras y proveedores'] }),
+  enterprise: Object.freeze({ code: 'enterprise', label: 'Enterprise', displayName: 'Enterprise', description: 'Operación con configuración avanzada.',
+    amount: null, currency: null, billingCadence: 'monthly', customPricing: true,
+    highlights: ['Todo Distribución', 'Bot a medida, instrucciones y permisos avanzados'] })
 });
+// Old identifiers remain recognizable for existing lifecycle records, but
+// deliberately carry no amount and are never a source for new contracts.
+const LEGACY_BILLING_PLAN_CODES = Object.freeze({
+  inicial: Object.freeze({ code: 'inicial', label: 'Plan Inicial', canonicalPlanKey: 'core' }),
+  crecimiento: Object.freeze({ code: 'crecimiento', label: 'Plan Crecimiento', canonicalPlanKey: 'growth' }),
+  empresa: Object.freeze({ code: 'empresa', label: 'Plan Empresa', canonicalPlanKey: 'enterprise' })
+});
+const PUBLIC_PLANS = CANONICAL_PLAN_CATALOG;
 function publicPlanCatalog() {
   return Object.entries(PUBLIC_PLANS).map(([key, plan]) => {
-    const price = LEGACY_BILLING_PLANS[plan.priceSource];
     return { key, displayName: plan.displayName, description: plan.description,
-      pricingMode: price ? 'fixed' : 'contact', amount: price?.amount ?? null,
-      currency: price?.currency ?? null, billingCadence: 'monthly',
-      highlights: [...plan.highlights], recommended: key === 'growth', ctaMode: price ? 'select_plan' : 'contact' };
+      pricingMode: plan.customPricing ? 'contact' : 'fixed', amount: plan.amount,
+      currency: plan.currency, billingCadence: plan.billingCadence,
+      highlights: [...plan.highlights], recommended: key === 'growth', ctaMode: plan.customPricing ? 'contact' : 'select_plan' };
   });
 }
 function canonicalKey(value) {
@@ -80,8 +93,9 @@ function canonicalKey(value) {
   return Object.hasOwn(PUBLIC_PLANS, key) ? key : null;
 }
 function billingPlan(key) {
-  const plan = PUBLIC_PLANS[key], price = plan && LEGACY_BILLING_PLANS[plan.priceSource];
-  return price ? Object.freeze({ code: key, label: plan.displayName, amount: price.amount, currency: price.currency,
+  const plan = CANONICAL_PLAN_CATALOG[key];
+  return plan ? Object.freeze({ code: key, label: plan.label, amount: plan.amount, currency: plan.currency,
+    billingCadence: plan.billingCadence, customPricing: plan.customPricing,
     entitlementProfileVersion: PROFILE_VERSION }) : null;
 }
 // Historical lifecycle labels are retained solely for old immutable contracts.
@@ -101,5 +115,5 @@ function legacyEntitlementPlan(value) {
 }
 module.exports = { PROFILE_VERSION, BOT_TIERS, CAPABILITY_REGISTRY, BOOLEAN_CAPABILITIES, LEGACY_CAPABILITY_MAP,
   MODULE_CAPABILITIES, PROFILE_DEFINITIONS, emptyCapabilities, validCapabilities, flattenProfile, resolveProfile,
-  LEGACY_BILLING_PLANS, PUBLIC_PLANS, publicPlanCatalog, canonicalKey, billingPlan, lifecyclePlan,
+  CANONICAL_PLAN_CATALOG, LEGACY_BILLING_PLAN_CODES, PUBLIC_PLANS, publicPlanCatalog, canonicalKey, billingPlan, lifecyclePlan,
   LEGACY_ENTITLEMENT_PLAN_MAP, legacyEntitlementPlan };
