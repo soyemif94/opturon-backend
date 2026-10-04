@@ -6,6 +6,7 @@ const {
 } = require('../repositories/saas-subscriptions.repository');
 const { isContractOutcome, validateContractOutcome, durableContractOutcomeResult } = require('./saas-billing-webhook-outcomes');
 const { enqueueReconciliation } = require('../repositories/saas-billing-reconciliation.repository');
+const { hasPersistedLifecycle } = require('./saas-billing-lifecycle');
 
 const CLAIM_STALE_AFTER_MS = 30000;
 const PROVIDER_BUDGET_MS = 15000;
@@ -16,7 +17,7 @@ const NO_ACTION_REASONS = new Set([
   'notification_identity_missing', 'invoice_payment_pending', 'authorized_invoice_not_found',
   'payment_pending', 'payment_in_process', 'payment_rejected', 'payment_cancelled', 'payment_canceled',
   'payment_authorized', 'payment_in_mediation', 'preapproval_plan_unsupported', 'unsupported_event',
-  'canonical_effect_already_applied'
+  'canonical_effect_already_applied', 'reversal_already_recorded'
 ]);
 
 async function shortTransaction(fn) {
@@ -109,14 +110,14 @@ async function processSubscriptionWebhookEvent(input, apply, prepare = async () 
       if (isContractOutcome(result)) {
         const outcome = validateContractOutcome(result);
         if (outcome.eventId && outcome.eventId.toLowerCase() !== event.id.toLowerCase()) throw new Error('webhook_outcome_event_mismatch');
-        await client.query('ROLLBACK TO SAVEPOINT webhook_business');
+        if (!hasPersistedLifecycle(result)) await client.query('ROLLBACK TO SAVEPOINT webhook_business');
         const completed = await persistSubscriptionEventContractOutcome(event.id, outcome, client, ownership.marker);
         if (!completed) throw new Error('webhook_completion_missing');
         return durableContractOutcomeResult(completed);
       }
       if (result?.type === 'NO_ACTION') {
         if (!NO_ACTION_REASONS.has(result.reasonCode)) throw new Error('webhook_no_action_invalid');
-        await client.query('ROLLBACK TO SAVEPOINT webhook_business');
+        if (!hasPersistedLifecycle(result)) await client.query('ROLLBACK TO SAVEPOINT webhook_business');
         await enqueueReconciliation(client, { id: event.id, resourceId: input.resourceId }, result.reasonCode);
         const completed = await updateSubscriptionEventStatus(event.id, {
           processingStatus: 'ignored', processingError: result.reasonCode

@@ -6,7 +6,8 @@ const CONTRACT_REJECT_REASON_CODES = Object.freeze([
 ]);
 const MANUAL_REVIEW_REASON_CODES = Object.freeze([
   'legacy_contract_unknown', 'local_contract_conflict', 'unsupported_charge_type',
-  'provider_relationship_unproven', 'legacy_effect_unreconciled'
+  'provider_relationship_unproven', 'legacy_effect_unreconciled', 'stale_billing_observation',
+  'reversal_requires_review', 'payment_refunded', 'payment_chargeback'
 ]);
 const FIELDS = new Set(['amount', 'currency', 'frequency', 'frequencyType', 'billingInterval',
   'externalReference', 'providerId', 'transaction_amount', 'currency_id', 'frequency_type',

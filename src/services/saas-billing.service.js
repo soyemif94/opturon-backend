@@ -30,25 +30,19 @@ const {
   getPayment,
   getAuthorizedPayment,
   searchAuthorizedPaymentsByPaymentId,
-  mapMercadoPagoPreapprovalStatus,
-  mapMercadoPagoPaymentStatus
+  mapMercadoPagoPreapprovalStatus
 } = require('./mercado-pago.service');
 const { resolveSaasPlanDefinition } = require('./saas-billing-plans.service');
 const { captureLocalBillingContract, resolveLocalBillingContract, canonicalizeExternalReferenceUuid } = require('./saas-billing-contract');
 const { contractRejected, manualReview } = require('./saas-billing-webhook-outcomes');
 const contractProof = require('./saas-billing-provider-contract');
-const { reserveEffect } = require('./saas-billing-effects');
+const { observePreapproval, applyPaymentLifecycle, readLifecycle } = require('./saas-billing-lifecycle');
 const { processSubscriptionWebhookEvent } = require('./saas-billing-webhook-claims');
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
 const ALLOWED_PLAN_CODES = new Set(['inicial', 'crecimiento', 'empresa']);
 const ALLOWED_LOCAL_STATUSES = new Set(['pending', 'active', 'paused', 'canceled', 'payment_failed', 'suspended']);
-const TENANT_PLAN_MAP = Object.freeze({
-  inicial: 'basic',
-  crecimiento: 'growth',
-  empresa: 'enterprise'
-});
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -87,83 +81,9 @@ function maskEmail(value) {
   return `${local.slice(0, 2) || '*'}***@${domain}`;
 }
 
-function parseSettings(raw) {
-  if (!raw) return {};
-  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
-  try {
-    const parsed = JSON.parse(String(raw));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
 function toIsoDate(value) {
   const text = normalizeString(value);
   return text || null;
-}
-
-function deriveTenantLifecycleStatus(localStatus) {
-  if (localStatus === 'active') return 'active';
-  if (localStatus === 'pending') return 'trial';
-  if (localStatus === 'suspended' || localStatus === 'canceled') return 'suspended';
-  if (localStatus === 'paused' || localStatus === 'payment_failed') return 'at_risk';
-  return 'trial';
-}
-
-function buildTenantBillingSnapshot(subscription) {
-  return {
-    provider: 'mercado_pago',
-    subscriptionId: subscription.id,
-    preapprovalId: subscription.mercadoPagoPreapprovalId,
-    status: subscription.localStatus,
-    mercadoPagoStatus: subscription.mercadoPagoStatus,
-    planCode: subscription.planCode,
-    amount: subscription.amount,
-    currency: subscription.currency,
-    billingInterval: subscription.billingInterval,
-    payerEmail: subscription.mercadoPagoPayerEmail,
-    currentPeriodStart: subscription.currentPeriodStart,
-    currentPeriodEnd: subscription.currentPeriodEnd,
-    nextBillingDate: subscription.nextBillingDate,
-    lastPaymentId: subscription.lastPaymentId,
-    lastPaymentStatus: subscription.lastPaymentStatus,
-    authorizationUrl: subscription.authorizationUrl,
-    externalReference: subscription.externalReference,
-    updatedAt: subscription.updatedAt
-  };
-}
-
-async function syncTenantBillingState(client, clinic, subscription) {
-  const settings = parseSettings(clinic.settings);
-  const portal = settings.portal && typeof settings.portal === 'object' ? { ...settings.portal } : {};
-  const policy = portal.policy && typeof portal.policy === 'object' ? { ...portal.policy } : {};
-  const lifecycle = portal.lifecycle && typeof portal.lifecycle === 'object' ? { ...portal.lifecycle } : {};
-  const billing = portal.billing && typeof portal.billing === 'object' ? { ...portal.billing } : {};
-
-  const mappedPlanCode = TENANT_PLAN_MAP[subscription.planCode] || policy.planCode || 'basic';
-  policy.planCode = mappedPlanCode;
-  lifecycle.status = deriveTenantLifecycleStatus(subscription.localStatus);
-  billing.status = subscription.localStatus;
-  billing.subscription = buildTenantBillingSnapshot(subscription);
-
-  const nextSettings = {
-    ...settings,
-    portal: {
-      ...portal,
-      policy,
-      lifecycle,
-      billing
-    }
-  };
-
-  await client.query(
-    `UPDATE clinics
-     SET settings = $2::jsonb,
-         "updatedAt" = NOW()
-     WHERE id = $1::uuid`,
-    [clinic.id, JSON.stringify(nextSettings)]
-  );
 }
 
 function mapPreapprovalToSubscriptionPatch(preapproval) {
@@ -238,8 +158,8 @@ async function finishSubscriptionProvisioning(subscriptionId) {
     // Match the webhook lock order: subscription, then clinic. Use fresh settings.
     const clinic = await findClinicByExternalTenantId(current.externalTenantId, client, { forUpdate: true });
     if (!clinic) throw new Error('tenant_not_found');
-    const ready = await updateSaasSubscriptionById(current.id, { provisioningState: 'ready' }, client);
-    await syncTenantBillingState(client, clinic, ready);
+    const ready = await observePreapproval(client, clinic, current, { provisioningState: 'ready',
+      mercadoPagoStatus: current.mercadoPagoStatus });
     return ready;
   });
   return { ok: true, subscription };
@@ -372,13 +292,18 @@ async function createSaasSubscriptionForTenant(input) {
 async function getSaasSubscriptionDetails(subscriptionId) {
   const subscription = await findSaasSubscriptionById(subscriptionId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
-  return { ok: true, subscription };
+  return { ok: true, subscription: { ...subscription, lifecycle: await readLifecycle(require('../db/client'), subscription.id) } };
+}
+
+async function latestSubscriptionWithLifecycle(tenantId) {
+  const subscription = await findLatestSaasSubscriptionByTenantId(tenantId);
+  return subscription ? { ...subscription, lifecycle: await readLifecycle(require('../db/client'), subscription.id) } : null;
 }
 
 async function listSaasSubscriptionsForAdmin(filters = {}) {
   const tenantId = normalizeString(filters.tenantId);
   const items = await listSaasSubscriptions({ externalTenantId: tenantId || null });
-  return { ok: true, subscriptions: items };
+  return { ok: true, subscriptions: await Promise.all(items.map(async subscription => ({ ...subscription, lifecycle: await readLifecycle(require('../db/client'), subscription.id) }))) };
 }
 
 async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
@@ -496,13 +421,7 @@ async function executeSubscriptionAction(subscriptionId, action) {
     return { ok: false, reason: 'unsupported_action', status: 400 };
   }
 
-  const patch = mapPreapprovalToSubscriptionPatch(remote);
-
-  const updated = await withBillingTransaction(async (client) => {
-    const next = await updateSaasSubscriptionById(subscription.id, patch, client);
-    await syncTenantBillingState(client, clinic, next);
-    return next;
-  });
+  const updated = await applyPreapprovalObservation(subscription.mercadoPagoPreapprovalId, remote);
 
   return { ok: true, subscription: updated };
 }
@@ -515,14 +434,17 @@ async function refreshSubscriptionFromMercadoPagoByPreapprovalId(preapprovalId) 
   if (!clinic) return { ok: false, reason: 'tenant_not_found', status: 404 };
 
   const remote = await getPreapproval(preapprovalId);
-  const patch = mapPreapprovalToSubscriptionPatch(remote);
-  const updated = await withBillingTransaction(async (client) => {
-    const next = await updateSaasSubscriptionById(subscription.id, patch, client);
-    await syncTenantBillingState(client, clinic, next);
-    return next;
-  });
+  const updated = await applyPreapprovalObservation(preapprovalId, remote);
 
   return { ok: true, subscription: updated };
+}
+
+async function applyPreapprovalObservation(preapprovalId, remote) {
+  return withBillingTransaction(async client => {
+    const proof = await lockProviderSubscription(client, preapprovalId, remote);
+    if (proof.decision.type !== 'VALID') throw new Error('subscription_observation_unproven');
+    return observePreapproval(client, proof.clinic, proof.subscription, mapPreapprovalToSubscriptionPatch(remote));
+  });
 }
 
 function resolveSubscriptionIdFromPayment(payment) {
@@ -811,7 +733,7 @@ async function validatePreparedWebhook(prepared, client) {
     decision: providerDecision(proof.decision, prepared.resource, proof.subscription)
   };
   if (prepared.kind === 'invoice') {
-    const decision = contractProof.validateCharge({ ...prepared, contract: proof.contract });
+    const decision = contractProof.validateCharge({ ...prepared, contract: proof.contract }, { lifecycle: true });
     if (decision.type !== 'VALID') return { decision: providerDecision(decision, prepared.resource, proof.subscription) };
   }
   return { ...proof, decision: null };
@@ -822,29 +744,14 @@ async function applyPreparedWebhook(prepared, payload, meta, client, source) {
   const proof = await validatePreparedWebhook(prepared, client);
   if (proof.decision) return proof.decision;
   const { subscription, clinic } = proof;
-  const { preapproval, payment, paymentId } = prepared;
+  const patch = mapPreapprovalToSubscriptionPatch(prepared.preapproval);
+  patch.provisioningState = subscription.provisioningState && patch.mercadoPagoPreapprovalId ? 'ready' : null;
   if (prepared.kind === 'invoice') {
-    const effectDecision = await reserveEffect(client, prepared, subscription, runtimeState, source);
-    if (effectDecision) return effectDecision;
+    patch.metadata = buildPaymentWebhookMetadata(prepared.payment, payload, meta);
+    return applyPaymentLifecycle(client, proof, prepared, patch, runtimeState, source);
   }
-  // Existing downstream activation/payment policy is unchanged (BILL-007).
-  const preapprovalPatch = mapPreapprovalToSubscriptionPatch(preapproval);
-  const patch = prepared.kind === 'invoice' ? {
-    ...preapprovalPatch,
-    provisioningState: subscription.provisioningState && preapprovalPatch.mercadoPagoPreapprovalId ? 'ready' : null,
-    lastPaymentId: paymentId,
-    lastPaymentStatus: normalizeString(payment.status).toLowerCase(),
-    localStatus: mapMercadoPagoPaymentStatus(payment.status) === 'active'
-      ? (preapprovalPatch.localStatus || 'active') : mapMercadoPagoPaymentStatus(payment.status),
-    metadata: buildPaymentWebhookMetadata(payment, payload, meta)
-  } : {
-    ...preapprovalPatch,
-    provisioningState: subscription.provisioningState && normalizeString(preapproval && preapproval.id) ? 'ready' : null,
-    metadata: buildPreapprovalWebhookMetadata(preapproval, payload, meta)
-  };
-  const next = await updateSaasSubscriptionById(subscription.id, patch, client);
-  if (!next) throw new Error('subscription_update_missing');
-  await syncTenantBillingState(client, clinic, next);
+  patch.metadata = buildPreapprovalWebhookMetadata(prepared.preapproval, payload, meta);
+  const next = await observePreapproval(client, clinic, subscription, patch);
   return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
 }
 
@@ -857,7 +764,7 @@ module.exports = {
   executeSubscriptionAction,
   refreshSubscriptionFromMercadoPagoByPreapprovalId,
   processMercadoPagoWebhook,
-  findLatestSaasSubscriptionByTenantId,
+  findLatestSaasSubscriptionByTenantId: latestSubscriptionWithLifecycle,
   __internal: {
     prepareMercadoPagoWebhook, validatePreparedWebhook, applyPreparedWebhook,
     processSubscriptionWebhookEvent,

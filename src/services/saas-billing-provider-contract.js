@@ -81,7 +81,7 @@ function validatePreapproval({ subscription, clinic, preapproval, preapprovalId,
   return valid();
 }
 
-function validateCharge({ invoice, invoiceId, payment, paymentId, preapprovalId, contract }) {
+function validateCharge({ invoice, invoiceId, payment, paymentId, preapprovalId, contract }, { lifecycle = false } = {}) {
   for (const [observed, expected] of [[invoice?.id, invoiceId], [invoice?.preapproval_id, preapprovalId]]) {
     const checked = identity(observed, expected);
     if (checked.type !== 'VALID') return checked;
@@ -97,6 +97,15 @@ function validateCharge({ invoice, invoiceId, payment, paymentId, preapprovalId,
   }
   // Nested status/summarized never authorizes success. Only canonical Payment.
   const status = text(payment.status).toLowerCase();
+  // BILL-007 may observe negative states only after the same canonical identity,
+  // amount and currency proof. This does not authorize any positive effect.
+  if (lifecycle && ['rejected', 'cancelled', 'canceled', 'refunded', 'charged_back'].includes(status)) {
+    const money = financialFields(payment, contract);
+    if (money.type !== 'VALID') return money;
+    const refund = payment.transaction_amount_refunded;
+    if (refund != null && !/^0+(?:\.0{1,2})?$/.test(String(refund).trim()) && exactMinorUnits(refund) === null) return review();
+    return valid();
+  }
   if (['refunded', 'charged_back'].includes(status)) return review('unsupported_charge_type');
   if (['pending', 'in_process', 'rejected', 'cancelled', 'canceled', 'authorized', 'in_mediation'].includes(status)) {
     return noAction(`payment_${status}`);
@@ -107,7 +116,7 @@ function validateCharge({ invoice, invoiceId, payment, paymentId, preapprovalId,
   const refunded = payment.transaction_amount_refunded;
   if (refunded != null) {
     const zero = ['string', 'number'].includes(typeof refunded) && /^0+(?:\.0{1,2})?$/.test(String(refunded).trim());
-    if (!zero) return exactMinorUnits(refunded) !== null ? review('unsupported_charge_type') : review();
+    if (!zero && (exactMinorUnits(refunded) === null || !lifecycle)) return exactMinorUnits(refunded) !== null ? review('unsupported_charge_type') : review();
   }
   const paymentMoney = financialFields(payment, contract);
   return paymentMoney.type === 'VALID' ? valid() : paymentMoney;

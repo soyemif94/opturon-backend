@@ -196,7 +196,7 @@ test('Rollback bridge: permanent protocol and combined 6BC; real PostgreSQL and 
     const row = await event(); const state = await business();
     assert.equal(row.processingStatus, 'processed'); assert.equal(row.processingError, null);
     assert.equal(row.contractOutcome, null); assert.equal(row.subscriptionId, subscription.id);
-    assert.deepEqual(row.raw, payload); assert.equal(state.subscription.localStatus, 'active');
+    assert.deepEqual(row.raw, payload); assert.equal(state.subscription.localStatus, payload.type === 'payment' ? 'active' : 'pending');
     assert.deepEqual(state.subscription.metadata.contract, subscription.metadata.contract);
     assert.equal(state.tenant.settings.portal.billing.subscription.updatedAt, state.subscription.updatedAt.toISOString());
     if (payment) assert.equal(state.subscription.lastPaymentId, 'pay-1');

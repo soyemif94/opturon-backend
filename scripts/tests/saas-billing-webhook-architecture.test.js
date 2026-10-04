@@ -382,7 +382,7 @@ test('BILL-006BC architecture: claim/CAS, short transactions, abort and normal A
       await decision('contract_rejected', 'external_reference_mismatch');
     });
     for (const status of ['refunded', 'charged_back', 'future_unknown']) await scenario(`CASE AD: ${status} cannot enter success gate`, async () => {
-      provider.payment.status = status; await decision('manual_review', 'unsupported_charge_type');
+      provider.payment.status = status; await decision('manual_review', status === 'refunded' ? 'payment_refunded' : status === 'charged_back' ? 'payment_chargeback' : 'unsupported_charge_type');
     });
     await scenario('CASE AE: payload cannot supply a claim UUID or outcome; raw remains unchanged', async () => {
       const forged = `billing_contract_v2:claim:${crypto.randomUUID()}:claim_active`;

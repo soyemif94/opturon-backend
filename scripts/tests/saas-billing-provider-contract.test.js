@@ -244,7 +244,7 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     for (const status of ['refunded', 'charged_back', 'unexpected_status']) {
       await scenario('CASE V: canonical ' + status + ' is visible durable manual review, not successful billing', async () => {
         provider.payment.status = status;
-        await assertDecision('manual_review', 'unsupported_charge_type');
+        await assertDecision('manual_review', status === 'refunded' ? 'payment_refunded' : status === 'charged_back' ? 'payment_chargeback' : 'unsupported_charge_type');
       });
     }
     for (const status of ['refunded', 'charged_back']) {
@@ -255,7 +255,7 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
         const response = await deliver();
         assert.equal(response.status, 200); assert.equal(response.body.outcome, 'MANUAL_REVIEW');
         const row = (await pool.query('SELECT * FROM saas_subscription_events WHERE "notificationId"=$1', [payload.id])).rows[0];
-        assert.equal(row.contractOutcome.reasonCode, 'unsupported_charge_type');
+        assert.equal(row.contractOutcome.reasonCode, status === 'refunded' ? 'payment_refunded' : 'payment_chargeback');
         assert.deepEqual(row.raw, payload); assert.deepEqual(await business(), before);
         await assertMutations(1);
       });
@@ -263,7 +263,7 @@ test('BILL-006C: canonical contract gate, signed HTTP and isolated PostgreSQL', 
     for (const refunded of [1, '100.01']) {
       await scenario('CASE V: approved Payment with partial refund ' + refunded + ' needs review', async () => {
         provider.payment.transaction_amount_refunded = refunded;
-        await assertDecision('manual_review', 'unsupported_charge_type');
+        await assertDecision('manual_review', 'payment_refunded');
       });
     }
     await scenario('Explicit zero refunded amount preserves an ordinary approved Payment', async () => {

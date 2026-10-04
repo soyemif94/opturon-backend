@@ -208,6 +208,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     await db.exec(read('db/migrations/086_saas_subscription_event_contract_outcome.sql'));
     await db.exec(read('db/migrations/087_saas_billing_runtime_state.sql'));
     await db.exec(read('db/migrations/088_saas_billing_effects_reconciliation.sql'));
+    await db.exec(read('db/migrations/089_saas_billing_entitlement_lifecycle.sql'));
     await db.exec("WITH activation AS (SELECT clock_timestamp() AS at) UPDATE saas_billing_runtime_state SET generation=2,\"billingContractV2CutoverActive\"=true,\"cutoverAt\"=at,\"autoApplyNotBefore\"=at+interval '24 hours' FROM activation");
     assert.equal((await rows()).length, 2);
     assert.ok((await rows()).every((row) => row.provisioningState === null));
@@ -332,8 +333,8 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
       const result = await webhook(); assert.equal(result.status, 200); assert.equal(result.body.error, undefined);
       const [recovered] = await rows();
       assert.equal(recovered.id, id); assert.equal(recovered.provisioningState, 'ready');
-      assert.equal(recovered.mercadoPagoPreapprovalId, provider.remote.id); assert.equal(recovered.localStatus, 'active');
-      assert.equal((await request()).status, 409); assert.equal(provider.calls.length, 1);
+      assert.equal(recovered.mercadoPagoPreapprovalId, provider.remote.id); assert.equal(recovered.localStatus, 'pending');
+      assert.equal((await request()).status, 201); assert.equal(provider.calls.length, 1);
     });
     await scenario('known provider ID survives tenant snapshot failure and resumes locally', async () => {
       fault.beforeQuery = once((sql) => sql.includes('SET settings ='));
@@ -342,14 +343,14 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
       assert.equal((await request()).status, 201); assert.equal(provider.calls.length, 1);
       assert.equal((await rows())[0].provisioningState, 'ready');
     });
-    await scenario('webhook arriving before create completion must not regress active state', async () => {
+    await scenario('authorization arriving before create completion preserves ready state without premature activation', async () => {
       provider.onCreate = async (_payload, result) => {
         provider.remote = { ...result, status: 'authorized' };
         assert.equal((await webhook()).body.error, undefined);
         return result;
       };
       assert.equal((await request()).status, 201);
-      assert.equal((await rows())[0].localStatus, 'active'); assert.equal(provider.calls.length, 1);
+      assert.equal((await rows())[0].localStatus, 'pending'); assert.equal((await rows())[0].provisioningState, 'ready'); assert.equal(provider.calls.length, 1);
     });
     await scenario('payment webhook can recover a missing provider ID using the durable external reference', async () => {
       fault.beforeCommit = once((phase) => phase === 'provider');

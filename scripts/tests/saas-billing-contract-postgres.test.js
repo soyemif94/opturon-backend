@@ -302,7 +302,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     await create();
     provider.remote = { ...provider.remote, status: 'authorized', contract: { amount: '1.00' },
       metadata: { contract: { currency: 'USD' } }, auto_recurring: { transaction_amount: 2, currency_id: 'USD' } };
-    assert.equal((await service.refreshSubscriptionFromMercadoPagoByPreapprovalId(provider.remote.id)).ok, true);
+    await assert.rejects(service.refreshSubscriptionFromMercadoPagoByPreapprovalId(provider.remote.id), /subscription_observation_unproven/);
     await sameContract(provider.captured[0]);
     assert.equal((await webhook()).outcome, 'CONTRACT_REJECTED');
     await sameContract(provider.captured[0]);
@@ -333,7 +333,7 @@ test('BILL-006A: immutable local contract with real PostgreSQL and mocked provid
     const recovered = await row();
     assert.equal(recovered.mercadoPagoPreapprovalId, provider.remote.id);
     assert.equal(recovered.provisioningState, 'ready');
-    assert.equal(recovered.localStatus, 'active');
+    assert.equal(recovered.localStatus, 'pending'); // Authorization alone is not paid activation.
     await sameContract(provider.captured[0]);
     assert.equal(provider.calls.length, 1);
   });

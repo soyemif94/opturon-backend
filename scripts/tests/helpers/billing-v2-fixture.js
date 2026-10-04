@@ -2,6 +2,11 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { activateCutover } = require('../../billing/activate-billing-contract-v2-cutover');
 async function activateFixture(pool) {
+  // Combined runtime keeps the 087/088 baseline and upgrades it additively.
+  if (!(await pool.query("SELECT to_regclass('saas_billing_lifecycles') AS name")).rows[0].name) {
+    await pool.query(require('fs').readFileSync(require('path').resolve(__dirname,
+      '../../../db/migrations/089_saas_billing_entitlement_lifecycle.sql'), 'utf8'));
+  }
   const client = await pool.connect();
   try { await activateCutover(client, { apply: true }); } finally { client.release(); }
 }

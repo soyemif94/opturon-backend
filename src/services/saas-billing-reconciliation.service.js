@@ -2,6 +2,7 @@ const { requireGeneration } = require('../repositories/saas-billing-runtime.repo
 const { claimReconciliation, lockReconciliationClaim, completeReconciliation, AUTO_RECONCILE_STATES } = require('../repositories/saas-billing-reconciliation.repository');
 const { shortTransaction, withProviderBudget, providerFailureReason } = require('./saas-billing-webhook-claims');
 const { isContractOutcome, validateContractOutcome } = require('./saas-billing-webhook-outcomes');
+const { hasPersistedLifecycle } = require('./saas-billing-lifecycle');
 
 async function runBillingReconciliationOnce() {
   await requireGeneration(2);
@@ -31,10 +32,10 @@ async function runBillingReconciliationOnce() {
       const result = await executor.applyPreparedWebhook(prepared, {}, {}, client, { runId: claim.runId });
       if (isContractOutcome(result)) {
         const outcome = validateContractOutcome(result);
-        await client.query('ROLLBACK TO SAVEPOINT reconciliation_business');
+        if (!hasPersistedLifecycle(result)) await client.query('ROLLBACK TO SAVEPOINT reconciliation_business');
         await completeReconciliation(client, claim, { status: 'manual_review', reason: outcome.reasonCode });
       } else if (result?.type === 'NO_ACTION') {
-        await client.query('ROLLBACK TO SAVEPOINT reconciliation_business');
+        if (!hasPersistedLifecycle(result)) await client.query('ROLLBACK TO SAVEPOINT reconciliation_business');
         await completeReconciliation(client, claim, { status: result.reasonCode === 'canonical_effect_already_applied' ? 'completed' : 'no_action',
           reason: result.reasonCode, retry: AUTO_RECONCILE_STATES.includes(result.reasonCode) });
       } else {

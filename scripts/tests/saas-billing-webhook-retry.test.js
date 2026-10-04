@@ -176,11 +176,11 @@ test('BILL-005: signed HTTP deliveries, real PostgreSQL locks and atomic complet
         EXECUTE FUNCTION count_webhook_mutation('tenant');`);
     t.diagnostic('SQL_ENGINE=PostgreSQL independent connections; provider mocked; production inaccessible');
 
-    await scenario('A: full success commits billing, tenant and processed together', async () => {
+    await scenario('A: preapproval observation commits billing snapshot and processed, but does not activate', async () => {
       assert.equal((await deliver()).status, 200);
       assert.equal((await event()).processingStatus, 'processed');
       await assertMutations(1);
-      assert.equal((await repository.findSaasSubscriptionById(subscription.id)).localStatus, 'active');
+      assert.equal((await repository.findSaasSubscriptionById(subscription.id)).localStatus, 'pending');
     });
     await scenario('B: invalid signature has no event, provider or business effect', async () => {
       assert.equal((await deliver({ valid: false })).status, 401);

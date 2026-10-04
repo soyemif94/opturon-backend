@@ -277,7 +277,7 @@ test('BILL-006BC final: authenticated delivery, canonical effects, cutover and r
       await assertProcessed(await deliver());
       const original = await event();
       // Local fixture reconstructs a retained legacy atomic completion. Never production SQL.
-      await pool.query('TRUNCATE saas_billing_effects');
+      await pool.query('TRUNCATE saas_billing_effects CASCADE');
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -301,7 +301,7 @@ test('BILL-006BC final: authenticated delivery, canonical effects, cutover and r
     });
     await scenario('Historical tool: lastPaymentId and processed status without atomic snapshot are insufficient', async () => {
       await assertProcessed(await deliver()); const original = await event();
-      await pool.query('TRUNCATE saas_billing_effects');
+      await pool.query('TRUNCATE saas_billing_effects CASCADE');
       await pool.query(`UPDATE saas_subscriptions SET metadata=metadata-'mercadoPagoPaymentSnapshot'`); await clearAudit();
       const result = await require('../billing/reconcile-historical-billing-effect').reconcileHistoricalEffect({
         paymentId: '19951521071', eventId: original.id, apply: true });
