@@ -38,6 +38,7 @@ function requirePortalModule(moduleName) {
       const result = await resolveTenantPolicyByExternalTenantId(tenantId);
       if (!result.ok) return next();
       if (isOpturonAdminTenant(result)) return next();
+      if (isSuspendedForNonpayment(result.policy)) return nonpaymentResponse(res, tenantId);
       if (isModuleEnabled(result.policy, moduleName)) return next();
 
       return res.status(403).json({
@@ -67,6 +68,7 @@ function requirePortalCapability(capabilityName) {
       const result = await resolveTenantPolicyByExternalTenantId(tenantId);
       if (!result.ok) return next();
       if (isOpturonAdminTenant(result)) return next();
+      if (isSuspendedForNonpayment(result.policy)) return nonpaymentResponse(res, tenantId);
       if (Array.isArray(result.policy?.capabilities) && result.policy.capabilities.includes(targetCapability)) {
         return next();
       }
@@ -87,6 +89,14 @@ function requirePortalCapability(capabilityName) {
       });
     }
   };
+}
+
+function isSuspendedForNonpayment(policy) {
+  return policy?.billingEntitlement?.state === 'suspended_for_nonpayment'
+    && policy.billingEntitlement.paidAccessAllowed === false;
+}
+function nonpaymentResponse(res, tenantId) {
+  return res.status(403).json({ success: false, error: 'billing_entitlement_suspended', tenantId });
 }
 
 module.exports = {

@@ -179,6 +179,12 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       provider.invoice.payment.id = provider.payment.id;
       provider.search.results[0].payment.id = provider.payment.id;
     };
+    const collection = status => {
+      provider.payment.status = 'rejected';
+      provider.invoice.type = 'scheduled'; provider.invoice.status = status;
+      provider.invoice.payment.status = 'rejected';
+      provider.invoice.last_modified = provider.payment.date_created;
+    };
     async function anotherContract(planCode = 'empresa') {
       const id = crypto.randomUUID(), preapprovalId = `mp-${id}`;
       const input = { id, clinicId, externalTenantId: 'tenant-routing', planCode, amount: 40600,
@@ -233,9 +239,9 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       assert.equal((await lifecycle()).billingState, 'payment_failed'); assert.equal(await plan(), 'basic');
       assert.equal(await planWrites(), 0); assert.equal((await effects()).length, 0);
     });
-    await scenario('H rejected renewal retains previously paid entitlement', async () => {
-      await deliver(); renewal(); provider.payment.status = 'rejected'; await clearAudit();
-      assert.equal((await fresh()).status, 200); assert.equal((await lifecycle()).billingState, 'payment_failed');
+    await scenario('H rejected renewal in provider recovery temporarily retains paid entitlement', async () => {
+      await deliver(); renewal(); collection('recycling'); await clearAudit();
+      assert.equal((await fresh()).status, 200); assert.equal((await lifecycle()).billingState, 'payment_retrying');
       assert.equal(await plan(), 'growth'); assert.equal(await planWrites(), 0); assert.equal((await effects()).length, 1);
     });
     await scenario('I cancellation before first success never activates', async () => {
@@ -413,6 +419,113 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       assert.equal((await fresh()).status, 503); assert.equal((await reversals()).length, 0);
       assert.deepEqual(await lifecycle(), before); assert.equal(await plan(), 'growth');
       fault = {}; assert.equal((await fresh()).body.outcome, 'MANUAL_REVIEW'); assert.equal((await reversals()).length, 1);
+    });
+    await scenario('RENEWAL A: recycling retains access temporarily and records canonical collection history', async () => {
+      await deliver(); const activation = (await lifecycle()).activatedAt; renewal(); collection('recycling');
+      await fresh(); const state = await lifecycle();
+      assert.equal(state.billingState, 'payment_retrying'); assert.equal(state.entitlementState, 'active');
+      assert.equal(state.collectionHistory[0].phase, 'retrying'); assert.equal(state.activatedAt, activation);
+      assert.equal((await business()).tenant.settings.portal.billing.entitlement.paidAccessAllowed, true);
+      assert.equal((await job()).resourceId, String(provider.invoice.id));
+    });
+    await scenario('RENEWAL B: a new approved retry resolves the collection without a second initial activation', async () => {
+      await deliver(); const activation = (await lifecycle()).activatedAt; renewal(); collection('recycling'); await fresh();
+      renewal(); provider.payment.status = 'approved'; provider.invoice.status = 'processed'; provider.invoice.payment.status = 'approved';
+      await clearAudit(); await fresh(); const state = await lifecycle();
+      assert.equal(state.billingState, 'active'); assert.equal(state.activatedAt, activation); assert.equal(state.nonpayment, null);
+      assert.equal(state.collectionHistory[0].resolvedByPaymentId, String(provider.payment.id)); assert.equal(await planWrites(), 0);
+      assert.equal((await effects()).length, 2);
+    });
+    await scenario('RENEWAL C: processed canonical rejected installment suspends paid entitlement, not the contract plan', async () => {
+      await deliver(); renewal(); collection('processed'); await clearAudit(); await fresh();
+      const state = await lifecycle(), current = await business();
+      assert.equal(state.billingState, 'suspended_for_nonpayment'); assert.equal(state.entitlementState, 'suspended_for_nonpayment');
+      assert.equal(current.subscription.localStatus, 'suspended'); assert.equal(current.tenant.settings.portal.lifecycle.status, 'suspended');
+      assert.equal(current.tenant.settings.portal.billing.entitlement.paidAccessAllowed, false);
+      assert.equal(state.collectionHistory[0].phase, 'final_unpaid'); assert.equal(await plan(), 'growth'); assert.equal(await planWrites(), 0);
+    });
+    await scenario('RENEWAL D: valid unique new payment reactivates the same plan once and retains unpaid history', async () => {
+      await deliver(); const activation = (await lifecycle()).activatedAt; renewal(); collection('processed'); await fresh();
+      renewal(); provider.payment.status = 'approved'; provider.invoice.payment.status = 'approved';
+      await clearAudit(); await fresh(); const state = await lifecycle();
+      assert.equal(state.entitlementState, 'active'); assert.equal(state.billingState, 'active'); assert.equal(state.activatedAt, activation);
+      assert.ok(state.collectionHistory[0].failedAt); assert.ok(state.collectionHistory[0].resolvedAt);
+      assert.equal(state.nonpayment, null); assert.equal((await business()).tenant.settings.portal.billing.entitlement.paidAccessAllowed, true);
+      assert.equal((await business()).tenant.settings.portal.lifecycle.status, 'active');
+      assert.equal(await plan(), 'growth'); assert.equal(await planWrites(), 0); await assertMutations(1);
+      await clearAudit(); await fresh(); await assertMutations(0); assert.deepEqual(await lifecycle(), state);
+      assert.equal((await effects()).length, 2);
+    });
+    await scenario('RENEWAL E: duplicate rejected webhooks cannot repeat a suspension', async () => {
+      await deliver(); renewal(); collection('processed'); await fresh(); const state = await lifecycle();
+      await clearAudit(); await fresh(); await assertMutations(0); assert.deepEqual(await lifecycle(), state);
+      assert.equal(state.collectionHistory.length, 1); assert.equal((await effects()).length, 1);
+    });
+    await scenario('RENEWAL F: old rejected event after newer regularization cannot suspend again', async () => {
+      await deliver(); renewal(); collection('processed'); await fresh(); const oldProvider = structuredClone(provider);
+      renewal(); provider.payment.status = 'approved'; provider.invoice.payment.status = 'approved'; await fresh();
+      const regularized = await lifecycle(); provider = oldProvider; await clearAudit(); await fresh();
+      assert.deepEqual(await lifecycle(), regularized); await assertMutations(0);
+      assert.equal((await business()).tenant.settings.portal.billing.entitlement.paidAccessAllowed, true);
+    });
+    await scenario('RENEWAL G: definitive unpaid first installment never acquires a paid entitlement or grace period', async () => {
+      collection('processed'); await deliver(); const state = await lifecycle();
+      assert.equal(state.activatedAt, undefined); assert.equal(state.entitlementState, 'unactivated'); assert.equal(state.billingState, 'payment_failed');
+      assert.equal(await plan(), 'basic'); assert.equal(await planWrites(), 0); assert.equal((await effects()).length, 0);
+      assert.equal((await business()).tenant.settings.portal.billing, undefined);
+    });
+    await scenario('RENEWAL H: suspension preserves immutable contract, plan, client settings and integration configuration', async () => {
+      await pool.query(`UPDATE clinics SET settings=settings || '{"clientData":{"keep":"customer-data"},"integrations":{"fixture":"preserved"}}'::jsonb`);
+      await deliver(); const before = await business(); renewal(); collection('processed'); await fresh(); const after = await business();
+      assert.deepEqual(after.subscription.metadata.contract, before.subscription.metadata.contract);
+      assert.equal(after.subscription.id, before.subscription.id); assert.equal(after.subscription.planCode, before.subscription.planCode);
+      assert.deepEqual(after.tenant.settings.portal.policy, before.tenant.settings.portal.policy);
+      assert.deepEqual(after.tenant.settings.clientData, before.tenant.settings.clientData);
+      assert.deepEqual(after.tenant.settings.integrations, before.tenant.settings.integrations);
+    });
+    for (const retryAttempt of [undefined, 0, 1, 2, 99]) await scenario(`No local retry threshold: recycling remains temporary with provider retry_attempt=${retryAttempt}`, async () => {
+      await deliver(); renewal(); collection('recycling'); provider.invoice.retry_attempt = retryAttempt; await fresh();
+      assert.equal((await lifecycle()).entitlementState, 'active'); assert.equal((await lifecycle()).billingState, 'payment_retrying');
+    });
+    await scenario('Unknown or contradictory collection evidence never authorizes suspension', async () => {
+      await deliver(); renewal(); collection('processed'); provider.invoice.payment.status = 'approved'; await fresh();
+      assert.equal((await lifecycle()).billingState, 'past_due'); assert.equal((await lifecycle()).reviewReason, 'collection_state_unproven');
+      assert.equal((await lifecycle()).entitlementState, 'active');
+    });
+    await scenario('Provider recycling to processed rejection is observed through the same reconciliation policy', async () => {
+      await deliver(); renewal(); collection('recycling'); await fresh(); collection('processed'); await due();
+      assert.equal((await reconciliation.runBillingReconciliationOnce()).completed, true);
+      assert.equal((await lifecycle()).entitlementState, 'suspended_for_nonpayment');
+      assert.equal((await job()).status, 'terminal');
+    });
+    await scenario('Local reconciliation exhaustion cannot masquerade as provider collection exhaustion', async () => {
+      await deliver(); renewal(); collection('recycling'); await fresh();
+      await pool.query(`UPDATE saas_billing_reconciliations SET attempts=12,"nextAttemptAt"=clock_timestamp()-interval '1 second'`);
+      await reconciliation.runBillingReconciliationOnce();
+      assert.equal((await lifecycle()).entitlementState, 'active'); assert.equal((await job()).status, 'manual_review');
+    });
+    await scenario('Cancellation and reversible nonpayment remain separate after regularization', async () => {
+      await deliver(); renewal(); collection('processed'); await fresh(); await cancel();
+      renewal(); provider.payment.status = 'approved'; provider.invoice.payment.status = 'approved'; await fresh();
+      const state = await lifecycle(); assert.equal(state.entitlementState, 'active'); assert.equal(state.billingState, 'subscription_cancelled');
+      assert.ok(state.cancellationAt); assert.equal((await business()).subscription.localStatus, 'canceled');
+    });
+    await scenario('Suspension completion failure rolls back entitlement, projection and rejection history together', async () => {
+      await deliver(); const state = await lifecycle(); renewal(); collection('processed');
+      fault.query = async (_c, sql, params) => { if (sql.includes('UPDATE saas_subscription_events') && params.includes('ignored')) throw new Error('suspend_completion_failed'); };
+      assert.equal((await fresh()).status, 503); assert.deepEqual(await lifecycle(), state);
+      assert.equal((await business()).tenant.settings.portal.billing.entitlement.paidAccessAllowed, true);
+      fault = {}; await fresh(); assert.equal((await lifecycle()).entitlementState, 'suspended_for_nonpayment');
+    });
+    await scenario('Refund of a later contract restores an earlier nonpayment access restriction exactly', async () => {
+      await deliver(); renewal(); collection('processed'); await fresh();
+      const previousAccess = (await business()).tenant.settings.portal.billing.entitlement;
+      await anotherContract(); provider.payment.status = 'approved'; provider.invoice.payment.status = 'approved'; await fresh();
+      assert.equal(await plan(), 'enterprise'); refund(); await fresh();
+      const portal = (await business()).tenant.settings.portal;
+      assert.equal(await plan(), 'growth'); assert.equal(portal.lifecycle.status, 'suspended');
+      assert.deepEqual(portal.billing.entitlement, previousAccess);
+      assert.equal(portal.billing.entitlement.paidAccessAllowed, false);
     });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));

@@ -135,6 +135,7 @@ function buildTenantPolicyFromSettings(settings) {
     recommendedCapabilities: buildRecommendedCapabilities(operatingProfile.presetKey),
     capabilities,
     enabledModules,
+    billingEntitlement: portal.billing?.entitlement || null,
     implementedModules: MODULES,
     capabilityCatalog: CAPABILITY_CATALOG,
     moduleCapabilities: MODULE_TO_CAPABILITY,

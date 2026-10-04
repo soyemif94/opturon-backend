@@ -1,5 +1,5 @@
 const { randomUUID } = require('crypto');
-const AUTO_RECONCILE_STATES = Object.freeze(['payment_pending', 'payment_in_process',
+const AUTO_RECONCILE_STATES = Object.freeze(['payment_pending', 'payment_in_process', 'payment_retrying',
   'authorized_invoice_not_found', 'invoice_payment_pending']);
 const MAX_ATTEMPTS = 12;
 const MAX_AGE_MS = 48 * 60 * 60 * 1000;

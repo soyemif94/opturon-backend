@@ -17,7 +17,7 @@ const NO_ACTION_REASONS = new Set([
   'notification_identity_missing', 'invoice_payment_pending', 'authorized_invoice_not_found',
   'payment_pending', 'payment_in_process', 'payment_rejected', 'payment_cancelled', 'payment_canceled',
   'payment_authorized', 'payment_in_mediation', 'preapproval_plan_unsupported', 'unsupported_event',
-  'canonical_effect_already_applied', 'reversal_already_recorded'
+  'canonical_effect_already_applied', 'reversal_already_recorded', 'payment_retrying'
 ]);
 
 async function shortTransaction(fn) {
@@ -118,7 +118,8 @@ async function processSubscriptionWebhookEvent(input, apply, prepare = async () 
       if (result?.type === 'NO_ACTION') {
         if (!NO_ACTION_REASONS.has(result.reasonCode)) throw new Error('webhook_no_action_invalid');
         if (!hasPersistedLifecycle(result)) await client.query('ROLLBACK TO SAVEPOINT webhook_business');
-        await enqueueReconciliation(client, { id: event.id, resourceId: input.resourceId }, result.reasonCode);
+        await enqueueReconciliation(client, { id: event.id,
+          resourceId: result.reconciliationResourceId || input.resourceId }, result.reasonCode);
         const completed = await updateSubscriptionEventStatus(event.id, {
           processingStatus: 'ignored', processingError: result.reasonCode
         }, client, ownership.marker);

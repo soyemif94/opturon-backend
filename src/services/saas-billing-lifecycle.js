@@ -1,5 +1,5 @@
 const { updateSaasSubscriptionById } = require('../repositories/saas-subscriptions.repository');
-const { reserveEffect, effectKey, bindings, matches, paymentCreatedAt } = require('./saas-billing-effects');
+const { reserveEffect, effectKey, bindings, matches, paymentCreatedAt, historicalEligible } = require('./saas-billing-effects');
 const { exactMinorUnits, noAction, resourceId } = require('./saas-billing-provider-contract');
 const { manualReview } = require('./saas-billing-webhook-outcomes');
 
@@ -45,6 +45,13 @@ async function syncBillingSnapshot(client, clinic, subscription, state, entitlem
   const settings = object(clinic.settings), portal = object(settings.portal);
   const nextPortal = { ...portal, billing: { ...object(portal.billing), status: state.billingState,
     subscription: snapshot(subscription, state) } };
+  if (entitlement || advanceRevision) {
+    nextPortal.billing.entitlement = { subscriptionId: subscription.id, state: state.entitlementState,
+      paidAccessAllowed: state.entitlementState !== 'suspended_for_nonpayment' };
+    if (entitlement && Object.hasOwn(entitlement, 'billingEntitlement')) {
+      nextPortal.billing.entitlement = entitlement.billingEntitlement;
+    }
+  }
   if (entitlement) {
     nextPortal.policy = { ...object(portal.policy), planCode: entitlement.planCode };
     nextPortal.lifecycle = { ...object(portal.lifecycle) };
@@ -101,6 +108,7 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
   const refundMinor = refunded == null || /^0+(?:\.0{1,2})?$/.test(String(refunded).trim()) ? 0n : exactMinorUnits(refunded);
   const reversal = ['refunded', 'charged_back'].includes(status) || (refundMinor !== null && refundMinor > 0n);
   if (reversal) return applyReversal(client, proof, prepared, state, source, refundMinor);
+  if (status === 'rejected') return applyRejectedPayment(client, proof, prepared, state);
   if (status !== 'approved') {
     // Pending remains BILL-006 no-action. Rejected/cancelled observations have
     // their own durable billing state without overwriting any paid entitlement.
@@ -126,6 +134,13 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
     return review(prepared, subscription, 'stale_billing_observation');
   }
   if (!previousEffect && state.entitlementState === 'reversed') return review(prepared, subscription, 'reversal_requires_review');
+  const sameUnfinishedAttempt = state.nonpayment?.paymentId === paymentId
+    && state.entitlementState !== 'suspended_for_nonpayment'
+    && !state.collectionHistory?.some(item => item.paymentId === paymentId && item.failedAt);
+  if (!previousEffect && state.nonpayment && !sameUnfinishedAttempt &&
+    !await isLater(client, payment.date_created, state.nonpayment.paymentCreatedAt)) {
+    return review(prepared, subscription, 'stale_billing_observation');
+  }
   if (!previousEffect && !state.activatedAt) {
     // The clinic lock serializes competing subscriptions. A delayed first
     // payment must not overwrite a newer entitlement from another contract.
@@ -150,21 +165,93 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
     return review(prepared, subscription, 'reversal_requires_review');
   }
   const now = (await client.query('SELECT clock_timestamp()::text AS now')).rows[0].now;
+  const reactivating = state.entitlementState === 'suspended_for_nonpayment';
   const nextState = { ...state, billingState: state.cancellationAt ? 'subscription_cancelled' : 'active',
     entitlementState: 'active', activatedAt: state.activatedAt || now,
     activationPaymentId: state.activationPaymentId || paymentId,
     previousEntitlement: state.previousEntitlement || { planCode: typeof currentPlan === 'string' ? currentPlan : null,
-      status: object(current.lifecycle).status ?? null, statusPresent: Object.hasOwn(object(current.lifecycle), 'status') },
+      status: object(current.lifecycle).status ?? null, statusPresent: Object.hasOwn(object(current.lifecycle), 'status'),
+      billingEntitlement: object(current.billing).entitlement || null },
     lastSuccessfulPaymentId: paymentId, lastSuccessfulPaymentAt: payment.date_created,
     reviewReason: state.cancellationAt ? 'cancellation_expiry_unproven' : null,
     entitlementRevision: String(BigInt(clinic.billingEntitlementRevision) + 1n) };
+  nextState.reason = 'payment_approved';
+  if (state.collectionHistory) {
+    nextState.collectionHistory = state.collectionHistory.map(item => item.resolvedAt ? item
+      : { ...item, resolvedAt: now, resolvedByPaymentId: paymentId });
+  }
+  if (state.nonpayment) { nextState.nonpayment = null; nextState.lastRegularizedAt = now; }
   const next = await updateSaasSubscriptionById(subscription.id, { ...patch,
     localStatus: state.cancellationAt ? 'canceled' : 'active', lastPaymentId: paymentId, lastPaymentStatus: 'approved' }, client);
   if (!next) throw new Error('subscription_update_missing');
   nextState.entitlementRevision = await syncBillingSnapshot(client, clinic, next, nextState,
-    first ? { planCode, status: 'active', statusPresent: true } : null, true);
+    first || reactivating ? { planCode, status: 'active', statusPresent: true } : null, true);
   await saveLifecycle(client, subscription.id, nextState);
   return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
+}
+
+async function applyRejectedPayment(client, proof, prepared, state) {
+  const { subscription, clinic, contract } = proof, { payment, invoice } = prepared;
+  const paymentId = resourceId(payment.id), invoiceId = resourceId(invoice.id);
+  if (!bindings(prepared, subscription)) return review(prepared, subscription, 'provider_relationship_unproven');
+  // Ordering is canonical, not delivery time. An old failure cannot revoke a
+  // more recent regularization, even if its webhook arrives afterwards.
+  if (paymentCreatedAt(payment.date_created) === null) return review(prepared, subscription, 'provider_relationship_unproven');
+  if (!await isLater(client, payment.date_created, state.lastSuccessfulPaymentAt)) return noAction('payment_rejected');
+  const invoiceStatus = normalizeStatus(invoice.status);
+  const retrying = invoiceStatus === 'recycling';
+  // MP documents processed + a rejected linked Payment as a finished unpaid
+  // collection cycle. retry_attempt, webhook counts and local poll exhaustion
+  // are never authority for this decision. Contradictory snapshots fail closed.
+  const finalUnpaid = invoiceStatus === 'processed' && invoice.type === 'scheduled'
+    && normalizeStatus(invoice.payment.status) === 'rejected'
+    && paymentCreatedAt(invoice.last_modified) !== null
+    && (await client.query('SELECT $1::timestamptz >= $2::timestamptz AS valid',
+      [invoice.last_modified, payment.date_created])).rows[0].valid;
+  const phase = finalUnpaid ? 'final_unpaid' : retrying ? 'retrying' : 'unproven';
+  const history = Array.isArray(state.collectionHistory) ? state.collectionHistory : [];
+  const prior = history.find(item => item.invoiceId === invoiceId);
+  const outcome = () => retrying ? { ...noAction('payment_retrying'), reconciliationResourceId: invoiceId }
+    : noAction('payment_rejected');
+  if (prior?.resolvedAt || prior?.phase === 'final_unpaid' || (prior?.phase === phase && prior.paymentId === paymentId)) {
+    return prior?.phase === 'final_unpaid' || prior?.resolvedAt ? noAction('payment_rejected') : outcome();
+  }
+  if (state.nonpayment && paymentId !== state.nonpayment.paymentId &&
+    !await isLater(client, payment.date_created, state.nonpayment.paymentCreatedAt)) return noAction('payment_rejected');
+  const now = (await client.query('SELECT clock_timestamp()::text AS now')).rows[0].now;
+  const observation = { ...prior, invoiceId, paymentId, paymentCreatedAt: payment.date_created,
+    invoiceStatus, invoiceModifiedAt: paymentCreatedAt(invoice.last_modified) === null ? null : invoice.last_modified,
+    phase, firstObservedAt: prior?.firstObservedAt || now, lastObservedAt: now,
+    ...(retrying ? { retryingAt: prior?.retryingAt || now } : {}),
+    ...(finalUnpaid ? { failedAt: now } : {}) };
+  const nextState = { ...state, collectionHistory: [...history.filter(item => item.invoiceId !== invoiceId), observation],
+    reason: finalUnpaid ? 'collection_final_unpaid' : retrying ? 'payment_retrying' : 'collection_state_unproven',
+    reviewReason: phase === 'unproven' ? 'collection_state_unproven' : state.reviewReason || null };
+  const alreadySuspended = state.entitlementState === 'suspended_for_nonpayment';
+  const ownsEntitlement = state.activatedAt && ['active', 'suspended_for_nonpayment'].includes(state.entitlementState)
+    && object(object(object(clinic.settings).portal).policy).planCode === PLAN_MAP[contract.planCode]
+    && String(clinic.billingEntitlementRevision) === state.entitlementRevision;
+  const suspend = finalUnpaid && ownsEntitlement && !alreadySuspended
+    && await historicalEligible(client, subscription, payment);
+  nextState.billingState = state.cancellationAt ? 'subscription_cancelled'
+    : suspend || alreadySuspended ? 'suspended_for_nonpayment'
+      : state.activatedAt ? retrying ? 'payment_retrying' : 'past_due' : 'payment_failed';
+  nextState.nonpayment = { invoiceId, paymentId, paymentCreatedAt: payment.date_created,
+    ...(state.nonpayment?.suspendedAt ? { suspendedAt: state.nonpayment.suspendedAt } : {}) };
+  if (finalUnpaid && state.activatedAt && !suspend && !alreadySuspended) nextState.reviewReason = 'nonpayment_suspension_unproven';
+  if (suspend) {
+    nextState.entitlementState = 'suspended_for_nonpayment';
+    nextState.nonpayment.suspendedAt = now;
+    nextState.reviewReason = null;
+    nextState.entitlementRevision = String(BigInt(clinic.billingEntitlementRevision) + 1n);
+    const next = await updateSaasSubscriptionById(subscription.id, {
+      localStatus: state.cancellationAt ? 'canceled' : 'suspended', lastPaymentId: paymentId, lastPaymentStatus: 'rejected'
+    }, client);
+    nextState.entitlementRevision = await syncBillingSnapshot(client, clinic, next, nextState,
+      { planCode: PLAN_MAP[contract.planCode], status: 'suspended', statusPresent: true });
+  }
+  await saveLifecycle(client, subscription.id, nextState);
+  return retainLifecycle(outcome());
 }
 
 async function applyReversal(client, proof, prepared, state, source, refundMinor) {
