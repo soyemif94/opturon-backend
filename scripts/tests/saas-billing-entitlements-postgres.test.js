@@ -18,7 +18,7 @@ test('BILL-008 real PostgreSQL migration, module/tool boundary and settings secu
     require.cache[id] = { id, filename: id, loaded: true, exports };
   };
   const id = crypto.randomUUID(), otherId = crypto.randomUUID(), malformedId = crypto.randomUUID(), invalidRootId = crypto.randomUUID();
-  const legacyCoreId = crypto.randomUUID(), legacyGrowthId = crypto.randomUUID();
+  const legacyCoreId = crypto.randomUUID(), legacyGrowthId = crypto.randomUUID(), legacyBasicId = crypto.randomUUID();
   const adminClinicId = crypto.randomUUID(), adminActorId = crypto.randomUUID();
   const current = async () => (await pool.query('SELECT * FROM clinics WHERE id=$1',[id])).rows[0];
   const replace = value => pool.query('UPDATE clinics SET settings=$2::jsonb WHERE id=$1',[id,JSON.stringify(value)]);
@@ -38,9 +38,12 @@ test('BILL-008 real PostgreSQL migration, module/tool boundary and settings secu
     const legacyGrowth = { botActive:true, bot:{enabled:true,active:true}, portal:{ policy:{
       planCode:'crecimiento', policyVersion:1, capabilities:['inbox','catalog','orders','inventory']
     } } };
+    const legacyBasic = { botActive:false, portal:{ policy:{
+      planCode:'basic', policyVersion:1, capabilities:['inbox','catalog','orders']
+    } } };
     const malformed = { botActive:false, portal:{ policy:{ policyVersion:1, capabilities:{ inventory:true }, enabledModules:{ inventory:true } } } };
-    await pool.query('INSERT INTO clinics(id,"externalTenantId",settings) VALUES ($1,\'tenant-a\',$2::jsonb),($3,\'tenant-b\',\'{}\'),($4,\'tenant-malformed\',$5::jsonb),($6,\'tenant-invalid-root\',$7::jsonb),($8,\'tenant-legacy-core\',$9::jsonb),($10,\'tenant-legacy-growth\',$11::jsonb)',
-      [id,JSON.stringify(legacy),otherId,malformedId,JSON.stringify(malformed),invalidRootId,JSON.stringify([]),legacyCoreId,JSON.stringify(legacyCore),legacyGrowthId,JSON.stringify(legacyGrowth)]);
+    await pool.query('INSERT INTO clinics(id,"externalTenantId",settings) VALUES ($1,\'tenant-a\',$2::jsonb),($3,\'tenant-b\',\'{}\'),($4,\'tenant-malformed\',$5::jsonb),($6,\'tenant-invalid-root\',$7::jsonb),($8,\'tenant-legacy-core\',$9::jsonb),($10,\'tenant-legacy-growth\',$11::jsonb),($12,\'tenant-legacy-basic\',$13::jsonb)',
+      [id,JSON.stringify(legacy),otherId,malformedId,JSON.stringify(malformed),invalidRootId,JSON.stringify([]),legacyCoreId,JSON.stringify(legacyCore),legacyGrowthId,JSON.stringify(legacyGrowth),legacyBasicId,JSON.stringify(legacyBasic)]);
     await pool.query('INSERT INTO clinics(id,"externalTenantId",settings) VALUES ($1,\'opturon-admin\',$2::jsonb)',
       [adminClinicId,JSON.stringify({ portal: { accountScope: 'opturon_admin' } })]);
     await pool.query('INSERT INTO staff_users(id,"clinicId",name,email,role,active) VALUES ($1,$2,\'Opturon Admin\',\'admin@example.invalid\',\'owner\',TRUE)',
@@ -82,6 +85,15 @@ test('BILL-008 real PostgreSQL migration, module/tool boundary and settings secu
       assert.equal(effective.planKey,'growth'); assert.equal(can(effective,'bot.enabled'),true);
       assert.equal(effective.capabilities['bot.tier'],'standard'); assert.equal(can(effective,'catalog'),true);
       assert.equal(can(effective,'orders'),true); assert.equal(can(effective,'inventory'),false);
+    });
+    await t.test('legacy basic resolves to Core and does not inherit an invalid Bot entitlement', async () => {
+      const row=(await pool.query('SELECT settings FROM clinics WHERE id=$1',[legacyBasicId])).rows[0];
+      const effective=resolve(row.settings);
+      assert.equal(row.settings.botActive,false);
+      assert.equal(row.settings.portal.entitlements.legacyPlanCode,'basic');
+      assert.equal(row.settings.portal.entitlements.capabilities['bot.enabled'],false);
+      assert.equal(row.settings.portal.entitlements.capabilities['bot.tier'],'none');
+      assert.equal(effective.planKey,'core'); assert.equal(can(effective,'bot.enabled'),false);
     });
     await t.test('BILL-007 historical contract rows remain unchanged by entitlement normalization', async () => {
       const after=await pool.query('SELECT id,"planCode",amount,currency,"externalReference",metadata FROM saas_subscriptions WHERE "externalReference"=$1',[legacyContractReference]);
@@ -193,6 +205,81 @@ test('BILL-008 real PostgreSQL migration, module/tool boundary and settings secu
       await replace(canonical('growth'));
       assert.equal(await botAllowedNow(id, whatsapp), true);
       assert.deepEqual((await current()).settings.portal.entitlements, profileBeforePreferenceChange);
+    });
+    await t.test('current production runtime read and billing snapshot write remain compatible after 090', async () => {
+      await pool.query('BEGIN');
+      try {
+        const clinic = (await pool.query('SELECT id,settings,"billingEntitlementRevision" FROM clinics WHERE id=$1 FOR UPDATE',[legacyGrowthId])).rows[0];
+        assert.ok(clinic, 'legacy runtime clinic lookup still returns its existing row');
+        assert.equal(clinic.settings.portal.entitlements.capabilities['bot.tier'],'standard');
+        const settings = clinic.settings, portal = settings.portal;
+        const nextSettings = { ...settings, portal: { ...portal, billing: {
+          ...(portal.billing || {}), status: 'active', subscription: { status: 'active' }
+        } } };
+        const updated = await pool.query(`UPDATE clinics SET settings=$2::jsonb,
+          "billingEntitlementRevision"="billingEntitlementRevision"+$3,"updatedAt"=NOW()
+          WHERE id=$1 RETURNING "billingEntitlementRevision"`,
+        [clinic.id,JSON.stringify(nextSettings),0]);
+        assert.equal(updated.rowCount,1);
+        const after=(await pool.query('SELECT settings,"billingEntitlementRevision" FROM clinics WHERE id=$1',[legacyGrowthId])).rows[0];
+        assert.equal(after.settings.portal.billing.status,'active');
+        assert.equal(after.settings.portal.entitlements.capabilities['bot.enabled'],true);
+        assert.equal(after.settings.portal.entitlements.capabilities['bot.tier'],'standard');
+        assert.equal(after.settings.botActive,true);
+        assert.equal(String(after.billingEntitlementRevision),String(clinic.billingEntitlementRevision));
+        await pool.query('COMMIT');
+      } catch(error) {
+        await pool.query('ROLLBACK').catch(()=>{});
+        throw error;
+      }
+    });
+    await t.test('090 patches owned paths after a concurrent runtime write without dropping unknown or nested settings', async () => {
+      const concurrentId=crypto.randomUUID();
+      const initial={existingKey:'A',anotherKey:'B',nested:{keep:'nested'},futureUnknown:{retain:true},botActive:false,
+        portal:{policy:{planCode:'basic',policyVersion:1,capabilities:['inbox']},unrelated:{preserve:'portal'}}};
+      await pool.query('INSERT INTO clinics(id,"externalTenantId",settings) VALUES ($1,\'tenant-090-concurrent\',$2::jsonb)',
+        [concurrentId,JSON.stringify(initial)]);
+      const runtime=await pool.connect();
+      const migrationPool=new Pool({connectionString:url.href,options:`-c search_path=${schema}`,application_name:'bill008_090_concurrency_test'});
+      const migrationClient=await migrationPool.connect();
+      let migrationPromise;
+      try {
+        await runtime.query('BEGIN');
+        await runtime.query("UPDATE clinics SET settings=jsonb_set(settings,'{anotherKey}',to_jsonb('NEW'::text),true) WHERE id=$1",[concurrentId]);
+        await migrationClient.query('BEGIN');
+        migrationPromise=migrationClient.query(fs.readFileSync(path.join(root,'db/migrations/090_canonical_plan_entitlements.sql'),'utf8'));
+        let waitingOnRuntime=false;
+        const deadline=Date.now()+10000;
+        while(Date.now()<deadline) {
+          const activity=await admin.query("SELECT wait_event_type FROM pg_stat_activity WHERE application_name='bill008_090_concurrency_test' AND state='active'");
+          if(activity.rows.some(row=>row.wait_event_type==='Lock')) { waitingOnRuntime=true; break; }
+          await new Promise(resolveDelay=>setTimeout(resolveDelay,20));
+        }
+        assert.equal(waitingOnRuntime,true,'migration should wait for the concurrent clinic row update');
+        await runtime.query('COMMIT');
+        await migrationPromise;
+        await migrationClient.query('COMMIT');
+      } catch(error) {
+        await runtime.query('ROLLBACK').catch(()=>{});
+        await migrationClient.query('ROLLBACK').catch(()=>{});
+        if(migrationPromise) await migrationPromise.catch(()=>{});
+        throw error;
+      } finally {
+        runtime.release(); migrationClient.release(); await migrationPool.end();
+      }
+      const after=(await pool.query('SELECT settings,"billingEntitlementRevision" FROM clinics WHERE id=$1',[concurrentId])).rows[0];
+      const effective=resolve(after.settings);
+      assert.equal(after.settings.existingKey,'A'); assert.equal(after.settings.anotherKey,'NEW');
+      assert.deepEqual(after.settings.nested,{keep:'nested'}); assert.deepEqual(after.settings.futureUnknown,{retain:true});
+      assert.deepEqual(after.settings.portal.unrelated,{preserve:'portal'}); assert.equal(after.settings.botActive,false);
+      assert.equal(after.settings.portal.entitlements.capabilities['bot.enabled'],false);
+      assert.equal(after.settings.portal.entitlements.capabilities['bot.tier'],'none');
+      assert.equal(effective.planKey,'core');
+      const stableSettings=structuredClone(after.settings);
+      await pool.query(fs.readFileSync(path.join(root,'db/migrations/090_canonical_plan_entitlements.sql'),'utf8'));
+      const repeated=(await pool.query('SELECT settings,"billingEntitlementRevision" FROM clinics WHERE id=$1',[concurrentId])).rows[0];
+      assert.deepEqual(repeated.settings,stableSettings);
+      assert.equal(repeated.billingEntitlementRevision,after.billingEntitlementRevision);
     });
   } finally {
     for (const [id,entry] of originals) { if (entry) require.cache[id]=entry; else delete require.cache[id]; }
