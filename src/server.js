@@ -1,7 +1,6 @@
 ﻿const path = require('path');
 const dotenv = require('dotenv');
 const http = require('http');
-const crypto = require('crypto');
 
 const envPath = path.resolve(__dirname, '../.env');
 dotenv.config({ path: envPath });
@@ -17,17 +16,12 @@ const { ensureWhatsAppTemplateCanarySchema } = require('./db/ensure-whatsapp-tem
 const app = createApp();
 const host = '0.0.0.0';
 const runWorkerInWeb = String(process.env.RUN_WORKER_IN_WEB || '').trim().toLowerCase() === 'true';
-const expectedMetaAppSecret = 'b6259ab44b50ea6976c928cd5d8c6932';
 const envValidation = env.collectEnvValidation();
 
 console.log('WORKER_MODE', {
   runInWeb: process.env.RUN_WORKER_IN_WEB,
   pid: process.pid
 });
-
-function fingerprint(value) {
-  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
-}
 
 logInfo('server_starting', {
   host,
@@ -76,11 +70,7 @@ function handleServerListening() {
   }
 
   logInfo('meta_app_secret_runtime_check', {
-    exists: Boolean(env.metaAppSecret),
-    runtimeLength: String(env.metaAppSecret || '').length,
-    runtimeFingerprint: fingerprint(env.metaAppSecret),
-    expectedFingerprint: fingerprint(expectedMetaAppSecret),
-    metaAppSecretMatchesExpected: fingerprint(env.metaAppSecret) === fingerprint(expectedMetaAppSecret),
+    configured: Boolean(env.metaAppSecret),
     verifySignatureEnabled: env.verifySignature,
     whatsappAppId: env.whatsappAppId || null
   });
