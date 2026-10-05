@@ -16,7 +16,7 @@ function getConfiguredWebhookUrl() {
 function getConfiguredBackUrl() {
   const base = normalizeString(env.opturonPublicAppUrl).replace(/\/$/, '');
   if (!base) return null;
-  return `${base}/login`;
+  return `${base}/checkout/return`;
 }
 
 function inferTokenKind(value) {

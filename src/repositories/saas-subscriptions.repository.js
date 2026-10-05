@@ -279,9 +279,9 @@ async function claimSaasSubscriptionProviderCall(id, client) {
   return mapSubscriptionRow(result.rows[0] || null);
 }
 
-async function markSaasSubscriptionReconciliationRequired(id) {
+async function markSaasSubscriptionReconciliationRequired(id, client = null) {
   // Never overwrite a verified webhook or a successfully persisted provider response.
-  await query(`UPDATE saas_subscriptions
+  await dbQuery(client, `UPDATE saas_subscriptions
     SET "provisioningState" = 'reconciliation_required', "updatedAt" = NOW()
     WHERE id = $1::uuid AND "provisioningState" = 'provider_call_started'`, [id]);
 }

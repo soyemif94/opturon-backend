@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
+const { resolveEffectiveEntitlements } = require('../../src/services/effective-entitlements');
 
 const root = path.resolve(__dirname, '../..');
 const file = (name) => path.join(root, name);
@@ -12,6 +13,10 @@ const originalFetch = global.fetch;
 const secret = 'local-test-webhook-secret';
 const tenantA = '00000000-0000-4000-8000-000000000001';
 const tenantB = '00000000-0000-4000-8000-000000000002';
+const billingOwnerA = '00000000-0000-4000-8000-000000000003';
+const billingManagerA = '00000000-0000-4000-8000-000000000004';
+const billingSellerA = '00000000-0000-4000-8000-000000000005';
+const billingOwnerB = '00000000-0000-4000-8000-000000000006';
 const input = { tenantId: 'tenant-a', planCode: 'core', payerEmail: 'payer@example.invalid' };
 const modules = new Map();
 
@@ -113,6 +118,17 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     stub(`src/services/${name}.service.js`, {});
   }
   const realMp = require(file('src/services/mercado-pago.service.js'));
+  const portalActors = new Map([
+    [billingOwnerA, { id: billingOwnerA, tenantId: 'tenant-a', accountScope: 'client', role: 'owner', email: input.payerEmail }],
+    [billingManagerA, { id: billingManagerA, tenantId: 'tenant-a', accountScope: 'client', role: 'manager', email: input.payerEmail }],
+    [billingSellerA, { id: billingSellerA, tenantId: 'tenant-a', accountScope: 'client', role: 'seller', email: input.payerEmail }],
+    [billingOwnerB, { id: billingOwnerB, tenantId: 'tenant-b', accountScope: 'client', role: 'owner', email: input.payerEmail }]
+  ]);
+  const portalUsersRepository = require(file('src/repositories/portal-users.repository.js'));
+  stub('src/repositories/portal-users.repository.js', {
+    ...portalUsersRepository,
+    findPortalBillingActorById: async (id) => portalActors.get(id) || null
+  });
   stub('src/services/mercado-pago.service.js', require('./helpers/billing-v2-fixture').canonicalReads({
     ...realMp,
     createPreapproval: async (payload) => {
@@ -126,7 +142,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
       assert.equal(payload.currency, row.currency);
       const result = {
         id: `mp-${provider.calls.length}`, external_reference: payload.externalReference,
-        payer_email: payload.payerEmail, status: 'pending', init_point: 'https://checkout.example.invalid/subscription',
+        payer_email: payload.payerEmail, status: 'pending', init_point: 'https://www.mercadopago.com.ar/subscriptions/checkout',
         auto_recurring: { transaction_amount: payload.amount, currency_id: payload.currency, frequency: 1, frequency_type: 'months' }
       };
       provider.remote = result;
@@ -148,10 +164,16 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
   const service = require(file('src/services/saas-billing.service.js'));
   const { postAdminBillingSubscription } = require(file('src/controllers/admin.controller.js'));
   const { postMercadoPagoWebhook } = require(file('src/controllers/mercadopago.controller.js'));
+  const {
+    postPortalBillingCheckout,
+    getPortalBillingCheckoutStatus
+  } = require(file('src/controllers/portal-public-billing.controller.js'));
   const { requirePortalInternalAuth } = require(file('src/middlewares/portal-internal-auth.middleware.js'));
   const app = express();
   app.use(express.json());
   app.post('/api/admin/billing/subscriptions', requirePortalInternalAuth, postAdminBillingSubscription);
+  app.post('/portal/tenants/:tenantId/billing/checkout', requirePortalInternalAuth, postPortalBillingCheckout);
+  app.get('/portal/tenants/:tenantId/billing/checkout/status', requirePortalInternalAuth, getPortalBillingCheckoutStatus);
   app.post('/api/webhooks/mercadopago', postMercadoPagoWebhook);
   httpServer = await new Promise((resolve) => { const server = app.listen(0, '127.0.0.1', () => resolve(server)); });
   const base = `http://127.0.0.1:${httpServer.address().port}`;
@@ -160,6 +182,20 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     const res = await fetch(`${base}/api/admin/billing/subscriptions`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-portal-key': 'local-test-key' },
       body: JSON.stringify(payload)
+    });
+    return { status: res.status, body: await res.json() };
+  }
+  async function portalCheckoutRequest(tenantId, actorId, body, method = 'POST') {
+    const res = await fetch(`${base}/portal/tenants/${encodeURIComponent(tenantId)}/billing/checkout`, {
+      method,
+      headers: { 'content-type': 'application/json', 'x-portal-key': 'local-test-key', 'x-portal-actor-id': actorId },
+      ...(method === 'POST' ? { body: JSON.stringify(body) } : {})
+    });
+    return { status: res.status, body: await res.json() };
+  }
+  async function portalStatusRequest(tenantId, actorId) {
+    const res = await fetch(`${base}/portal/tenants/${encodeURIComponent(tenantId)}/billing/checkout/status`, {
+      headers: { 'x-portal-key': 'local-test-key', 'x-portal-actor-id': actorId }
     });
     return { status: res.status, body: await res.json() };
   }
@@ -209,6 +245,7 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
     await db.exec(read('db/migrations/087_saas_billing_runtime_state.sql'));
     await db.exec(read('db/migrations/088_saas_billing_effects_reconciliation.sql'));
     await db.exec(read('db/migrations/089_saas_billing_entitlement_lifecycle.sql'));
+    await db.exec(read('db/migrations/090_canonical_plan_entitlements.sql'));
     await db.exec("WITH activation AS (SELECT clock_timestamp() AS at) UPDATE saas_billing_runtime_state SET generation=2,\"billingContractV2CutoverActive\"=true,\"cutoverAt\"=at,\"autoApplyNotBefore\"=at+interval '24 hours' FROM activation");
     assert.equal((await rows()).length, 2);
     assert.ok((await rows()).every((row) => row.provisioningState === null));
@@ -378,10 +415,108 @@ test('durable subscription creation: real SQL, mocked provider, failure injectio
       assert.equal((await rows())[0].provisioningState, 'provider_call_started');
       assert.equal((await request()).status, 409); assert.equal(provider.calls.length, 1);
     });
+    await scenario('BILL-009 Core public checkout resolves canonical contract and durable actor audit', async () => {
+      const result = await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'core' });
+      assert.equal(result.status, 201);
+      assert.equal(result.body.data.planKey, 'core');
+      assert.equal(result.body.data.amount, '49900.00');
+      assert.equal(result.body.data.currency, 'ARS');
+      assert.equal(result.body.data.billingCadence, 'monthly');
+      assert.match(result.body.data.authorizationUrl, /^https:\/\/www\.mercadopago\.com\.ar\//);
+      const [row] = await rows();
+      assert.equal(row.metadata.contract.planCode, 'core');
+      assert.equal(row.metadata.contract.amount, '49900.00');
+      assert.equal(row.metadata.contract.entitlementProfileVersion, 1);
+      assert.equal(row.metadata.checkoutAudit.actorUserId, billingOwnerA);
+      assert.equal(provider.calls[0].amount, 49900);
+      const clinic = (await db.query('SELECT settings FROM clinics WHERE "externalTenantId" = $1', ['tenant-a'])).rows[0];
+      assert.equal(clinic.settings.portal.entitlements, undefined);
+      const effective = resolveEffectiveEntitlements(clinic.settings);
+      assert.equal(effective.state, 'unactivated');
+      assert.equal(effective.capabilities['bot.enabled'], false);
+    });
+    await scenario('BILL-009 Growth public checkout resolves canonical ARS 69900 contract', async () => {
+      const result = await portalCheckoutRequest('tenant-a', billingManagerA, { planKey: 'growth' });
+      assert.equal(result.status, 201);
+      assert.equal(result.body.data.planKey, 'growth');
+      assert.equal(result.body.data.amount, '69900.00');
+      assert.equal(provider.calls.length, 1);
+      assert.equal(provider.calls[0].amount, 69900);
+      assert.equal((await rows())[0].metadata.contract.planCode, 'growth');
+    });
+    await scenario('BILL-009 Distribution public checkout resolves canonical ARS 89900 contract', async () => {
+      const result = await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'distribution' });
+      assert.equal(result.status, 201);
+      assert.equal(result.body.data.planKey, 'distribution');
+      assert.equal(result.body.data.amount, '89900.00');
+      assert.equal(provider.calls.length, 1);
+      assert.equal(provider.calls[0].amount, 89900);
+      assert.equal((await rows())[0].metadata.contract.entitlementProfileVersion, 1);
+    });
+    await scenario('BILL-009 Enterprise, unknown plans and client financial fields fail before provider', async () => {
+      const enterprise = await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'enterprise' });
+      assert.equal(enterprise.status, 409);
+      assert.equal(enterprise.body.error, 'enterprise_contact_required');
+      assert.equal(enterprise.body.contactPath, '/contacto');
+      assert.equal((await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'basic' })).status, 400);
+      assert.equal((await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'core', amount: 1 })).status, 400);
+      assert.equal((await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'core', capabilities: { 'bot.enabled': true } })).status, 400);
+      assert.equal(provider.calls.length, 0);
+      assert.equal((await rows()).length, 0);
+    });
+    await scenario('BILL-009 only owner and manager actors for the same client tenant may create checkout', async () => {
+      assert.equal((await portalCheckoutRequest('tenant-a', billingSellerA, { planKey: 'core' })).status, 403);
+      assert.equal((await portalCheckoutRequest('tenant-a', billingOwnerB, { planKey: 'core' })).status, 403);
+      assert.equal((await portalCheckoutRequest('tenant-a', 'unknown-actor', { planKey: 'core' })).status, 403);
+      assert.equal(provider.calls.length, 0);
+      assert.equal((await rows()).length, 0);
+    });
+    await scenario('BILL-009 sequential same-plan retry reuses one provider authorization', async () => {
+      const first = await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'growth' });
+      const replay = await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'growth' });
+      assert.equal(first.status, 201);
+      assert.equal(replay.status, 200);
+      assert.equal(replay.body.data.reused, true);
+      assert.equal(replay.body.data.subscriptionId, first.body.data.subscriptionId);
+      assert.equal(provider.calls.length, 1);
+      assert.equal((await rows()).length, 1);
+    });
+    await scenario('BILL-009 existing active subscription blocks another plan checkout', async () => {
+      await seed({ localStatus: 'active' });
+      const result = await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'distribution' });
+      assert.equal(result.status, 409);
+      assert.equal(result.body.error, 'subscription_already_exists');
+      assert.equal(provider.calls.length, 0);
+      assert.equal((await rows()).length, 1);
+    });
+    await scenario('BILL-009 authenticated status is read-only and pending checkout has no paid entitlement', async () => {
+      await portalCheckoutRequest('tenant-a', billingOwnerA, { planKey: 'growth' });
+      const result = await portalStatusRequest('tenant-a', billingOwnerA);
+      assert.equal(result.status, 200);
+      assert.equal(result.body.data.planKey, 'growth');
+      assert.equal(result.body.data.paymentPending, true);
+      assert.equal(result.body.data.entitlementActive, false);
+      assert.equal(result.body.data.entitlementState, 'unactivated');
+      assert.equal(result.body.data.canResume, true);
+      assert.equal(provider.calls.length, 1);
+    });
     await scenario('tenant validation and internal authentication precede any reservation', async () => {
       assert.equal((await request({ ...input, tenantId: 'unknown' })).status, 404);
       const res = await fetch(`${base}/api/admin/billing/subscriptions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
       assert.equal(res.status, 401); assert.equal((await rows()).length, 0); assert.equal(provider.calls.length, 0);
+    });
+    await scenario('BILL-009 checkout has no GET mutation route and return page cannot activate entitlements', async () => {
+      const response = await fetch(`${base}/portal/tenants/tenant-a/billing/checkout?planKey=core`, {
+        headers: { 'x-portal-key': 'local-test-key', 'x-portal-actor-id': billingOwnerA }
+      });
+      assert.equal(response.status, 404);
+      assert.equal(provider.calls.length, 0);
+      const source = read('src/controllers/portal-public-billing.controller.js');
+      assert.doesNotMatch(source, /setTenantPlan|activatePlan|enableModules|update.*Entitlement/i);
+      const route = read('src/routes/portal.routes.js');
+      assert.match(route, /router\.post\('\/tenants\/:tenantId\/billing\/checkout', requirePortalInternalAuth, portalBillingCheckoutLimiter/);
+      assert.match(route, /router\.get\('\/tenants\/:tenantId\/billing\/checkout\/status', requirePortalInternalAuth/);
+      assert.match(read('src/services/mercado-pago.service.js'), /return `\$\{base\}\/checkout\/return`/);
     });
     await scenario('static guard: all runtime INSERTs are behind the serialized reservation service', async () => {
       const source = read('src/services/saas-billing.service.js');

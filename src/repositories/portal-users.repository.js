@@ -446,6 +446,37 @@ async function findPortalUserById(userId, client = null) {
   return result.rows[0] || null;
 }
 
+async function findPortalBillingActorById(userId, client = null) {
+  if (!isUuid(userId)) return null;
+
+  const result = await dbQuery(
+    client,
+    `SELECT su.id,
+            su."clinicId",
+            su.name,
+            su.email,
+            CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS role,
+            su.active,
+            c."externalTenantId" AS "tenantId",
+            COALESCE(
+              c.settings #>> '{portal,accountScope}',
+              c.settings #>> '{accountScope}',
+              'client'
+            ) AS "accountScope"
+     FROM staff_users su
+     INNER JOIN clinics c ON c.id = su."clinicId"
+     WHERE su.id = $1::uuid
+       AND su."accountType" = '${PORTAL_ACCOUNT_TYPE}'
+       AND su.email IS NOT NULL
+       AND su.active = TRUE
+       AND su.role IN ${PORTAL_ROLE_SQL}
+     LIMIT 1`,
+    [userId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function findPortalUserByEmailAndTenantId(email, tenantId, client = null) {
   const result = await dbQuery(
     client,
@@ -525,6 +556,7 @@ module.exports = {
   findAnyPortalUserByEmailAndClinicId,
   findPortalUserByEmailAndTenantId,
   findPortalUserById,
+  findPortalBillingActorById,
   findPortalUserByIdAndClinicId,
   findPortalUserByNameAndClinicId
 };

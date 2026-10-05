@@ -1,5 +1,7 @@
 const express = require('express');
 const multer = require('multer');
+const rateLimit = require('express-rate-limit');
+const { createHash } = require('crypto');
 const {
   getPortalTenantContext,
   getPortalTenantPolicy,
@@ -203,6 +205,11 @@ const {
   getOperationalAlertHistoryDetail
 } = require('../controllers/portal-operational-alerts.controller');
 const { requirePortalInternalAuth } = require('../middlewares/portal-internal-auth.middleware');
+const {
+  postPortalAuthRegister,
+  postPortalBillingCheckout,
+  getPortalBillingCheckoutStatus
+} = require('../controllers/portal-public-billing.controller');
 const { requireAdminInternalActor } = require('../middlewares/partner-auth.middleware');
 const { applyPortalActiveTenant } = require('../middlewares/portal-active-tenant.middleware');
 const { requirePortalModule, requirePortalCapability } = require('../middlewares/portal-module-gate.middleware');
@@ -238,6 +245,28 @@ const {
 } = require('../controllers/portal-admin-qa-inventory.controller');
 
 const router = express.Router();
+
+const publicPortalRegistrationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: req => {
+    const clientIp = String(req.get('x-portal-client-ip') || req.ip || 'unknown').trim().slice(0, 96);
+    return `portal-registration:${createHash('sha256').update(clientIp).digest('hex')}`;
+  }
+});
+const portalBillingCheckoutLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: req => {
+    const tenantId = String(req.params.tenantId || '').trim();
+    const actorId = String(req.get('x-portal-actor-id') || '').trim();
+    return `portal-checkout:${createHash('sha256').update(`${tenantId}:${actorId}`).digest('hex')}`;
+  }
+});
 
 const inboxModule = requirePortalModule('inbox');
 const agendaModule = requirePortalModule('agenda');
@@ -672,6 +701,9 @@ router.delete('/tenants/:tenantId/users/:userId', requirePortalInternalAuth, req
 router.get('/auth/invitations', getPortalInvitation);
 router.post('/auth/invitations/accept', postPortalInvitationAccept);
 router.post('/auth/login', postPortalAuthLogin);
+router.post('/auth/register', requirePortalInternalAuth, publicPortalRegistrationLimiter, postPortalAuthRegister);
+router.post('/tenants/:tenantId/billing/checkout', requirePortalInternalAuth, portalBillingCheckoutLimiter, postPortalBillingCheckout);
+router.get('/tenants/:tenantId/billing/checkout/status', requirePortalInternalAuth, getPortalBillingCheckoutStatus);
 router.post('/auth/forgot-password', postPortalAuthForgotPassword);
 router.post('/auth/forgot-password/invalidate', postPortalAuthForgotPasswordInvalidate);
 router.get('/auth/reset-password/validate', getPortalAuthResetPasswordValidation);

@@ -1,11 +1,12 @@
-const { createHash, randomBytes } = require('crypto');
+const { createHash, randomBytes, randomUUID } = require('crypto');
 const { hashSync, compareSync } = require('bcryptjs');
 const { withTransaction } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
 const {
   getClinicPortalAccountConfigById,
   updateClinicPortalPrimaryUserIdById,
-  provisionCleanClinicForExternalTenant
+  provisionCleanClinicForExternalTenant,
+  initializeClinicUnactivatedBillingById
 } = require('../repositories/tenant.repository');
 const {
   listPortalUsersByClinicId,
@@ -721,6 +722,67 @@ async function invitePortalUser(tenantId, payload, options = {}) {
   }
 }
 
+async function registerPortalOwnerAccount(payload = {}) {
+  const name = normalizeString(payload.name);
+  const businessName = normalizeString(payload.businessName);
+  const email = normalizeEmail(payload.email);
+  const password = String(payload.password || '');
+
+  if (name.length < 2 || name.length > 120) return { ok: false, reason: 'invalid_name' };
+  if (businessName.length < 2 || businessName.length > 160) return { ok: false, reason: 'invalid_business_name' };
+  if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { ok: false, reason: 'invalid_email' };
+  }
+  if (password.length < 12 || password.length > 128) return { ok: false, reason: 'invalid_password' };
+
+  const tenantId = `tenant_${randomUUID()}`;
+  try {
+    const created = await withTransaction(async (client) => {
+      if (await findAnyPortalUserByEmail(email, client)) {
+        return { error: 'email_already_registered' };
+      }
+
+      const clinic = await provisionCleanClinicForExternalTenant({
+        externalTenantId: tenantId,
+        name: businessName,
+        timezone: 'America/Argentina/Buenos_Aires'
+      }, client);
+      if (!clinic) throw new Error('portal_signup_tenant_create_failed');
+
+      // A new workspace remains unactivated until BILL-007 records a valid
+      // approved payment. The selected public plan never enters tenant policy.
+      await initializeClinicUnactivatedBillingById(clinic.id, client);
+      const user = await createPortalUser({
+        clinicId: clinic.id,
+        name,
+        email,
+        passwordHash: hashSync(password, 10),
+        role: 'owner',
+        active: true
+      }, client);
+      if (!user) throw new Error('portal_signup_owner_create_failed');
+
+      await updateClinicPortalPrimaryUserIdById(clinic.id, user.id, client);
+      await createPortalUserAuditEvent({
+        tenantId,
+        clinicId: clinic.id,
+        actorUserId: user.id,
+        targetUserId: user.id,
+        action: 'tenant_portal_owner_self_registered',
+        payload: { accountScope: 'client', billingState: 'unactivated' }
+      }, client);
+
+      return { user: { id: user.id, email: user.email, name: user.name, tenantId, tenantRole: 'owner' } };
+    });
+
+    if (created.error) return { ok: false, reason: created.error };
+    return { ok: true, user: { ...created.user, globalRole: 'client', accountScope: 'client' } };
+  } catch (error) {
+    if (error && error.code === '23505') return { ok: false, reason: 'email_already_registered' };
+    throw error;
+  }
+}
+
 async function updatePortalUser(tenantId, userId, payload) {
   const context = await resolvePortalTenantContext(tenantId);
   if (!context.ok || !context.clinic?.id) {
@@ -1290,6 +1352,7 @@ async function getPortalAuthUserByEmail(email, tenantId = null) {
 module.exports = {
   listPortalUsers,
   invitePortalUser,
+  registerPortalOwnerAccount,
   assignPrimaryPortalUser,
   updatePortalUser,
   deletePortalUser,

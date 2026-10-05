@@ -8,6 +8,7 @@ async function withBillingTransaction(fn) {
   });
 }
 const { findClinicByExternalTenantId } = require('../repositories/tenant.repository');
+const { findPortalBillingActorById } = require('../repositories/portal-users.repository');
 const {
   insertSaasSubscription,
   findBlockingSaasSubscriptions,
@@ -216,7 +217,14 @@ async function createSaasSubscriptionForTenant(input) {
       localStatus: 'pending',
       provisioningState: 'reserved',
       externalReference,
-      metadata: { billingModel: 'pending_link', plan: planDefinition, contract }
+      metadata: {
+        billingModel: 'pending_link',
+        plan: planDefinition,
+        contract,
+        ...(input.checkoutSource === 'portal' && /^[0-9a-f-]{36}$/i.test(normalizeString(input.actorUserId))
+          ? { checkoutAudit: { source: 'portal', actorUserId: normalizeString(input.actorUserId) } }
+          : {})
+      }
     }, client);
     return { ok: true, subscription };
   });
@@ -290,6 +298,124 @@ async function createSaasSubscriptionForTenant(input) {
     }, client);
   });
   return finishSubscriptionProvisioning(claimed.id);
+}
+
+function isSafeMercadoPagoAuthorizationUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' && (
+      host === 'mercadopago.com' || host.endsWith('.mercadopago.com') ||
+      host === 'mercadopago.com.ar' || host.endsWith('.mercadopago.com.ar')
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function resolveAuthorizedTenantBillingActor(tenantId, actorUserId) {
+  const safeTenantId = normalizeString(tenantId);
+  const safeActorId = normalizeString(actorUserId);
+  if (!safeTenantId || !safeActorId) return null;
+  const actor = await findPortalBillingActorById(safeActorId);
+  if (!actor || String(actor.tenantId || '') !== safeTenantId || actor.accountScope !== 'client'
+    || !['owner', 'manager'].includes(String(actor.role || '').toLowerCase())) return null;
+  return actor;
+}
+
+async function createPortalSaasCheckout(input = {}) {
+  const tenantId = normalizeString(input.tenantId);
+  const actor = await resolveAuthorizedTenantBillingActor(tenantId, input.actorUserId);
+  if (!actor) return { ok: false, reason: 'billing_actor_forbidden', status: 403 };
+
+  const planKey = canonicalKey(input.planKey);
+  if (!planKey) return { ok: false, reason: 'invalid_plan_key', status: 400 };
+  const plan = PUBLIC_PLANS[planKey];
+  if (plan.customPricing || plan.amount === null) {
+    return { ok: false, reason: 'enterprise_contact_required', status: 409, contactPath: '/contacto' };
+  }
+
+  const result = await createSaasSubscriptionForTenant({
+    tenantId,
+    planCode: planKey,
+    payerEmail: actor.email,
+    checkoutSource: 'portal',
+    actorUserId: actor.id
+  });
+  if (!result.ok) return result;
+
+  const subscription = result.subscription;
+  const resolved = resolveLocalBillingContract(subscription);
+  if (resolved.status !== 'KNOWN' || resolved.source !== 'contract'
+    || resolved.contract.planCode !== planKey) {
+    return { ok: false, reason: 'checkout_contract_unavailable', status: 409 };
+  }
+  if (Number(resolved.contract.amount) !== Number(plan.amount)
+    || resolved.contract.currency !== plan.currency
+    || resolved.contract.billingInterval !== plan.billingCadence
+    || resolved.contract.entitlementProfileVersion !== resolveSaasPlanDefinition(planKey).entitlementProfileVersion) {
+    return { ok: false, reason: 'existing_checkout_terms_changed', status: 409 };
+  }
+  if (!isSafeMercadoPagoAuthorizationUrl(subscription.authorizationUrl)) {
+    return { ok: false, reason: 'checkout_authorization_unavailable', status: 502 };
+  }
+
+  return {
+    ok: true,
+    checkout: {
+      subscriptionId: subscription.id,
+      planKey,
+      amount: resolved.contract.amount,
+      currency: resolved.contract.currency,
+      billingCadence: resolved.contract.billingInterval,
+      state: subscription.localStatus,
+      reused: result.reused === true,
+      authorizationUrl: subscription.authorizationUrl
+    }
+  };
+}
+
+async function getPortalSaasCheckoutStatus(input = {}) {
+  const tenantId = normalizeString(input.tenantId);
+  const actor = await resolveAuthorizedTenantBillingActor(tenantId, input.actorUserId);
+  if (!actor) return { ok: false, reason: 'billing_actor_forbidden', status: 403 };
+
+  const [subscription, clinic] = await Promise.all([
+    findLatestSaasSubscriptionByTenantId(tenantId),
+    findClinicByExternalTenantId(tenantId)
+  ]);
+  const entitlements = require('./effective-entitlements').resolveEffectiveEntitlements(clinic && clinic.settings || {});
+  const lifecycle = subscription && subscription.lifecycle || null;
+  const contract = subscription ? resolveLocalBillingContract(subscription) : null;
+  const planKey = contract && contract.status === 'KNOWN' && contract.source === 'contract'
+    ? canonicalKey(contract.contract.planCode)
+    : null;
+  const lifecycleStatus = String(lifecycle && lifecycle.billingState || '').toLowerCase();
+  const subscriptionStatus = String(subscription && subscription.localStatus || '').toLowerCase() || null;
+  const pending = Boolean(subscription && subscriptionStatus === 'pending'
+    && !['subscription_cancelled', 'active'].includes(lifecycleStatus));
+  const suspended = lifecycleStatus === 'suspended_for_nonpayment'
+    || String(lifecycle && lifecycle.entitlementState || '').toLowerCase() === 'suspended_for_nonpayment';
+  const lifecycleSettings = clinic && clinic.settings && clinic.settings.portal && clinic.settings.portal.lifecycle;
+  const accountActive = !['inactive', 'suspended', 'archived', 'deleted'].includes(
+    String(lifecycleSettings && lifecycleSettings.status || '').toLowerCase()
+  );
+
+  return {
+    ok: true,
+    status: {
+      planKey,
+      contractedAmount: contract && contract.status === 'KNOWN' ? contract.contract.amount : null,
+      contractedCurrency: contract && contract.status === 'KNOWN' ? contract.contract.currency : null,
+      subscriptionStatus,
+      billingState: lifecycleStatus || 'awaiting_payment',
+      entitlementState: suspended ? 'suspended_for_nonpayment' : entitlements.state,
+      entitlementActive: entitlements.state === 'active',
+      paymentPending: pending,
+      accountActive,
+      canResume: Boolean(pending && planKey && isSafeMercadoPagoAuthorizationUrl(subscription.authorizationUrl))
+    }
+  };
 }
 
 async function getSaasSubscriptionDetails(subscriptionId) {
@@ -761,6 +887,8 @@ async function applyPreparedWebhook(prepared, payload, meta, client, source) {
 module.exports = {
   ALLOWED_LOCAL_STATUSES,
   createSaasSubscriptionForTenant,
+  createPortalSaasCheckout,
+  getPortalSaasCheckoutStatus,
   getSaasSubscriptionDetails,
   listSaasSubscriptionsForAdmin,
   sendSaasSubscriptionAuthorizationLinkEmail,

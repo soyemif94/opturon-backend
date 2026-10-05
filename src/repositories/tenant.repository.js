@@ -370,6 +370,49 @@ async function updateClinicPortalPrimaryUserIdById(clinicId, primaryPortalUserId
   };
 }
 
+async function initializeClinicUnactivatedBillingById(clinicId, client = null) {
+  const result = await dbQuery(
+    client,
+    `WITH portal_ready AS (
+       SELECT id,
+              jsonb_set(
+                COALESCE(settings, '{}'::jsonb),
+                '{portal}',
+                CASE WHEN jsonb_typeof(settings -> 'portal') = 'object' THEN settings -> 'portal' ELSE '{}'::jsonb END,
+                true
+              ) AS settings
+       FROM clinics
+       WHERE id = $1::uuid
+     ), entitlement_removed AS (
+       SELECT id, settings #- '{portal,entitlements}' AS settings
+       FROM portal_ready
+     ), billing_ready AS (
+       SELECT id,
+              jsonb_set(
+                settings,
+                '{portal,billing}',
+                COALESCE(settings #> '{portal,billing}', '{}'::jsonb),
+                true
+              ) AS settings
+       FROM entitlement_removed
+     )
+     UPDATE clinics c
+     SET settings = jsonb_set(
+           billing_ready.settings,
+           '{portal,billing,entitlement}',
+           '{"state":"unactivated","paidAccessAllowed":false}'::jsonb,
+           true
+         ),
+         "updatedAt" = NOW()
+     FROM billing_ready
+     WHERE c.id = billing_ready.id
+     RETURNING c.id, c.settings`,
+    [clinicId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function findPreferredWhatsAppChannelByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
@@ -989,6 +1032,7 @@ module.exports = {
   getClinicPortalAccountConfigById,
   getClinicPortalSubaccountLimitById,
   updateClinicPortalPrimaryUserIdById,
+  initializeClinicUnactivatedBillingById,
   findPreferredWhatsAppChannelByClinicId,
   listWhatsAppChannelsByClinicId,
   findInstagramChannelByExternalId,
