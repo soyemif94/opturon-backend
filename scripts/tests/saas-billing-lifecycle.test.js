@@ -71,6 +71,10 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       assert.deepEqual(JSON.parse(init.body), { status: 'canceled' });
       calls.push('mock_cancel');
       provider.cancelCalls = (provider.cancelCalls || 0) + 1;
+      if (provider.cancelError) {
+        return new Response(JSON.stringify(provider.cancelError.body || { message: 'mock cancellation rejected' }),
+          { status: provider.cancelError.status || 400 });
+      }
       provider.preapproval.status = provider.cancelStatusAfterPut || 'cancelled';
       if (provider.cancelNetworkAfterMutation) throw new Error('mock_response_lost_after_provider_cancel');
       return new Response(JSON.stringify(structuredClone(provider.preapproval)), { status: 200 });
@@ -90,6 +94,13 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
     if (kind !== 'search' && request.pathname.split('/').pop() !== (provider.endpointId?.[kind] || endpointId[kind])) return new Response('{}', { status: 404 });
     if (provider.beforeFetch) await provider.beforeFetch(kind, init.signal);
     if (provider.httpBase) return originalFetch(provider.httpBase + request.pathname + request.search, init);
+    if (kind === 'preapproval' && provider.cancelCalls && Array.isArray(provider.cancelReadbackStatuses)) {
+      const index = provider.cancelReadbackCount || 0;
+      const status = provider.cancelReadbackStatuses[Math.min(index, provider.cancelReadbackStatuses.length - 1)];
+      provider.cancelReadbackCount = index + 1;
+      provider.preapproval.status = status;
+      return new Response(JSON.stringify(structuredClone(provider.preapproval)), { status: 200 });
+    }
     if (provider.error?.kind === kind) {
       if (provider.error.network) throw new Error(provider.error.message);
       return new Response(JSON.stringify(provider.error.body || { message: 'mock provider error' }),
@@ -651,10 +662,86 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       const response = await adminCancel();
       assert.equal(response.status, 502);
       assert.equal(response.body.error, 'subscription_cancellation_unconfirmed');
+      assert.equal(response.body.details.providerHttpStatus, 200);
+      assert.equal(response.body.details.providerResponseStatus, 'pending');
+      assert.equal(response.body.details.providerReadbackStatus, 'pending');
+      assert.equal(response.body.details.providerReadbackAttempts, 5);
       assert.equal(provider.cancelCalls, 1);
       assert.equal((await business()).subscription.localStatus, 'pending');
       assert.equal(await lifecycle(), undefined);
       assert.equal((await effects()).length, 0);
+    });
+    await scenario('BILL-010A.3 A: accepted cancellation is applied only after provider readback confirms cancelled', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true;
+      const response = await adminCancel();
+      assert.equal(response.status, 200);
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal(calls.filter(call => call === '/preapproval/mp-1').length, 2);
+      assert.equal((await business()).subscription.localStatus, 'canceled');
+      assert.equal((await business()).subscription.mercadoPagoStatus, 'cancelled');
+      assert.equal((await lifecycle()).billingState, 'subscription_cancelled');
+      assert.equal((await effects()).length, 0);
+    });
+    await scenario('BILL-010A.3 B: provider already cancelled reconciles locally without another PUT', async () => {
+      provider.preapproval.status = 'cancelled';
+      const response = await adminCancel();
+      assert.equal(response.status, 200);
+      assert.equal(provider.cancelCalls || 0, 0);
+      const after = await business();
+      assert.equal(after.subscription.localStatus, 'canceled');
+      assert.equal(after.subscription.mercadoPagoStatus, 'cancelled');
+      assert.deepEqual(after.subscription.metadata.contract, subscription.metadata.contract);
+      assert.equal((await lifecycle()).billingState, 'subscription_cancelled');
+      assert.equal((await effects()).length, 0);
+    });
+    await scenario('BILL-010A.3 C: canceled PUT response cannot override a pending canonical readback', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true;
+      provider.cancelStatusAfterPut = 'cancelled';
+      provider.cancelReadbackStatuses = ['pending', 'pending', 'pending', 'pending', 'pending'];
+      const response = await adminCancel();
+      assert.equal(response.status, 502);
+      assert.equal(response.body.error, 'subscription_cancellation_unconfirmed');
+      assert.equal(response.body.details.providerHttpStatus, 200);
+      assert.equal(response.body.details.providerResponseStatus, 'cancelled');
+      assert.equal(response.body.details.providerReadbackStatus, 'pending');
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal((await business()).subscription.localStatus, 'pending');
+      assert.equal(await lifecycle(), undefined);
+      assert.equal((await effects()).length, 0);
+    });
+    await scenario('BILL-010A.3 D: lagging readback eventually confirms cancellation without a second provider write', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true;
+      provider.cancelStatusAfterPut = 'pending';
+      provider.cancelReadbackStatuses = ['pending', 'pending', 'cancelled'];
+      const response = await adminCancel();
+      assert.equal(response.status, 200);
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal(provider.cancelReadbackCount, 3);
+      const after = await business();
+      const state = await lifecycle();
+      assert.equal(after.subscription.localStatus, 'canceled');
+      assert.equal(after.subscription.mercadoPagoStatus, 'cancelled');
+      assert.equal(state.billingState, 'subscription_cancelled');
+      assert.equal(state.activatedAt, undefined);
+      assert.equal(state.entitlementState, 'unactivated');
+      assert.equal((await effects()).length, 0);
+      await assertMutations(1);
+    });
+    await scenario('BILL-010A.3 F: provider rejection is diagnosed and local billing remains unchanged', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true;
+      provider.cancelError = { status: 400, body: { message: 'provider rejected cancellation' } };
+      const response = await adminCancel();
+      assert.equal(response.status, 502);
+      assert.equal(response.body.error, 'subscription_cancellation_unconfirmed');
+      assert.equal(response.body.details.providerHttpStatus, 400);
+      assert.equal(response.body.details.providerReadbackStatus, 'pending');
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal((await business()).subscription.localStatus, 'pending');
+      assert.equal(await lifecycle(), undefined);
+      assert.equal((await effects()).length, 0);
+      const failure = logs.find(item => item.event === 'billing_subscription_cancellation_unconfirmed');
+      assert.ok(failure);
+      assert.equal(JSON.stringify(failure).includes('provider rejected cancellation'), false);
     });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));

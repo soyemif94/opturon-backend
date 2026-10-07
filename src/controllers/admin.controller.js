@@ -368,7 +368,8 @@ async function postAdminBillingSubscriptionAction(req, res) {
     if (!result.ok) {
       return res.status(result.status || 400).json({
         success: false,
-        error: result.reason
+        error: result.reason,
+        ...(action === 'cancel' && result.diagnostics ? { details: result.diagnostics } : {})
       });
     }
     return res.status(200).json({ success: true, data: result });

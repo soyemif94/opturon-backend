@@ -47,9 +47,42 @@ const ALLOWED_PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLAN_CODES), .
 const ALLOWED_LOCAL_STATUSES = new Set(['pending', 'active', 'paused', 'canceled', 'payment_failed', 'suspended']);
 const CANCELLABLE_PREAPPROVAL_STATUSES = new Set(['pending', 'authorized', 'active', 'paused']);
 const CANCELED_PREAPPROVAL_STATUSES = new Set(['canceled', 'cancelled']);
+const CANCELLATION_READBACK_DELAYS_MS = [0, 250, 500, 1000, 2000];
 
 function normalizeString(value) {
   return String(value || '').trim();
+}
+
+function safeProviderStatus(value) {
+  const status = normalizeString(value).toLowerCase();
+  return /^[a-z_]{1,40}$/.test(status) ? status : null;
+}
+
+function safeProviderErrorCode(value) {
+  const code = normalizeString(value);
+  return /^[a-z0-9_.-]{1,80}$/i.test(code) ? code : null;
+}
+
+async function confirmProviderCancellation(preapprovalId) {
+  let latest = null;
+  let lastError = null;
+  let attempts = 0;
+
+  for (const delayMs of CANCELLATION_READBACK_DELAYS_MS) {
+    if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+    attempts += 1;
+    try {
+      latest = await getPreapproval(preapprovalId);
+      lastError = null;
+      if (CANCELED_PREAPPROVAL_STATUSES.has(normalizeString(latest?.status).toLowerCase())) {
+        return { confirmed: true, preapproval: latest, attempts, error: null };
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  return { confirmed: false, preapproval: latest, attempts, error: lastError };
 }
 
 function normalizeEmail(value) {
@@ -557,30 +590,40 @@ async function executeSubscriptionAction(subscriptionId, action) {
       return { ok: false, reason: 'subscription_cancellation_state_unsupported', status: 409 };
     } else {
       let updateError = null;
+      let updateHttpStatus = null;
       try {
-        remote = await cancelPreapproval(preapprovalId);
+        const result = await cancelPreapproval(preapprovalId);
+        remote = result?.data || null;
+        updateHttpStatus = Number.isInteger(Number(result?.httpStatus)) ? Number(result.httpStatus) : null;
       } catch (error) {
         updateError = error;
+        updateHttpStatus = Number.isInteger(Number(error?.status)) ? Number(error.status) : null;
       }
 
-      if (!CANCELED_PREAPPROVAL_STATUSES.has(normalizeString(remote?.status).toLowerCase())) {
-        try {
-          const verified = await getPreapproval(preapprovalId);
-          if (CANCELED_PREAPPROVAL_STATUSES.has(normalizeString(verified?.status).toLowerCase())) {
-            remote = verified;
-            updateError = null;
-          }
-        } catch {
-          // Keep the local lifecycle unchanged unless the provider readback proves cancellation.
-        }
+      // A successful PUT response can still be stale. Only canonical GET
+      // readback is allowed to move the local subscription to cancelled.
+      const confirmation = await confirmProviderCancellation(preapprovalId);
+      if (!confirmation.confirmed) {
+        const diagnostics = {
+          providerHttpStatus: updateHttpStatus,
+          providerErrorCode: safeProviderErrorCode(updateError?.code),
+          providerResponseStatus: safeProviderStatus(remote?.status),
+          providerReadbackStatus: safeProviderStatus(confirmation.preapproval?.status),
+          providerReadbackHttpStatus: Number.isInteger(Number(confirmation.error?.status))
+            ? Number(confirmation.error.status)
+            : null,
+          providerReadbackErrorCode: safeProviderErrorCode(confirmation.error?.code),
+          providerReadbackAttempts: confirmation.attempts
+        };
+        logError('billing_subscription_cancellation_unconfirmed', diagnostics);
+        return {
+          ok: false,
+          reason: 'subscription_cancellation_unconfirmed',
+          status: 502,
+          diagnostics
+        };
       }
-
-      if (updateError) {
-        return { ok: false, reason: 'subscription_cancellation_unconfirmed', status: 502 };
-      }
-      if (!CANCELED_PREAPPROVAL_STATUSES.has(normalizeString(remote?.status).toLowerCase())) {
-        return { ok: false, reason: 'subscription_cancellation_unconfirmed', status: 502 };
-      }
+      remote = confirmation.preapproval;
     }
   } else if (action === 'pause') {
     remote = await pausePreapproval(subscription.mercadoPagoPreapprovalId);

@@ -63,7 +63,7 @@ function buildMercadoPagoHeaders(extraHeaders = {}) {
   return headers;
 }
 
-async function mercadoPagoFetch(path, init = {}) {
+async function mercadoPagoFetch(path, init = {}, { includeHttpStatus = false } = {}) {
   const response = await fetch(`${MERCADO_PAGO_API_BASE}${path}`, {
     ...init,
     headers: buildMercadoPagoHeaders(init.headers || {})
@@ -87,7 +87,7 @@ async function mercadoPagoFetch(path, init = {}) {
     throw error;
   }
 
-  return json;
+  return includeHttpStatus ? { data: json, httpStatus: response.status } : json;
 }
 
 function sanitizeMercadoPagoErrorBody(body) {
@@ -301,7 +301,10 @@ async function pausePreapproval(preapprovalId) {
 }
 
 async function cancelPreapproval(preapprovalId) {
-  return updatePreapproval(preapprovalId, { status: 'canceled' });
+  return mercadoPagoFetch(`/preapproval/${encodeURIComponent(preapprovalId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ status: 'canceled' })
+  }, { includeHttpStatus: true });
 }
 
 async function reactivatePreapproval(preapprovalId) {
