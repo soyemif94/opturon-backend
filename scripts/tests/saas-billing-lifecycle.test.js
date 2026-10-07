@@ -45,14 +45,15 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
     }
   });
   stub('src/config/env.js', { mercadoPagoWebhookSecret: secret, mercadoPagoAccessToken: token,
-    mercadoPagoEnvironment: 'test', nodeEnv: 'production' });
+    mercadoPagoEnvironment: 'test', nodeEnv: 'production', portalInternalKey: 'admin-test-key' });
   const log = (event, fields) => logs.push({ event, fields });
   stub('src/utils/logger.js', { logInfo: log, logWarn: log, logError: log });
   stub('src/services/saas-billing-email.service.js', {
     sendBillingSubscriptionAuthorizationEmail() { throw new Error('email_forbidden'); }
   });
   // Exercise the real provider service, including auth, URL encoding and error
-  // taxonomy. MP responses are intercepted BEFORE any network; writes are banned.
+  // taxonomy. MP responses are intercepted BEFORE any network; only explicitly
+  // enabled cancellation writes are allowed by these isolated scenarios.
   global.fetch = async (value, init = {}) => {
     const request = new URL(value);
     if (request.hostname === '127.0.0.1') return originalFetch(value, init);
@@ -61,6 +62,17 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       const body = JSON.parse(init.body); calls.push('mock_create');
       return new Response(JSON.stringify({ ...provider.preapproval, status: 'pending',
         external_reference: body.external_reference, init_point: 'https://example.invalid/authorize' }), { status: 201 });
+    }
+    if (init.method === 'PUT' && request.pathname === `/preapproval/${encodeURIComponent(provider.preapproval.id)}`
+      && provider.allowCancel) {
+      assert.equal(init.headers.Authorization, `Bearer ${token}`);
+      assert.equal(init.headers['X-scope'], 'stage');
+      assert.deepEqual(JSON.parse(init.body), { status: 'canceled' });
+      calls.push('mock_cancel');
+      provider.cancelCalls = (provider.cancelCalls || 0) + 1;
+      provider.preapproval.status = provider.cancelStatusAfterPut || 'cancelled';
+      if (provider.cancelNetworkAfterMutation) throw new Error('mock_response_lost_after_provider_cancel');
+      return new Response(JSON.stringify(structuredClone(provider.preapproval)), { status: 200 });
     }
     assert.equal(init.method, 'GET', 'provider writes forbidden');
     assert.equal(init.headers.Authorization, `Bearer ${token}`);
@@ -86,8 +98,18 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
   };
   const repository = require('../../src/repositories/saas-subscriptions.repository');
   const service = require('../../src/services/saas-billing.service');
+  const { requirePortalInternalAuth } = require('../../src/middlewares/portal-internal-auth.middleware');
   const app = express();
   app.use('/api/webhooks/mercadopago', require('../../src/routes/mercadopago-webhook.routes'));
+  app.post('/api/admin/billing/subscriptions/:id/cancel', requirePortalInternalAuth, async (req, res) => {
+    try {
+      const result = await service.executeSubscriptionAction(req.params.id, 'cancel');
+      if (!result.ok) return res.status(result.status || 400).json({ success: false, error: result.reason });
+      return res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      return res.status(500).json({ success: false, error: 'billing_subscription_action_failed', details: error.message });
+    }
+  });
   server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const clinicId = '00000000-0000-4000-8000-000000000001';
@@ -97,6 +119,12 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
     const response = await fetch(`${base}/api/webhooks/mercadopago?data.id=${encodeURIComponent(id)}`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': requestId,
         'x-signature': `ts=${ts},v1=${valid ? digest : '0'.repeat(64)}` }, body: JSON.stringify(payload)
+    });
+    return { status: response.status, body: await response.json() };
+  }
+  async function adminCancel({ authorized = true } = {}) {
+    const response = await fetch(`${base}/api/admin/billing/subscriptions/${subscription.id}/cancel`, {
+      method: 'POST', headers: authorized ? { 'x-portal-key': 'admin-test-key' } : {}
     });
     return { status: response.status, body: await response.json() };
   }
@@ -564,6 +592,77 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       provider = oldProvider; subscription = oldSubscription; refund(); await clearAudit();
       assert.equal((await fresh()).body.outcome, 'MANUAL_REVIEW'); await assertMutations(0);
       assert.deepEqual((await business()).tenant.settings.portal.entitlements, before);
+    });
+    await scenario('BILL-010A.1 A-D: Admin cancels a pending preapproval without payment or entitlement effects', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true;
+      const response = await adminCancel();
+      assert.equal(response.status, 200); assert.equal(response.body.success, true);
+      assert.equal(provider.cancelCalls, 1); assert.equal(provider.preapproval.status, 'cancelled');
+      const after = await business(); const state = await lifecycle();
+      assert.equal(after.subscription.localStatus, 'canceled');
+      assert.equal(after.subscription.mercadoPagoStatus, 'cancelled');
+      assert.deepEqual(after.subscription.metadata.contract, subscription.metadata.contract);
+      assert.equal(state.billingState, 'subscription_cancelled');
+      assert.equal(state.activatedAt, undefined); assert.equal(state.entitlementState, 'unactivated');
+      assert.equal(after.tenant.settings.portal.policy.planCode, 'basic');
+      assert.equal(after.subscription.lastPaymentId, null); assert.equal(after.subscription.lastPaymentStatus, null);
+      assert.equal((await effects()).length, 0);
+      assert.deepEqual(calls.filter(call => call === 'mock_cancel'), ['mock_cancel']);
+    });
+    await scenario('BILL-010A.1 E: retry observes provider cancellation and avoids a duplicate provider mutation', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true;
+      assert.equal((await adminCancel()).status, 200);
+      const firstCancellationAt = (await lifecycle()).cancellationAt;
+      assert.equal((await adminCancel()).status, 200);
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal((await lifecycle()).cancellationAt, firstCancellationAt);
+      assert.equal((await effects()).length, 0);
+      assert.equal((await business()).tenant.settings.portal.policy.planCode, 'basic');
+    });
+    await scenario('BILL-010A.1 F: request without the protected Admin credential cannot reach cancellation', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true;
+      const response = await adminCancel({ authorized: false });
+      assert.equal(response.status, 401);
+      assert.equal(provider.cancelCalls || 0, 0);
+      assert.equal(calls.length, 0);
+      assert.equal(provider.preapproval.status, 'pending');
+      assert.equal((await business()).subscription.localStatus, 'pending');
+    });
+    await scenario('BILL-010A.1 G: unknown provider state fails closed before any provider mutation', async () => {
+      provider.preapproval.status = 'review_required'; provider.allowCancel = true;
+      const response = await adminCancel();
+      assert.equal(response.status, 409);
+      assert.equal(response.body.error, 'subscription_cancellation_state_unsupported');
+      assert.equal(provider.cancelCalls || 0, 0);
+      assert.equal((await business()).subscription.localStatus, 'pending');
+      assert.deepEqual(calls.filter(call => call === 'mock_cancel'), []);
+    });
+    for (const existingStatus of ['authorized', 'paused']) await scenario(`BILL-010A.1 H: existing ${existingStatus} subscriptions remain cancellable`, async () => {
+      provider.preapproval.status = existingStatus; provider.allowCancel = true;
+      const response = await adminCancel();
+      assert.equal(response.status, 200);
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal((await business()).subscription.localStatus, 'canceled');
+      assert.equal((await lifecycle()).billingState, 'subscription_cancelled');
+    });
+    await scenario('BILL-010A.1: lost provider response reconciles only after canonical GET confirms cancellation', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true; provider.cancelNetworkAfterMutation = true;
+      const response = await adminCancel();
+      assert.equal(response.status, 200);
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal((await business()).subscription.localStatus, 'canceled');
+      assert.equal((await lifecycle()).billingState, 'subscription_cancelled');
+      assert.equal((await effects()).length, 0);
+    });
+    await scenario('BILL-010A.1: unconfirmed provider result leaves local subscription pending', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true; provider.cancelStatusAfterPut = 'pending';
+      const response = await adminCancel();
+      assert.equal(response.status, 502);
+      assert.equal(response.body.error, 'subscription_cancellation_unconfirmed');
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal((await business()).subscription.localStatus, 'pending');
+      assert.equal(await lifecycle(), undefined);
+      assert.equal((await effects()).length, 0);
     });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));

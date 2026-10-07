@@ -45,6 +45,8 @@ const { logError, logInfo } = require('../utils/logger');
 
 const ALLOWED_PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLAN_CODES), ...Object.keys(PUBLIC_PLANS)]);
 const ALLOWED_LOCAL_STATUSES = new Set(['pending', 'active', 'paused', 'canceled', 'payment_failed', 'suspended']);
+const CANCELLABLE_PREAPPROVAL_STATUSES = new Set(['pending', 'authorized', 'active', 'paused']);
+const CANCELED_PREAPPROVAL_STATUSES = new Set(['canceled', 'cancelled']);
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -541,7 +543,45 @@ async function executeSubscriptionAction(subscriptionId, action) {
   }
 
   if (action === 'cancel') {
-    remote = await cancelPreapproval(subscription.mercadoPagoPreapprovalId);
+    const preapprovalId = subscription.mercadoPagoPreapprovalId;
+    const current = await getPreapproval(preapprovalId);
+    const currentProof = await withBillingTransaction(client => lockProviderSubscription(client, preapprovalId, current));
+    if (currentProof.decision.type !== 'VALID' || currentProof.subscription?.id !== subscription.id) {
+      return { ok: false, reason: 'subscription_cancellation_identity_unproven', status: 409 };
+    }
+
+    const currentStatus = normalizeString(current.status).toLowerCase();
+    if (CANCELED_PREAPPROVAL_STATUSES.has(currentStatus)) {
+      remote = current;
+    } else if (!CANCELLABLE_PREAPPROVAL_STATUSES.has(currentStatus)) {
+      return { ok: false, reason: 'subscription_cancellation_state_unsupported', status: 409 };
+    } else {
+      let updateError = null;
+      try {
+        remote = await cancelPreapproval(preapprovalId);
+      } catch (error) {
+        updateError = error;
+      }
+
+      if (!CANCELED_PREAPPROVAL_STATUSES.has(normalizeString(remote?.status).toLowerCase())) {
+        try {
+          const verified = await getPreapproval(preapprovalId);
+          if (CANCELED_PREAPPROVAL_STATUSES.has(normalizeString(verified?.status).toLowerCase())) {
+            remote = verified;
+            updateError = null;
+          }
+        } catch {
+          // Keep the local lifecycle unchanged unless the provider readback proves cancellation.
+        }
+      }
+
+      if (updateError) {
+        return { ok: false, reason: 'subscription_cancellation_unconfirmed', status: 502 };
+      }
+      if (!CANCELED_PREAPPROVAL_STATUSES.has(normalizeString(remote?.status).toLowerCase())) {
+        return { ok: false, reason: 'subscription_cancellation_unconfirmed', status: 502 };
+      }
+    }
   } else if (action === 'pause') {
     remote = await pausePreapproval(subscription.mercadoPagoPreapprovalId);
   } else if (action === 'reactivate') {
