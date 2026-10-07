@@ -45,7 +45,8 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
     }
   });
   stub('src/config/env.js', { mercadoPagoWebhookSecret: secret, mercadoPagoAccessToken: token,
-    mercadoPagoEnvironment: 'test', nodeEnv: 'production', portalInternalKey: 'admin-test-key' });
+    mercadoPagoEnvironment: 'test', nodeEnv: 'production', portalInternalKey: 'admin-test-key',
+    getWhatsAppGraphVersion: () => 'v25.0' });
   const log = (event, fields) => logs.push({ event, fields });
   stub('src/utils/logger.js', { logInfo: log, logWarn: log, logError: log });
   stub('src/services/saas-billing-email.service.js', {
@@ -98,18 +99,9 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
   };
   const repository = require('../../src/repositories/saas-subscriptions.repository');
   const service = require('../../src/services/saas-billing.service');
-  const { requirePortalInternalAuth } = require('../../src/middlewares/portal-internal-auth.middleware');
   const app = express();
   app.use('/api/webhooks/mercadopago', require('../../src/routes/mercadopago-webhook.routes'));
-  app.post('/api/admin/billing/subscriptions/:id/cancel', requirePortalInternalAuth, async (req, res) => {
-    try {
-      const result = await service.executeSubscriptionAction(req.params.id, 'cancel');
-      if (!result.ok) return res.status(result.status || 400).json({ success: false, error: result.reason });
-      return res.status(200).json({ success: true, data: result });
-    } catch (error) {
-      return res.status(500).json({ success: false, error: 'billing_subscription_action_failed', details: error.message });
-    }
-  });
+  app.use('/api/admin', require('../../src/routes/admin.routes'));
   server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const clinicId = '00000000-0000-4000-8000-000000000001';
