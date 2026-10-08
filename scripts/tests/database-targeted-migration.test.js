@@ -16,7 +16,7 @@ const historical = [
 ];
 const earlierApplied = '078_previous.sql';
 
-async function runRunner({ args = [], applied = [earlierApplied], failMigration, failTracking = false, realTarget, targetIsFile = true } = {}) {
+async function runRunner({ args = [], applied = [earlierApplied], failMigration, failTracking = false, realTarget, targetIsFile = true, migrationFiles } = {}) {
   const calls = [];
   const logs = [];
   const reads = [];
@@ -26,7 +26,7 @@ async function runRunner({ args = [], applied = [earlierApplied], failMigration,
   let connected = 0;
   let released = 0;
   let closed = 0;
-  const files = [target, ...historical.slice().reverse(), earlierApplied];
+  const files = migrationFiles || [target, ...historical.slice().reverse(), earlierApplied];
   const sqlByFile = new Map(files.map((file) => [file, `-- migration ${file}`]));
   const migrationsDir = path.join(root, 'db', 'migrations');
   const client = {
@@ -221,4 +221,86 @@ test('default invocation retains whole-batch rollback when a later migration fai
   assert.deepEqual(tracked(result), historical);
   assert.equal(result.calls.at(-1).sql, 'ROLLBACK');
   assert.deepEqual(result.database, { applied: [earlierApplied], effects: [] });
+});
+
+test('--after 090 is a safe no-op when there are no later migrations', async () => {
+  const baseline = '090_canonical_plan_entitlements.sql';
+  const result = await runRunner({
+    args: ['--after', baseline],
+    migrationFiles: [
+      '075_whatsapp_templates_channel_waba_identity.sql',
+      baseline,
+      '089_saas_billing_entitlement_lifecycle.sql'
+    ],
+    applied: [baseline]
+  });
+  assert.deepEqual(result.exits, [0]);
+  assert.deepEqual(result.reads, []);
+  assert.deepEqual(tracked(result), []);
+  assert.deepEqual(result.database.effects, []);
+  assert.ok(result.logs.some((log) => log.message === 'migration_forward_window_selected' && log.baseline === baseline && log.eligible === 0));
+  assert.ok(result.logs.some((log) => log.message === 'migrations_complete' && log.executed === 0));
+});
+
+test('--after 090 selects only unapplied future migrations in deterministic order', async () => {
+  const baseline = '090_canonical_plan_entitlements.sql';
+  const future091 = '091_example_future_migration.sql';
+  const future092 = '092_example_future_migration.sql';
+  const result = await runRunner({
+    args: ['--after', baseline],
+    migrationFiles: [
+      '075_whatsapp_templates_channel_waba_identity.sql',
+      future092,
+      baseline,
+      future091,
+      '089_saas_billing_entitlement_lifecycle.sql'
+    ],
+    applied: [baseline, future091]
+  });
+  assert.deepEqual(result.exits, [0]);
+  assert.deepEqual(result.reads, [future092]);
+  assert.deepEqual(tracked(result), [future092]);
+  assert.ok(!result.reads.includes('075_whatsapp_templates_channel_waba_identity.sql'));
+  assert.ok(!result.reads.includes(baseline));
+  assert.deepEqual(result.database.effects, [`-- migration ${future092}`]);
+  assert.ok(result.logs.some((log) => log.message === 'migrations_complete' && log.executed === 1));
+});
+
+test('--after fails closed when the baseline is missing', async () => {
+  const result = await runRunner({ args: ['--after', '090_missing_baseline.sql'] });
+  assert.deepEqual(result.exits, [1]);
+  assert.equal(result.connected, 0);
+  assert.deepEqual(result.calls, []);
+  assert.deepEqual(result.reads, []);
+  assert.ok(result.logs.some((log) => log.message === 'migrations_failed'));
+});
+
+test('--after fails closed for malformed or ambiguous arguments', async () => {
+  for (const args of [
+    ['--after'],
+    ['--after', '090_*.sql'],
+    ['--after', '090.sql', '091.sql'],
+    ['--only', target, '--after', '090.sql'],
+    ['--after=090_canonical_plan_entitlements.sql']
+  ]) {
+    const result = await runRunner({ args });
+    assert.deepEqual(result.exits, [1], JSON.stringify(args));
+    assert.equal(result.connected, 0, JSON.stringify(args));
+    assert.deepEqual(result.calls, [], JSON.stringify(args));
+  }
+});
+
+test('--after rolls back all future effects when a later migration fails', async () => {
+  const baseline = '090_canonical_plan_entitlements.sql';
+  const future091 = '091_example_future_migration.sql';
+  const future092 = '092_example_future_migration.sql';
+  const result = await runRunner({
+    args: ['--after', baseline],
+    migrationFiles: [baseline, future091, future092],
+    applied: [baseline],
+    failMigration: future092
+  });
+  assert.deepEqual(result.exits, [1]);
+  assert.equal(result.calls.at(-1).sql, 'ROLLBACK');
+  assert.deepEqual(result.database, { applied: [baseline], effects: [] });
 });
