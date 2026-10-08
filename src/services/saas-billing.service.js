@@ -397,14 +397,35 @@ async function executeSubscriptionAction(subscriptionId, action) {
     return { ok: false, reason: 'missing_preapproval_id', status: 409 };
   }
 
-  if (action === 'cancel') {
-    remote = await cancelPreapproval(subscription.mercadoPagoPreapprovalId);
-  } else if (action === 'pause') {
-    remote = await pausePreapproval(subscription.mercadoPagoPreapprovalId);
-  } else if (action === 'reactivate') {
-    remote = await reactivatePreapproval(subscription.mercadoPagoPreapprovalId);
-  } else {
-    return { ok: false, reason: 'unsupported_action', status: 400 };
+  try {
+    if (action === 'cancel') {
+      remote = await cancelPreapproval(subscription.mercadoPagoPreapprovalId);
+    } else if (action === 'pause') {
+      remote = await pausePreapproval(subscription.mercadoPagoPreapprovalId);
+    } else if (action === 'reactivate') {
+      remote = await reactivatePreapproval(subscription.mercadoPagoPreapprovalId);
+    } else {
+      return { ok: false, reason: 'unsupported_action', status: 400 };
+    }
+  } catch (error) {
+    const diagnostic = error && error.providerDiagnostic ? error.providerDiagnostic : {};
+    logError('billing_subscription_cancellation_failed', {
+      subscriptionId,
+      action,
+      provider: 'mercado_pago',
+      providerHttpStatus: diagnostic.providerHttpStatus || Number(error && error.status) || null,
+      providerStatusText: diagnostic.providerStatusText || null,
+      providerError: diagnostic.providerError || null,
+      providerErrorCode: diagnostic.providerErrorCode || null,
+      providerErrorMessage: diagnostic.providerErrorMessage || null,
+      providerErrorStatus: diagnostic.providerErrorStatus || null,
+      providerCause: diagnostic.providerCause || null,
+      providerCauses: diagnostic.providerCauses || null,
+      providerDetails: diagnostic.providerDetails || null,
+      providerResponseSummary: diagnostic.providerResponseSummary || null,
+      providerRequestId: diagnostic.providerRequestId || null
+    });
+    throw error;
   }
 
   const patch = mapPreapprovalToSubscriptionPatch(remote);

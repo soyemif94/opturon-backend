@@ -373,10 +373,10 @@ async function postAdminBillingSubscriptionAction(req, res) {
     }
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
-    return res.status(500).json({
+    return res.status(Number(error && error.status) >= 400 ? 502 : 500).json({
       success: false,
       error: 'billing_subscription_action_failed',
-      details: error.message
+      detail: 'No se pudo completar la accion de suscripcion. La suscripcion local no fue modificada.'
     });
   }
 }
