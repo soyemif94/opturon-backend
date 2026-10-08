@@ -192,6 +192,7 @@ function sanitizeMercadoPagoErrorBody(body) {
 function existingCreationResult(subscription) {
   // Legacy NULL state is never safe to resume, even with no provider ID.
   if (subscription && subscription.localStatus === 'pending'
+    && subscription.metadata?.checkoutAbandoned !== true
     && subscription.mercadoPagoPreapprovalId && subscription.authorizationUrl
     && (!subscription.provisioningState || subscription.provisioningState === 'ready')) {
     return { ok: true, subscription, reused: true };
@@ -447,7 +448,8 @@ async function getPortalSaasCheckoutStatus(input = {}) {
     : null;
   const lifecycleStatus = String(lifecycle && lifecycle.billingState || '').toLowerCase();
   const subscriptionStatus = String(subscription && subscription.localStatus || '').toLowerCase() || null;
-  const pending = Boolean(subscription && subscriptionStatus === 'pending'
+  const abandoned = Boolean(subscription && subscription.metadata?.checkoutAbandoned === true);
+  const pending = Boolean(subscription && !abandoned && subscriptionStatus === 'pending'
     && !['subscription_cancelled', 'active'].includes(lifecycleStatus));
   const suspended = lifecycleStatus === 'suspended_for_nonpayment'
     || String(lifecycle && lifecycle.entitlementState || '').toLowerCase() === 'suspended_for_nonpayment';
@@ -468,7 +470,9 @@ async function getPortalSaasCheckoutStatus(input = {}) {
       entitlementActive: entitlements.state === 'active',
       paymentPending: pending,
       accountActive,
-      canResume: Boolean(pending && planKey && isSafeMercadoPagoAuthorizationUrl(subscription.authorizationUrl))
+      canResume: Boolean(pending && planKey && isSafeMercadoPagoAuthorizationUrl(subscription.authorizationUrl)),
+      checkoutAbandoned: abandoned,
+      checkoutActive: Boolean(pending && !abandoned)
     }
   };
 }
@@ -500,7 +504,7 @@ async function sendSaasSubscriptionAuthorizationLinkEmail(input) {
 
   const subscription = await findLatestSaasSubscriptionByTenantId(tenantId);
   if (!subscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
-  if (subscription.localStatus !== 'pending') {
+  if (subscription.localStatus !== 'pending' || subscription.metadata?.checkoutAbandoned === true) {
     return { ok: false, reason: 'subscription_not_pending', status: 409 };
   }
   if (!normalizeString(subscription.authorizationUrl)) {
@@ -593,6 +597,42 @@ async function executeSubscriptionAction(subscriptionId, action) {
   let remote = null;
   if (!subscription.mercadoPagoPreapprovalId) {
     return { ok: false, reason: 'missing_preapproval_id', status: 409 };
+  }
+
+  if (action === 'abandon') {
+    const current = await getPreapproval(subscription.mercadoPagoPreapprovalId);
+    if (normalizeString(current && current.status).toLowerCase() !== 'pending') {
+      return { ok: false, reason: 'pending_checkout_abandonment_requires_pending_provider', status: 409 };
+    }
+    return withBillingTransaction(async client => {
+      const currentSubscription = await findSaasSubscriptionById(subscription.id, client, { forUpdate: true });
+      if (!currentSubscription) return { ok: false, reason: 'subscription_not_found', status: 404 };
+      if (currentSubscription.metadata?.checkoutAbandoned === true) {
+        return { ok: true, subscription: currentSubscription, idempotent: true };
+      }
+      const state = await readLifecycle(client, currentSubscription.id);
+      const approvedEffects = (await client.query(
+        'SELECT COUNT(*)::int AS count FROM saas_billing_effects WHERE "subscriptionId"=$1',
+        [currentSubscription.id]
+      )).rows[0]?.count || 0;
+      if (Number(approvedEffects) !== 0 || state.activatedAt || state.entitlementState !== 'unactivated') {
+        return { ok: false, reason: 'pending_checkout_abandonment_financial_history', status: 409 };
+      }
+      const updated = await updateSaasSubscriptionById(currentSubscription.id, {
+        metadata: {
+          checkoutActive: false,
+          checkoutAbandoned: true,
+          checkoutAbandonedAt: new Date().toISOString(),
+          checkoutAbandonmentReason: 'pending_authorization_abandoned'
+        }
+      }, client);
+      if (!updated) throw new Error('subscription_update_missing');
+      await client.query(
+        'UPDATE saas_billing_lifecycles SET data = data || $2::jsonb, "updatedAt" = clock_timestamp() WHERE "subscriptionId" = $1',
+        [currentSubscription.id, JSON.stringify({ checkoutState: 'abandoned', checkoutActive: false })]
+      );
+      return { ok: true, subscription: updated };
+    });
   }
 
   if (action === 'cancel') {

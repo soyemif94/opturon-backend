@@ -30,7 +30,7 @@ function mapSubscriptionRow(row) {
     lastPaymentId: row.lastPaymentId || null,
     lastPaymentStatus: row.lastPaymentStatus || null,
     externalReference: row.externalReference,
-    authorizationUrl: row.authorizationUrl || null,
+    authorizationUrl: row.metadata?.checkoutAbandoned === true ? null : (row.authorizationUrl || null),
     metadata: row.metadata && typeof row.metadata === 'object' ? row.metadata : {},
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null
@@ -259,6 +259,7 @@ async function findSaasSubscriptionById(id, client = null, options = {}) {
 async function findBlockingSaasSubscriptions(clinicId, externalTenantId, client) {
   const result = await dbQuery(client, `SELECT * FROM saas_subscriptions
     WHERE ("clinicId" = $1::uuid OR "externalTenantId" = $2)
+      AND COALESCE(metadata->>'checkoutAbandoned', 'false') <> 'true'
       AND ("localStatus" <> 'canceled'
         OR "provisioningState" IN (
           'reserved', 'provider_call_started', 'provider_created', 'reconciliation_required'

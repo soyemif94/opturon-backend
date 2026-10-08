@@ -72,6 +72,7 @@ async function syncBillingSnapshot(client, clinic, subscription, state, entitlem
 
 async function observePreapproval(client, clinic, subscription, patch) {
   const state = await readLifecycle(client, subscription.id);
+  const abandoned = subscription.metadata?.checkoutAbandoned === true || state.checkoutState === 'abandoned';
   const providerStatus = normalizeStatus(patch.mercadoPagoStatus);
   const canceled = isCanceled(providerStatus);
   // Pending/authorization/refresh is never financial authority. A cancellation
@@ -86,7 +87,9 @@ async function observePreapproval(client, clinic, subscription, patch) {
       : state.activatedAt ? state.billingState : 'awaiting_payment';
   }
   const next = await updateSaasSubscriptionById(subscription.id, { ...patch,
-    localStatus: canceled || state.cancellationAt ? 'canceled' : providerStatus === 'paused' ? 'paused'
+    ...(abandoned ? { localStatus: 'pending', authorizationUrl: null,
+      metadata: { checkoutActive: false, checkoutAbandoned: true } } : {}),
+    localStatus: abandoned ? 'pending' : canceled || state.cancellationAt ? 'canceled' : providerStatus === 'paused' ? 'paused'
       : state.activatedAt ? subscription.localStatus : 'pending'
   }, client);
   if (!next) throw new Error('subscription_update_missing');
@@ -100,6 +103,9 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
   const payment = prepared.payment, status = normalizeStatus(payment.status);
   const paymentId = resourceId(payment.id);
   const state = await readLifecycle(client, subscription.id);
+  if (subscription.metadata?.checkoutAbandoned === true || state.checkoutState === 'abandoned') {
+    return review(prepared, subscription, 'abandoned_checkout_ineligible');
+  }
   // A payment notification also contains canonical preapproval evidence. Do not
   // wait for a separate cancellation webhook to record the missing expiry proof.
   if (isCanceled(prepared.preapproval.status)) {
