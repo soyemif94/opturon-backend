@@ -624,6 +624,7 @@ async function executeSubscriptionAction(subscriptionId, action) {
       // readback is allowed to move the local subscription to cancelled.
       const confirmation = await confirmProviderCancellation(preapprovalId);
       if (!confirmation.confirmed) {
+        const providerDiagnostic = updateError?.providerDiagnostic || {};
         const diagnostics = {
           providerHttpStatus: updateHttpStatus,
           providerErrorCode: safeProviderErrorCode(updateError?.code),
@@ -634,7 +635,19 @@ async function executeSubscriptionAction(subscriptionId, action) {
           providerReadbackErrorCode: safeProviderErrorCode(confirmation.error?.code),
           providerReadbackAttempts: confirmation.attempts
         };
-        logError('billing_subscription_cancellation_unconfirmed', diagnostics);
+        logError('billing_subscription_cancellation_unconfirmed', {
+          ...diagnostics,
+          providerStatusText: providerDiagnostic.providerStatusText || null,
+          providerError: providerDiagnostic.providerError || null,
+          providerErrorCode: providerDiagnostic.providerErrorCode || diagnostics.providerErrorCode,
+          providerErrorMessage: providerDiagnostic.providerErrorMessage || null,
+          providerErrorStatus: providerDiagnostic.providerErrorStatus || null,
+          providerCause: providerDiagnostic.providerCause || null,
+          providerCauses: providerDiagnostic.providerCauses || null,
+          providerDetails: providerDiagnostic.providerDetails || null,
+          providerResponseSummary: providerDiagnostic.providerResponseSummary || null,
+          providerRequestId: providerDiagnostic.providerRequestId || null
+        });
         return {
           ok: false,
           reason: 'subscription_cancellation_unconfirmed',

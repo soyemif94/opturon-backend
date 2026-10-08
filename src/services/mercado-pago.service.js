@@ -2,6 +2,11 @@ const crypto = require('crypto');
 const env = require('../config/env');
 
 const MERCADO_PAGO_API_BASE = 'https://api.mercadopago.com';
+const MAX_DIAGNOSTIC_STRING_LENGTH = 500;
+const MAX_RESPONSE_SUMMARY_LENGTH = 2000;
+const MAX_DIAGNOSTIC_DEPTH = 4;
+const MAX_DIAGNOSTIC_KEYS = 40;
+const MAX_DIAGNOSTIC_ARRAY_ITEMS = 12;
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -77,13 +82,14 @@ async function mercadoPagoFetch(path, init = {}, { includeHttpStatus = false } =
     json = null;
   }
   if (!response.ok) {
-    const sanitizedBody = sanitizeMercadoPagoErrorBody(json);
-    const errorCode = classifyMercadoPagoErrorCode(response.status, sanitizedBody);
-    const detail = buildMercadoPagoErrorDetail(response.status, sanitizedBody, text);
-    const error = new Error(detail);
+    const diagnostic = buildMercadoPagoErrorDiagnostic(response, json, text);
+    const errorCode = classifyMercadoPagoErrorCode(response.status, diagnostic.body);
+    const error = new Error(`mercadopago_request_failed_${response.status}`);
     error.code = errorCode;
     error.status = response.status;
-    error.body = sanitizedBody || sanitizeMercadoPagoRawBody(text);
+    error.statusText = diagnostic.providerStatusText;
+    error.body = diagnostic.body;
+    error.providerDiagnostic = diagnostic;
     throw error;
   }
 
@@ -91,35 +97,77 @@ async function mercadoPagoFetch(path, init = {}, { includeHttpStatus = false } =
 }
 
 function sanitizeMercadoPagoErrorBody(body) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return body || null;
-  const safe = {};
-  for (const [key, value] of Object.entries(body)) {
-    const normalizedKey = String(key || '').toLowerCase();
-    if (
-      normalizedKey.includes('token') ||
-      normalizedKey.includes('access_token') ||
-      normalizedKey.includes('card_token') ||
-      normalizedKey.includes('security')
-    ) {
-      continue;
-    }
-    if (Array.isArray(value)) {
-      safe[key] = value.map((item) => sanitizeMercadoPagoErrorBody(item) || item);
-      continue;
-    }
-    if (value && typeof value === 'object') {
-      safe[key] = sanitizeMercadoPagoErrorBody(value);
-      continue;
-    }
-    safe[key] = value;
-  }
-  return safe;
+  return sanitizeMercadoPagoValue(body);
 }
 
 function sanitizeMercadoPagoRawBody(text) {
   const raw = normalizeString(text);
   if (!raw) return null;
-  return raw.slice(0, 500);
+  return sanitizeDiagnosticString(raw, MAX_RESPONSE_SUMMARY_LENGTH);
+}
+
+function sanitizeDiagnosticString(value, maxLength = MAX_DIAGNOSTIC_STRING_LENGTH) {
+  let safe = String(value || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
+    .replace(/(["']?(?:access[_-]?token|card[_-]?token|password|secret|authorization|cookie)["']?\s*[:=]\s*["']?)[^,\s"'}]+/gi, '$1[REDACTED]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[REDACTED_EMAIL]');
+  return safe.length > maxLength ? `${safe.slice(0, maxLength)}…` : safe;
+}
+
+function isSensitiveDiagnosticKey(key) {
+  return /(authorization|access[_-]?token|token|password|passwd|secret|cookie|card|payer|email|phone|address|document|identification|name)/i.test(String(key || ''));
+}
+
+function sanitizeMercadoPagoValue(value, depth = 0) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return sanitizeDiagnosticString(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (depth >= MAX_DIAGNOSTIC_DEPTH) return '[TRUNCATED]';
+  if (Array.isArray(value)) {
+    return value.slice(0, MAX_DIAGNOSTIC_ARRAY_ITEMS).map((item) => sanitizeMercadoPagoValue(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const safe = {};
+    for (const [key, item] of Object.entries(value).slice(0, MAX_DIAGNOSTIC_KEYS)) {
+      safe[key] = isSensitiveDiagnosticKey(key)
+        ? '[REDACTED]'
+        : sanitizeMercadoPagoValue(item, depth + 1);
+    }
+    return safe;
+  }
+  return sanitizeDiagnosticString(value);
+}
+
+function getResponseHeader(response, names) {
+  for (const name of names) {
+    const value = response && response.headers && typeof response.headers.get === 'function'
+      ? response.headers.get(name)
+      : null;
+    if (value) return sanitizeDiagnosticString(value, 200);
+  }
+  return null;
+}
+
+function buildMercadoPagoErrorDiagnostic(response, json, text) {
+  const body = json !== null ? sanitizeMercadoPagoErrorBody(json) : sanitizeMercadoPagoRawBody(text);
+  const summaryValue = json !== null ? body : sanitizeMercadoPagoRawBody(text);
+  return {
+    providerHttpStatus: Number(response && response.status) || null,
+    providerStatusText: sanitizeDiagnosticString(response && response.statusText, 200) || null,
+    providerError: json && typeof json === 'object' ? sanitizeDiagnosticString(json.error) || null : null,
+    providerErrorCode: json && typeof json === 'object' ? sanitizeDiagnosticString(json.code) || null : null,
+    providerErrorMessage: json && typeof json === 'object' ? sanitizeDiagnosticString(json.message) || null : null,
+    providerErrorStatus: json && typeof json === 'object' ? sanitizeDiagnosticString(json.status) || null : null,
+    providerCause: json && typeof json === 'object' ? sanitizeMercadoPagoValue(json.cause) : null,
+    providerCauses: json && typeof json === 'object' ? sanitizeMercadoPagoValue(json.causes) : null,
+    providerDetails: json && typeof json === 'object' ? sanitizeMercadoPagoValue(json.details) : null,
+    providerResponseSummary: sanitizeDiagnosticString(
+      typeof summaryValue === 'string' ? summaryValue : JSON.stringify(summaryValue),
+      MAX_RESPONSE_SUMMARY_LENGTH
+    ) || null,
+    providerRequestId: getResponseHeader(response, ['x-request-id', 'x-correlation-id', 'x-meli-request-id']),
+    body
+  };
 }
 
 function sanitizeMercadoPagoUserBody(body) {
@@ -175,14 +223,6 @@ function classifyMercadoPagoErrorCode(status, body) {
   }
 
   return 'mercadopago_preapproval_failed';
-}
-
-function buildMercadoPagoErrorDetail(status, body, rawText) {
-  const safeCause = extractMercadoPagoCause(body) || sanitizeMercadoPagoRawBody(rawText);
-  if (safeCause) {
-    return `mercadopago_request_failed_${status}: ${safeCause}`;
-  }
-  return `mercadopago_request_failed_${status}`;
 }
 
 function buildCreatePreapprovalPayload(input) {

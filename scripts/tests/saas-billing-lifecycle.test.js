@@ -73,7 +73,7 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       provider.cancelCalls = (provider.cancelCalls || 0) + 1;
       if (provider.cancelError) {
         return new Response(JSON.stringify(provider.cancelError.body || { message: 'mock cancellation rejected' }),
-          { status: provider.cancelError.status || 400 });
+          { status: provider.cancelError.status || 400, headers: provider.cancelError.headers });
       }
       provider.preapproval.status = provider.cancelStatusAfterPut || 'cancelled';
       if (provider.cancelNetworkAfterMutation) throw new Error('mock_response_lost_after_provider_cancel');
@@ -735,8 +735,12 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
     await scenario('BILL-010A.3 F: provider rejection is diagnosed and local billing remains unchanged', async () => {
       provider.preapproval.status = 'pending'; provider.allowCancel = true;
       provider.cancelError = { status: 400, body: {
-        message: 'provider rejected cancellation', error: 'bad_request', status: 400,
-        cause: [{ code: 2034, description: 'do not persist this provider detail' }]
+        message: 'provider rejected cancellation', error: 'bad_request', code: 'PA_INVALID_STATE', status: 400,
+        cause: [{ code: 2034, description: 'do not persist this provider detail' }],
+        causes: [{ code: 'secondary_reason', description: 'secondary provider detail' }],
+        details: { reason: 'provider detail', payer_email: 'person@example.com', access_token: 'secret-token' }
+      }, headers: {
+        'x-request-id': 'mp-request-010a6'
       } };
       const response = await adminCancel();
       assert.equal(response.status, 502);
@@ -752,8 +756,19 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       assert.equal((await effects()).length, 0);
       const failure = logs.find(item => item.event === 'billing_subscription_cancellation_unconfirmed');
       assert.ok(failure);
-      assert.equal(JSON.stringify(failure).includes('provider rejected cancellation'), false);
-      assert.equal(JSON.stringify(failure).includes('do not persist this provider detail'), false);
+      assert.equal(failure.fields.providerHttpStatus, 400);
+      assert.equal(failure.fields.providerError, 'bad_request');
+      assert.equal(failure.fields.providerErrorCode, 'PA_INVALID_STATE');
+      assert.equal(failure.fields.providerErrorMessage, 'provider rejected cancellation');
+      assert.equal(failure.fields.providerErrorStatus, '400');
+      assert.equal(failure.fields.providerRequestId, 'mp-request-010a6');
+      assert.equal(failure.fields.providerCause[0].code, 2034);
+      assert.equal(failure.fields.providerCauses[0].code, 'secondary_reason');
+      assert.equal(failure.fields.providerDetails.payer_email, '[REDACTED]');
+      assert.equal(failure.fields.providerDetails.access_token, '[REDACTED]');
+      const serializedFailure = JSON.stringify(failure);
+      assert.equal(serializedFailure.includes('secret-token'), false);
+      assert.equal(serializedFailure.includes('person@example.com'), false);
     });
     await scenario('BILL-010A.4: failed readback captures HTTP status and safe error code without provider body', async () => {
       provider.preapproval.status = 'pending'; provider.allowCancel = true;
