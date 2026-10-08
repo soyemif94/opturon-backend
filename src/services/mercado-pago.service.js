@@ -283,10 +283,10 @@ async function runMercadoPagoAuthDiagnostics() {
   return result;
 }
 
-async function getPreapproval(preapprovalId, { signal } = {}) {
+async function getPreapproval(preapprovalId, { signal, includeHttpStatus = false } = {}) {
   return mercadoPagoFetch(`/preapproval/${encodeURIComponent(preapprovalId)}`, {
     method: 'GET', signal
-  });
+  }, { includeHttpStatus });
 }
 
 async function updatePreapproval(preapprovalId, payload) {

@@ -63,26 +63,46 @@ function safeProviderErrorCode(value) {
   return /^[a-z0-9_.-]{1,80}$/i.test(code) ? code : null;
 }
 
+function safeProviderHttpStatus(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
+function safeProviderResponseErrorCodes(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return [];
+  const candidates = [body.error, body.code];
+  if (Array.isArray(body.cause)) {
+    for (const cause of body.cause.slice(0, 5)) {
+      if (cause && typeof cause === 'object') candidates.push(cause.code);
+    }
+  }
+  return [...new Set(candidates.map(safeProviderErrorCode).filter(Boolean))].slice(0, 5);
+}
+
 async function confirmProviderCancellation(preapprovalId) {
   let latest = null;
   let lastError = null;
+  let latestHttpStatus = null;
   let attempts = 0;
 
   for (const delayMs of CANCELLATION_READBACK_DELAYS_MS) {
     if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
     attempts += 1;
     try {
-      latest = await getPreapproval(preapprovalId);
+      const result = await getPreapproval(preapprovalId, { includeHttpStatus: true });
+      latest = result?.data || null;
+      latestHttpStatus = safeProviderHttpStatus(result?.httpStatus);
       lastError = null;
       if (CANCELED_PREAPPROVAL_STATUSES.has(normalizeString(latest?.status).toLowerCase())) {
-        return { confirmed: true, preapproval: latest, attempts, error: null };
+        return { confirmed: true, preapproval: latest, attempts, httpStatus: latestHttpStatus, error: null };
       }
     } catch (error) {
       lastError = error;
+      latestHttpStatus = safeProviderHttpStatus(error?.status);
     }
   }
 
-  return { confirmed: false, preapproval: latest, attempts, error: lastError };
+  return { confirmed: false, preapproval: latest, attempts, httpStatus: latestHttpStatus, error: lastError };
 }
 
 function normalizeEmail(value) {
@@ -594,10 +614,10 @@ async function executeSubscriptionAction(subscriptionId, action) {
       try {
         const result = await cancelPreapproval(preapprovalId);
         remote = result?.data || null;
-        updateHttpStatus = Number.isInteger(Number(result?.httpStatus)) ? Number(result.httpStatus) : null;
+        updateHttpStatus = safeProviderHttpStatus(result?.httpStatus);
       } catch (error) {
         updateError = error;
-        updateHttpStatus = Number.isInteger(Number(error?.status)) ? Number(error.status) : null;
+        updateHttpStatus = safeProviderHttpStatus(error?.status);
       }
 
       // A successful PUT response can still be stale. Only canonical GET
@@ -607,11 +627,10 @@ async function executeSubscriptionAction(subscriptionId, action) {
         const diagnostics = {
           providerHttpStatus: updateHttpStatus,
           providerErrorCode: safeProviderErrorCode(updateError?.code),
-          providerResponseStatus: safeProviderStatus(remote?.status),
+          providerResponseStatus: safeProviderStatus(remote?.status || updateError?.body?.status),
+          providerResponseErrorCodes: safeProviderResponseErrorCodes(updateError?.body),
           providerReadbackStatus: safeProviderStatus(confirmation.preapproval?.status),
-          providerReadbackHttpStatus: Number.isInteger(Number(confirmation.error?.status))
-            ? Number(confirmation.error.status)
-            : null,
+          providerReadbackHttpStatus: confirmation.httpStatus || safeProviderHttpStatus(confirmation.error?.status),
           providerReadbackErrorCode: safeProviderErrorCode(confirmation.error?.code),
           providerReadbackAttempts: confirmation.attempts
         };

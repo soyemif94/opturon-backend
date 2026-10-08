@@ -96,9 +96,12 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
     if (provider.httpBase) return originalFetch(provider.httpBase + request.pathname + request.search, init);
     if (kind === 'preapproval' && provider.cancelCalls && Array.isArray(provider.cancelReadbackStatuses)) {
       const index = provider.cancelReadbackCount || 0;
-      const status = provider.cancelReadbackStatuses[Math.min(index, provider.cancelReadbackStatuses.length - 1)];
+      const observation = provider.cancelReadbackStatuses[Math.min(index, provider.cancelReadbackStatuses.length - 1)];
       provider.cancelReadbackCount = index + 1;
-      provider.preapproval.status = status;
+      if (observation && typeof observation === 'object') {
+        return new Response(JSON.stringify(observation.body || {}), { status: observation.httpStatus || 200 });
+      }
+      provider.preapproval.status = observation;
       return new Response(JSON.stringify(structuredClone(provider.preapproval)), { status: 200 });
     }
     if (provider.error?.kind === kind) {
@@ -665,6 +668,7 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       assert.equal(response.body.details.providerHttpStatus, 200);
       assert.equal(response.body.details.providerResponseStatus, 'pending');
       assert.equal(response.body.details.providerReadbackStatus, 'pending');
+      assert.equal(response.body.details.providerReadbackHttpStatus, 200);
       assert.equal(response.body.details.providerReadbackAttempts, 5);
       assert.equal(provider.cancelCalls, 1);
       assert.equal((await business()).subscription.localStatus, 'pending');
@@ -704,6 +708,7 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       assert.equal(response.body.details.providerHttpStatus, 200);
       assert.equal(response.body.details.providerResponseStatus, 'cancelled');
       assert.equal(response.body.details.providerReadbackStatus, 'pending');
+      assert.equal(response.body.details.providerReadbackHttpStatus, 200);
       assert.equal(provider.cancelCalls, 1);
       assert.equal((await business()).subscription.localStatus, 'pending');
       assert.equal(await lifecycle(), undefined);
@@ -729,12 +734,18 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
     });
     await scenario('BILL-010A.3 F: provider rejection is diagnosed and local billing remains unchanged', async () => {
       provider.preapproval.status = 'pending'; provider.allowCancel = true;
-      provider.cancelError = { status: 400, body: { message: 'provider rejected cancellation' } };
+      provider.cancelError = { status: 400, body: {
+        message: 'provider rejected cancellation', error: 'bad_request', status: 400,
+        cause: [{ code: 2034, description: 'do not persist this provider detail' }]
+      } };
       const response = await adminCancel();
       assert.equal(response.status, 502);
       assert.equal(response.body.error, 'subscription_cancellation_unconfirmed');
       assert.equal(response.body.details.providerHttpStatus, 400);
+      assert.equal(response.body.details.providerResponseStatus, null);
+      assert.deepEqual(response.body.details.providerResponseErrorCodes, ['bad_request', '2034']);
       assert.equal(response.body.details.providerReadbackStatus, 'pending');
+      assert.equal(response.body.details.providerReadbackHttpStatus, 200);
       assert.equal(provider.cancelCalls, 1);
       assert.equal((await business()).subscription.localStatus, 'pending');
       assert.equal(await lifecycle(), undefined);
@@ -742,6 +753,23 @@ test('BILL-007: paid entitlement lifecycle with canonical proofs and atomic Post
       const failure = logs.find(item => item.event === 'billing_subscription_cancellation_unconfirmed');
       assert.ok(failure);
       assert.equal(JSON.stringify(failure).includes('provider rejected cancellation'), false);
+      assert.equal(JSON.stringify(failure).includes('do not persist this provider detail'), false);
+    });
+    await scenario('BILL-010A.4: failed readback captures HTTP status and safe error code without provider body', async () => {
+      provider.preapproval.status = 'pending'; provider.allowCancel = true;
+      provider.cancelStatusAfterPut = 'pending';
+      provider.cancelReadbackStatuses = Array.from({ length: 5 }, () => ({
+        httpStatus: 503, body: { error: 'service_unavailable', cause: [{ code: 'readback_down', description: 'private detail' }] }
+      }));
+      const response = await adminCancel();
+      assert.equal(response.status, 502);
+      assert.equal(response.body.details.providerReadbackHttpStatus, 503);
+      assert.deepEqual(response.body.details.providerReadbackErrorCode, 'mercadopago_preapproval_failed');
+      assert.equal(response.body.details.providerReadbackStatus, null);
+      assert.equal(JSON.stringify(response.body.details).includes('private detail'), false);
+      assert.equal(provider.cancelCalls, 1);
+      assert.equal((await business()).subscription.localStatus, 'pending');
+      assert.equal((await effects()).length, 0);
     });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
