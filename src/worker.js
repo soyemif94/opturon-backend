@@ -20475,6 +20475,13 @@ async function processConversationReplyJobUnlocked(job) {
       contextPatch: automationContextPatch
     };
     decisionSource = 'automation';
+    logInfo('one_inbound_one_automatic_response', {
+      requestId,
+      conversationId: conversation.id,
+      clinicId: conversation.clinicId,
+      autoResponseHandled: true,
+      authority: 'deterministic_automation'
+    });
   }
   if (!decision && !qaAgendaBypassActive && !shouldPrioritizeAgendaFlow && botRoute.allowCommerce && botRoute.domain !== 'demo') {
     const configuredBotDecision = resolveConfiguredSalesBotReply({

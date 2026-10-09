@@ -222,7 +222,11 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
     }
   }
   await saveLifecycle(client, subscription.id, nextState);
-  return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
+  const staffTable = first ? (await client.query(`SELECT to_regclass('public.staff_users') AS table_name`)).rows[0]?.table_name : null;
+  const activationRecipient = first && staffTable ? (await client.query(`SELECT email FROM staff_users WHERE "clinicId"=$1 AND active=true ORDER BY id ASC LIMIT 1`, [clinic.id])).rows[0]?.email || null : null;
+  const activationPolicy = resolveAiPlanPolicy(planCode);
+  return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next,
+    ...(activationRecipient ? { activationEmail: { clinicId: clinic.id, email: activationRecipient, planKey: activationPolicy.planKey || planCode, aiProvisioningRequired: activationPolicy.provisioningRequired !== false, sourceKey: paymentId } } : {}) };
 }
 
 async function applyRejectedPayment(client, proof, prepared, state) {

@@ -48,6 +48,8 @@ const {
   sendRecruitmentInvitationAsAdmin
 } = require('../services/partner-recruitment-applications.service');
 const { logError } = require('../utils/logger');
+const { query } = require('../db/client');
+const { sendAiReadyEmail } = require('../services/onboarding-email.service');
 
 function sanitizeBillingPayload(payload) {
   const safePayload = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
@@ -440,6 +442,17 @@ async function postAdminAiProvisioningAction(req, res) {
   try {
     const result = await updateAiProvisioningStatus(clinicId, status, req.body?.reason || null);
     if (!result) return res.status(404).json({ success: false, error: 'ai_provisioning_not_found' });
+    if (status === 'ready' && result.readyAt) {
+      const staffTable = (await query(`SELECT to_regclass('public.staff_users') AS table_name`)).rows[0]?.table_name;
+      const recipient = staffTable ? (await query('SELECT email FROM staff_users WHERE "clinicId"=$1 AND active=true ORDER BY id ASC LIMIT 1', [clinicId])).rows[0]?.email || null : null;
+      if (recipient) {
+        try {
+          await sendAiReadyEmail({ email: recipient, idempotencyKey: `ai-ready:${clinicId}:${result.readyAt}` });
+        } catch (error) {
+          logError('ai_ready_email_failed', { clinicId, error: error.message });
+        }
+      }
+    }
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
     return res.status(500).json({ success: false, error: 'ai_provisioning_action_failed' });

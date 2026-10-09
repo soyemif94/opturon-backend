@@ -64,8 +64,13 @@ async function completeAiUsage(client, id, result, status = 'succeeded') {
 }
 
 async function listAiProvisioningQueue(client = null) {
-  const result = await dbQuery(client, `SELECT p.*, c.name AS "clinicName"
+  const result = await dbQuery(client, `SELECT p.*, c.name AS "clinicName",
+    COALESCE(u.used_responses, 0)::int AS "usedResponses",
+    GREATEST(p."includedResponses" - COALESCE(u.used_responses, 0), 0)::int AS "remainingResponses",
+    CASE WHEN p."provisioningStartedAt" IS NULL THEN 0 ELSE EXTRACT(EPOCH FROM (clock_timestamp() - p."provisioningStartedAt"))/3600 END AS "hoursElapsed",
+    CASE WHEN p."provisioningStartedAt" IS NOT NULL AND p.status IN ('pending','blocked','failed') AND clock_timestamp() >= p."provisioningStartedAt" + interval '48 hours' THEN true ELSE false END AS "over48Hours"
     FROM ai_tenant_provisioning p JOIN clinics c ON c.id=p."clinicId"
+    LEFT JOIN (SELECT "clinicId", COUNT(*) FILTER (WHERE status='succeeded') AS used_responses FROM ai_usage_events GROUP BY "clinicId") u ON u."clinicId"=p."clinicId"
     ORDER BY CASE p.status WHEN 'pending' THEN 0 WHEN 'failed' THEN 1 WHEN 'blocked' THEN 2 ELSE 3 END, p."updatedAt" ASC`);
   return result.rows;
 }

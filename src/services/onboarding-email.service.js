@@ -84,4 +84,32 @@ function sendAdvisorApprovalEmail(input) {
   });
 }
 
-module.exports = { sendClientWelcomeEmail, sendAdvisorApplicationReceivedEmail, sendAdvisorApprovalEmail };
+function sendClientActivationEmail(input) {
+  const plan = text(input.planName || input.planKey) || 'tu plan';
+  const advanced = input.aiProvisioningRequired !== false;
+  return sendOnboardingEmail({
+    to: input.email,
+    subject: 'Tu plan de Opturon ya está activo',
+    title: 'Tu plan de Opturon ya está activo',
+    body: `Tu plan ${plan} fue activado después de un pago aprobado. Ya podés ingresar a Opturon y preparar tu negocio, catálogo y canales.${advanced ? ' La configuración inicial de automatizaciones y funciones inteligentes puede demorar entre 24 y 48 horas.' : ''}`,
+    deckPath: CLIENT_DECK,
+    deckName: 'Opturon_Primeros_Pasos_Cliente.pptx',
+    linkPath: '/app',
+    idempotencyKey: input.idempotencyKey
+  });
+}
+
+function sendAiReadyEmail(input) {
+  return sendOnboardingEmail({
+    to: input.email,
+    subject: 'Tu configuración de Opturon está completa',
+    title: 'Tu configuración de Opturon está completa',
+    body: 'Las funciones inteligentes correspondientes a tu plan ya están disponibles. Revisá tus canales y configuración antes de activar la atención automática; podés encenderla o apagarla desde Opturon.',
+    deckPath: CLIENT_DECK,
+    deckName: 'Opturon_Primeros_Pasos_Cliente.pptx',
+    linkPath: '/app',
+    idempotencyKey: input.idempotencyKey
+  });
+}
+
+module.exports = { sendClientWelcomeEmail, sendAdvisorApplicationReceivedEmail, sendAdvisorApprovalEmail, sendClientActivationEmail, sendAiReadyEmail };

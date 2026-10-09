@@ -11,7 +11,7 @@ const {
 const { logInfo, logWarn } = require('../utils/logger');
 const { buildCommercialPromptContext } = require('../ai/tenant-commercial-profile');
 const { ASSISTANT_MODES, normalizeAssistantMode } = require('../ai/assistant-mode');
-const { resolveAiPolicyFromEntitlements } = require('./ai-plan-policy.service');
+const { resolveAiPolicyFromEntitlements, resolveAiExecutionPolicy } = require('./ai-plan-policy.service');
 const { findAiProvisioning, periodBounds, reserveAiUsage, completeAiUsage } = require('../repositories/ai-provisioning.repository');
 
 const AI_ASSIST_EVENT_TYPE = 'AI_ASSIST_INVOKED';
@@ -361,7 +361,7 @@ function validateDecision(decision) {
 
 async function callOpenAiAssist(input) {
   const apiKey = normalizeString(env.aiAssistApiKey);
-  const model = normalizeString(env.aiAssistModel) || 'gpt-4o-mini';
+  const model = normalizeString(input.providerModel) || normalizeString(env.aiAssistModel) || 'gpt-4o-mini';
   const timeoutMs = Number(env.aiAssistTimeoutMs || 8000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -498,6 +498,11 @@ async function classifyCommerceAiAssist(input, options = {}) {
     return { ok: false, reason: 'plan_ai_not_entitled', skipped: true };
   }
 
+  const executionPolicy = resolveAiExecutionPolicy({
+    entitlements: input.entitlements,
+    message: input.message,
+    context: input.context
+  });
   let durableReservation = null;
   let durableUsageAvailable = false;
   try {
@@ -516,7 +521,9 @@ async function classifyCommerceAiAssist(input, options = {}) {
         periodStart: bounds.start,
         periodEnd: bounds.end,
         botTier: aiPolicy.botTier,
-        route: aiPolicy.routing
+        route: executionPolicy.logicalRoute,
+        routeReason: executionPolicy.routeReason,
+        providerModel: executionPolicy.providerModel
       });
       durableUsageAvailable = true;
       if (!durableReservation.ok) {
@@ -549,7 +556,8 @@ async function classifyCommerceAiAssist(input, options = {}) {
         context: input.context || {},
         recentMessages: input.recentMessages || [],
         botConfig: input.botConfig || null,
-        assistantMode: input.assistantMode
+        assistantMode: input.assistantMode,
+        providerModel: executionPolicy.providerModel
       },
       provider
     );
@@ -572,6 +580,8 @@ async function classifyCommerceAiAssist(input, options = {}) {
         intent: providerResult.decision.intent,
         confidence: providerResult.decision.confidence,
         routingDecision: providerResult.decision.routingDecision,
+        logicalRoute: executionPolicy.logicalRoute,
+        routeReason: executionPolicy.routeReason,
         suggestedReplyIntent: providerResult.decision.suggestedReplyIntent,
         entities: providerResult.decision.entities,
         usage: providerResult.usage,
@@ -587,6 +597,8 @@ async function classifyCommerceAiAssist(input, options = {}) {
       model: providerResult.model,
       confidence: providerResult.decision.confidence,
       routingDecision: providerResult.decision.routingDecision,
+      logicalRoute: executionPolicy.logicalRoute,
+      providerModel: providerResult.model,
       suggestedReplyIntent: providerResult.decision.suggestedReplyIntent
     });
 

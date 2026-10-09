@@ -41,6 +41,7 @@ const contractProof = require('./saas-billing-provider-contract');
 const { observePreapproval, applyPaymentLifecycle, readLifecycle } = require('./saas-billing-lifecycle');
 const { processSubscriptionWebhookEvent } = require('./saas-billing-webhook-claims');
 const { sendBillingSubscriptionAuthorizationEmail } = require('./saas-billing-email.service');
+const { sendClientActivationEmail, sendAiReadyEmail } = require('./onboarding-email.service');
 const { logError, logInfo } = require('../utils/logger');
 
 const ALLOWED_PLAN_CODES = new Set([...Object.keys(LEGACY_BILLING_PLAN_CODES), ...Object.keys(PUBLIC_PLANS)]);
@@ -899,7 +900,7 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
   const dedupeKey = signedDeliveryIdentity(meta.verifiedDelivery);
   snapshot.resourceId = meta.verifiedDelivery.resourceId;
 
-  return processSubscriptionWebhookEvent({
+  const result = await processSubscriptionWebhookEvent({
     subscriptionId: null,
     provider: 'mercado_pago',
     topic: snapshot.topic,
@@ -922,6 +923,15 @@ async function processMercadoPagoWebhook(payload, meta = {}) {
     signal.throwIfAborted();
     return prepared;
   });
+  if (result?.activationEmail && result.duplicate !== true) {
+    try {
+      await sendClientActivationEmail({ ...result.activationEmail, idempotencyKey: `activation:${result.activationEmail.clinicId}:${result.activationEmail.sourceKey}` });
+    } catch (error) {
+      logError('billing_activation_email_failed', { clinicId: result.activationEmail.clinicId, error: error.message });
+    }
+    delete result.activationEmail;
+  }
+  return result;
 }
 
 function providerDecision(result, resource, subscription = null) {
