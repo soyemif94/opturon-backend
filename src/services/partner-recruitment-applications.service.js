@@ -32,6 +32,7 @@ const {
   buildPartnerInvitationAcceptLink,
   sendPartnerInvitationEmail
 } = require('./partner-invitations-email.service');
+const { sendAdvisorApprovalEmail } = require('./onboarding-email.service');
 
 const EDITABLE_STATUSES = new Set(['draft', 'changes_requested']);
 const PARTNER_CANCEL_STATUSES = new Set(['draft', 'pending_review', 'changes_requested']);
@@ -193,13 +194,14 @@ async function createPublicAdvisorApplication(payload, trace = {}) {
   if (normalized.data.hasMonotributo !== true) return { ok: false, reason: 'monotributo_required' };
   if (!normalized.data.independentRelationshipAcknowledged) return { ok: false, reason: 'independent_relationship_acknowledgement_required' };
   if (!normalized.data.monotributoAcknowledged) return { ok: false, reason: 'monotributo_acknowledgement_required' };
-  return withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
     const draft = await createRecruitmentApplication({ sponsorPartnerId: null, status: 'pending_review', ...normalized.data, metadata: { source: 'public_advisor_application', traceId: trace.traceId || null } }, client);
     const duplicateCheck = await assertNoBlockingDuplicates(draft, client);
     if (!duplicateCheck.ok) return { ok: false, reason: duplicateCheck.reason, duplicateWarnings: duplicateCheck.duplicateWarnings };
     await appendRecruitmentAuditLog({ partnerId: null, applicationId: draft.id, action: 'public_advisor_application_submitted', actorType: 'system', nextStatus: draft.status, duplicateWarnings: duplicateCheck.duplicateWarnings || [] }, client);
     return { ok: true, application: draft, duplicateWarnings: duplicateCheck.duplicateWarnings || [] };
   });
+  return result;
 }
 
 async function appendRecruitmentAuditLog(input, client = null) {
@@ -437,7 +439,7 @@ async function getApplicationForPartner(partnerId, applicationId) {
 }
 
 async function updateApplicationForPartner(partnerId, applicationId, payload) {
-  return withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
     const current = await findRecruitmentApplicationById(applicationId, client);
     if (!current || String(current.sponsorPartnerId) !== String(partnerId)) {
       return { ok: false, reason: 'partner_recruitment_application_not_found' };
@@ -474,6 +476,7 @@ async function updateApplicationForPartner(partnerId, applicationId, payload) {
 
     return { ok: true, application, duplicateWarnings: duplicateCheck.duplicateWarnings };
   });
+  return result;
 }
 
 async function reopenApplicationForEditByPartner(partnerId, applicationId) {
@@ -611,7 +614,7 @@ async function reviewApplicationAsAdmin(applicationId, action, payload = {}, act
     return { ok: false, reason: 'admin_notes_required' };
   }
 
-  return withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
     const current = await findRecruitmentApplicationById(applicationId, client);
     if (!current) return { ok: false, reason: 'partner_recruitment_application_not_found' };
     const allowApprovedCorrection = nextStatus === 'changes_requested' && canReopenApprovedApplication(current);
@@ -650,8 +653,24 @@ async function reviewApplicationAsAdmin(applicationId, action, payload = {}, act
       duplicateWarnings: duplicateCheck.duplicateWarnings || [],
       correctionAfterApproval: current.status === 'approved' && nextStatus === 'changes_requested'
     }, client);
-    return { ok: true, application, duplicateWarnings: duplicateCheck.duplicateWarnings || [] };
+    return { ok: true, application, duplicateWarnings: duplicateCheck.duplicateWarnings || [], publicApplication: !current.sponsorPartnerId };
   });
+
+  if (result && result.ok && nextStatus === 'approved' && result.publicApplication) {
+    const invitationResult = await sendRecruitmentInvitationAsAdmin(applicationId, actorStaffUserId);
+    if (!invitationResult.ok) return invitationResult;
+    try {
+      await sendAdvisorApprovalEmail({
+        email: result.application.email,
+        idempotencyKey: `advisor_approval:${result.application.id}`
+      });
+    } catch (error) {
+      return { ok: false, reason: error && error.code ? error.code : 'advisor_approval_email_failed' };
+    }
+    return { ...invitationResult, duplicateWarnings: result.duplicateWarnings || [] };
+  }
+
+  return result;
 }
 
 async function issueRecruitmentInvitationEmail(partner, invitationToken, expiresAt, options = {}) {
@@ -680,9 +699,10 @@ async function sendRecruitmentInvitationAsAdmin(applicationId, actorStaffUserId)
       return { error: 'partner_recruitment_application_not_approved' };
     }
 
-    const sponsor = await findPartnerById(application.sponsorPartnerId, client);
-    if (!sponsor) return { error: 'partner_not_found' };
-    if (sponsor.status !== 'active') return { error: 'partner_sponsor_inactive' };
+    const isPublicApplication = !application.sponsorPartnerId;
+    const sponsor = isPublicApplication ? null : await findPartnerById(application.sponsorPartnerId, client);
+    if (!isPublicApplication && !sponsor) return { error: 'partner_not_found' };
+    if (!isPublicApplication && sponsor.status !== 'active') return { error: 'partner_sponsor_inactive' };
 
     const duplicateCheck = await assertNoBlockingDuplicates(application, client);
     const duplicateResult = mapRecruitmentInvitationDuplicateResult(duplicateCheck);
@@ -768,7 +788,7 @@ async function sendRecruitmentInvitationAsAdmin(applicationId, actorStaffUserId)
       application: updated,
       partner,
       invitation,
-      sponsorDisplayName: sponsor.profile ? sponsor.profile.displayName : null
+      sponsorDisplayName: sponsor && sponsor.profile ? sponsor.profile.displayName : null
     };
   });
 
@@ -818,14 +838,15 @@ async function acceptRecruitmentInvitation(invitation, client = null) {
     return { ok: false, reason: 'partner_recruitment_application_not_invitable' };
   }
 
-  const sponsor = await findPartnerById(application.sponsorPartnerId, client);
-  if (!sponsor) return { ok: false, reason: 'partner_sponsor_not_found' };
-  if (sponsor.status !== 'active') return { ok: false, reason: 'partner_sponsor_inactive' };
-  if (String(sponsor.id) === String(invitation.partnerId)) return { ok: false, reason: 'partner_recruitment_self_invitation' };
+  const isPublicApplication = !application.sponsorPartnerId;
+  const sponsor = isPublicApplication ? null : await findPartnerById(application.sponsorPartnerId, client);
+  if (!isPublicApplication && !sponsor) return { ok: false, reason: 'partner_sponsor_not_found' };
+  if (!isPublicApplication && sponsor.status !== 'active') return { ok: false, reason: 'partner_sponsor_inactive' };
+  if (!isPublicApplication && String(sponsor.id) === String(invitation.partnerId)) return { ok: false, reason: 'partner_recruitment_self_invitation' };
 
   const invitedPartner = await findPartnerById(invitation.partnerId, client);
   if (!invitedPartner) return { ok: false, reason: 'partner_not_found' };
-  if (invitedPartner.sponsorPartnerId && String(invitedPartner.sponsorPartnerId) !== String(sponsor.id)) {
+  if (!isPublicApplication && invitedPartner.sponsorPartnerId && String(invitedPartner.sponsorPartnerId) !== String(sponsor.id)) {
     return { ok: false, reason: 'partner_relationship_already_exists' };
   }
 
@@ -838,7 +859,7 @@ async function acceptRecruitmentInvitation(invitation, client = null) {
   }
 
   let relationship = null;
-  if (!invitedPartner.sponsorPartnerId) {
+  if (!isPublicApplication && !invitedPartner.sponsorPartnerId) {
     relationship = await createPartnerRelationship({
       partnerId: invitedPartner.id,
       sponsorPartnerId: sponsor.id,
@@ -852,7 +873,7 @@ async function acceptRecruitmentInvitation(invitation, client = null) {
   }, client);
 
   await appendRecruitmentAuditLog({
-    partnerId: sponsor.id,
+    partnerId: sponsor ? sponsor.id : invitedPartner.id,
     applicationId: application.id,
     action: 'partner_recruitment_invitation_accepted',
     actorType: 'partner',
@@ -872,10 +893,10 @@ async function acceptRecruitmentInvitation(invitation, client = null) {
     actorType: 'partner',
     actorPartnerId: invitedPartner.id,
     metadata: {
-      sponsorPartnerId: sponsor.id,
+      sponsorPartnerId: sponsor ? sponsor.id : null,
       applicationId: application.id,
       invitationId: invitation.id,
-      depth: 1
+    depth: sponsor ? 1 : 0
     }
   }, client);
 

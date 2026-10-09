@@ -14,6 +14,9 @@ ALTER TABLE partner_recruitment_applications
   ADD COLUMN IF NOT EXISTS "documentationStatus" TEXT NOT NULL DEFAULT 'pending';
 
 ALTER TABLE partner_recruitment_applications
+  DROP CONSTRAINT IF EXISTS partner_recruitment_applications_documentation_status_check;
+
+ALTER TABLE partner_recruitment_applications
   ADD CONSTRAINT partner_recruitment_applications_documentation_status_check
   CHECK ("documentationStatus" IN ('pending', 'received', 'verified', 'rejected'));
 
