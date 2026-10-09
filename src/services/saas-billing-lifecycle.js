@@ -2,9 +2,12 @@ const { updateSaasSubscriptionById } = require('../repositories/saas-subscriptio
 const { reserveEffect, effectKey, bindings, matches, paymentCreatedAt, historicalEligible } = require('./saas-billing-effects');
 const { exactMinorUnits, noAction, resourceId } = require('./saas-billing-provider-contract');
 const { manualReview } = require('./saas-billing-webhook-outcomes');
+const env = require('../config/env');
 
 // Existing product mapping, not a price/catalog lookup. The contract selects it.
 const { lifecyclePlan } = require('./plan-catalog');
+const { resolveAiPlanPolicy } = require('./ai-plan-policy.service');
+const { ensureAiProvisioning } = require('../repositories/ai-provisioning.repository');
 const persistedDecisions = new WeakSet();
 const retainLifecycle = result => { persistedDecisions.add(result); return result; };
 const hasPersistedLifecycle = result => Boolean(result && persistedDecisions.has(result));
@@ -199,6 +202,25 @@ async function applyPaymentLifecycle(client, proof, prepared, patch, runtimeStat
     first || reactivating ? { planCode, status: 'active', statusPresent: true,
       ...(contract.entitlementProfileVersion ? { profile: { planKey: contract.planCode,
         entitlementProfileVersion: contract.entitlementProfileVersion, source: 'billing' } } : {}) } : null, true);
+  if (first) {
+    const aiPolicy = resolveAiPlanPolicy(planCode);
+    try {
+      await ensureAiProvisioning(client, {
+        clinicId: clinic.id,
+        planKey: aiPolicy.planKey,
+        botTier: aiPolicy.botTier,
+        includedResponses: aiPolicy.includedResponses === null
+          ? Math.max(0, Number(env.aiEnterpriseMonthlyResponses || 0))
+          : aiPolicy.includedResponses,
+        activatedAt: nextState.activatedAt
+      });
+    } catch (error) {
+      // Keep older isolated billing fixtures compatible until migration 092 is
+      // installed; the financial activation remains authoritative.
+      const missingAiSchema = error?.code === '42P01' || /ai_tenant_provisioning.*does not exist|relation .*ai_tenant_provisioning/i.test(String(error?.message || ''));
+      if (!missingAiSchema) throw error;
+    }
+  }
   await saveLifecycle(client, subscription.id, nextState);
   return { ok: true, outcome: 'PROCESSED_SUCCESSFULLY', duplicate: false, subscription: next };
 }

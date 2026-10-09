@@ -20183,9 +20183,13 @@ async function processConversationReplyJobUnlocked(job) {
       const aiEntitlements = await loadEntitlements(conversation.clinicId);
       const aiBotConfig = getClinicBotConfig(clinic);
       aiBotConfig.botTier = aiEntitlements.capabilities['bot.tier'];
+      const { resolveAiPolicyFromEntitlements } = require('./services/ai-plan-policy.service');
       const aiAssistResult = await classifyCommerceAiAssist({
         clinicId: conversation.clinicId,
         conversationId: conversation.id,
+        messageId: waMessageId || inboundMessage.id || null,
+        entitlements: aiEntitlements,
+        aiPolicy: resolveAiPolicyFromEntitlements(aiEntitlements),
         message: inboundText,
         context: safeContext,
         recentMessages: Array.isArray(recentMessages)

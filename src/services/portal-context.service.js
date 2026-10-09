@@ -4,6 +4,7 @@ const { listAutomationsByClinicId } = require('../repositories/automations.repos
 const { query } = require('../db/client');
 const { logInfo, logWarn } = require('../utils/logger');
 const { buildTenantPolicyFromSettings } = require('./tenant-policy.service');
+const { findAiProvisioning } = require('../repositories/ai-provisioning.repository');
 
 function summarizeClinic(clinic) {
   if (!clinic) return null;
@@ -181,6 +182,8 @@ async function resolvePortalTenantContext(externalTenantId) {
   const activeAutomations = (Array.isArray(automations) ? automations : []).filter((automation) => automation && automation.enabled !== false);
   const conversationsCount = Number(conversationsResult.rows[0] && conversationsResult.rows[0].total ? conversationsResult.rows[0].total : 0);
   const policy = buildTenantPolicyFromSettings(clinic.settings);
+  let aiProvisioning = null;
+  try { aiProvisioning = await findAiProvisioning(clinic.id); } catch (error) { if (error?.code !== '42P01') throw error; }
 
   if (!channelSelection.channel && channelSelection.reason !== 'mapped_clinic_without_whatsapp_channel') {
     logWarn('portal_channel_selection_ambiguous', {
@@ -226,6 +229,17 @@ async function resolvePortalTenantContext(externalTenantId) {
     botMode: resolveClinicBotMode(clinic),
     policy,
     entitlements: policy.entitlements,
+    aiProvisioning: aiProvisioning ? {
+      status: aiProvisioning.status,
+      planKey: aiProvisioning.planKey,
+      botTier: aiProvisioning.botTier,
+      includedResponses: aiProvisioning.includedResponses,
+      periodStart: aiProvisioning.periodStart,
+      periodEnd: aiProvisioning.periodEnd,
+      provisioningStartedAt: aiProvisioning.provisioningStartedAt,
+      readyAt: aiProvisioning.readyAt,
+      blockedReason: aiProvisioning.blockedReason
+    } : null,
     reason: channelSelection.reason
   };
 }

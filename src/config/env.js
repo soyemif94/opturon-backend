@@ -120,6 +120,7 @@ const env = {
   aiAssistModel: String(process.env.AI_ASSIST_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini').trim(),
   aiAssistTimeoutMs: parsePositiveInt(process.env.AI_ASSIST_TIMEOUT_MS, 8000),
   aiAssistMaxMonthlyCalls: parsePositiveInt(process.env.AI_ASSIST_MAX_MONTHLY_CALLS, 2000),
+  aiEnterpriseMonthlyResponses: parsePositiveInt(process.env.AI_ENTERPRISE_MONTHLY_RESPONSES, 0),
   aiAssistMaxCallsPerConversation: parsePositiveInt(process.env.AI_ASSIST_MAX_CALLS_PER_CONVERSATION, 50),
   aiAssistSuggestedProdMaxCallsPerConversation: parsePositiveInt(process.env.AI_ASSIST_SUGGESTED_PROD_MAX_CALLS_PER_CONVERSATION, 15),
   aiAssistEnabledClinicIds: parseCsvList(process.env.AI_ASSIST_ENABLED_CLINIC_IDS, []),

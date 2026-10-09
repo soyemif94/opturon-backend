@@ -11,6 +11,8 @@ const {
   postAdminBillingSubscriptionAction,
   postAdminBillingSubscriptionSendLink,
   getAdminAiAssistDiagnostics,
+  getAdminAiProvisioningQueue,
+  postAdminAiProvisioningAction,
   getAdminMetaEmbeddedSignupReadiness,
   getAdminPartners,
   postAdminPartner,
@@ -56,6 +58,8 @@ router.get('/billing/subscriptions/:id', requirePortalInternalAuth, getAdminBill
 router.post('/billing/subscriptions/:id/:action(cancel|pause|reactivate|abandon)', requirePortalInternalAuth, postAdminBillingSubscriptionAction);
 router.post('/tenants/:tenantId/billing/subscription/send-link', requirePortalInternalAuth, postAdminBillingSubscriptionSendLink);
 router.get('/diagnostics/ai-assist', requirePortalInternalAuth, getAdminAiAssistDiagnostics);
+router.get('/ai/provisioning', requireAdminInternalActor, getAdminAiProvisioningQueue);
+router.post('/ai/provisioning/:clinicId', requireAdminInternalActor, postAdminAiProvisioningAction);
 router.get('/meta/embedded-signup/readiness', requirePortalInternalAuth, getAdminMetaEmbeddedSignupReadiness);
 router.get('/partners', requireAdminInternalActor, getAdminPartners);
 router.post('/partners', requireAdminInternalActor, postAdminPartner);

@@ -13,6 +13,7 @@ const {
   sendSaasSubscriptionAuthorizationLinkEmail
 } = require('../services/saas-billing.service');
 const { getAiAssistRuntimeDiagnostics } = require('../services/ai-assist.service');
+const { listAiProvisioningQueue, updateAiProvisioningStatus } = require('../repositories/ai-provisioning.repository');
 const { getMetaEmbeddedSignupReadiness } = require('../services/meta-embedded-readiness.service');
 const {
   createPartner,
@@ -420,6 +421,28 @@ async function getAdminAiAssistDiagnostics(req, res) {
       error: 'ai_assist_diagnostics_failed',
       details: error.message
     });
+  }
+}
+
+async function getAdminAiProvisioningQueue(req, res) {
+  try {
+    return res.status(200).json({ success: true, data: await listAiProvisioningQueue() });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'ai_provisioning_queue_failed' });
+  }
+}
+
+async function postAdminAiProvisioningAction(req, res) {
+  const clinicId = String(req.params.clinicId || '').trim();
+  const action = String(req.body?.action || '').trim().toLowerCase();
+  const status = action === 'mark_ready' ? 'ready' : action === 'block' ? 'blocked' : action === 'retry' ? 'pending' : null;
+  if (!clinicId || !status) return res.status(400).json({ success: false, error: 'invalid_ai_provisioning_action' });
+  try {
+    const result = await updateAiProvisioningStatus(clinicId, status, req.body?.reason || null);
+    if (!result) return res.status(404).json({ success: false, error: 'ai_provisioning_not_found' });
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'ai_provisioning_action_failed' });
   }
 }
 
@@ -839,6 +862,8 @@ module.exports = {
   postAdminBillingSubscriptionAction,
   postAdminBillingSubscriptionSendLink,
   getAdminAiAssistDiagnostics,
+  getAdminAiProvisioningQueue,
+  postAdminAiProvisioningAction,
   getAdminMetaEmbeddedSignupReadiness,
   getAdminPartners,
   postAdminPartner,

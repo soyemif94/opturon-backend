@@ -11,6 +11,8 @@ const {
 const { logInfo, logWarn } = require('../utils/logger');
 const { buildCommercialPromptContext } = require('../ai/tenant-commercial-profile');
 const { ASSISTANT_MODES, normalizeAssistantMode } = require('../ai/assistant-mode');
+const { resolveAiPolicyFromEntitlements } = require('./ai-plan-policy.service');
+const { findAiProvisioning, periodBounds, reserveAiUsage, completeAiUsage } = require('../repositories/ai-provisioning.repository');
 
 const AI_ASSIST_EVENT_TYPE = 'AI_ASSIST_INVOKED';
 const AI_ASSIST_FAILURE_EVENT_TYPE = 'AI_ASSIST_FAILED';
@@ -159,6 +161,7 @@ function getAiAssistRuntimeDiagnostics() {
     provider: getAiAssistProvider(),
     model: normalizeString(env.aiAssistModel) || 'gpt-4o-mini',
     maxMonthlyCalls: Math.max(1, Number(env.aiAssistMaxMonthlyCalls || 2000)),
+    enterpriseMonthlyResponses: Math.max(0, Number(env.aiEnterpriseMonthlyResponses || 0)),
     maxCallsPerConversation: Math.max(1, Number(env.aiAssistMaxCallsPerConversation || 50)),
     suggestedProdMaxCallsPerConversation: Math.max(1, Number(env.aiAssistSuggestedProdMaxCallsPerConversation || 15)),
     enabledClinicIds: Array.isArray(env.aiAssistEnabledClinicIds) ? env.aiAssistEnabledClinicIds.filter(Boolean) : [],
@@ -488,7 +491,50 @@ async function classifyCommerceAiAssist(input, options = {}) {
     return { ok: false, reason: 'missing_scope', skipped: true };
   }
 
-  const budget = await reserveAiAssistBudget({ clinicId, conversationId });
+  const aiPolicy = input && input.aiPolicy && typeof input.aiPolicy === 'object'
+    ? input.aiPolicy
+    : resolveAiPolicyFromEntitlements(input && input.entitlements);
+  if (!aiPolicy.enabled || aiPolicy.botTier === 'none') {
+    return { ok: false, reason: 'plan_ai_not_entitled', skipped: true };
+  }
+
+  let durableReservation = null;
+  let durableUsageAvailable = false;
+  try {
+    const provisioning = await findAiProvisioning(clinicId);
+    // A missing row is the compatibility path for an already-active legacy
+    // tenant. New paid activations create the row in the billing transaction.
+    if (provisioning && provisioning.status !== 'ready') {
+      return { ok: false, reason: `ai_provisioning_${provisioning.status}`, skipped: true };
+    }
+    if (provisioning) {
+      const bounds = periodBounds();
+      durableReservation = await reserveAiUsage(null, {
+        clinicId,
+        conversationId,
+        messageId: input.messageId || null,
+        periodStart: bounds.start,
+        periodEnd: bounds.end,
+        botTier: aiPolicy.botTier,
+        route: aiPolicy.routing
+      });
+      durableUsageAvailable = true;
+      if (!durableReservation.ok) {
+        return { ok: false, reason: durableReservation.reason, skipped: true, handoff: true };
+      }
+      if (durableReservation.duplicate && durableReservation.status === 'succeeded') {
+        return { ok: false, reason: 'ai_request_already_processed', skipped: true };
+      }
+    }
+  } catch (error) {
+    // Older test fixtures and pre-092 local databases retain the historical
+    // event budget. Production with 092 fails closed through the durable path.
+    durableReservation = null;
+  }
+
+  const budget = durableUsageAvailable
+    ? { ok: true, reason: null, conversationCount: null, monthlyCount: null }
+    : await reserveAiAssistBudget({ clinicId, conversationId });
   if (!budget.ok) {
     return { ok: false, reason: budget.reason, skipped: true };
   }
@@ -511,6 +557,8 @@ async function classifyCommerceAiAssist(input, options = {}) {
     if (!validateDecision(providerResult.decision)) {
       throw new Error('ai_assist_invalid_decision');
     }
+
+    if (durableUsageAvailable) await completeAiUsage(null, durableReservation.id, providerResult, 'succeeded');
 
     await addEvent({
       clinicId,
@@ -551,6 +599,9 @@ async function classifyCommerceAiAssist(input, options = {}) {
       decision: providerResult.decision
     };
   } catch (error) {
+    if (durableUsageAvailable && durableReservation?.id) {
+      try { await completeAiUsage(null, durableReservation.id, null, 'failed'); } catch {}
+    }
     await addEvent({
       clinicId,
       conversationId,
