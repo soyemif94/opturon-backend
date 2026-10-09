@@ -54,6 +54,24 @@ function main() {
   assert.strictEqual(recruitmentService.canTransition('approved', 'pending_review'), false);
   assert.strictEqual(recruitmentService.canTransition('invitation_sent', 'invitation_accepted'), true);
 
+  const recruitmentServiceText = fs.readFileSync(
+    path.join(rootDir, 'src/services/partner-recruitment-applications.service.js'),
+    'utf8'
+  );
+  const onboardingEmailText = fs.readFileSync(
+    path.join(rootDir, 'src/services/onboarding-email.service.js'),
+    'utf8'
+  );
+  const publicMigrationText = fs.readFileSync(
+    path.join(rootDir, 'db/migrations/091_public_advisor_applications.sql'),
+    'utf8'
+  );
+  assert.match(recruitmentServiceText, /findRecruitmentApplicationByIdForUpdate\(applicationId, client\)/);
+  assert.match(recruitmentServiceText, /partner_recruitment_invitation_already_sent/);
+  assert.match(recruitmentServiceText, /sponsor \? sponsor\.id : 'public'/);
+  assert.match(onboardingEmailText, /ON CONFLICT \("eventKey"\) DO NOTHING/);
+  assert.match(publicMigrationText, /"eventKey" TEXT NOT NULL UNIQUE/);
+
   assertRoute(partnerRoutes, 'post:/me/recruitment-applications');
   assertRoute(partnerRoutes, 'get:/me/recruitment-applications');
   assertRoute(partnerRoutes, 'get:/me/recruitment-applications/:applicationId');

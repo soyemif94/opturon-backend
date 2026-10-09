@@ -887,7 +887,7 @@ async function acceptRecruitmentInvitation(invitation, client = null) {
   await createPartnerAuditLog({
     partnerId: invitedPartner.id,
     entityType: 'partner_relationship',
-    entityId: relationship ? relationship.id : `${sponsor.id}:${invitedPartner.id}`,
+    entityId: relationship ? relationship.id : `${sponsor ? sponsor.id : 'public'}:${invitedPartner.id}`,
     action: 'partner_relationship_created_from_recruitment',
     reason: RECRUITMENT_INVITATION_SOURCE,
     actorType: 'partner',
