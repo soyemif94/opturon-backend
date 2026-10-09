@@ -22,7 +22,8 @@ const {
   patchPartnerRecruitmentApplication,
   postPartnerRecruitmentApplicationReopenForEdit,
   postPartnerRecruitmentApplicationSubmit,
-  postPartnerRecruitmentApplicationCancel
+  postPartnerRecruitmentApplicationCancel,
+  postPublicAdvisorApplication
 } = require('../controllers/partners.controller');
 const { MAX_RECEIPT_BYTES } = require('../services/partner-client-request-receipts.service');
 const { authenticatePartnerUser, getPartnerAuthUserByEmail } = require('../services/partners.service');
@@ -34,6 +35,8 @@ const clientRequestReceiptUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_RECEIPT_BYTES }
 });
+
+router.post('/public-advisor-applications', postPublicAdvisorApplication);
 
 function handleClientRequestReceiptUpload(req, res, next) {
   clientRequestReceiptUpload.single('receipt')(req, res, (error) => {

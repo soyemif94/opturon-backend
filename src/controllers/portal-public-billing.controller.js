@@ -3,6 +3,7 @@ const {
   createPortalSaasCheckout,
   getPortalSaasCheckoutStatus
 } = require('../services/saas-billing.service');
+const { sendClientWelcomeEmail } = require('../services/onboarding-email.service');
 
 function respond(res, result, successStatus = 200) {
   res.set('Cache-Control', 'private, no-store');
@@ -41,6 +42,9 @@ async function postPortalAuthRegister(req, res) {
   try {
     const result = await registerPortalOwnerAccount(req.body);
     if (!result.ok) return respond(res, result);
+    void sendClientWelcomeEmail({ email: result.user.email, idempotencyKey: `client_welcome:${result.user.id}` }).catch((error) => {
+      console.error('client_welcome_email_failed', { event: 'client_welcome_email_failed', code: error.code || error.name });
+    });
     return respond(res, { ...result, data: result.user }, 201);
   } catch (error) {
     return respond(res, { ok: false, reason: 'registration_unavailable', status: 500 });

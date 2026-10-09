@@ -173,9 +173,33 @@ function normalizePayload(payload = {}) {
       province: normalizeString(payload.province) || null,
       country,
       notes: normalizeString(payload.notes) || null,
-      consentConfirmed
+      consentConfirmed,
+      cuit: normalizeDocumentId(payload.cuit) || null,
+      hasMonotributo: typeof payload.hasMonotributo === 'boolean' ? payload.hasMonotributo : null,
+      taxCategory: normalizeString(payload.taxCategory) || null,
+      commercialExperience: normalizeString(payload.commercialExperience) || null,
+      commercialApproach: normalizeString(payload.commercialApproach) || null,
+      independentRelationshipAcknowledged: payload.independentRelationshipAcknowledged === true || payload.independentRelationshipAcknowledged === 'true',
+      monotributoAcknowledged: payload.monotributoAcknowledged === true || payload.monotributoAcknowledged === 'true',
+      documentationStatus: 'pending'
     }
   };
+}
+
+async function createPublicAdvisorApplication(payload, trace = {}) {
+  const normalized = normalizePayload(payload);
+  if (!normalized.ok) return normalized;
+  if (!normalized.data.cuit) return { ok: false, reason: 'missing_advisor_cuit' };
+  if (normalized.data.hasMonotributo !== true) return { ok: false, reason: 'monotributo_required' };
+  if (!normalized.data.independentRelationshipAcknowledged) return { ok: false, reason: 'independent_relationship_acknowledgement_required' };
+  if (!normalized.data.monotributoAcknowledged) return { ok: false, reason: 'monotributo_acknowledgement_required' };
+  return withTransaction(async (client) => {
+    const draft = await createRecruitmentApplication({ sponsorPartnerId: null, status: 'pending_review', ...normalized.data, metadata: { source: 'public_advisor_application', traceId: trace.traceId || null } }, client);
+    const duplicateCheck = await assertNoBlockingDuplicates(draft, client);
+    if (!duplicateCheck.ok) return { ok: false, reason: duplicateCheck.reason, duplicateWarnings: duplicateCheck.duplicateWarnings };
+    await appendRecruitmentAuditLog({ partnerId: null, applicationId: draft.id, action: 'public_advisor_application_submitted', actorType: 'system', nextStatus: draft.status, duplicateWarnings: duplicateCheck.duplicateWarnings || [] }, client);
+    return { ok: true, application: draft, duplicateWarnings: duplicateCheck.duplicateWarnings || [] };
+  });
 }
 
 async function appendRecruitmentAuditLog(input, client = null) {
@@ -874,6 +898,7 @@ module.exports = {
   findRecruitmentApplicationByInvitationId,
   markRecruitmentApplicationExpired,
   normalizePayload,
+  createPublicAdvisorApplication,
   canTransition,
   canReopenApprovedApplication,
   isEditableByPartner,

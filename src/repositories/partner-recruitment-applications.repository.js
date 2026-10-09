@@ -23,6 +23,14 @@ const APPLICATION_SELECT = `SELECT app.id,
        app.country,
        app.notes,
        app."consentConfirmed",
+       app."cuit",
+       app."hasMonotributo",
+       app."taxCategory",
+       app."commercialExperience",
+       app."commercialApproach",
+       app."independentRelationshipAcknowledged",
+       app."monotributoAcknowledged",
+       app."documentationStatus",
        app."adminNotes",
        app."reviewedBy",
        app."reviewedAt",
@@ -44,8 +52,8 @@ const APPLICATION_SELECT = `SELECT app.id,
        invited.status AS "createdPartnerStatus",
        invited_profile."displayName" AS "createdPartnerDisplayName"
 FROM partner_recruitment_applications app
-INNER JOIN partner_accounts sponsor ON sponsor.id = app."sponsorPartnerId"
-INNER JOIN partner_profiles sponsor_profile ON sponsor_profile."partnerId" = sponsor.id
+LEFT JOIN partner_accounts sponsor ON sponsor.id = app."sponsorPartnerId"
+LEFT JOIN partner_profiles sponsor_profile ON sponsor_profile."partnerId" = sponsor.id
 LEFT JOIN partner_accounts invited ON invited.id = app."createdPartnerId"
 LEFT JOIN partner_profiles invited_profile ON invited_profile."partnerId" = invited.id`;
 
@@ -69,6 +77,14 @@ function mapApplicationRow(row) {
     country: row.country || null,
     notes: row.notes || null,
     consentConfirmed: row.consentConfirmed === true,
+    cuit: row.cuit || null,
+    hasMonotributo: typeof row.hasMonotributo === 'boolean' ? row.hasMonotributo : null,
+    taxCategory: row.taxCategory || null,
+    commercialExperience: row.commercialExperience || null,
+    commercialApproach: row.commercialApproach || null,
+    independentRelationshipAcknowledged: row.independentRelationshipAcknowledged === true,
+    monotributoAcknowledged: row.monotributoAcknowledged === true,
+    documentationStatus: row.documentationStatus || 'pending',
     adminNotes: row.adminNotes || null,
     reviewedBy: row.reviewedBy || null,
     reviewedAt: row.reviewedAt || null,
@@ -142,9 +158,11 @@ async function createRecruitmentApplication(input, client = null) {
     client,
     `INSERT INTO partner_recruitment_applications (
       "sponsorPartnerId", status, "firstName", "lastName", email, "normalizedEmail", phone, "normalizedPhone",
-      "documentId", "normalizedDocumentId", city, province, country, notes, "consentConfirmed", metadata, "updatedAt"
+      "documentId", "normalizedDocumentId", city, province, country, notes, "consentConfirmed", metadata, "updatedAt",
+      "cuit", "hasMonotributo", "taxCategory", "commercialExperience", "commercialApproach",
+      "independentRelationshipAcknowledged", "monotributoAcknowledged", "documentationStatus"
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, NOW(), $17, $18, $19, $20, $21, $22, $23, $24)
     RETURNING id`,
     [
       input.sponsorPartnerId,
@@ -162,7 +180,11 @@ async function createRecruitmentApplication(input, client = null) {
       input.country || null,
       input.notes || null,
       input.consentConfirmed === true,
-      JSON.stringify(input.metadata || {})
+      JSON.stringify(input.metadata || {}), input.cuit || null,
+      typeof input.hasMonotributo === 'boolean' ? input.hasMonotributo : null,
+      input.taxCategory || null, input.commercialExperience || null, input.commercialApproach || null,
+      input.independentRelationshipAcknowledged === true, input.monotributoAcknowledged === true,
+      input.documentationStatus || 'pending'
     ]
   );
   return findRecruitmentApplicationById(result.rows[0].id, client);
@@ -326,7 +348,7 @@ async function listRecruitmentApplications(options = {}, client = null) {
     client,
     `SELECT COUNT(*)::INT AS total
      FROM partner_recruitment_applications app
-     INNER JOIN partner_profiles sponsor_profile ON sponsor_profile."partnerId" = app."sponsorPartnerId"
+     LEFT JOIN partner_profiles sponsor_profile ON sponsor_profile."partnerId" = app."sponsorPartnerId"
      ${whereSql}`,
     params
   );

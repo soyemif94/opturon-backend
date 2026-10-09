@@ -26,6 +26,22 @@ const {
   submitApplicationForPartner,
   cancelApplicationForPartner
 } = require('../services/partner-recruitment-applications.service');
+const { createPublicAdvisorApplication } = require('../services/partner-recruitment-applications.service');
+const { sendAdvisorApplicationReceivedEmail } = require('../services/onboarding-email.service');
+
+async function postPublicAdvisorApplication(req, res) {
+  try {
+    const result = await createPublicAdvisorApplication(req.body || {}, { traceId: req.requestId, requestPath: req.originalUrl || req.path });
+    if (!result.ok) return res.status(400).json({ success: false, error: result.reason });
+    void sendAdvisorApplicationReceivedEmail({ email: result.application.email, idempotencyKey: `advisor_application_received:${result.application.id}` }).catch((error) => {
+      console.error('advisor_application_email_failed', { event: 'advisor_application_email_failed', code: error.code || error.name });
+    });
+    return res.status(201).json({ success: true, data: { application: result.application, status: 'pending_review' } });
+  } catch (error) {
+    console.error('public_advisor_application_failed', { event: 'public_advisor_application_failed', code: error.code || error.name });
+    return res.status(500).json({ success: false, error: 'public_advisor_application_failed' });
+  }
+}
 
 function getPartnerActorId(req) {
   return String((req.partnerAuth && req.partnerAuth.partnerId) || '').trim();
@@ -347,6 +363,7 @@ async function postPartnerRecruitmentApplicationCancel(req, res) {
 }
 
 module.exports = {
+  postPublicAdvisorApplication,
   getPartnerInvitationValidation,
   postPartnerInvitationAcceptance,
   getPartnersMe,
