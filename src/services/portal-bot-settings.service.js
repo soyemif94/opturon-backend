@@ -14,6 +14,11 @@ const {
 } = require('../utils/transfer-config');
 const { DEFAULT_BOT_CONFIG, normalizeBotConfig, validateBotConfig } = require('../utils/bot-config');
 const { resolveEffectiveEntitlements, canCapability } = require('./effective-entitlements');
+const {
+  getAiUsageSummary,
+  crossedQuotaThresholds,
+  claimAiQuotaWarnings
+} = require('../repositories/ai-provisioning.repository');
 
 const ALLOWED_BOT_MODES = new Set(['automatic', 'sales', 'agenda']);
 
@@ -37,7 +42,19 @@ function buildReason(reason, detail = null, extra = null) {
   };
 }
 
-function mapBotSettings(tenantId, clinic, botMode, effectiveEntitlements = null) {
+function resolveBotStatus(entitlements, botActive, provisioning, usage, channelOperational) {
+  if (!canCapability(entitlements, 'bot.enabled')) return { code: 'not_included', label: 'No incluido en tu plan', detail: 'El asistente inteligente está disponible desde Growth.' };
+  if (provisioning?.status === 'pending') return { code: 'provisioning_pending', label: 'Configuración inicial en proceso', detail: 'La preparación inicial puede demorar entre 24 y 48 horas.' };
+  if (provisioning?.status === 'blocked') return { code: 'provisioning_blocked', label: 'Configuración pendiente', detail: 'Contactá a soporte para continuar.' };
+  if (provisioning?.status === 'failed') return { code: 'provisioning_failed', label: 'No pudimos completar la configuración', detail: 'Contactá a soporte para continuar.' };
+  if (provisioning && provisioning.status !== 'ready') return { code: 'provisioning_unavailable', label: 'Configuración no disponible', detail: 'La configuración inicial aún no está lista.' };
+  if (!channelOperational) return { code: 'channel_unavailable', label: 'Canal no disponible', detail: 'Conectá un canal compatible para utilizar atención automática.' };
+  if (usage && !usage.quotaAvailable) return { code: 'quota_exhausted', label: 'Activo — pausado por límite de respuestas', detail: 'Alcanzaste el límite de respuestas inteligentes del período.' };
+  if (!botActive) return { code: 'disabled', label: 'Desactivado por el cliente', detail: 'El asistente está apagado.' };
+  return { code: 'ready_on', label: 'Configuración lista', detail: 'El asistente está activo.' };
+}
+
+function mapBotSettings(tenantId, clinic, botMode, effectiveEntitlements = null, context = {}, aiUsage = null, quotaWarnings = []) {
   const botSettings = clinic && clinic.botSettings && typeof clinic.botSettings === 'object'
     ? clinic.botSettings
     : {};
@@ -52,8 +69,31 @@ function mapBotSettings(tenantId, clinic, botMode, effectiveEntitlements = null)
     mode: normalizeBotMode(botMode, 'automatic'),
     botActive: clinic.settings?.botActive === true,
     entitlements,
-    botConfig
+    botConfig,
+    aiProvisioning: context.aiProvisioning || null,
+    aiUsage,
+    botStatus: resolveBotStatus(
+      entitlements,
+      clinic.settings?.botActive === true,
+      context.aiProvisioning,
+      aiUsage,
+      context.onboarding?.hasChannel === true
+    ),
+    quotaWarnings
   };
+}
+
+async function loadUsageAndWarnings(clinicId, context) {
+  if (!context.aiProvisioning) return { usage: null, warnings: [] };
+  try {
+    const usage = await getAiUsageSummary(clinicId, context.aiProvisioning);
+    const thresholds = crossedQuotaThresholds(usage?.percent);
+    const warnings = await claimAiQuotaWarnings(clinicId, context.aiProvisioning.periodStart, thresholds);
+    return { usage, warnings };
+  } catch (error) {
+    if (error?.code === '42P01') return { usage: null, warnings: [] };
+    throw error;
+  }
 }
 
 function mapPortalTransferSettings(tenantId, clinic) {
@@ -89,11 +129,13 @@ async function getPortalBotSettings(tenantId) {
     });
   }
 
+  const { usage, warnings } = await loadUsageAndWarnings(context.clinic.id, context);
+
   return {
     ok: true,
     tenantId: safeTenantId,
     clinicId: clinic.id,
-    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode, context.entitlements)
+    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode, context.entitlements, context, usage, warnings)
   };
 }
 
@@ -128,6 +170,15 @@ async function updatePortalBotSettings(tenantId, payload) {
     return buildReason('tenant_mapping_not_found', 'No encontramos la clinica asociada a este workspace.', {
       tenantId: safeTenantId
     });
+  }
+
+  if (Object.hasOwn(payload, 'botActive') && payload.botActive === true) {
+    if (!canCapability(context.entitlements, 'bot.enabled')) {
+      return buildReason('bot_activation_unavailable', 'El asistente inteligente no está incluido en tu plan.', { tenantId: safeTenantId });
+    }
+    if (context.aiProvisioning && context.aiProvisioning.status !== 'ready') {
+      return buildReason('bot_activation_unavailable', 'Podrás activar la atención automática cuando finalice la configuración.', { tenantId: safeTenantId });
+    }
   }
 
   let clinic = currentClinic;
@@ -200,8 +251,9 @@ async function updatePortalBotSettings(tenantId, payload) {
   }
 
   if (Object.hasOwn(payload, 'botActive')) clinic = await updateClinicBotActiveById(context.clinic.id, payload.botActive);
+  const { usage, warnings } = await loadUsageAndWarnings(context.clinic.id, context);
   return { ok: true, tenantId: safeTenantId, clinicId: clinic.id,
-    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode, context.entitlements) };
+    settings: mapBotSettings(safeTenantId, clinic, clinic.botMode, context.entitlements, context, usage, warnings) };
 }
 
 async function getPortalBotTransferConfig(tenantId) {

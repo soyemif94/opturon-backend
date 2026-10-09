@@ -6026,6 +6026,8 @@ async function patchPortalBotSettingsController(req, res) {
         result.reason === 'invalid_bot_config' ||
         result.reason === 'invalid_bot_settings_payload'
           ? 400
+          : result.reason === 'bot_activation_unavailable'
+            ? 409
           : result.reason === 'bot_settings_not_saved'
             ? 500
             : 404;

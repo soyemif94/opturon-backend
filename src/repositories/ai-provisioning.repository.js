@@ -86,4 +86,74 @@ async function updateAiProvisioningStatus(clinicId, status, reason = null, clien
   return result.rows[0] || null;
 }
 
-module.exports = { periodBounds, ensureAiProvisioning, findAiProvisioning, reserveAiUsage, completeAiUsage, listAiProvisioningQueue, updateAiProvisioningStatus };
+function summarizeAiUsage({ includedResponses = null, succeededResponses = 0, reservedResponses = 0, periodStart = null, periodEnd = null } = {}) {
+  const included = includedResponses == null ? null : Math.max(0, Number(includedResponses) || 0);
+  const used = Math.max(0, Number(succeededResponses) || 0);
+  const reserved = Math.max(0, Number(reservedResponses) || 0);
+  const committed = used + reserved;
+  const remaining = included == null ? null : Math.max(included - committed, 0);
+  const percent = included == null || included === 0 ? null : Math.min(100, Math.floor((committed / included) * 100));
+  return {
+    usedResponses: used,
+    reservedResponses: reserved,
+    includedResponses: included,
+    remainingResponses: remaining,
+    percent,
+    quotaAvailable: included == null || committed < included,
+    periodStart,
+    periodEnd
+  };
+}
+
+function crossedQuotaThresholds(percent) {
+  const value = Number(percent);
+  if (!Number.isFinite(value)) return [];
+  return [50, 70, 100].filter((threshold) => value >= threshold);
+}
+
+async function getAiUsageSummary(clinicId, provisioning, client = null) {
+  if (!clinicId || !provisioning) return null;
+  const result = await dbQuery(client, `
+    SELECT
+      COUNT(*) FILTER (WHERE status='succeeded')::int AS succeeded_responses,
+      COUNT(*) FILTER (WHERE status='reserved')::int AS reserved_responses
+    FROM ai_usage_events
+    WHERE "clinicId"=$1 AND "periodStart"=$2 AND "periodEnd"=$3`,
+    [clinicId, provisioning.periodStart, provisioning.periodEnd]);
+  const row = result.rows[0] || {};
+  return summarizeAiUsage({
+    includedResponses: provisioning.includedResponses,
+    succeededResponses: row.succeeded_responses,
+    reservedResponses: row.reserved_responses,
+    periodStart: provisioning.periodStart,
+    periodEnd: provisioning.periodEnd
+  });
+}
+
+async function claimAiQuotaWarnings(clinicId, periodStart, thresholds, client = null) {
+  if (!clinicId || !periodStart || !Array.isArray(thresholds) || thresholds.length === 0) return [];
+  const claimed = [];
+  for (const threshold of thresholds.filter((value) => [50, 70, 100].includes(value))) {
+    const result = await dbQuery(client, `
+      INSERT INTO ai_quota_warning_deliveries ("clinicId","periodStart",threshold)
+      VALUES ($1,$2,$3)
+      ON CONFLICT ("clinicId","periodStart",threshold) DO NOTHING
+      RETURNING threshold`, [clinicId, periodStart, threshold]);
+    if (result.rows[0]) claimed.push(Number(result.rows[0].threshold));
+  }
+  return claimed;
+}
+
+module.exports = {
+  periodBounds,
+  ensureAiProvisioning,
+  findAiProvisioning,
+  reserveAiUsage,
+  completeAiUsage,
+  listAiProvisioningQueue,
+  updateAiProvisioningStatus,
+  summarizeAiUsage,
+  crossedQuotaThresholds,
+  getAiUsageSummary,
+  claimAiQuotaWarnings
+};
