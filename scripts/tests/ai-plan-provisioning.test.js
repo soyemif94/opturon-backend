@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
-const { resolveAiPlanPolicy, resolveAiPolicyFromEntitlements } = require('../../src/services/ai-plan-policy.service');
+const { resolveAiPlanPolicy, resolveAiPolicyFromEntitlements, resolveAiExecutionPolicy } = require('../../src/services/ai-plan-policy.service');
 
 test('canonical AI plan matrix is stable', () => {
   assert.deepEqual(resolveAiPlanPolicy('core'), { planKey: 'core', botTier: 'none', includedResponses: 0, provisioningRequired: false, routing: 'disabled' });
@@ -18,6 +18,14 @@ test('AI runtime requires active entitlement and bot preference', () => {
   assert.equal(resolveAiPolicyFromEntitlements({ ...base, botActive: false }).enabled, false);
   assert.equal(resolveAiPolicyFromEntitlements({ ...base, state: 'inactive' }).enabled, false);
   assert.equal(resolveAiPolicyFromEntitlements({ ...base, planKey: 'core' }).botTier, 'none');
+});
+
+test('execution routing resolves plan-specific logical routes', () => {
+  const entitlements = (planKey) => ({ planKey, state: 'active', botActive: true, capabilities: { 'bot.enabled': true } });
+  assert.equal(resolveAiExecutionPolicy({ entitlements: entitlements('growth') }).logicalRoute, 'growth_standard');
+  assert.equal(resolveAiExecutionPolicy({ entitlements: entitlements('distribution'), message: '¿Cuál es el precio?' }).logicalRoute, 'distribution_simple');
+  assert.equal(resolveAiExecutionPolicy({ entitlements: entitlements('distribution'), message: 'Compará inventario e historial de pedidos con varias condiciones' }).logicalRoute, 'distribution_complex');
+  assert.equal(resolveAiExecutionPolicy({ entitlements: entitlements('enterprise') }).logicalRoute, 'enterprise_custom');
 });
 
 test('092 creates durable provisioning and usage records without secrets', () => {
