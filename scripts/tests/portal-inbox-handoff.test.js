@@ -286,11 +286,35 @@ async function testNoOpenHandoffRegression() {
   assert.strictEqual(await getOpenHandoff(state.clinicId, state.conversationId), null);
 }
 
+async function testLegacyConversationModeActionsAreRejectedWithoutMutation() {
+  resetScenario({ withHandoff: false });
+  state.conversation.context.botFlowLock = 'agenda';
+  state.conversation.context.botDomainOverride = 'agenda';
+
+  const flowLockResult = await patchPortalConversation(state.tenantId, state.conversationId, {
+    action: 'set_bot_flow_lock',
+    botFlowLock: 'commerce'
+  });
+  assert.strictEqual(flowLockResult.ok, false);
+  assert.strictEqual(flowLockResult.reason, 'legacy_bot_mode_selection_disabled');
+  assert.strictEqual(state.conversation.context.botFlowLock, 'agenda');
+
+  const domainResult = await patchPortalConversation(state.tenantId, state.conversationId, {
+    action: 'set_bot_domain_override',
+    botDomainOverride: 'commerce'
+  });
+  assert.strictEqual(domainResult.ok, false);
+  assert.strictEqual(domainResult.reason, 'legacy_bot_mode_selection_disabled');
+  assert.strictEqual(state.conversation.context.botDomainOverride, 'agenda');
+  assert.strictEqual(state.events.length, 0);
+}
+
 async function run() {
   await testResetConversationClosesOpenHandoff();
   await testToggleBotEnabledTrueClosesOpenHandoff();
   await testToggleBotEnabledFalseKeepsOpenHandoff();
   await testNoOpenHandoffRegression();
+  await testLegacyConversationModeActionsAreRejectedWithoutMutation();
   console.log('portal inbox handoff tests passed');
 }
 

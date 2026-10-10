@@ -24,11 +24,12 @@ const {
   buildResolvedCapabilities,
   evaluateTemplateCompatibility
 } = require('./automation-enablement.service');
-const { ensureClinicConversationFlowAutomations } = require('./automation-runtime.service');
 const { buildTenantPolicyFromSettings } = require('./tenant-policy.service');
 
 const ALLOWED_TRIGGERS = new Set(['message_received', 'keyword', 'off_hours', 'new_contact']);
+const CONVERSATIONAL_LEGACY_TRIGGERS = new Set(['message_received', 'keyword', 'off_hours', 'new_contact']);
 const ALLOWED_ACTIONS = new Set(['send_message', 'assign_human', 'tag_contact']);
+const LEGACY_AUTOMATION_MUTATION_BLOCKED = 'legacy_conversational_automation_creation_disabled';
 const RUNTIME_TEMPLATE_MAP = {
   conversation_welcome: ['Conversational Welcome Menu'],
   conversation_products_menu: ['Conversational Menu Products'],
@@ -43,6 +44,18 @@ const PROTECTED_RUNTIME_AUTOMATION_NAMES = new Set(
     .map((item) => normalizeString(item))
     .filter(Boolean)
 );
+
+function classifyPortalAutomation(automation) {
+  const triggerType = normalizeString(automation && automation.trigger && automation.trigger.type).toLowerCase();
+  const conditions = automation && automation.conditions && typeof automation.conditions === 'object' ? automation.conditions : {};
+  if (conditions.conversationFlow === true) return 'COMPATIBILITY_LEGACY';
+  if (CONVERSATIONAL_LEGACY_TRIGGERS.has(triggerType)) return 'CONVERSATIONAL_LEGACY';
+  return 'OPERATIONAL_DETERMINISTIC';
+}
+
+function isLegacyConversationalAutomation(automation) {
+  return classifyPortalAutomation(automation) !== 'OPERATIONAL_DETERMINISTIC';
+}
 
 function normalizeString(value) {
   return String(value || '').trim();
@@ -116,15 +129,10 @@ function buildTemplateAvailability(template, tenantTemplate, businessProfile, au
 }
 
 async function ensurePortalAutomationFoundationFromContext(context) {
-  const [clinic, botClinic, templates, existingAutomations, existingTenantTemplates] = await Promise.all([
-    getClinicBusinessProfileById(context.clinic.id),
-    getClinicBotSettingsById(context.clinic.id),
+  const [templates, existingTenantTemplates] = await Promise.all([
     listAutomationTemplates(),
-    listAutomationsByClinicId(context.clinic.id),
     listTenantAutomationTemplatesByClinicId(context.clinic.id)
   ]);
-
-  const businessProfile = await normalizeBusinessProfileSnapshot(clinic || context.clinic, clinic && clinic.businessProfile, context);
   const activeTemplates = templates.filter((template) => normalizeString(template && template.status).toLowerCase() === 'active');
   const tenantTemplateMap = new Map(existingTenantTemplates.map((item) => [item.templateKey, item]));
 
@@ -144,25 +152,8 @@ async function ensurePortalAutomationFoundationFromContext(context) {
     tenantTemplateMap.set(template.key, upserted);
   }
 
-  const runtimeAutomationNames = activeTemplates
-    .map((template) => ({
-      template,
-      availability: withGeneratedRuntimeAvailability(
-        template,
-        buildTemplateAvailability(template, tenantTemplateMap.get(template.key) || null, businessProfile, existingAutomations),
-        botClinic
-      )
-    }))
-    .filter((item) => item.availability.compatible && item.availability.tenantEnabled && getRuntimeTemplateNames(item.template).length)
-    .flatMap((item) => getRuntimeTemplateNames(item.template));
-
-  if (runtimeAutomationNames.length) {
-    await ensureClinicConversationFlowAutomations({
-      clinicId: context.clinic.id,
-      externalTenantId: context.tenantId,
-      names: runtimeAutomationNames
-    });
-  }
+  // Template metadata remains available for compatibility, but reads and
+  // provisioning no longer materialize legacy inbound reply rules.
 }
 
 async function ensurePortalAutomationFoundation(tenantId) {
@@ -257,8 +248,6 @@ async function listPortalAutomations(tenantId) {
     return context;
   }
 
-  await ensurePortalAutomationFoundationFromContext(context);
-
   const [automations, clinic, botClinic, templates, tenantTemplates] = await Promise.all([
     listAutomationsByClinicId(context.clinic.id),
     getClinicBusinessProfileById(context.clinic.id),
@@ -300,6 +289,10 @@ async function createPortalAutomation(tenantId, payload) {
     actions: normalizeActions(payload && payload.actions),
     enabled: payload && payload.enabled !== false
   };
+
+  if (isLegacyConversationalAutomation(input)) {
+    return buildReason(LEGACY_AUTOMATION_MUTATION_BLOCKED, null, { tenantId: context.tenantId });
+  }
 
   const reason = validateAutomationPayload(input);
   if (reason) {
@@ -345,6 +338,15 @@ async function updatePortalAutomation(tenantId, automationId, payload) {
     return buildReason('invalid_automation_enabled', null, { tenantId: context.tenantId });
   }
 
+  const automations = await listAutomationsByClinicId(context.clinic.id);
+  const currentAutomation = automations.find((item) => String(item.id) === normalizedAutomationId) || null;
+  if (!currentAutomation) {
+    return buildReason('automation_not_found', null, { tenantId: context.tenantId });
+  }
+  if (payload.enabled === true && isLegacyConversationalAutomation(currentAutomation)) {
+    return buildReason(LEGACY_AUTOMATION_MUTATION_BLOCKED, null, { tenantId: context.tenantId });
+  }
+
   const automation = await updateAutomationById(context.clinic.id, normalizedAutomationId, {
     enabled: payload.enabled
   });
@@ -375,6 +377,10 @@ async function updatePortalAutomationTemplate(tenantId, templateKey, payload) {
     return buildReason('invalid_automation_template_enabled', null, { tenantId: context.tenantId });
   }
 
+  if (payload.enabled === true && Object.hasOwn(RUNTIME_TEMPLATE_MAP, normalizedTemplateKey)) {
+    return buildReason(LEGACY_AUTOMATION_MUTATION_BLOCKED, null, { tenantId: context.tenantId });
+  }
+
   const [template, clinic, botClinic, initialAutomations] = await Promise.all([
     findAutomationTemplateByKey(normalizedTemplateKey),
     getClinicBusinessProfileById(context.clinic.id),
@@ -388,29 +394,7 @@ async function updatePortalAutomationTemplate(tenantId, templateKey, payload) {
   }
 
   const businessProfile = await normalizeBusinessProfileSnapshot(clinic || context.clinic, clinic && clinic.businessProfile, context);
-  const currentTemplate = withGeneratedRuntimeAvailability(
-    template,
-    buildTemplateAvailability(template, null, businessProfile, automations),
-    botClinic
-  );
-  if (payload.enabled === true && !currentTemplate.compatible) {
-    return buildReason('automation_template_incompatible', null, {
-      tenantId: context.tenantId,
-      missingCapabilities: currentTemplate.missingCapabilities,
-      businessType: businessProfile.businessType
-    });
-  }
-
   const linkedAutomationNames = getRuntimeTemplateNames(template);
-  if (payload.enabled === true && linkedAutomationNames.length) {
-    await ensureClinicConversationFlowAutomations({
-      clinicId: context.clinic.id,
-      externalTenantId: context.tenantId,
-      names: linkedAutomationNames
-    });
-    automations = await listAutomationsByClinicId(context.clinic.id);
-  }
-
   const linkedAutomations = automations.filter((automation) => linkedAutomationNames.includes(normalizeString(automation.name)));
   const updatedAutomations = [];
 
@@ -509,6 +493,9 @@ async function deletePortalAutomation(tenantId, automationId) {
 module.exports = {
   ALLOWED_TRIGGERS: Array.from(ALLOWED_TRIGGERS),
   ALLOWED_ACTIONS: Array.from(ALLOWED_ACTIONS),
+  LEGACY_AUTOMATION_MUTATION_BLOCKED,
+  classifyPortalAutomation,
+  isLegacyConversationalAutomation,
   listPortalAutomations,
   ensurePortalAutomationFoundation,
   createPortalAutomation,

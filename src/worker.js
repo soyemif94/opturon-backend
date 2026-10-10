@@ -79,6 +79,7 @@ const {
 } = require('./repositories/conversation-events.repository');
 const { claimJobs, markJobDone, requeueOrFailJob } = require('./repositories/job.repository');
 const { resolveAutomationReplyForInbound } = require('./services/automation-runtime.service');
+const { isModernAssistantAuthorityReady } = require('./services/modern-assistant-authority.service');
 const { getAutomationEnablementState } = require('./services/automation-enablement.service');
 const classifyCommerceAiAssist = guardedBotTool(require('./services/ai-assist.service').classifyCommerceAiAssist,
   'ai_assist', input => input.clinicId, () => ({ ok: false, skipped: true, reason: 'bot_tool_not_entitled' }));
@@ -1405,12 +1406,13 @@ function resolveBotDomainRoute({
   transferPaymentIntent,
   managementIntent,
   inboundLooksLikeCommerce,
-  inboundLooksLikeCommerceCancel
+  inboundLooksLikeCommerceCancel,
+  modernAssistantAuthority = false
 }) {
-  const botMode = resolveClinicBotMode(clinic);
+  const botMode = modernAssistantAuthority ? 'automatic' : resolveClinicBotMode(clinic);
   const configuredBotActive = Boolean(getActiveGeneratedBotConfig(clinic));
-  const botFlowLock = normalizeConversationBotFlowLock(safeContext);
-  const overrideDomain = normalizeConversationBotDomainOverride(safeContext);
+  const botFlowLock = modernAssistantAuthority ? null : normalizeConversationBotFlowLock(safeContext);
+  const overrideDomain = modernAssistantAuthority ? null : normalizeConversationBotDomainOverride(safeContext);
   const activeDomain = resolveConversationDomain({ currentState, safeContext });
   const demoIntent = isPublicDemoExperienceIntent(inboundText);
   const demoContextActive = activeDomain === 'demo';
@@ -19742,6 +19744,17 @@ async function processConversationReplyJobUnlocked(job) {
     return;
   }
 
+  const modernAssistantAuthority = await isModernAssistantAuthorityReady(conversation.clinicId, channel);
+  if (modernAssistantAuthority) {
+    logInfo('modern_assistant_authority_active', {
+      requestId,
+      jobId: job.id,
+      clinicId: conversation.clinicId,
+      channelId,
+      conversationId: conversation.id
+    });
+  }
+
   const inboundText = String(inboundMessage.text || '').trim();
   const currentState = String(conversation.state || '').toUpperCase();
   const storedContext = conversation.context && typeof conversation.context === 'object' ? conversation.context : {};
@@ -19916,7 +19929,8 @@ async function processConversationReplyJobUnlocked(job) {
     transferPaymentIntent,
     managementIntent,
     inboundLooksLikeCommerce,
-    inboundLooksLikeCommerceCancel
+    inboundLooksLikeCommerceCancel,
+    modernAssistantAuthority
   });
 
   const chosenBotPath =
@@ -20356,6 +20370,13 @@ async function processConversationReplyJobUnlocked(job) {
       contextPatch: null,
       matched: [],
       source: 'worker.commerce'
+    }
+    : modernAssistantAuthority
+    ? {
+      replyText: null,
+      contextPatch: null,
+      matched: [],
+      source: 'modern_assistant_authority'
     }
     : await resolveAutomationReplyForInbound({
       clinic,

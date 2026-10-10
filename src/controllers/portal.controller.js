@@ -390,6 +390,7 @@ async function updatePortalConversation(req, res) {
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ? 400
+          : result.reason === 'legacy_bot_mode_selection_disabled' ? 410
           : result.reason === 'repair_channel_target_unresolved' ? 409
             : result.reason === 'repair_channel_invalid_provider' || result.reason === 'repair_channel_inactive' ? 409
               : result.reason === 'repair_channel_not_persisted' ? 500
@@ -3710,6 +3711,8 @@ async function patchPortalAutomationTemplate(req, res) {
           ? 400
           : result.reason === 'automation_template_incompatible'
             ? 409
+            : result.reason === 'legacy_conversational_automation_creation_disabled'
+              ? 410
             : 404;
 
       return res.status(status).json({
@@ -3926,7 +3929,9 @@ async function postPortalAutomation(req, res) {
           ? 400
           : result.reason === 'tenant_automation_limit_reached'
             ? 409
-          : 404;
+            : result.reason === 'legacy_conversational_automation_creation_disabled'
+              ? 410
+              : 404;
 
       return res.status(status).json({
         success: false,
@@ -3963,7 +3968,9 @@ async function patchPortalAutomation(req, res) {
         result.reason === 'missing_automation_id' ||
         result.reason === 'invalid_automation_enabled'
           ? 400
-          : 404;
+          : result.reason === 'legacy_conversational_automation_creation_disabled'
+            ? 410
+            : 404;
 
       return res.status(status).json({
         success: false,

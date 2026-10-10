@@ -1124,6 +1124,15 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
 
   const safePayload = payload && typeof payload === 'object' ? payload : {};
   const action = String(safePayload.action || '').trim();
+  if (action === 'set_bot_flow_lock' || action === 'set_bot_domain_override') {
+    return {
+      ok: false,
+      tenantId: context.tenantId,
+      clinic: context.clinic,
+      channel: toPortalChannel(context.channel),
+      reason: 'legacy_bot_mode_selection_disabled'
+    };
+  }
   const currentContext = parseContext(conversation.context);
   const nextContext = { ...currentContext };
 
@@ -1151,20 +1160,6 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
       channel: toPortalChannel(context.channel),
       reason: 'updated'
     };
-  } else if (action === 'set_bot_flow_lock') {
-    const nextLock = normalizeBotFlowLock(safePayload.botFlowLock);
-    if (nextLock === 'automatic') {
-      delete nextContext.botFlowLock;
-    } else {
-      nextContext.botFlowLock = nextLock;
-    }
-  } else if (action === 'set_bot_domain_override') {
-    const nextOverride = normalizeBotDomainOverride(safePayload.botDomainOverride);
-    if (nextOverride === 'automatic') {
-      delete nextContext.botDomainOverride;
-    } else {
-      nextContext.botDomainOverride = nextOverride;
-    }
   } else if (action === 'toggle_bot') {
     Object.assign(nextContext, safePayload.botEnabled
       ? buildResumeContextPatch()
