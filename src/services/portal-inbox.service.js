@@ -461,8 +461,89 @@ function leadStatusLabel(value) {
 
 function normalizeNextActionNote(value) {
   if (value === null || value === undefined) return null;
-  const safeValue = String(value).trim();
+  const safeValue = String(value).trim().slice(0, 2000);
   return safeValue ? safeValue : null;
+}
+
+function normalizeCommercialTimeline(value) {
+  let entries = value;
+  if (typeof entries === 'string') {
+    try {
+      entries = JSON.parse(entries);
+    } catch {
+      entries = [];
+    }
+  }
+  if (!Array.isArray(entries)) return [];
+  return entries.slice(-30).map((entry) => ({
+    id: entry && entry.id ? String(entry.id) : null,
+    type: entry && entry.type ? String(entry.type) : null,
+    data: entry && entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data) ? entry.data : {},
+    createdAt: entry && entry.createdAt ? entry.createdAt : null
+  }));
+}
+
+async function resolveCommercialActor(clinicId, actorUserId, client = null) {
+  const safeActorUserId = normalizeString(actorUserId);
+  if (!safeActorUserId) return null;
+  const actor = await findPortalUserByIdAndClinicId(safeActorUserId, clinicId, client);
+  return actor ? { id: actor.id, name: actor.name || null, role: actor.role || null } : null;
+}
+
+async function persistSellerAssignment({ context, conversationId, seller, actorUserId = null, reason = null }) {
+  return withTransaction(async (client) => {
+    const current = await conversationRepo.getConversationCommercialStateForUpdate({
+      conversationId,
+      clinicId: context.clinic.id
+    }, client);
+    if (!current) return { ok: false, reason: 'conversation_not_found' };
+
+    const fromSellerId = current.assignedSellerUserId || null;
+    if (fromSellerId === seller.id) {
+      return { ok: true, conversation: current, event: null, reason: 'already_assigned' };
+    }
+
+    const fromSeller = fromSellerId
+      ? await findPortalUserByIdAndClinicId(fromSellerId, context.clinic.id, client)
+      : null;
+    const actor = await resolveCommercialActor(context.clinic.id, actorUserId, client);
+    if (!actor) return { ok: false, reason: 'assignment_actor_required' };
+    const actorRole = String(actor.role || '').trim().toLowerCase();
+    const supervisorRole = actorRole === 'owner' || actorRole === 'manager';
+    const sellerClaimingUnassignedLead = actorRole === 'seller' && !fromSellerId && seller.id === actor.id;
+    if (!supervisorRole && !sellerClaimingUnassignedLead) {
+      return { ok: false, reason: 'assignment_forbidden' };
+    }
+    const updatedConversation = await conversationRepo.assignConversationSellerForClinic({
+      conversationId,
+      clinicId: context.clinic.id,
+      sellerUserId: seller.id,
+      expectedSellerUserId: fromSellerId,
+      contextPatch: {
+        portalAssignedTo: seller.name || null,
+        portalAssignedToUserId: seller.id
+      }
+    }, client);
+    if (!updatedConversation) return { ok: false, reason: 'conversation_assignment_conflict' };
+
+    const reassigned = Boolean(fromSellerId);
+    const event = await addEvent({
+      clinicId: context.clinic.id,
+      conversationId,
+      type: reassigned ? 'seller_reassigned' : 'seller_assigned',
+      data: {
+        fromSellerId,
+        fromSellerName: fromSeller ? fromSeller.name || null : null,
+        toSellerId: seller.id,
+        toSellerName: seller.name || null,
+        changedBy: actor ? actor.id : null,
+        changedByName: actor ? actor.name : null,
+        reason: normalizeString(reason).slice(0, 300) || null
+      }
+    }, client);
+
+    return { ok: true, conversation: updatedConversation, event, reason: reassigned ? 'reassigned' : 'assigned' };
+  });
 }
 
 function buildRelatedOrderSummary(order) {
@@ -536,6 +617,9 @@ function mapConversationRow(row) {
     slaMinutes: computeSlaMinutes(row),
     nextActionAt: row.nextActionAt || null,
     nextActionNote: normalizeNextActionNote(row.nextActionNote),
+    lastCommercialActivityAt: row.lastCommercialActivityAt || row.lastMessageAt || row.conversationCreatedAt || row.createdAt || null,
+    lastReassignedAt: row.lastReassignedAt || null,
+    commercialTimeline: normalizeCommercialTimeline(row.commercialTimeline),
     contact: {
       id: row.contactId,
       name: identity.displayName,
@@ -829,6 +913,7 @@ async function listPortalConversations(tenantId, options = {}) {
        c."lastInboundAt",
        c."lastOutboundAt",
        c."updatedAt",
+       c."createdAt" AS "conversationCreatedAt",
        c."contactId" AS "contactId",
        c."assignedSellerUserId" AS "assignedSellerUserId",
        ct.name AS "contactName",
@@ -839,7 +924,13 @@ async function listPortalConversations(tenantId, options = {}) {
        su.name AS "assignedSellerName",
        CASE WHEN su.role = 'editor' THEN 'seller' ELSE su.role END AS "assignedSellerRole",
        latest.text AS "lastMessagePreview",
-       latest."createdAt" AS "lastMessageAt",
+       COALESCE(latest."createdAt", c."createdAt") AS "lastMessageAt",
+       GREATEST(
+         COALESCE(latest."createdAt", c."createdAt"),
+         COALESCE(commercialActivity."lastCommercialActivityAt", c."createdAt")
+       ) AS "lastCommercialActivityAt",
+       reassignment."lastReassignedAt" AS "lastReassignedAt",
+       commercial."commercialTimeline" AS "commercialTimeline",
        COALESCE(unread.total, 0)::int AS "unreadCount"
      FROM conversations c
      INNER JOIN contacts ct ON ct.id = c."contactId"
@@ -868,12 +959,51 @@ async function listPortalConversations(tenantId, options = {}) {
            to_timestamp(0)
          )
      ) unread ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT
+         COALESCE(
+           jsonb_agg(
+             jsonb_build_object(
+               'id', recent.id,
+               'type', recent.type,
+               'data', recent.data,
+               'createdAt', recent."createdAt"
+             ) ORDER BY recent."createdAt" ASC
+           ),
+           '[]'::jsonb
+         ) AS "commercialTimeline"
+       FROM (
+         SELECT event.id, event.type, event.data, event."createdAt"
+         FROM conversation_events event
+         WHERE event."clinicId" = c."clinicId"
+           AND event."conversationId" = c.id
+           AND event.type IN ('seller_assigned', 'seller_reassigned', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated')
+         ORDER BY event."createdAt" DESC
+         LIMIT 30
+       ) recent
+     ) commercial ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT MAX(event."createdAt") AS "lastCommercialActivityAt"
+       FROM conversation_events event
+       WHERE event."clinicId" = c."clinicId"
+         AND event."conversationId" = c.id
+         AND event.type IN ('commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated')
+     ) commercialActivity ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT event."createdAt" AS "lastReassignedAt"
+       FROM conversation_events event
+       WHERE event."clinicId" = c."clinicId"
+         AND event."conversationId" = c.id
+         AND event.type = 'seller_reassigned'
+       ORDER BY event."createdAt" DESC
+       LIMIT 1
+     ) reassignment ON TRUE
       WHERE c."clinicId" = $1::uuid
        AND c."deletedAt" IS NULL
        ${contactVisibilityClause}
        ${visibilityClause}
        ${channelFilterClause}
-      ORDER BY COALESCE(latest."createdAt", c."updatedAt") DESC, c."updatedAt" DESC`,
+      ORDER BY COALESCE(latest."createdAt", c."createdAt") DESC, c."updatedAt" DESC`,
     queryParams
   );
 
@@ -943,7 +1073,17 @@ async function getPortalConversationDetail(tenantId, conversationId) {
     channelExternalPageName: conversationChannel ? conversationChannel.externalPageName : null,
     channelInstagramUsername: conversationChannel ? conversationChannel.instagramUsername : null,
     lastMessageAt:
-      messages.length > 0 ? messages[messages.length - 1].createdAt : conversation.updatedAt,
+      messages.length > 0 ? messages[messages.length - 1].createdAt : conversation.createdAt,
+    lastCommercialActivityAt: [
+      messages.length > 0 ? messages[messages.length - 1].createdAt : conversation.createdAt,
+      ...events
+        .filter((event) => ['commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
+        .map((event) => event.createdAt)
+    ].filter(Boolean).sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] || conversation.createdAt,
+    lastReassignedAt: events.find((event) => event.type === 'seller_reassigned')?.createdAt || null,
+    commercialTimeline: events
+      .filter((event) => ['seller_assigned', 'seller_reassigned', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
+      .slice(0, 30),
     lastMessagePreview: messages.length > 0 ? messages[messages.length - 1].text : null,
     unreadCount: 0
   });
@@ -1002,7 +1142,10 @@ async function getPortalConversationDetail(tenantId, conversationId) {
         : undefined,
       assignedSeller: assignedSeller || undefined,
       quickReplies: defaultQuickReplies(),
-      aiEvents: events.slice(0, 10).map((event) => ({
+      aiEvents: events
+        .filter((event) => !['seller_assigned', 'seller_reassigned', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
+        .slice(0, 10)
+        .map((event) => ({
         id: event.id,
         text: event.type,
         createdAt: event.createdAt
@@ -1107,7 +1250,7 @@ async function restorePortalConversations(tenantId, payload = {}) {
   };
 }
 
-async function patchPortalConversation(tenantId, conversationId, payload = {}) {
+async function patchPortalConversation(tenantId, conversationId, payload = {}, options = {}) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
 
@@ -1135,30 +1278,50 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
   }
   const currentContext = parseContext(conversation.context);
   const nextContext = { ...currentContext };
+  let commercialNoteToAppend = null;
 
   if (action === 'assign') {
     const resolvedAssignee = await resolvePortalAssignee(context.clinic.id, safePayload.assignedTo);
-    nextContext.portalAssignedTo = resolvedAssignee.label;
-    nextContext.portalAssignedToUserId = resolvedAssignee.userId;
-    await conversationRepo.assignConversationSellerForClinic({
+    const seller = resolvedAssignee.userId
+      ? await findPortalUserByIdAndClinicId(resolvedAssignee.userId, context.clinic.id)
+      : null;
+    if (!seller || !isOperationalPortalAssigneeRole(seller.role)) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(context.channel),
+        reason: 'seller_user_not_found'
+      };
+    }
+    const assignment = await persistSellerAssignment({
+      context,
       conversationId: conversation.id,
-      clinicId: context.clinic.id,
-      sellerUserId: resolvedAssignee.userId || null,
-      leadStatus:
-        resolvedAssignee.userId && normalizeLeadStatus(conversation.leadStatus) === 'NEW'
-          ? 'IN_CONVERSATION'
-          : null,
-      contextPatch: {
-        portalAssignedTo: resolvedAssignee.label,
-        portalAssignedToUserId: resolvedAssignee.userId
-      }
+      seller,
+      actorUserId: options.actorUserId || null
     });
+    if (!assignment.ok) {
+      return {
+        ok: false,
+        tenantId: context.tenantId,
+        clinic: context.clinic,
+        channel: toPortalChannel(context.channel),
+        reason: assignment.reason
+      };
+    }
     return {
       ok: true,
       tenantId: context.tenantId,
       clinic: context.clinic,
       channel: toPortalChannel(context.channel),
-      reason: 'updated'
+      conversation: mapConversationRow({
+        ...assignment.conversation,
+        assignedSellerName: seller.name || null,
+        assignedSellerRole: seller.role || null,
+        lastMessageAt: assignment.conversation.createdAt || null,
+        commercialTimeline: assignment.event ? [assignment.event] : []
+      }),
+      reason: assignment.reason
     };
   } else if (action === 'toggle_bot') {
     Object.assign(nextContext, safePayload.botEnabled
@@ -1175,11 +1338,13 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
   } else if (action === 'change_stage') {
     nextContext.portalDealStage = safePayload.stage ? String(safePayload.stage) : null;
   } else if (action === 'add_note') {
-    const text = String(safePayload.text || '').trim();
+    const text = String(safePayload.text || '').trim().slice(0, 2000);
     if (text) {
-      const notes = Array.isArray(nextContext.portalNotes) ? nextContext.portalNotes.slice(0, 49) : [];
-      notes.unshift({ id: crypto.randomUUID(), text, createdAt: new Date().toISOString() });
-      nextContext.portalNotes = notes;
+      commercialNoteToAppend = {
+        id: crypto.randomUUID(),
+        text,
+        createdAt: new Date().toISOString()
+      };
     }
   } else if (action === 'add_task') {
     const title = String(safePayload.title || '').trim();
@@ -1348,12 +1513,48 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
     });
   }
 
-  await conversationRepo.replaceConversationStateForClinic({
-    conversationId: conversation.id,
-    clinicId: context.clinic.id,
-    state: null,
-    context: nextContext
-  });
+  if (commercialNoteToAppend) {
+    await withTransaction(async (client) => {
+      const locked = await conversationRepo.getConversationCommercialStateForUpdate({
+        conversationId: conversation.id,
+        clinicId: context.clinic.id
+      }, client);
+      if (!locked) throw new Error('conversation_not_found');
+      const latestContext = parseContext(locked.context);
+      const previousNotes = Array.isArray(latestContext.portalNotes) ? latestContext.portalNotes : [];
+      const actor = await resolveCommercialActor(context.clinic.id, options.actorUserId, client);
+      const note = {
+        ...commercialNoteToAppend,
+        createdByUserId: actor ? actor.id : null,
+        createdByName: actor ? actor.name : null
+      };
+      const notes = [note, ...previousNotes].slice(0, 50);
+      const updated = await conversationRepo.replaceConversationStateForClinic({
+        conversationId: conversation.id,
+        clinicId: context.clinic.id,
+        state: null,
+        context: { ...latestContext, portalNotes: notes }
+      }, client);
+      if (!updated) throw new Error('conversation_not_found');
+      await addEvent({
+        clinicId: context.clinic.id,
+        conversationId: conversation.id,
+        type: 'commercial_note_updated',
+        data: {
+          text: note.text,
+          changedBy: actor ? actor.id : null,
+          changedByName: actor ? actor.name : null
+        }
+      }, client);
+    });
+  } else {
+    await conversationRepo.replaceConversationStateForClinic({
+      conversationId: conversation.id,
+      clinicId: context.clinic.id,
+      state: null,
+      context: nextContext
+    });
+  }
 
   let invalidatedConversationReplyJobs = 0;
   let resolvedHandoff = null;
@@ -1408,20 +1609,9 @@ async function patchPortalConversation(tenantId, conversationId, payload = {}) {
   };
 }
 
-async function assignPortalConversationSeller(tenantId, conversationId, payload = {}) {
+async function assignPortalConversationSeller(tenantId, conversationId, payload = {}, options = {}) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
-
-  const conversation = await conversationRepo.getConversationByIdAndClinicId(conversationId, context.clinic.id);
-  if (!conversation) {
-    return {
-      ok: false,
-      tenantId: context.tenantId,
-      clinic: context.clinic,
-      channel: toPortalChannel(context.channel),
-      reason: 'conversation_not_found'
-    };
-  }
 
   const sellerUserId = String(payload && payload.sellerUserId ? payload.sellerUserId : '').trim();
   if (!sellerUserId) {
@@ -1445,24 +1635,20 @@ async function assignPortalConversationSeller(tenantId, conversationId, payload 
     };
   }
 
-  const updatedConversation = await conversationRepo.assignConversationSellerForClinic({
-    conversationId: conversation.id,
-    clinicId: context.clinic.id,
-    sellerUserId: seller.id,
-    leadStatus: normalizeLeadStatus(conversation.leadStatus) === 'NEW' ? 'IN_CONVERSATION' : null,
-    contextPatch: {
-      portalAssignedTo: seller.name || null,
-      portalAssignedToUserId: seller.id
-    }
+  const assignment = await persistSellerAssignment({
+    context,
+    conversationId,
+    seller,
+    actorUserId: options.actorUserId || null,
+    reason: payload && payload.reason
   });
-
-  if (!updatedConversation) {
+  if (!assignment.ok) {
     return {
       ok: false,
       tenantId: context.tenantId,
       clinic: context.clinic,
       channel: toPortalChannel(context.channel),
-      reason: 'conversation_not_found'
+      reason: assignment.reason
     };
   }
 
@@ -1472,17 +1658,20 @@ async function assignPortalConversationSeller(tenantId, conversationId, payload 
     clinic: context.clinic,
     channel: toPortalChannel(context.channel),
     conversation: mapConversationRow({
-      ...updatedConversation,
+      ...assignment.conversation,
       contactName: null,
       contactPhone: null,
       contactProfileImageUrl: null,
       assignedSellerName: seller.name || null,
       assignedSellerRole: seller.role || null,
       lastMessagePreview: null,
-      lastMessageAt: updatedConversation.updatedAt,
+      lastMessageAt: assignment.conversation.createdAt || null,
+      lastCommercialActivityAt: assignment.conversation.createdAt || null,
+      lastReassignedAt: assignment.event?.type === 'seller_reassigned' ? assignment.event.createdAt : null,
+      commercialTimeline: assignment.event ? [assignment.event] : [],
       unreadCount: 0
     }),
-    reason: 'assigned'
+    reason: assignment.reason
   };
 }
 
@@ -1543,7 +1732,7 @@ async function patchPortalConversationLeadStatus(tenantId, conversationId, paylo
   };
 }
 
-async function patchPortalConversationNextAction(tenantId, conversationId, payload = {}) {
+async function patchPortalConversationNextAction(tenantId, conversationId, payload = {}, options = {}) {
   const context = await resolveRuntimeContext(tenantId);
   if (!context.ok) return context;
 
@@ -1558,7 +1747,8 @@ async function patchPortalConversationNextAction(tenantId, conversationId, paylo
     };
   }
 
-  const hasNextActionAt = Object.prototype.hasOwnProperty.call(payload || {}, 'nextActionAt');
+  const completedFollowUp = payload && payload.completed === true;
+  const hasNextActionAt = completedFollowUp || Object.prototype.hasOwnProperty.call(payload || {}, 'nextActionAt');
   const hasNextActionNote = Object.prototype.hasOwnProperty.call(payload || {}, 'nextActionNote');
   if (!hasNextActionAt && !hasNextActionNote) {
     return {
@@ -1571,7 +1761,7 @@ async function patchPortalConversationNextAction(tenantId, conversationId, paylo
   }
 
   let parsedNextActionAt = null;
-  if (hasNextActionAt) {
+  if (hasNextActionAt && !completedFollowUp) {
     if (payload.nextActionAt !== null && String(payload.nextActionAt || '').trim()) {
       const date = new Date(String(payload.nextActionAt));
       if (Number.isNaN(date.getTime())) {
@@ -1587,14 +1777,74 @@ async function patchPortalConversationNextAction(tenantId, conversationId, paylo
     }
   }
 
-  const updatedConversation = await conversationRepo.updateConversationFollowUpForClinic({
-    conversationId: conversation.id,
-    clinicId: context.clinic.id,
-    patch: {
-      ...(hasNextActionAt ? { nextActionAt: parsedNextActionAt } : {}),
-      ...(hasNextActionNote ? { nextActionNote: normalizeNextActionNote(payload.nextActionNote) } : {})
+  const persisted = await withTransaction(async (client) => {
+    const current = await conversationRepo.getConversationCommercialStateForUpdate({
+      conversationId: conversation.id,
+      clinicId: context.clinic.id
+    }, client);
+    if (!current) return { conversation: null };
+    if (completedFollowUp && !current.nextActionAt) return { conversation: current, events: [] };
+
+    const nextActionNote = hasNextActionNote
+      ? normalizeNextActionNote(payload.nextActionNote)
+      : normalizeNextActionNote(current.nextActionNote);
+    const nextActionAt = completedFollowUp ? null : hasNextActionAt ? parsedNextActionAt : current.nextActionAt || null;
+    const updatedConversation = await conversationRepo.updateConversationFollowUpForClinic({
+      conversationId: conversation.id,
+      clinicId: context.clinic.id,
+      patch: {
+        ...(hasNextActionAt ? { nextActionAt } : {}),
+        ...(hasNextActionNote ? { nextActionNote } : {})
+      }
+    }, client);
+    if (!updatedConversation) return { conversation: null };
+
+    const actor = await resolveCommercialActor(context.clinic.id, options.actorUserId, client);
+    const events = [];
+    const previousActionAt = current.nextActionAt ? new Date(current.nextActionAt).toISOString() : null;
+    const normalizedNextActionAt = nextActionAt ? new Date(nextActionAt).toISOString() : null;
+    if (completedFollowUp && previousActionAt) {
+      events.push(await addEvent({
+        clinicId: context.clinic.id,
+        conversationId: conversation.id,
+        type: 'commercial_follow_up_completed',
+        data: {
+          previousFollowUpAt: previousActionAt,
+          completedAt: new Date().toISOString(),
+          changedBy: actor ? actor.id : null,
+          changedByName: actor ? actor.name : null
+        }
+      }, client));
+    } else if (hasNextActionAt && previousActionAt !== normalizedNextActionAt) {
+      events.push(await addEvent({
+        clinicId: context.clinic.id,
+        conversationId: conversation.id,
+        type: 'commercial_follow_up_updated',
+        data: {
+          previousFollowUpAt: previousActionAt,
+          followUpAt: normalizedNextActionAt,
+          changedBy: actor ? actor.id : null,
+          changedByName: actor ? actor.name : null
+        }
+      }, client));
     }
+    const previousNote = normalizeNextActionNote(current.nextActionNote);
+    if (hasNextActionNote && previousNote !== nextActionNote) {
+      events.push(await addEvent({
+        clinicId: context.clinic.id,
+        conversationId: conversation.id,
+        type: 'commercial_note_updated',
+        data: {
+          previousText: previousNote,
+          text: nextActionNote,
+          changedBy: actor ? actor.id : null,
+          changedByName: actor ? actor.name : null
+        }
+      }, client));
+    }
+    return { conversation: updatedConversation, events };
   });
+  const updatedConversation = persisted.conversation;
 
   if (!updatedConversation) {
     return {

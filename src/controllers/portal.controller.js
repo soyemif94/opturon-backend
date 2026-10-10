@@ -386,11 +386,16 @@ async function updatePortalConversation(req, res) {
   const conversationId = String(req.params.conversationId || '').trim();
 
   try {
-    const result = await patchPortalConversation(tenantId, conversationId, req.body || {});
+    const result = await patchPortalConversation(tenantId, conversationId, req.body || {}, {
+      actorUserId: req.get('x-portal-actor-id') || null
+    });
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ? 400
           : result.reason === 'legacy_bot_mode_selection_disabled' ? 410
+            : result.reason === 'seller_user_not_found' ? 422
+              : result.reason === 'conversation_assignment_conflict' ? 409
+                : result.reason === 'assignment_actor_required' || result.reason === 'assignment_forbidden' ? 403
           : result.reason === 'repair_channel_target_unresolved' ? 409
             : result.reason === 'repair_channel_invalid_provider' || result.reason === 'repair_channel_inactive' ? 409
               : result.reason === 'repair_channel_not_persisted' ? 500
@@ -901,11 +906,15 @@ async function patchPortalConversationAssignSeller(req, res) {
   const conversationId = String(req.params.conversationId || '').trim();
 
   try {
-    const result = await assignPortalConversationSeller(tenantId, conversationId, req.body || {});
+    const result = await assignPortalConversationSeller(tenantId, conversationId, req.body || {}, {
+      actorUserId: req.get('x-portal-actor-id') || null
+    });
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' || result.reason === 'missing_seller_user_id' ? 400
           : result.reason === 'seller_user_not_found' ? 422
+            : result.reason === 'conversation_assignment_conflict' ? 409
+              : result.reason === 'assignment_actor_required' || result.reason === 'assignment_forbidden' ? 403
             : result.reason === 'mapped_clinic_without_whatsapp_channel' ? 409
               : 404;
       return res.status(status).json({ success: false, error: result.reason, tenantId: result.tenantId });
@@ -956,7 +965,9 @@ async function patchPortalConversationNextActionController(req, res) {
   const conversationId = String(req.params.conversationId || '').trim();
 
   try {
-    const result = await patchPortalConversationNextAction(tenantId, conversationId, req.body || {});
+    const result = await patchPortalConversationNextAction(tenantId, conversationId, req.body || {}, {
+      actorUserId: req.get('x-portal-actor-id') || null
+    });
     if (!result.ok) {
       const status =
         result.reason === 'missing_tenant_id' ||

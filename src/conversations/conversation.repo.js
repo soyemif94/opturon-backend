@@ -577,6 +577,22 @@ async function updateConversationLeadStatusForClinic({ conversationId, clinicId,
   return result.rows[0] || null;
 }
 
+async function getConversationCommercialStateForUpdate({ conversationId, clinicId }, client) {
+  if (!client || typeof client.query !== 'function') {
+    throw new Error('conversation_commercial_lock_requires_transaction');
+  }
+  const result = await dbQuery(
+    client,
+    `SELECT id, "clinicId", "assignedSellerUserId", "leadStatus", "nextActionAt", "nextActionNote", context, "updatedAt"
+     FROM conversations
+     WHERE id = $1
+       AND "clinicId" = $2
+     FOR UPDATE`,
+    [conversationId, clinicId]
+  );
+  return result.rows[0] || null;
+}
+
 async function updateConversationFollowUpForClinic({ conversationId, clinicId, patch = {} }, client = null) {
   const updates = [];
   const params = [conversationId, clinicId];
@@ -636,7 +652,15 @@ async function reassignConversationChannelForClinic({ conversationId, clinicId, 
   return result.rows[0] || null;
 }
 
-async function assignConversationSellerForClinic({ conversationId, clinicId, sellerUserId = null, contextPatch = null, leadStatus = null }, client = null) {
+async function assignConversationSellerForClinic({
+  conversationId,
+  clinicId,
+  sellerUserId = null,
+  contextPatch = null,
+  leadStatus = null,
+  expectedSellerUserId
+}, client = null) {
+  const hasExpectedSeller = expectedSellerUserId !== undefined;
   const result = await dbQuery(
     client,
     `UPDATE conversations
@@ -650,9 +674,11 @@ async function assignConversationSellerForClinic({ conversationId, clinicId, sel
        "updatedAt" = NOW()
      WHERE id = $1
        AND "clinicId" = $2
+       AND ($6::boolean = FALSE OR "assignedSellerUserId" IS NOT DISTINCT FROM $7::uuid)
      RETURNING id, "clinicId", "channelId", "contactId", "assignedSellerUserId", "leadStatus", "nextActionAt", "nextActionNote", "waFrom", "waTo", status, stage, state, context,
                "lastInboundAt", "lastOutboundAt", "createdAt", "updatedAt"`,
-    [conversationId, clinicId, sellerUserId, leadStatus, contextPatch ? JSON.stringify(contextPatch) : null]
+    [conversationId, clinicId, sellerUserId, leadStatus, contextPatch ? JSON.stringify(contextPatch) : null,
+      hasExpectedSeller, hasExpectedSeller ? expectedSellerUserId : null]
   );
   return result.rows[0] || null;
 }
@@ -1663,6 +1689,7 @@ module.exports = {
   replaceConversationStateForClinic,
   updateConversationStatusForClinic,
   updateConversationLeadStatusForClinic,
+  getConversationCommercialStateForUpdate,
   updateConversationFollowUpForClinic,
   reassignConversationChannelForClinic,
   assignConversationSellerForClinic,
