@@ -98,21 +98,33 @@ function extractImageMediaFromRaw(raw) {
 
 function mapPortalConversationMessage(message, channel) {
   const type = normalizeString(message && message.type) || 'text';
-  const imageMedia = extractImageMediaFromRaw(message && message.raw);
+  const raw = message && message.raw && typeof message.raw === 'object' ? message.raw : {};
+  const imageMedia = extractImageMediaFromRaw(raw);
+  const historyMediaUnavailable = raw.source === 'history_import' && raw.mediaUnavailable === true;
   const caption = imageMedia && imageMedia.caption ? imageMedia.caption : '';
+  const mappedText = message.text || (historyMediaUnavailable && type !== 'image'
+    ? `Contenido multimedia histórico (${type}) no disponible.`
+    : '');
 
   return {
     id: message.id,
     direction: message.direction,
     type,
-    text: message.text || '',
+    text: mappedText,
+    origin: message && message.raw && message.raw.source === 'WHATSAPP_BUSINESS_APP'
+      ? 'human_whatsapp_business_app'
+      : message && message.raw && message.raw.source === 'history_import'
+        ? 'history_import'
+        : null,
     caption,
     timestamp: message.createdAt,
     status: message.direction === 'inbound'
       ? 'read'
-      : normalizeString(channel && channel.provider).toLowerCase() === 'whatsapp_cloud'
-        ? normalizeString(message && message.raw && message.raw.delivery && message.raw.delivery.status) || 'unknown_delivery'
-        : 'sent',
+      : message && message.raw && message.raw.source === 'WHATSAPP_BUSINESS_APP'
+        ? 'sent'
+        : normalizeString(channel && channel.provider).toLowerCase() === 'whatsapp_cloud'
+          ? normalizeString(message && message.raw && message.raw.delivery && message.raw.delivery.status) || 'unknown_delivery'
+          : 'sent',
     deliveryErrorCode: normalizeString(message && message.raw && message.raw.delivery && message.raw.delivery.errorCode) || null,
     media: imageMedia
       ? {
@@ -123,7 +135,7 @@ function mapPortalConversationMessage(message, channel) {
           caption: imageMedia.caption,
           available: Boolean(imageMedia.mediaId)
         }
-      : null
+      : historyMediaUnavailable ? { available: false } : null
   };
 }
 

@@ -110,6 +110,14 @@ function createSmbMessageEchoProcessor(overrides = {}) {
             at: new Date(Number(event.timestamp) * 1000).toISOString()
           }, client);
           if (!takeover) throw new Error('smb_message_echo_takeover_failed');
+          if (client && typeof client.query === 'function') {
+            await client.query(
+              `INSERT INTO whatsapp_coexistence_channel_state ("clinicId", "channelId", "lastEchoAt", "lastWebhookAt", "updatedAt")
+               VALUES ($1, $2, NOW(), NOW(), NOW())
+               ON CONFLICT ("channelId") DO UPDATE SET "lastEchoAt" = NOW(), "lastWebhookAt" = NOW(), "updatedAt" = NOW()`,
+              [channel.clinicId, channel.id]
+            );
+          }
           await deps.invalidateCandidate(channel.clinicId, conversation.id, write.row.id, client);
           return { duplicate: false, conversationId: conversation.id, takeoverActivated: takeover.activated };
         });

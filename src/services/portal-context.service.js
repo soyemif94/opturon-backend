@@ -26,6 +26,7 @@ function summarizeChannel(channel) {
     displayPhoneNumber: channel.displayPhoneNumber || null,
     verifiedName: channel.verifiedName || null,
     wabaId: channel.wabaId || null,
+    connectionMode: channel.connectionMode || null,
     status: channel.status || null
   };
 }

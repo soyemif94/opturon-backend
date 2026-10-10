@@ -314,7 +314,17 @@ async function testFinalizeSuccessPersistsConnection({
     steps.push('session_completed');
     return { rows: [session] };
   };
-  mockModule('src/db/client.js', { query: completionQuery, withTransaction: async (fn) => fn({ query: completionQuery }) });
+  const onboardingTransactionQuery = async (sql, parameters) => {
+    if (String(sql).includes('INSERT INTO whatsapp_coexistence_channel_state')) {
+      assert.strictEqual(connectionMode, 'COEXISTENCE');
+      assert.deepStrictEqual(parameters.slice(0, 2), ['clinic-1', 'channel-success']);
+      assert.deepStrictEqual(parameters.slice(2), [true, 'CLOUD_API', 'active']);
+      steps.push('coexistence_status_persisted');
+      return { rows: [] };
+    }
+    return completionQuery(sql, parameters);
+  };
+  mockModule('src/db/client.js', { query: completionQuery, withTransaction: async (fn) => fn({ query: onboardingTransactionQuery }) });
   const { markOnboardingSessionCompleted } = require(modulePath('src/repositories/whatsapp-onboarding.repository.js'));
 
   setupCommonMocks({
@@ -373,7 +383,7 @@ async function testFinalizeSuccessPersistsConnection({
     withOnboardingTransaction: async (fn) => {
       const before = { session: { ...session }, channel: context.channel };
       try {
-        const result = await fn({ query: completionQuery });
+        const result = await fn({ query: onboardingTransactionQuery });
         steps.push('commit');
         return result;
       } catch (error) {
@@ -432,6 +442,13 @@ async function testFinalizeSuccessPersistsConnection({
       assert.deepStrictEqual([...requestUrl.searchParams.keys()].sort(), ['client_id', 'client_secret', 'code']);
       steps.push('code_exchanged');
       return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'test-access-token', token_type: 'bearer' }) };
+    }
+    if (connectionMode === 'COEXISTENCE' && requestUrl.pathname.endsWith('/phone-success')) {
+      assert.equal(requestUrl.searchParams.get('fields'), 'is_on_biz_app,platform_type');
+      assert.equal(options.method, 'GET');
+      assert.equal(options.headers.Authorization, 'Bearer test-access-token');
+      steps.push('coexistence_status_checked');
+      return { ok: true, status: 200, text: async () => JSON.stringify({ is_on_biz_app: true, platform_type: 'CLOUD_API' }) };
     }
     assert.strictEqual(withFinishPayload, false);
     assert.ok(requestUrl.pathname.endsWith('/debug_token'));
@@ -507,11 +524,14 @@ async function testFinalizeSuccessPersistsConnection({
     assert.ok(result.session.completedAt);
     assert.deepStrictEqual(steps, [
       'exchanging_code', 'code_exchanged', 'discovering_assets', 'phone_discovered',
+      ...(connectionMode === 'COEXISTENCE' ? ['coexistence_status_checked'] : []),
       'subscribing_app', 'webhook_subscribed',
       ...(connectionMode === 'API_ONLY'
         ? ['registering_phone', 'pin_loaded', ...(alreadyRegistered ? [] : ['phone_registered', 'registration_saved'])]
         : []),
-      'persisting_channel', 'channel_active', 'session_completed', 'commit'
+      'persisting_channel', 'channel_active',
+      ...(connectionMode === 'COEXISTENCE' ? ['coexistence_status_persisted'] : []),
+      'session_completed', 'commit'
     ]);
     assert.strictEqual(registerCallCount, connectionMode === 'API_ONLY' && !alreadyRegistered ? 1 : 0);
     assert.ok(!JSON.stringify({ result, logs }).includes('042731'), 'successful signup must not expose the PIN');
@@ -520,7 +540,12 @@ async function testFinalizeSuccessPersistsConnection({
     assert.strictEqual(signupStatus.session.channelId, 'channel-success');
 
     clearModule('src/services/portal-whatsapp-status.service.js');
-    mockModule('src/db/client.js', { query: async () => ({ rows: [] }) });
+    mockModule('src/repositories/whatsapp-onboarding.repository.js', {
+      findWhatsAppChannelByClinicAndPhoneNumberId: async () => ({ ...context.channel, accessToken: 'test-access-token' })
+    });
+    mockModule('src/db/client.js', { query: async (sql) => String(sql).includes('FROM whatsapp_coexistence_channel_state') && connectionMode === 'COEXISTENCE'
+      ? { rows: [{ isOnBizApp: true, platformType: 'CLOUD_API', coexistenceStatus: 'active', historySyncStatus: 'not_requested', contactsSyncStatus: 'not_requested' }] }
+      : { rows: [] } });
     mockModule('src/utils/bot-config.js', { DEFAULT_BOT_CONFIG: {}, normalizeBotConfig: () => ({}) });
     const { getPortalWhatsAppStatus } = require(modulePath('src/services/portal-whatsapp-status.service.js'));
     const status = await getPortalWhatsAppStatus('tenant-a');

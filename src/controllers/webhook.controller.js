@@ -23,6 +23,8 @@ const {
   reconcileOrderCustomerNotificationStatuses
 } = require('../services/order-customer-notification-status.service');
 const { hasSmbMessageEchoEntries } = require('../webhooks/smb-message-echoes');
+const { persistCoexistenceWebhookEvents } = require('../repositories/whatsapp-coexistence.repository');
+const { extractCoexistenceChanges } = require('../webhooks/whatsapp-coexistence');
 const { processSmbMessageEchoes } = require('../conversations/smb-message-echo.service');
 
 function withRequestMeta(req, meta = {}) {
@@ -71,18 +73,17 @@ function getSafeRawBody(req, payload) {
   }
 }
 
-function analyzeDeferredCoexistenceFields(payload) {
-  const deferred = new Set(['history', 'smb_app_state_sync']);
-  const entries = Array.isArray(payload && payload.entry) ? payload.entry : [];
-  const allFields = entries.flatMap((entry) =>
-    (Array.isArray(entry && entry.changes) ? entry.changes : [])
-      .map((change) => String(change && change.field || '').trim())
-      .filter(Boolean)
-  );
-  return {
-    fields: Array.from(new Set(allFields.filter((field) => deferred.has(field)))),
-    safeToAcknowledge: allFields.length > 0 && allFields.every((field) => deferred.has(field))
-  };
+function removeCoexistenceOnlyFields(payload, { removeEchoes = false } = {}) {
+  if (!payload || !Array.isArray(payload.entry)) return payload || {};
+  const entries = payload.entry.map((entry) => ({
+    ...entry,
+    changes: (Array.isArray(entry && entry.changes) ? entry.changes : []).filter((change) => {
+      const field = String(change && change.field || '').trim();
+      if (['history', 'smb_app_state_sync', 'account_update'].includes(field)) return false;
+      return !(removeEchoes && field === 'smb_message_echoes');
+    })
+  })).filter((entry) => entry.changes.length > 0);
+  return { ...payload, entry: entries };
 }
 
 function verifyWebhook(req, res) {
@@ -479,9 +480,34 @@ async function persistAndEnqueue(event, req) {
 }
 
 async function handleWebhook(req, res) {
-  const payload = req.body || {};
+  const originalPayload = req.body || {};
+  const coexistenceEvents = extractCoexistenceChanges(originalPayload);
+  const containsEchoes = hasSmbMessageEchoEntries(originalPayload);
+  const containsCoexistenceData = coexistenceEvents.length > 0 || containsEchoes;
+  let coexistenceCounts = { received: coexistenceEvents.length, queued: 0, duplicates: 0, ignored: 0 };
+
+  if (coexistenceEvents.length > 0) {
+    if (req.metaSignatureValid !== true) {
+      coexistenceCounts.ignored = coexistenceEvents.length;
+      logWarn('whatsapp_coexistence_event_rejected', withRequestMeta(req, {
+        reason: 'verified_meta_signature_required',
+        eventCount: coexistenceEvents.length
+      }));
+    } else {
+      try {
+        coexistenceCounts = await persistCoexistenceWebhookEvents(originalPayload);
+      } catch (error) {
+        logError('whatsapp_coexistence_event_persist_failed', withRequestMeta(req, {
+          eventCount: coexistenceEvents.length,
+          errorCode: error && error.code || 'PERSIST_FAILED'
+        }));
+        return res.status(503).json({ success: false, error: 'webhook_event_persist_failed' });
+      }
+    }
+  }
+
+  const payload = removeCoexistenceOnlyFields(originalPayload, { removeEchoes: containsEchoes && req.metaSignatureValid !== true });
   const hasSmbEchoes = hasSmbMessageEchoEntries(payload);
-  const deferredCoexistence = analyzeDeferredCoexistenceFields(payload);
   const payloadSummary = summarizeWebhookPayload(payload);
   const topLevelBodyKeys = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? Object.keys(payload)
@@ -502,19 +528,19 @@ async function handleWebhook(req, res) {
     })
   );
 
-  if (deferredCoexistence.safeToAcknowledge) {
-    logInfo('meta_coexistence_deferred_event_acknowledged', withRequestMeta(req, {
-      fields: deferredCoexistence.fields,
-      persisted: false,
-      processed: false
+  if (Array.isArray(originalPayload.entry) && payload.entry.length === 0) {
+    logInfo('whatsapp_coexistence_webhook_acknowledged', withRequestMeta(req, {
+      received: coexistenceCounts.received,
+      queued: coexistenceCounts.queued,
+      duplicates: coexistenceCounts.duplicates,
+      ignored: coexistenceCounts.ignored
     }));
     return res.status(200).json({
       success: true,
-      received: 0,
-      enqueued: 0,
-      unrouted: 0,
-      duplicates: 0,
-      acknowledged: deferredCoexistence.fields
+      received: coexistenceCounts.received,
+      enqueued: coexistenceCounts.queued,
+      duplicates: coexistenceCounts.duplicates,
+      ignored: coexistenceCounts.ignored
     });
   }
 
@@ -525,8 +551,8 @@ async function handleWebhook(req, res) {
     field: payloadSummary.firstChangeField,
     from: payloadSummary.from,
     messageId: payloadSummary.messageId,
-    textPreview: payloadSummary.textPreview,
-    rawBody: hasSmbEchoes ? null : getSafeRawBody(req, payload)
+    textPreview: containsCoexistenceData ? null : payloadSummary.textPreview,
+    rawBody: containsCoexistenceData ? null : getSafeRawBody(req, payload)
   });
 
   const isMetaPayload = Array.isArray(payload.entry);
@@ -537,7 +563,7 @@ async function handleWebhook(req, res) {
   const eventType = deriveMetaEventType(payload);
   const meta = extractMetaWebhookIdentifiers(payload);
   const safeHeaders = {
-    'x-hub-signature-256': req.get('x-hub-signature-256') || null,
+    'x-hub-signature-256': req.get('x-hub-signature-256') ? '[redacted]' : null,
     'x-forwarded-for': req.get('x-forwarded-for') || null,
     'user-agent': req.get('user-agent') || null
   };
@@ -551,7 +577,12 @@ async function handleWebhook(req, res) {
       waMessageId: meta.waMessageId,
       waFrom: meta.waFrom,
       waTo: meta.waTo,
-      raw: payload,
+      // Echo/history/state-sync content is already routed to its owning
+      // processor. Do not duplicate message text or contact PII in the generic
+      // webhook diagnostic store.
+      raw: containsCoexistenceData
+        ? removeCoexistenceOnlyFields(originalPayload, { removeEchoes: true })
+        : payload,
       headers: safeHeaders,
       signatureValid
     });
@@ -610,6 +641,12 @@ async function handleWebhook(req, res) {
       if (provider === 'meta_whatsapp') {
         if (hasSmbEchoes) {
           echoCounts = await processSmbMessageEchoes(payload, { requestId: req.requestId || null });
+          if (echoCounts.failed > 0) {
+            // Previously persisted echoes are WAMID-idempotent, so asking Meta
+            // to retry the batch is safe and prevents transient DB failures
+            // from silently losing a human reply.
+            return res.status(503).json({ success: false, error: 'whatsapp_echo_persist_failed' });
+          }
         }
         try {
           await observeAndAutoReply(req, payload);
@@ -637,10 +674,10 @@ async function handleWebhook(req, res) {
 
       return res.status(200).json({
         success: true,
-        received: (processed && Number.isInteger(processed.received) ? processed.received : 0) + echoCounts.received,
-        enqueued: processed && Number.isInteger(processed.enqueued) ? processed.enqueued : 0,
+        received: (processed && Number.isInteger(processed.received) ? processed.received : 0) + echoCounts.received + coexistenceCounts.received,
+        enqueued: (processed && Number.isInteger(processed.enqueued) ? processed.enqueued : 0) + coexistenceCounts.queued,
         unrouted: processed && Number.isInteger(processed.unrouted) ? processed.unrouted : 0,
-        duplicates: (processed && Number.isInteger(processed.duplicates) ? processed.duplicates : 0) + echoCounts.duplicates
+        duplicates: (processed && Number.isInteger(processed.duplicates) ? processed.duplicates : 0) + echoCounts.duplicates + coexistenceCounts.duplicates
       });
     }
 

@@ -434,7 +434,7 @@ async function findPreferredWhatsAppChannelByClinicId(clinicId, client = null) {
 async function listWhatsAppChannelsByClinicId(clinicId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", type, provider, "phoneNumberId", "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status, "updatedAt", "createdAt"
+    `SELECT id, "clinicId", type, provider, "phoneNumberId", "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status, "connectionMode", "updatedAt", "createdAt"
      FROM channels
      WHERE "clinicId" = $1
        AND provider = 'whatsapp_cloud'

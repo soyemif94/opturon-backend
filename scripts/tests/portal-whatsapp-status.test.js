@@ -31,6 +31,7 @@ const state = {
   failures: [],
   handoffOpenCount: 0,
   handoffBlockedCount: 0,
+  coexistenceRows: [],
   queries: []
 };
 
@@ -55,6 +56,7 @@ function activeContext() {
       displayPhoneNumber: '+54 9 291 566-5793',
       verifiedName: 'Opturon',
       status: 'active',
+      connectionMode: 'API_ONLY',
       accessToken: 'secret-token'
     },
     onboarding: {
@@ -99,6 +101,7 @@ function resetScenario({ withChannel = true } = {}) {
   state.failures = [];
   state.handoffOpenCount = 0;
   state.handoffBlockedCount = 0;
+  state.coexistenceRows = [];
   state.queries = [];
 }
 
@@ -172,6 +175,21 @@ async function fakeQuery(text, params) {
     };
   }
 
+  if (sql.includes('FROM whatsapp_coexistence_channel_state')) {
+    assert.deepStrictEqual(params, [state.clinicId, state.channelId]);
+    return { rows: state.coexistenceRows.slice(0, 1).map(clone) };
+  }
+
+  if (sql.includes('INSERT INTO whatsapp_coexistence_channel_state')) {
+    state.coexistenceRows = [{
+      clinicId: params[0], channelId: params[1], isOnBizApp: params[2], platformType: params[3],
+      coexistenceStatus: params[4], historySyncStatus: 'not_requested', contactsSyncStatus: 'not_requested'
+    }];
+    return { rows: [] };
+  }
+
+  if (sql.startsWith('UPDATE channels SET status')) return { rows: [] };
+
   throw new Error(`Unexpected query: ${sql}`);
 }
 
@@ -181,6 +199,16 @@ mockModule('src/services/portal-context.service.js', {
     assert.strictEqual(tenantId, state.tenantId);
     return clone(state.context);
   }
+});
+mockModule('src/repositories/whatsapp-onboarding.repository.js', {
+  findWhatsAppChannelByClinicAndPhoneNumberId: async (clinicId, phoneNumberId) => {
+    assert.strictEqual(clinicId, state.clinicId);
+    assert.strictEqual(phoneNumberId, state.phoneNumberId);
+    return { ...state.context.channel, accessToken: 'secret-token' };
+  }
+});
+mockModule('src/whatsapp/whatsapp-graph.client.js', {
+  request: async () => { throw new Error('unexpected_graph_client_call'); }
 });
 
 const { getPortalWhatsAppStatus } = require(modulePath('src/services/portal-whatsapp-status.service.js'));
@@ -207,6 +235,33 @@ async function testChannelSummaryWithoutSecrets() {
   assert.strictEqual(result.channel.wabaId, state.wabaId);
   assert.ok(!Object.prototype.hasOwnProperty.call(result.channel, 'accessToken'));
   assert.strictEqual(result.botRuntime.enabled, true);
+}
+
+async function testCoexistenceStatusRequiresCanonicalProviderFields() {
+  resetScenario();
+  state.context.channel.connectionMode = 'COEXISTENCE';
+  state.coexistenceRows = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    const requestUrl = new URL(url);
+    assert.equal(requestUrl.hostname, 'graph.facebook.com');
+    assert.equal(requestUrl.pathname, '/v25.0/phone-a');
+    assert.equal(requestUrl.searchParams.get('fields'), 'is_on_biz_app,platform_type');
+    assert.equal(options.method, 'GET');
+    assert.equal(options.headers.Authorization, 'Bearer secret-token');
+    return { ok: true, status: 200, text: async () => JSON.stringify({ is_on_biz_app: true, platform_type: 'CLOUD_API' }) };
+  };
+  let result;
+  try { result = await getPortalWhatsAppStatus(state.tenantId); }
+  finally { global.fetch = originalFetch; }
+  assert.strictEqual(result.channel.connected, true);
+  assert.deepStrictEqual(result.coexistence, {
+    status: 'active', isOnBizApp: true, platformType: 'CLOUD_API', phoneLast4: '5793',
+    historySyncStatus: 'not_requested', contactsSyncStatus: 'not_requested',
+    historyPhase: null, historyChunkOrder: null, historyProgress: null, historyStartedAt: null,
+    historyUpdatedAt: null, contactsUpdatedAt: null, lastWebhookAt: null, lastEchoAt: null, lastAccountEvent: null
+  });
+  assert.ok(!JSON.stringify(result).includes('secret-token'));
 }
 
 async function testActivityCalculations() {
@@ -297,6 +352,7 @@ async function testNoJobsOrEventsDoesNotCrash() {
 async function run() {
   await testTenantWithoutChannel();
   await testChannelSummaryWithoutSecrets();
+  await testCoexistenceStatusRequiresCanonicalProviderFields();
   await testActivityCalculations();
   await testHandoffSummary();
   await testBotConfigSummary();

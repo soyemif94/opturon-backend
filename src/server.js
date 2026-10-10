@@ -12,6 +12,7 @@ const { autoDetectPhoneNumberId } = require('./whatsapp/whatsapp.service');
 const buildInfo = require('./utils/build');
 const { ensureInboxConversationSoftDeleteSchema } = require('./db/ensure-inbox-conversation-soft-delete');
 const { ensureWhatsAppTemplateCanarySchema } = require('./db/ensure-whatsapp-template-canary');
+const { ensureWhatsAppCoexistenceSchema } = require('./db/ensure-whatsapp-coexistence');
 
 const app = createApp();
 const host = '0.0.0.0';
@@ -114,11 +115,12 @@ function handleServerListening() {
 async function ensureStartupSchema() {
   const inboxResult = await ensureInboxConversationSoftDeleteSchema();
   const canaryResult = await ensureWhatsAppTemplateCanarySchema();
-  return { inboxResult, canaryResult };
+  const coexistenceResult = await ensureWhatsAppCoexistenceSchema();
+  return { inboxResult, canaryResult, coexistenceResult };
 }
 
 ensureStartupSchema()
-  .then(({ inboxResult, canaryResult }) => {
+  .then(({ inboxResult, canaryResult, coexistenceResult }) => {
     logInfo('inbox_conversation_soft_delete_schema_ready', {
       migration: inboxResult.migration,
       columns: Object.keys(inboxResult.columns || {})
@@ -127,11 +129,15 @@ ensureStartupSchema()
       migration: canaryResult.migration,
       schema: canaryResult.schema
     });
+    logInfo('whatsapp_coexistence_schema_ready', {
+      migration: coexistenceResult.migration,
+      schema: coexistenceResult.schema
+    });
     server.listen(env.port, host, handleServerListening);
   })
   .catch((error) => {
     logError('server_schema_bootstrap_failed', {
-      migrations: ['076_inbox_conversation_soft_delete.sql', '077_whatsapp_template_canary_attempts.sql'],
+      migrations: ['076_inbox_conversation_soft_delete.sql', '077_whatsapp_template_canary_attempts.sql', '094_whatsapp_coexistence.sql'],
       error: error.message,
       code: error.code || null
     });

@@ -1,5 +1,7 @@
 const { query } = require('../db/client');
 const { resolvePortalTenantContext } = require('./portal-context.service');
+const { findWhatsAppChannelByClinicAndPhoneNumberId } = require('../repositories/whatsapp-onboarding.repository');
+const { refreshCoexistenceProviderStatus } = require('./whatsapp-coexistence-sync.service');
 const { DEFAULT_BOT_CONFIG, normalizeBotConfig } = require('../utils/bot-config');
 
 function normalizeString(value) {
@@ -38,6 +40,7 @@ function summarizeChannel(channel) {
     wabaId: channel.wabaId || null,
     displayPhoneNumber: channel.displayPhoneNumber || null,
     verifiedName: channel.verifiedName || null,
+    connectionMode: channel.connectionMode || null,
     status: channel.status || null
   };
 }
@@ -147,6 +150,17 @@ async function getPortalWhatsAppStatus(tenantId) {
   const channelSummary = summarizeChannel(channel);
   const channelId = channel && channel.id ? channel.id : null;
   const phoneNumberId = channel && channel.phoneNumberId ? channel.phoneNumberId : null;
+  let coexistenceProviderStatus = null;
+  if (channelSummary.connectionMode === 'COEXISTENCE') {
+    try {
+      const scopedChannel = await findWhatsAppChannelByClinicAndPhoneNumberId(clinicId, phoneNumberId);
+      if (scopedChannel) {
+        coexistenceProviderStatus = await refreshCoexistenceProviderStatus(scopedChannel, `portal-wa-status:${channelId}`);
+      }
+    } catch {
+      // Status remains unknown when Meta or the diagnostic read is unavailable.
+    }
+  }
   const webhookIdentifiers = [
     normalizeString(phoneNumberId),
     normalizeDigits(channel && channel.displayPhoneNumber)
@@ -163,7 +177,8 @@ async function getPortalWhatsAppStatus(tenantId) {
     jobResult,
     inboundFailureResult,
     failedJobResult,
-    handoffResult
+    handoffResult,
+    coexistenceResult
   ] = await Promise.all([
     query('SELECT settings FROM clinics WHERE id = $1 LIMIT 1', [clinicId]),
     webhookIdentifiers.length
@@ -277,7 +292,18 @@ async function getPortalWhatsAppStatus(tenantId) {
        WHERE "clinicId" = $1
          AND status IN ('open', 'assigned')`,
       [clinicId]
-    )
+    ),
+    channelId
+      ? query(
+          `SELECT "isOnBizApp", "platformType", "coexistenceStatus", "historySyncStatus", "contactsSyncStatus",
+                  "historyLastPhase", "historyLastChunkOrder", "historyProgress", "historyStartedAt",
+                  "historyUpdatedAt", "contactsUpdatedAt", "lastWebhookAt", "lastEchoAt", "lastAccountEvent"
+           FROM whatsapp_coexistence_channel_state
+           WHERE "clinicId" = $1 AND "channelId" = $2
+           LIMIT 1`,
+          [clinicId, channelId]
+        )
+      : Promise.resolve({ rows: [] })
   ]);
 
   const counts = {
@@ -300,6 +326,34 @@ async function getPortalWhatsAppStatus(tenantId) {
   const botRuntime = {
     enabled: context.onboarding && typeof context.onboarding.botEnabled === 'boolean' ? context.onboarding.botEnabled : null
   };
+  const coexistenceRow = coexistenceResult.rows[0] || null;
+  const isCoexistence = channelSummary.connectionMode === 'COEXISTENCE';
+  const coexistence = isCoexistence ? {
+    status: normalizeString(coexistenceRow && coexistenceRow.coexistenceStatus) || 'unknown',
+    isOnBizApp: coexistenceRow && typeof coexistenceRow.isOnBizApp === 'boolean' ? coexistenceRow.isOnBizApp : null,
+    platformType: coexistenceRow && coexistenceRow.platformType || null,
+    phoneLast4: normalizeDigits(channel && channel.displayPhoneNumber).slice(-4) || null,
+    historySyncStatus: coexistenceRow && coexistenceRow.historySyncStatus || 'not_requested',
+    contactsSyncStatus: coexistenceRow && coexistenceRow.contactsSyncStatus || 'not_requested',
+    historyPhase: coexistenceRow && coexistenceRow.historyLastPhase || null,
+    historyChunkOrder: coexistenceRow && coexistenceRow.historyLastChunkOrder != null
+      ? Number(coexistenceRow.historyLastChunkOrder) : null,
+    historyProgress: coexistenceRow && coexistenceRow.historyProgress != null
+      ? Number(coexistenceRow.historyProgress) : null,
+    historyStartedAt: toIso(coexistenceRow && coexistenceRow.historyStartedAt),
+    historyUpdatedAt: toIso(coexistenceRow && coexistenceRow.historyUpdatedAt),
+    contactsUpdatedAt: toIso(coexistenceRow && coexistenceRow.contactsUpdatedAt),
+    lastWebhookAt: toIso(coexistenceRow && coexistenceRow.lastWebhookAt),
+    lastEchoAt: toIso(coexistenceRow && coexistenceRow.lastEchoAt),
+    lastAccountEvent: coexistenceRow && coexistenceRow.lastAccountEvent || null
+  } : null;
+  if (isCoexistence) {
+    channelSummary.connected = Boolean(
+      coexistence && coexistence.status === 'active' &&
+      coexistenceProviderStatus && coexistenceProviderStatus.status === 'active' &&
+      coexistenceProviderStatus.observed
+    );
+  }
 
   return {
     ok: true,
@@ -307,6 +361,7 @@ async function getPortalWhatsAppStatus(tenantId) {
     clinicId,
     generatedAt: new Date().toISOString(),
     channel: channelSummary,
+    coexistence,
     botRuntime,
     webhook: {
       lastReceived: mapWebhookRow(webhookLatestResult.rows[0]),

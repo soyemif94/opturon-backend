@@ -697,6 +697,42 @@ async function subscribeCurrentAppToWaba({ accessToken, wabaId, requestId = null
   };
 }
 
+async function readCoexistencePlatformStatus({ accessToken, phoneNumberId }) {
+  const unknown = { isOnBizApp: null, platformType: null, status: 'unknown', httpStatus: null };
+  if (!accessToken || !phoneNumberId) return unknown;
+  const url = new URL(`https://graph.facebook.com/${encodeURIComponent(DEFAULT_GRAPH_VERSION)}/${encodeURIComponent(phoneNumberId)}`);
+  url.searchParams.set('fields', 'is_on_biz_app,platform_type');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+      signal: controller.signal
+    });
+    const raw = await response.text();
+    let data = null;
+    if (raw && raw.length <= 32768) {
+      try { data = JSON.parse(raw); } catch { data = null; }
+    }
+    const isOnBizApp = response.ok && data && typeof data.is_on_biz_app === 'boolean'
+      ? data.is_on_biz_app : null;
+    const platformType = response.ok && data && typeof data.platform_type === 'string'
+      ? data.platform_type.slice(0, 80) : null;
+    return {
+      isOnBizApp,
+      platformType,
+      status: isOnBizApp === true && platformType === 'CLOUD_API' ? 'active'
+        : isOnBizApp === false ? 'disconnected' : 'unknown',
+      httpStatus: response.status
+    };
+  } catch {
+    return unknown;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 const REGISTRATION_ERRORS = {
   missing_tenant_id: 'No recibimos el tenantId para registrar el numero.',
   whatsapp_registration_channel_unavailable: 'No encontramos un canal WhatsApp unico para este workspace.',
@@ -1107,6 +1143,9 @@ async function finalizePortalWhatsAppSignup({
       metaPayload,
       requestId
     });
+    const providerPlatformStatus = connectionMode === WHATSAPP_CONNECTION_MODE.COEXISTENCE
+      ? await readCoexistencePlatformStatus({ accessToken: token.accessToken, phoneNumberId: assets.phoneNumberId })
+      : null;
 
     logInfo('portal_whatsapp_embedded_signup_assets_resolved', {
       requestId,
@@ -1237,6 +1276,19 @@ async function finalizePortalWhatsAppSignup({
         },
         client
       );
+
+      if (providerPlatformStatus) {
+        await client.query(
+          `INSERT INTO whatsapp_coexistence_channel_state
+             ("clinicId", "channelId", "isOnBizApp", "platformType", "coexistenceStatus", "providerStatusCheckedAt", "updatedAt")
+           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+           ON CONFLICT ("channelId") DO UPDATE SET "isOnBizApp" = EXCLUDED."isOnBizApp",
+             "platformType" = EXCLUDED."platformType", "coexistenceStatus" = EXCLUDED."coexistenceStatus",
+             "providerStatusCheckedAt" = NOW(), "updatedAt" = NOW()`,
+          [session.clinicId, channel.id, providerPlatformStatus.isOnBizApp,
+            providerPlatformStatus.platformType, providerPlatformStatus.status]
+        );
+      }
 
       await deactivateOtherClinicWhatsAppChannels(session.clinicId, channel.id, client);
 

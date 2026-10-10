@@ -139,6 +139,7 @@ const {
 const {
   createOperationalAlertWorkerHeartbeatReporter
 } = require('./services/operational-alert-worker-heartbeat.service');
+const { processWhatsAppCoexistenceEvent } = require('./services/whatsapp-coexistence-sync.service');
 
 const WORKER_ID = env.workerId || 'worker-1';
 const POLL_MS = Number(env.workerPollMs || 1000);
@@ -21515,6 +21516,15 @@ async function processJob(job) {
       return;
     }
 
+    if (job.type === 'WHATSAPP_COEXISTENCE_EVENT') {
+      const payload = parseJobPayload(job.payload);
+      const eventId = String(payload.eventId || '').trim();
+      if (!eventId) throw new Error('coexistence_event_id_missing');
+      await processWhatsAppCoexistenceEvent(eventId);
+      await markJobDone(job.id);
+      return;
+    }
+
     if (job.type === 'whatsapp_send' || job.type === 'whatsapp_template_send') {
       const requestId = `worker:${job.id}`;
       const payload = parseJobPayload(job.payload);
@@ -21682,6 +21692,21 @@ async function processJob(job) {
     });
   } catch (error) {
     const result = await requeueOrFailJob(job, error);
+    if (job.type === 'WHATSAPP_COEXISTENCE_EVENT') {
+      try {
+        const payload = parseJobPayload(job.payload);
+        const eventId = String(payload.eventId || '').trim();
+        if (eventId) {
+          await require('./repositories/whatsapp-coexistence.repository').setCoexistenceEventStatus(
+            eventId,
+            result.status === 'failed' ? 'failed' : 'queued',
+            error && error.code ? String(error.code).slice(0, 100) : 'PROCESSING_FAILED'
+          );
+        }
+      } catch {
+        logWarn('whatsapp_coexistence_event_state_update_failed', { jobId: job.id });
+      }
+    }
     logWarn('worker_job_failed', {
       requestId: `worker:${job.id}`,
       jobId: job.id,
