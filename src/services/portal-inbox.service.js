@@ -490,7 +490,7 @@ async function resolveCommercialActor(clinicId, actorUserId, client = null) {
   return actor ? { id: actor.id, name: actor.name || null, role: actor.role || null } : null;
 }
 
-async function persistSellerAssignment({ context, conversationId, seller, actorUserId = null, reason = null }) {
+async function persistSellerAssignment({ context, conversationId, seller, actorUserId = null, reason = null, startRecovery = false }) {
   return withTransaction(async (client) => {
     const current = await conversationRepo.getConversationCommercialStateForUpdate({
       conversationId,
@@ -499,17 +499,35 @@ async function persistSellerAssignment({ context, conversationId, seller, actorU
     if (!current) return { ok: false, reason: 'conversation_not_found' };
 
     const fromSellerId = current.assignedSellerUserId || null;
-    if (fromSellerId === seller.id) {
-      return { ok: true, conversation: current, event: null, reason: 'already_assigned' };
+    const actor = await resolveCommercialActor(context.clinic.id, actorUserId, client);
+    const actorRole = String(actor && actor.role || '').trim().toLowerCase();
+    const supervisorRole = actorRole === 'owner' || actorRole === 'manager';
+    if (startRecovery && !supervisorRole) {
+      return { ok: false, reason: actor ? 'assignment_forbidden' : 'assignment_actor_required' };
+    }
+    if (fromSellerId === seller.id && !startRecovery) {
+      return { ok: true, conversation: current, event: null, events: [], reason: 'already_assigned' };
+    }
+    if (fromSellerId === seller.id && startRecovery) {
+      const recoveryEvent = await addEvent({
+        clinicId: context.clinic.id,
+        conversationId,
+        type: 'recovery_started',
+        data: {
+          sellerId: seller.id,
+          sellerName: seller.name || null,
+          changedBy: actor.id,
+          changedByName: actor.name || null,
+          source: 'ops'
+        }
+      }, client);
+      return { ok: true, conversation: current, event: recoveryEvent, events: [recoveryEvent], reason: 'recovery_started' };
     }
 
     const fromSeller = fromSellerId
       ? await findPortalUserByIdAndClinicId(fromSellerId, context.clinic.id, client)
       : null;
-    const actor = await resolveCommercialActor(context.clinic.id, actorUserId, client);
     if (!actor) return { ok: false, reason: 'assignment_actor_required' };
-    const actorRole = String(actor.role || '').trim().toLowerCase();
-    const supervisorRole = actorRole === 'owner' || actorRole === 'manager';
     const sellerClaimingUnassignedLead = actorRole === 'seller' && !fromSellerId && seller.id === actor.id;
     if (!supervisorRole && !sellerClaimingUnassignedLead) {
       return { ok: false, reason: 'assignment_forbidden' };
@@ -527,7 +545,7 @@ async function persistSellerAssignment({ context, conversationId, seller, actorU
     if (!updatedConversation) return { ok: false, reason: 'conversation_assignment_conflict' };
 
     const reassigned = Boolean(fromSellerId);
-    const event = await addEvent({
+    const assignmentEvent = await addEvent({
       clinicId: context.clinic.id,
       conversationId,
       type: reassigned ? 'seller_reassigned' : 'seller_assigned',
@@ -542,7 +560,30 @@ async function persistSellerAssignment({ context, conversationId, seller, actorU
       }
     }, client);
 
-    return { ok: true, conversation: updatedConversation, event, reason: reassigned ? 'reassigned' : 'assigned' };
+    const events = [assignmentEvent];
+    if (startRecovery) {
+      events.push(await addEvent({
+        clinicId: context.clinic.id,
+        conversationId,
+        type: 'recovery_started',
+        data: {
+          sellerId: seller.id,
+          sellerName: seller.name || null,
+          fromSellerId,
+          fromSellerName: fromSeller ? fromSeller.name || null : null,
+          changedBy: actor.id,
+          changedByName: actor.name || null,
+          source: 'ops'
+        }
+      }, client));
+    }
+    return {
+      ok: true,
+      conversation: updatedConversation,
+      event: assignmentEvent,
+      events,
+      reason: startRecovery ? 'recovery_started' : (reassigned ? 'reassigned' : 'assigned')
+    };
   });
 }
 
@@ -576,6 +617,10 @@ function mapConversationRow(row) {
   const transferPayment = getTransferPaymentContext(context);
   const assignedSeller = buildAssignedSeller(row, context);
   const leadStatus = normalizeLeadStatus(row.leadStatus);
+  const commercialTimeline = normalizeCommercialTimeline(row.commercialTimeline);
+  const latestRecoveryEvent = commercialTimeline
+    .filter((event) => event.type === 'recovery_started')
+    .sort((left, right) => new Date(String(right.createdAt || 0)).getTime() - new Date(String(left.createdAt || 0)).getTime())[0];
   const channelLike = {
     type: row.channelType,
     provider: row.channelProvider,
@@ -619,7 +664,8 @@ function mapConversationRow(row) {
     nextActionNote: normalizeNextActionNote(row.nextActionNote),
     lastCommercialActivityAt: row.lastCommercialActivityAt || row.lastMessageAt || row.conversationCreatedAt || row.createdAt || null,
     lastReassignedAt: row.lastReassignedAt || null,
-    commercialTimeline: normalizeCommercialTimeline(row.commercialTimeline),
+    recoveryStartedAt: latestRecoveryEvent?.createdAt || null,
+    commercialTimeline,
     contact: {
       id: row.contactId,
       name: identity.displayName,
@@ -977,7 +1023,7 @@ async function listPortalConversations(tenantId, options = {}) {
          FROM conversation_events event
          WHERE event."clinicId" = c."clinicId"
            AND event."conversationId" = c.id
-           AND event.type IN ('seller_assigned', 'seller_reassigned', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated')
+           AND event.type IN ('seller_assigned', 'seller_reassigned', 'recovery_started', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated')
          ORDER BY event."createdAt" DESC
          LIMIT 30
        ) recent
@@ -987,7 +1033,7 @@ async function listPortalConversations(tenantId, options = {}) {
        FROM conversation_events event
        WHERE event."clinicId" = c."clinicId"
          AND event."conversationId" = c.id
-         AND event.type IN ('commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated')
+         AND event.type IN ('seller_assigned', 'seller_reassigned', 'recovery_started', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated')
      ) commercialActivity ON TRUE
      LEFT JOIN LATERAL (
        SELECT event."createdAt" AS "lastReassignedAt"
@@ -1077,12 +1123,12 @@ async function getPortalConversationDetail(tenantId, conversationId) {
     lastCommercialActivityAt: [
       messages.length > 0 ? messages[messages.length - 1].createdAt : conversation.createdAt,
       ...events
-        .filter((event) => ['commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
+        .filter((event) => ['seller_assigned', 'seller_reassigned', 'recovery_started', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
         .map((event) => event.createdAt)
     ].filter(Boolean).sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] || conversation.createdAt,
     lastReassignedAt: events.find((event) => event.type === 'seller_reassigned')?.createdAt || null,
     commercialTimeline: events
-      .filter((event) => ['seller_assigned', 'seller_reassigned', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
+      .filter((event) => ['seller_assigned', 'seller_reassigned', 'recovery_started', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
       .slice(0, 30),
     lastMessagePreview: messages.length > 0 ? messages[messages.length - 1].text : null,
     unreadCount: 0
@@ -1143,7 +1189,7 @@ async function getPortalConversationDetail(tenantId, conversationId) {
       assignedSeller: assignedSeller || undefined,
       quickReplies: defaultQuickReplies(),
       aiEvents: events
-        .filter((event) => !['seller_assigned', 'seller_reassigned', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
+        .filter((event) => !['seller_assigned', 'seller_reassigned', 'recovery_started', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'].includes(event.type))
         .slice(0, 10)
         .map((event) => ({
         id: event.id,
@@ -1640,7 +1686,8 @@ async function assignPortalConversationSeller(tenantId, conversationId, payload 
     conversationId,
     seller,
     actorUserId: options.actorUserId || null,
-    reason: payload && payload.reason
+    reason: payload && payload.reason,
+    startRecovery: payload && payload.startRecovery === true
   });
   if (!assignment.ok) {
     return {
@@ -1666,9 +1713,10 @@ async function assignPortalConversationSeller(tenantId, conversationId, payload 
       assignedSellerRole: seller.role || null,
       lastMessagePreview: null,
       lastMessageAt: assignment.conversation.createdAt || null,
-      lastCommercialActivityAt: assignment.conversation.createdAt || null,
-      lastReassignedAt: assignment.event?.type === 'seller_reassigned' ? assignment.event.createdAt : null,
-      commercialTimeline: assignment.event ? [assignment.event] : [],
+      lastCommercialActivityAt: assignment.events?.[assignment.events.length - 1]?.createdAt || assignment.conversation.createdAt || null,
+      lastReassignedAt: assignment.events?.find((event) => event.type === 'seller_reassigned')?.createdAt || null,
+      recoveryStartedAt: assignment.events?.find((event) => event.type === 'recovery_started')?.createdAt || null,
+      commercialTimeline: assignment.events || (assignment.event ? [assignment.event] : []),
       unreadCount: 0
     }),
     reason: assignment.reason

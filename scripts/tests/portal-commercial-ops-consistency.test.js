@@ -159,6 +159,28 @@ async function testReassignmentIsAtomicAndDoesNotChangeCommercialStage() {
   assert.ok(state.events[0].createdAt, 'assignment history has a database event timestamp');
 }
 
+async function testSameSellerRecoveryIsDurableAndDoesNotChangeStage() {
+  reset();
+  const result = await service.assignPortalConversationSeller(
+    state.tenantId,
+    state.conversationId,
+    { sellerUserId: 'seller-a', startRecovery: true },
+    { actorUserId: 'supervisor-a' }
+  );
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.reason, 'recovery_started');
+  assert.strictEqual(state.conversation.assignedSellerUserId, 'seller-a');
+  assert.strictEqual(state.conversation.leadStatus, 'NEW');
+  assert.strictEqual(state.events.length, 1);
+  assert.strictEqual(state.events[0].type, 'recovery_started');
+  assert.strictEqual(state.events[0].clinicId, 'clinic-a');
+  assert.strictEqual(state.events[0].data.sellerId, 'seller-a');
+  assert.strictEqual(state.events[0].data.changedBy, 'supervisor-a');
+  assert.strictEqual(state.events[0].data.source, 'ops');
+  assert.ok(state.events[0].createdAt);
+}
+
 async function testSellerCannotReassignAnotherSellerButCanClaimUnassignedLead() {
   reset();
   const forbidden = await service.assignPortalConversationSeller(
@@ -248,8 +270,8 @@ function testInboxAndOpsShareTenantScopedCommercialEvents() {
   assert.match(source, /event\."conversationId" = c\.id/);
   assert.match(source, /commercial\."commercialTimeline" AS "commercialTimeline"/);
   assert.match(source, /commercialActivity\."lastCommercialActivityAt"/);
-  assert.match(source, /event\.type IN \('commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'\)/);
-  assert.doesNotMatch(source, /lastCommercialActivityAt: assignment\.event/);
+  assert.match(source, /event\.type IN \('seller_assigned', 'seller_reassigned', 'recovery_started', 'commercial_follow_up_updated', 'commercial_follow_up_completed', 'commercial_note_updated'\)/);
+  assert.match(source, /lastCommercialActivityAt: assignment\.events\?\.\[assignment\.events\.length - 1\]\?\.createdAt/);
   assert.match(source, /"nextActionAt" AS "nextActionAt"/);
   assert.match(source, /"assignedSellerUserId" AS "assignedSellerUserId"/);
   const routes = fs.readFileSync(modulePath('src/routes/portal.routes.js'), 'utf8');
@@ -260,6 +282,7 @@ function testInboxAndOpsShareTenantScopedCommercialEvents() {
 
 (async () => {
   await testReassignmentIsAtomicAndDoesNotChangeCommercialStage();
+  await testSameSellerRecoveryIsDurableAndDoesNotChangeStage();
   await testSellerCannotReassignAnotherSellerButCanClaimUnassignedLead();
   await testInboxFollowUpAndNoteAreRecordedWithActor();
   await testFollowUpCompletionIsAnAuditedCanonicalTransition();
