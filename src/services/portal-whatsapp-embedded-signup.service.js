@@ -27,6 +27,8 @@ const {
   deactivateOtherClinicWhatsAppChannels,
   withOnboardingTransaction
 } = require('../repositories/whatsapp-onboarding.repository');
+const whatsappTransitionRepository = require('../repositories/whatsapp-channel-transition.repository');
+const whatsappTransitionService = require('./whatsapp-channel-transition.service');
 const { createPortalUserAuditEvent } = require('../repositories/portal-user-audit.repository');
 const {
   WHATSAPP_CONNECTION_MODE,
@@ -751,7 +753,7 @@ function registrationError(reason) {
   return error;
 }
 
-async function ensureWhatsAppPhoneRegistered({ clinicId, phoneNumberId, accessToken, requestId = null }) {
+async function ensureWhatsAppPhoneRegistered({ clinicId, phoneNumberId, accessToken, requestId = null, force = false }) {
   let credential;
   try {
     // Durable before the remote call: a timeout or later channel transaction
@@ -761,7 +763,7 @@ async function ensureWhatsAppPhoneRegistered({ clinicId, phoneNumberId, accessTo
     throw registrationError(error.code === 'whatsapp_registration_ownership_conflict'
       ? error.code : 'whatsapp_registration_storage_failed');
   }
-  if (credential.registeredAt) return;
+  if (credential.registeredAt && force !== true) return;
 
   let registration;
   try {
@@ -854,14 +856,30 @@ async function createPortalWhatsAppSignupSession({
   if (proposedStateToken && !CLIENT_STATE_TOKEN_PATTERN.test(proposedStateToken)) {
     return withReason('invalid_embedded_signup_state_token', 'El state del onboarding no tiene un formato valido.');
   }
+  let transitionForBootstrap = null;
+  if (authorizedConnectionMode === WHATSAPP_CONNECTION_MODE.COEXISTENCE) {
+    const candidate = await whatsappTransitionRepository.findActiveWhatsAppChannelTransitionByClinicId(context.clinic.id);
+    if (candidate) {
+      if (context.channel && candidate.channelId === context.channel.id
+        && ['business_app_ready', 'coexistence_onboarding'].includes(candidate.status)) {
+        transitionForBootstrap = candidate;
+      } else {
+        return withReason(
+          'existing_channel_connection_mode_mismatch',
+          'El workspace tiene una transición WhatsApp que no coincide con el canal seleccionado.'
+        );
+      }
+    }
+  }
   if (
     context.channel &&
-    resolveStoredWhatsAppConnectionMode(context.channel.connectionMode) !== authorizedConnectionMode
+    resolveStoredWhatsAppConnectionMode(context.channel.connectionMode) !== authorizedConnectionMode &&
+    !transitionForBootstrap
   ) {
-    return withReason(
-      'existing_channel_connection_mode_mismatch',
-      'El workspace ya tiene un canal conectado con otro modo y requiere una migracion controlada.'
-    );
+      return withReason(
+        'existing_channel_connection_mode_mismatch',
+        'El workspace ya tiene un canal conectado con otro modo y requiere una migracion controlada.'
+      );
   }
 
   const metaConfig = buildMetaConfigStatus();
@@ -892,6 +910,16 @@ async function createPortalWhatsAppSignupSession({
     );
   }
 
+  if (transitionForBootstrap && transitionForBootstrap.status === 'business_app_ready') {
+    const advanced = await whatsappTransitionService.advanceWhatsAppChannelTransition(
+      transitionForBootstrap.id,
+      'coexistence_onboarding'
+    );
+    if (!advanced.ok) {
+      return withReason('whatsapp_transition_state_conflict', 'No pudimos validar el estado de transición antes del onboarding.');
+    }
+  }
+
   const session = await withOnboardingTransaction(async (client) => {
     await expirePreviousPendingSessions(context.clinic.id, client);
     return createOnboardingSession(
@@ -905,7 +933,10 @@ async function createPortalWhatsAppSignupSession({
         status: 'awaiting_callback',
         stateToken: proposedStateToken || randomToken(24),
         nonce: randomToken(16),
-        metadata: metadata || null
+        metadata: {
+          ...(metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {}),
+          ...(transitionForBootstrap ? { transitionId: transitionForBootstrap.id } : {})
+        }
       },
       client
     );
@@ -1147,6 +1178,38 @@ async function finalizePortalWhatsAppSignup({
       ? await readCoexistencePlatformStatus({ accessToken: token.accessToken, phoneNumberId: assets.phoneNumberId })
       : null;
 
+    const activeTransition = connectionMode === WHATSAPP_CONNECTION_MODE.COEXISTENCE
+      ? await whatsappTransitionRepository.findActiveWhatsAppChannelTransitionByClinicId(session.clinicId)
+      : null;
+    let transitionCompletion = null;
+    if (activeTransition) {
+      const transitionIdentity = whatsappTransitionService.validateTransitionProviderIdentity(activeTransition, {
+        wabaId: assets.wabaId,
+        phoneNumberId: assets.phoneNumberId,
+        displayPhoneNumber: assets.displayPhoneNumber,
+        isOnBizApp: providerPlatformStatus && providerPlatformStatus.isOnBizApp,
+        platformType: providerPlatformStatus && providerPlatformStatus.platformType
+      });
+      if (!transitionIdentity.ok || !['coexistence_onboarding', 'business_app_ready'].includes(activeTransition.status)) {
+        const failureCode = transitionIdentity.reason || 'transition_not_ready_for_coexistence';
+        logWarn('portal_whatsapp_transition_identity_rejected', {
+          requestId,
+          clinicId: session.clinicId,
+          transitionId: activeTransition.id,
+          reason: failureCode
+        });
+        await markOnboardingSessionFailed(session.id, {
+          errorCode: failureCode,
+          errorMessage: 'La identidad verificada por Meta no coincide con la transición autorizada.'
+        });
+        return withReason(
+          'whatsapp_transition_identity_mismatch',
+          'La identidad o el estado de WhatsApp no coincide con la transición autorizada.'
+        );
+      }
+      transitionCompletion = activeTransition;
+    }
+
     logInfo('portal_whatsapp_embedded_signup_assets_resolved', {
       requestId,
       tenantId: session.externalTenantId,
@@ -1183,7 +1246,8 @@ async function finalizePortalWhatsAppSignup({
     if (
       existingChannel &&
       existingChannel.clinicId === session.clinicId &&
-      resolveStoredWhatsAppConnectionMode(existingChannel.connectionMode) !== connectionMode
+      resolveStoredWhatsAppConnectionMode(existingChannel.connectionMode) !== connectionMode &&
+      !(transitionCompletion && existingChannel.id === transitionCompletion.channelId)
     ) {
       await markOnboardingSessionFailed(session.id, {
         errorCode: 'existing_channel_connection_mode_mismatch',
@@ -1194,6 +1258,17 @@ async function finalizePortalWhatsAppSignup({
         'existing_channel_connection_mode_mismatch',
         'El numero ya esta conectado con otro modo y no se convertira automaticamente.'
       );
+    }
+
+    if (transitionCompletion) {
+      const recordedCandidate = await whatsappTransitionRepository.recordWhatsAppChannelTransitionCandidate({
+        transitionId: transitionCompletion.id,
+        phoneNumberId: assets.phoneNumberId,
+        wabaId: assets.wabaId
+      });
+      if (!recordedCandidate) {
+        return withReason('whatsapp_transition_state_conflict', 'No pudimos conservar la identidad verificada para recuperación.');
+      }
     }
 
     await markOnboardingSessionProcessing(session.id, {
@@ -1255,27 +1330,57 @@ async function finalizePortalWhatsAppSignup({
         },
         client
       );
-      const channelStatus = subscription.ok ? 'active' : 'pending';
-      const channel = await upsertWhatsAppChannel(
-        {
-          clinicId: session.clinicId,
-          phoneNumberId: assets.phoneNumberId,
-          wabaId: assets.wabaId,
-          connectionMode,
+      let channelStatus = subscription.ok ? 'active' : 'pending';
+      let channel;
+      if (transitionCompletion && subscription.ok) {
+        const transitioned = await whatsappTransitionService.validateAndCompleteWhatsAppCoexistenceTransition({
+          transition: transitionCompletion,
+          provider: {
+            wabaId: assets.wabaId,
+            phoneNumberId: assets.phoneNumberId,
+            displayPhoneNumber: assets.displayPhoneNumber,
+            isOnBizApp: providerPlatformStatus && providerPlatformStatus.isOnBizApp,
+            platformType: providerPlatformStatus && providerPlatformStatus.platformType
+          },
           accessToken: token.accessToken,
-          displayPhoneNumber: assets.displayPhoneNumber,
           verifiedName: assets.verifiedName,
-          status: channelStatus,
-          connectionSource: 'embedded_signup',
-          connectionMetadata: {
-            onboardingProvider: DEFAULT_PROVIDER,
-            businessId: assets.businessId,
-            subscriptionOk: subscription.ok,
-            subscriptionAlreadyExisted: subscription.alreadySubscribed || false
-          }
-        },
-        client
-      );
+          client
+        });
+        if (!transitioned.ok) throw new Error(transitioned.reason || 'whatsapp_transition_rebind_failed');
+        channel = await findWhatsAppChannelByClinicAndPhoneNumberId(session.clinicId, assets.phoneNumberId, client);
+        if (!channel || channel.id !== transitionCompletion.channelId) {
+          throw new Error('whatsapp_transition_channel_identity_lost');
+        }
+      } else if (transitionCompletion) {
+        // A failed provider subscription must not replace the original channel identity.
+        channelStatus = 'pending';
+        channel = await findWhatsAppChannelByClinicAndPhoneNumberId(
+          session.clinicId,
+          transitionCompletion.originalPhoneNumberId,
+          client
+        );
+      } else {
+        channel = await upsertWhatsAppChannel(
+          {
+            clinicId: session.clinicId,
+            phoneNumberId: assets.phoneNumberId,
+            wabaId: assets.wabaId,
+            connectionMode,
+            accessToken: token.accessToken,
+            displayPhoneNumber: assets.displayPhoneNumber,
+            verifiedName: assets.verifiedName,
+            status: channelStatus,
+            connectionSource: 'embedded_signup',
+            connectionMetadata: {
+              onboardingProvider: DEFAULT_PROVIDER,
+              businessId: assets.businessId,
+              subscriptionOk: subscription.ok,
+              subscriptionAlreadyExisted: subscription.alreadySubscribed || false
+            }
+          },
+          client
+        );
+      }
 
       if (providerPlatformStatus) {
         await client.query(
@@ -1290,7 +1395,9 @@ async function finalizePortalWhatsAppSignup({
         );
       }
 
-      await deactivateOtherClinicWhatsAppChannels(session.clinicId, channel.id, client);
+      if (!transitionCompletion) {
+        await deactivateOtherClinicWhatsAppChannels(session.clinicId, channel.id, client);
+      }
 
       if (subscription.ok) {
         await markOnboardingSessionCompleted(
@@ -1575,6 +1682,7 @@ module.exports = {
   cancelPortalWhatsAppSignupSession,
   finalizePortalWhatsAppSignup,
   registerPortalWhatsAppPhoneNumber,
+  ensureWhatsAppPhoneRegistered,
   buildMetaConfigStatus,
   __private__: {
     ONBOARDING_SESSION_TTL_MS,

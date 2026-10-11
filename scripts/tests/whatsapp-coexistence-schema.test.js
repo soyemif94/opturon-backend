@@ -31,6 +31,7 @@ test('094 creates tenant-scoped durable deduped events and releases stored webho
       );
     `);
     await db.exec(fs.readFileSync(path.join(root, 'db/migrations/094_whatsapp_coexistence.sql'), 'utf8'));
+    await db.exec(fs.readFileSync(path.join(root, 'db/migrations/095_whatsapp_channel_transition.sql'), 'utf8'));
     await db.query('INSERT INTO clinics(id, name) VALUES ($1, $2)', [clinicId, 'Tenant A']);
     await db.query(`INSERT INTO channels (id, "clinicId", provider, "phoneNumberId", "wabaId", "displayPhoneNumber", "connectionMode")
       VALUES ($1, $2, 'whatsapp_cloud', 'phone-a', 'waba-a', '+54 11 8888 0000', 'COEXISTENCE')`, [channelId, clinicId]);

@@ -132,10 +132,10 @@ test('contact upsert prioritizes provider identity and cannot overwrite a CRM na
     assert.equal(result.name, 'Emi Fernandez');
     assert.deepEqual(calls[0].params[1], ['5492915275449', '542915275449']);
     assert.equal(calls.length, 2);
-    assert.equal(calls[1].params[5], true);
-    assert.equal(calls[1].params[6], true);
-    assert.match(calls[1].sql, /CASE WHEN \$6::boolean THEN name/);
-    assert.match(calls[1].sql, /CASE WHEN \$7::boolean THEN "waId"/);
+    assert.equal(calls[1].params[7], true);
+    assert.equal(calls[1].params[8], true);
+    assert.match(calls[1].sql, /CASE WHEN \$8::boolean THEN name/);
+    assert.match(calls[1].sql, /CASE WHEN \$9::boolean THEN "waId"/);
   } finally {
     if (savedDb) require.cache[dbFilename] = savedDb; else delete require.cache[dbFilename];
     if (savedContact) require.cache[contactFilename] = savedContact; else delete require.cache[contactFilename];
@@ -147,7 +147,7 @@ test('PGlite exact production rows choose canonical 13-digit contact over retire
   await db.exec(`
     CREATE TABLE contacts (
       id text PRIMARY KEY, "clinicId" text NOT NULL, "waId" text, phone text, name text,
-      email text, "profileImageUrl" text, "whatsappPhone" text, "taxId" text,
+      email text, "profileImageUrl" text, metadata jsonb, "whatsappPhone" text, "taxId" text,
       "taxCondition" text, "companyName" text, notes text, status text,
       "archivedAt" timestamptz, "deletedAt" timestamptz, "optedOut" boolean DEFAULT false,
       "createdAt" timestamptz DEFAULT now(), "updatedAt" timestamptz DEFAULT now(),

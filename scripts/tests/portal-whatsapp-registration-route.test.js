@@ -60,6 +60,7 @@ function harness(options = {}) {
   const dependencies = {
     express: { Router: () => router },
     multer,
+    'express-rate-limit': () => noop,
     '../middlewares/portal-internal-auth.middleware': internalAuth,
     '../middlewares/portal-active-tenant.middleware': activeTenant,
     '../middlewares/portal-whatsapp-canary-authorization.middleware': canaryAuthorization,

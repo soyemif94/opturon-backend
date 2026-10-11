@@ -14,6 +14,10 @@ const {
   getAdminAiProvisioningQueue,
   postAdminAiProvisioningAction,
   getAdminMetaEmbeddedSignupReadiness,
+  getAdminWhatsAppChannelTransitionDiagnostics,
+  postAdminPrepareWhatsAppChannelTransition,
+  postAdminWhatsAppChannelTransitionStage,
+  postAdminWhatsAppChannelTransitionRollback,
   getAdminPartners,
   postAdminPartner,
   postAdminPartnerInvite,
@@ -61,6 +65,10 @@ router.get('/diagnostics/ai-assist', requirePortalInternalAuth, getAdminAiAssist
 router.get('/ai/provisioning', requireAdminInternalActor, getAdminAiProvisioningQueue);
 router.post('/ai/provisioning/:clinicId', requireAdminInternalActor, postAdminAiProvisioningAction);
 router.get('/meta/embedded-signup/readiness', requirePortalInternalAuth, getAdminMetaEmbeddedSignupReadiness);
+router.get('/tenants/:tenantId/whatsapp/channel-transitions', requireAdminInternalActor, getAdminWhatsAppChannelTransitionDiagnostics);
+router.post('/tenants/:tenantId/whatsapp/channel-transitions/prepare', requireAdminInternalActor, postAdminPrepareWhatsAppChannelTransition);
+router.post('/whatsapp/channel-transitions/:transitionId/stage', requireAdminInternalActor, postAdminWhatsAppChannelTransitionStage);
+router.post('/whatsapp/channel-transitions/:transitionId/rollback', requireAdminInternalActor, postAdminWhatsAppChannelTransitionRollback);
 router.get('/partners', requireAdminInternalActor, getAdminPartners);
 router.post('/partners', requireAdminInternalActor, postAdminPartner);
 router.post('/partners/invite', requireAdminInternalActor, postAdminPartnerInvite);

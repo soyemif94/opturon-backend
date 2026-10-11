@@ -23,6 +23,8 @@ function clearModule(relativePath) {
 
 function setupCommonMocks(repositoryOverrides = {}, contextOverrides = {}, envOverrides = {}) {
   clearModule('src/services/portal-whatsapp-embedded-signup.service.js');
+  clearModule('src/services/whatsapp-channel-transition.service.js');
+  clearModule('src/repositories/whatsapp-channel-transition.repository.js');
   mockModule('src/config/env.js', {
     whatsappAppId: '3388083341350043',
     metaAppSecret: 'app-secret',
@@ -56,6 +58,15 @@ function setupCommonMocks(repositoryOverrides = {}, contextOverrides = {}, envOv
   });
   mockModule('src/repositories/portal-user-audit.repository.js', {
     createPortalUserAuditEvent: async () => null
+  });
+  mockModule('src/repositories/whatsapp-channel-transition.repository.js', {
+    findActiveWhatsAppChannelTransitionByClinicId: async () => null,
+    recordWhatsAppChannelTransitionCandidate: async () => null
+  });
+  mockModule('src/services/whatsapp-channel-transition.service.js', {
+    advanceWhatsAppChannelTransition: async () => ({ ok: true }),
+    validateTransitionProviderIdentity: () => ({ ok: false, reason: 'no_active_transition' }),
+    validateAndCompleteWhatsAppCoexistenceTransition: async () => ({ ok: false, reason: 'no_active_transition' })
   });
   mockModule('src/repositories/whatsapp-onboarding.repository.js', {
     createOnboardingSession: async () => null,

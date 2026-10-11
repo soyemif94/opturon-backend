@@ -12,7 +12,8 @@ function validateEchoChannel(event, channel) {
   if (!channel) return 'channel_not_found_or_ambiguous';
   if (channel.provider !== 'whatsapp_cloud' || channel.connectionMode !== 'COEXISTENCE') return 'not_coexistence';
   if (String(channel.status || '').toLowerCase() !== 'active') return 'channel_inactive';
-  if (String(channel.phoneNumberId || '') !== event.phoneNumberId) return 'phone_id_mismatch';
+  if (String(channel.phoneNumberId || '') !== event.phoneNumberId
+    && !(channel.matchedViaAlias === true && String(channel.matchedPhoneNumberId || '') === event.phoneNumberId)) return 'phone_id_mismatch';
   if (!channel.wabaId || String(channel.wabaId) !== event.wabaId) return 'waba_mismatch';
   const businessNumber = digits(channel.displayPhoneNumber);
   if (!businessNumber || businessNumber !== event.from || businessNumber !== event.displayPhoneNumber) {

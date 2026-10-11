@@ -50,6 +50,7 @@ const {
 const { logError } = require('../utils/logger');
 const { query } = require('../db/client');
 const { sendAiReadyEmail } = require('../services/onboarding-email.service');
+const whatsappChannelTransitionService = require('../services/whatsapp-channel-transition.service');
 
 function sanitizeBillingPayload(payload) {
   const safePayload = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
@@ -305,6 +306,60 @@ async function getAdminMetaEmbeddedSignupReadiness(req, res) {
       error: 'meta_embedded_signup_readiness_failed',
       details: error && error.message ? error.message : 'unknown_error'
     });
+  }
+}
+
+async function getAdminWhatsAppChannelTransitionDiagnostics(req, res) {
+  try {
+    const result = await whatsappChannelTransitionService.getWhatsAppChannelTransitionDiagnostics(
+      req.params && req.params.tenantId
+    );
+    return res.status(result.ok ? 200 : 404).json({ success: result.ok, ...(result.ok ? { data: result } : { error: result.reason }) });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_whatsapp_transition_diagnostics_failed' });
+  }
+}
+
+async function postAdminPrepareWhatsAppChannelTransition(req, res) {
+  const { actorUserId } = getAdminActor(req);
+  try {
+    const result = await whatsappChannelTransitionService.prepareWhatsAppChannelTransition(
+      req.params && req.params.tenantId,
+      actorUserId
+    );
+    const status = result.ok ? 200 : result.reason === 'transition_requires_one_whatsapp_channel' ? 404 : 409;
+    return res.status(status).json({ success: result.ok, ...(result.ok ? { data: result } : { error: result.reason }) });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_whatsapp_transition_prepare_failed' });
+  }
+}
+
+async function postAdminWhatsAppChannelTransitionStage(req, res) {
+  try {
+    const status = String(req.body && req.body.status || '').trim();
+    const failureCode = req.body && req.body.failureCode;
+    const result = await whatsappChannelTransitionService.advanceWhatsAppChannelTransition(
+      req.params && req.params.transitionId,
+      status,
+      failureCode
+    );
+    const httpStatus = result.ok ? 200 : result.reason === 'transition_not_found' ? 404 : 409;
+    return res.status(httpStatus).json({ success: result.ok, ...(result.ok ? { data: { transitionId: result.transition.id, status: result.transition.status } } : { error: result.reason }) });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_whatsapp_transition_stage_failed' });
+  }
+}
+
+async function postAdminWhatsAppChannelTransitionRollback(req, res) {
+  try {
+    const result = await whatsappChannelTransitionService.executeWhatsAppTransitionRollback(
+      req.params && req.params.transitionId,
+      req.body && req.body.confirmRecovery === true
+    );
+    const status = result.ok ? 200 : result.reason === 'transition_not_found' ? 404 : 409;
+    return res.status(status).json({ success: result.ok, ...(result.ok ? { data: result } : { error: result.reason }) });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'admin_whatsapp_transition_rollback_failed' });
   }
 }
 
@@ -878,6 +933,10 @@ module.exports = {
   getAdminAiProvisioningQueue,
   postAdminAiProvisioningAction,
   getAdminMetaEmbeddedSignupReadiness,
+  getAdminWhatsAppChannelTransitionDiagnostics,
+  postAdminPrepareWhatsAppChannelTransition,
+  postAdminWhatsAppChannelTransitionStage,
+  postAdminWhatsAppChannelTransitionRollback,
   getAdminPartners,
   postAdminPartner,
   postAdminPartnerInvite,

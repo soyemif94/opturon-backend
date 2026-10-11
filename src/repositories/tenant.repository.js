@@ -112,27 +112,51 @@ function buildPortalAccountConfig(settings) {
 async function findChannelByPhoneNumberId(phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", type, provider, "phoneNumberId", "externalId", "externalPageId", "externalPageName", "instagramUserId", "instagramUsername", "displayPhoneNumber", "verifiedName", "wabaId", "accessToken", status
-     FROM channels
-     WHERE "phoneNumberId" = $1
-       AND provider = 'whatsapp_cloud'
-       AND LOWER(COALESCE(status, '')) = 'active'
-     LIMIT 1`,
+    `SELECT * FROM (
+       SELECT ch.id, ch."clinicId", ch.type, ch.provider, ch."phoneNumberId", ch."externalId", ch."externalPageId",
+              ch."externalPageName", ch."instagramUserId", ch."instagramUsername", ch."displayPhoneNumber",
+              ch."verifiedName", ch."wabaId", ch."accessToken", ch.status
+       FROM channels ch
+       WHERE ch."phoneNumberId" = $1 AND ch.provider = 'whatsapp_cloud'
+         AND LOWER(COALESCE(ch.status, '')) = 'active'
+       UNION ALL
+       SELECT ch.id, ch."clinicId", ch.type, ch.provider, ch."phoneNumberId", ch."externalId", ch."externalPageId",
+              ch."externalPageName", ch."instagramUserId", ch."instagramUsername", ch."displayPhoneNumber",
+              ch."verifiedName", ch."wabaId", ch."accessToken", ch.status
+       FROM whatsapp_channel_phone_aliases a
+       JOIN whatsapp_channel_transitions t ON t.id = a."transitionId" AND t."clinicId" = a."clinicId" AND t."channelId" = a."channelId"
+       JOIN channels ch ON ch.id = a."channelId" AND ch."clinicId" = a."clinicId"
+       WHERE a."phoneNumberId" = $1 AND a."expiresAt" > NOW()
+         AND a."wabaId" = ch."wabaId" AND t.status IN ('completed', 'rolled_back')
+         AND ch.provider = 'whatsapp_cloud' AND LOWER(COALESCE(ch.status, '')) = 'active'
+         AND NOT EXISTS (SELECT 1 FROM channels direct WHERE direct."phoneNumberId" = $1)
+     ) resolved
+     LIMIT 2`,
     [phoneNumberId]
   );
 
-  return mapChannelTokenRecord(result.rows[0] || null);
+  return result.rows.length === 1 ? mapChannelTokenRecord(result.rows[0]) : null;
 }
 
 async function findCoexistenceChannelByPhoneNumberId(phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", "displayPhoneNumber", "wabaId", status, "connectionMode"
-     FROM channels
-     WHERE "phoneNumberId" = $1
-       AND provider = 'whatsapp_cloud'
-     ORDER BY id ASC
-     LIMIT 2`,
+    `SELECT * FROM (
+       SELECT ch.id, ch."clinicId", ch.provider, ch."phoneNumberId", ch."displayPhoneNumber", ch."wabaId", ch.status,
+              ch."connectionMode", $1::text AS "matchedPhoneNumberId", FALSE AS "matchedViaAlias"
+       FROM channels ch
+       WHERE ch."phoneNumberId" = $1 AND ch.provider = 'whatsapp_cloud'
+       UNION ALL
+       SELECT ch.id, ch."clinicId", ch.provider, ch."phoneNumberId", ch."displayPhoneNumber", ch."wabaId", ch.status,
+              ch."connectionMode", a."phoneNumberId" AS "matchedPhoneNumberId", TRUE AS "matchedViaAlias"
+       FROM whatsapp_channel_phone_aliases a
+       JOIN whatsapp_channel_transitions t ON t.id = a."transitionId" AND t."clinicId" = a."clinicId" AND t."channelId" = a."channelId"
+       JOIN channels ch ON ch.id = a."channelId" AND ch."clinicId" = a."clinicId"
+       WHERE a."phoneNumberId" = $1 AND a."expiresAt" > NOW() AND a."wabaId" = ch."wabaId"
+         AND t.status IN ('completed', 'rolled_back') AND ch.provider = 'whatsapp_cloud'
+         AND NOT EXISTS (SELECT 1 FROM channels direct WHERE direct."phoneNumberId" = $1)
+     ) resolved
+     ORDER BY id ASC LIMIT 2`,
     [phoneNumberId]
   );
   return result.rows.length === 1 ? result.rows[0] : null;
@@ -141,10 +165,19 @@ async function findCoexistenceChannelByPhoneNumberId(phoneNumberId, client = nul
 async function findWhatsAppChannelByPhoneNumberIdIncludingInactive(phoneNumberId, client = null) {
   const result = await dbQuery(
     client,
-    `SELECT id, "clinicId", provider, "phoneNumberId", status
-     FROM channels
-     WHERE "phoneNumberId" = $1
-       AND provider = 'whatsapp_cloud'
+    `SELECT * FROM (
+       SELECT id, "clinicId", provider, "phoneNumberId", status, FALSE AS "matchedViaAlias"
+       FROM channels
+       WHERE "phoneNumberId" = $1 AND provider = 'whatsapp_cloud'
+       UNION ALL
+       SELECT ch.id, ch."clinicId", ch.provider, ch."phoneNumberId", ch.status, TRUE AS "matchedViaAlias"
+       FROM whatsapp_channel_phone_aliases a
+       JOIN whatsapp_channel_transitions t ON t.id = a."transitionId" AND t."clinicId" = a."clinicId" AND t."channelId" = a."channelId"
+       JOIN channels ch ON ch.id = a."channelId" AND ch."clinicId" = a."clinicId"
+       WHERE a."phoneNumberId" = $1 AND a."expiresAt" > NOW() AND a."wabaId" = ch."wabaId"
+         AND t.status IN ('completed', 'rolled_back') AND ch.provider = 'whatsapp_cloud'
+         AND NOT EXISTS (SELECT 1 FROM channels direct WHERE direct."phoneNumberId" = $1)
+     ) resolved
      ORDER BY id ASC
      LIMIT 2`,
     [phoneNumberId]

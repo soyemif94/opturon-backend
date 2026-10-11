@@ -13,6 +13,7 @@ const buildInfo = require('./utils/build');
 const { ensureInboxConversationSoftDeleteSchema } = require('./db/ensure-inbox-conversation-soft-delete');
 const { ensureWhatsAppTemplateCanarySchema } = require('./db/ensure-whatsapp-template-canary');
 const { ensureWhatsAppCoexistenceSchema } = require('./db/ensure-whatsapp-coexistence');
+const { ensureWhatsAppChannelTransitionSchema } = require('./db/ensure-whatsapp-channel-transition');
 
 const app = createApp();
 const host = '0.0.0.0';
@@ -116,11 +117,12 @@ async function ensureStartupSchema() {
   const inboxResult = await ensureInboxConversationSoftDeleteSchema();
   const canaryResult = await ensureWhatsAppTemplateCanarySchema();
   const coexistenceResult = await ensureWhatsAppCoexistenceSchema();
-  return { inboxResult, canaryResult, coexistenceResult };
+  const transitionResult = await ensureWhatsAppChannelTransitionSchema();
+  return { inboxResult, canaryResult, coexistenceResult, transitionResult };
 }
 
 ensureStartupSchema()
-  .then(({ inboxResult, canaryResult, coexistenceResult }) => {
+  .then(({ inboxResult, canaryResult, coexistenceResult, transitionResult }) => {
     logInfo('inbox_conversation_soft_delete_schema_ready', {
       migration: inboxResult.migration,
       columns: Object.keys(inboxResult.columns || {})
@@ -133,11 +135,15 @@ ensureStartupSchema()
       migration: coexistenceResult.migration,
       schema: coexistenceResult.schema
     });
+    logInfo('whatsapp_channel_transition_schema_ready', {
+      migration: transitionResult.migration,
+      schema: transitionResult.schema
+    });
     server.listen(env.port, host, handleServerListening);
   })
   .catch((error) => {
     logError('server_schema_bootstrap_failed', {
-      migrations: ['076_inbox_conversation_soft_delete.sql', '077_whatsapp_template_canary_attempts.sql', '094_whatsapp_coexistence.sql'],
+      migrations: ['076_inbox_conversation_soft_delete.sql', '077_whatsapp_template_canary_attempts.sql', '094_whatsapp_coexistence.sql', '095_whatsapp_channel_transition.sql'],
       error: error.message,
       code: error.code || null
     });

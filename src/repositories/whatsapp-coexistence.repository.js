@@ -21,11 +21,20 @@ async function resolveChannelsForEvent(event) {
 
   if (!event.phoneNumberId) return [];
   const result = await query(
-    `SELECT id, "clinicId", "phoneNumberId", "wabaId", "displayPhoneNumber", "connectionMode", status
-     FROM channels
-     WHERE provider = 'whatsapp_cloud' AND "phoneNumberId" = $1
-     LIMIT 2`,
-    [event.phoneNumberId]
+    `SELECT * FROM (
+       SELECT ch.id, ch."clinicId", ch."phoneNumberId", ch."wabaId", ch."displayPhoneNumber", ch."connectionMode", ch.status
+       FROM channels ch
+       WHERE ch.provider = 'whatsapp_cloud' AND ch."phoneNumberId" = $1
+       UNION ALL
+       SELECT ch.id, ch."clinicId", ch."phoneNumberId", ch."wabaId", ch."displayPhoneNumber", ch."connectionMode", ch.status
+       FROM whatsapp_channel_phone_aliases a
+       JOIN whatsapp_channel_transitions t ON t.id = a."transitionId" AND t."clinicId" = a."clinicId" AND t."channelId" = a."channelId"
+       JOIN channels ch ON ch.id = a."channelId" AND ch."clinicId" = a."clinicId"
+       WHERE a."phoneNumberId" = $1 AND a."wabaId" = $2 AND a."expiresAt" > NOW()
+         AND t.status = 'completed' AND ch.provider = 'whatsapp_cloud'
+         AND NOT EXISTS (SELECT 1 FROM channels direct WHERE direct."phoneNumberId" = $1)
+     ) resolved LIMIT 2`,
+    [event.phoneNumberId, event.wabaId]
   );
   if (result.rows.length !== 1) return [];
   const channel = result.rows[0];
@@ -65,7 +74,7 @@ async function persistCoexistenceWebhookEvents(payload) {
            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
            ON CONFLICT ("channelId", field, "eventHash") DO NOTHING
            RETURNING id`,
-          [channel.clinicId, channel.id, event.wabaId, channel.phoneNumberId, event.field,
+          [channel.clinicId, channel.id, event.wabaId, event.phoneNumberId, event.field,
             event.eventHash, JSON.stringify(event.value)]
         );
         if (!result.rows[0]) return false;
@@ -86,7 +95,14 @@ async function persistCoexistenceWebhookEvents(payload) {
 async function findCoexistenceEventForProcessing(eventId, client) {
   const result = await scopedQuery(client,
     `SELECT e.id, e."clinicId", e."channelId", e."wabaId", e."phoneNumberId", e.field, e.payload, e.status,
-            c."displayPhoneNumber", c."connectionMode", c."wabaId" AS "channelWabaId", c."phoneNumberId" AS "channelPhoneNumberId"
+            c."displayPhoneNumber", c."connectionMode", c."wabaId" AS "channelWabaId", c."phoneNumberId" AS "channelPhoneNumberId",
+            EXISTS (
+              SELECT 1 FROM whatsapp_channel_phone_aliases a
+              JOIN whatsapp_channel_transitions t ON t.id = a."transitionId" AND t."clinicId" = a."clinicId" AND t."channelId" = a."channelId"
+              WHERE a."phoneNumberId" = e."phoneNumberId" AND a."wabaId" = e."wabaId"
+                AND a."clinicId" = e."clinicId" AND a."channelId" = e."channelId"
+                AND a."expiresAt" > NOW() AND t.status = 'completed'
+            ) AS "phoneNumberIdAliasValid"
      FROM whatsapp_coexistence_events e
      JOIN channels c ON c.id = e."channelId" AND c."clinicId" = e."clinicId"
      WHERE e.id = $1::uuid
@@ -205,7 +221,8 @@ async function processCoexistenceEvent(eventId, handlers) {
   return withTransaction(async (client) => {
     const event = await findCoexistenceEventForProcessing(eventId, client);
     if (!event || event.status === 'done' || !event.payload) return { skipped: true };
-    if (event.channelWabaId !== event.wabaId || event.channelPhoneNumberId !== event.phoneNumberId && event.field !== 'account_update') {
+    if (event.channelWabaId !== event.wabaId
+      || event.channelPhoneNumberId !== event.phoneNumberId && event.field !== 'account_update' && event.phoneNumberIdAliasValid !== true) {
       const error = new Error('coexistence_event_channel_identity_mismatch');
       error.code = 'COEXISTENCE_CHANNEL_IDENTITY_MISMATCH';
       throw error;
@@ -228,6 +245,7 @@ async function processCoexistenceEvent(eventId, handlers) {
 }
 
 module.exports = {
+  resolveChannelsForEvent,
   findOrCreateHistoricalConversation,
   insertHistoricalMessage,
   markContactRemoved,

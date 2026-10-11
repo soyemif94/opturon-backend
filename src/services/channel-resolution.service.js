@@ -1,6 +1,9 @@
 const env = require('../config/env');
 const { query } = require('../db/client');
-const { findChannelByPhoneNumberId } = require('../repositories/tenant.repository');
+const {
+  findChannelByPhoneNumberId,
+  findWhatsAppChannelByPhoneNumberIdIncludingInactive
+} = require('../repositories/tenant.repository');
 const { maybeEncryptSecret } = require('../utils/secret-crypto');
 const { WHATSAPP_CONNECTION_MODE } = require('../whatsapp/whatsapp-connection-mode');
 
@@ -18,7 +21,7 @@ function summarizeChannel(channel) {
 
 async function listChannels() {
   const result = await query(
-    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", status, "updatedAt", "createdAt"
+    `SELECT id, "clinicId", provider, "phoneNumberId", "wabaId", "connectionMode", status, "updatedAt", "createdAt"
      FROM channels
      ORDER BY "updatedAt" DESC, "createdAt" DESC`,
     []
@@ -129,6 +132,33 @@ async function getConfiguredChannelStatus(options = {}) {
   }
 
   const existingChannels = await listChannels();
+  const configuredRecord = existingChannels.find((channel) => channel.provider === 'whatsapp_cloud'
+    && String(channel.phoneNumberId || '').trim() === configuredPhoneNumberId);
+  if (configuredRecord && ['transitioning', 'reconnect_required', 'disconnected'].includes(
+    String(configuredRecord.status || '').trim().toLowerCase()
+  )) {
+    return {
+      ok: false,
+      requestId,
+      configuredPhoneNumberId,
+      channel: summarizeChannel(configuredRecord),
+      reason: 'whatsapp_channel_transition_in_progress',
+      existingChannels: existingChannels.map(summarizeChannel),
+      clinics: []
+    };
+  }
+  const configuredPhoneMatch = await findWhatsAppChannelByPhoneNumberIdIncludingInactive(configuredPhoneNumberId);
+  if (configuredPhoneMatch && configuredPhoneMatch.matchedViaAlias === true) {
+    return {
+      ok: false,
+      requestId,
+      configuredPhoneNumberId,
+      channel: summarizeChannel(configuredPhoneMatch),
+      reason: 'configured_phone_id_is_transition_alias',
+      existingChannels: existingChannels.map(summarizeChannel),
+      clinics: []
+    };
+  }
   const matchedChannel = await findChannelByPhoneNumberId(configuredPhoneNumberId);
 
   if (matchedChannel) {
